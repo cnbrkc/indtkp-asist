@@ -1,0 +1,17 @@
+{
+  "source_chats": [
+    "@indirimkanali"
+  ],
+  "destination": "me",
+  "include_keywords": [
+    "5070ti",
+    "ekran kartı",
+    "laptop"
+  ],
+  "exclude_keywords": [
+    "çekiliş",
+    "sponsorlu"
+  ],
+  "match_mode": "any",
+  "copy_mode": "forward"
+}

@@ -5,8 +5,10 @@ okuyamaz. Yapılandırma ortam değişkenlerinden gelir, böylece sırlar repoya
 """
 
 import asyncio
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Iterable
 
 from telethon import TelegramClient, events
@@ -19,8 +21,21 @@ logging.basicConfig(
 log = logging.getLogger("telegram-filter")
 
 
-def csv_env(name: str) -> list[str]:
-    return [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
+def load_config() -> dict:
+    """Public config dosyasını oku; ortam değişkenleri geriye dönük desteklenir."""
+    path = Path(os.getenv("CONFIG_FILE", "config.json"))
+    with path.open(encoding="utf-8") as file:
+        config = json.load(file)
+
+    # Eski Variables kurulumu kullananların geçişini kolaylaştır.
+    for key in ("source_chats", "include_keywords", "exclude_keywords"):
+        env_name = key.upper()
+        if os.getenv(env_name):
+            config[key] = [x.strip() for x in os.environ[env_name].split(",") if x.strip()]
+    for key in ("destination", "match_mode", "copy_mode"):
+        if os.getenv(key.upper()):
+            config[key] = os.environ[key.upper()]
+    return config
 
 
 def chat_values(values: Iterable[str]) -> list[object]:
@@ -37,12 +52,13 @@ def chat_values(values: Iterable[str]) -> list[object]:
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ.get("SESSION_STRING", "").strip()
-SOURCE_CHATS = chat_values(csv_env("SOURCE_CHATS"))
-DESTINATION = os.getenv("DESTINATION", "me").strip()
-INCLUDE_KEYWORDS = [x.casefold() for x in csv_env("INCLUDE_KEYWORDS")]
-EXCLUDE_KEYWORDS = [x.casefold() for x in csv_env("EXCLUDE_KEYWORDS")]
-MATCH_MODE = os.getenv("MATCH_MODE", "any").lower()
-COPY_MODE = os.getenv("COPY_MODE", "forward").lower()
+CONFIG = load_config()
+SOURCE_CHATS = chat_values(CONFIG.get("source_chats", []))
+DESTINATION = str(CONFIG.get("destination", "me")).strip()
+INCLUDE_KEYWORDS = [str(x).casefold() for x in CONFIG.get("include_keywords", [])]
+EXCLUDE_KEYWORDS = [str(x).casefold() for x in CONFIG.get("exclude_keywords", [])]
+MATCH_MODE = str(CONFIG.get("match_mode", "any")).lower()
+COPY_MODE = str(CONFIG.get("copy_mode", "forward")).lower()
 
 if not SOURCE_CHATS:
     raise RuntimeError("SOURCE_CHATS boş olamaz; izlenecek kanal ID'lerini girin.")

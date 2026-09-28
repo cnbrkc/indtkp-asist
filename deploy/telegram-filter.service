@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram indirim takipçisi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/telegram-bot
+EnvironmentFile=/etc/telegram-filter.env
+ExecStart=/usr/bin/python3 /opt/telegram-bot/bot.py
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

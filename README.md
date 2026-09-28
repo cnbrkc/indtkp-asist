@@ -1,71 +1,99 @@
 # Telegram indirim takipçisi
 
-Kişisel Telegram hesabının üye olduğu indirim kanallarını dinler, seçtiğin kelimelere uyan gönderileri ayrı bir sohbete yollar. **Bot hesabı değil, Telethon ile kişisel hesap oturumu kullanır**; bu yüzden kaynak kanallara hesabınla üye olman gerekir.
+Kişisel Telegram hesabının üye olduğu kanalları dinler, kelime filtresinden geçen mesajları başka bir sohbete gönderir. Mesaj dinleme başladıktan sonra polling yapmaz; Telegram bağlantısını açık tutar ve yeni mesajı geldiği anda işler.
 
-## Önce güvenlik
+## Gerçek çalışma süresi
 
-Eski `bot.py` içinde API ID/API Hash açıkta kalmıştı. Bu değerler daha önce GitHub'a gönderildiyse artık gizli kabul edilmez: [my.telegram.org](https://my.telegram.org) üzerinden API uygulamasını yenile veya hash'i değiştir. Git geçmişinde görünen sırları temizlemek tek başına yeterli değildir.
+- `bot.py` çalıştığı sürece mesajlar anlık olarak dinlenir; 1 dakika bekleyip tarama yapmaz.
+- GitHub Actions ise kalıcı sunucu değildir. Workflow yaklaşık 5 saat 50 dakika çalışır, sonra yeniden başlatılır. Yeniden başlatma arasında boşluk olabilir.
+- GitHub'ın scheduled workflow için resmi en kısa aralığı 5 dakikadır; ayrıca zamanlama yoğunlukta gecikebilir [GitHub Docs](https://docs.github.com/actions/using-workflows/workflow-syntax-for-github-actions). Bu nedenle her dakikada garanti tarama GitHub Actions ile yapılamaz.
+- Gerçekten 7/24 ve 1 dakikadan kısa tepki isteniyorsa `bot.py`yi ücretsiz bir Oracle Cloud Free Tier VM üzerinde sürekli çalıştırmak daha doğru çözümdür. GitHub Actions yedeği olarak bırakılabilir.
 
-`SESSION_STRING` ve API bilgilerini asla kod içine, issue'ya veya herkese açık log'a yazma. String session, hesabına giriş yapmaya yarayan parolaya eşdeğerdir.
+GitHub Actions kurulumu ücretsiz ve kolay başlangıç içindir; kritik indirim kaçırmama hedefinde VM yolunu tercih etmek gerekir.
 
-## GitHub Actions ile ücretsiz kurulum
+## En kolay kurulum
 
-Bu yöntem bilgisayarın sürekli açık kalmasını gerektirmez. GitHub'ın public repository runner'ı yaklaşık 6 saatlik oturumlar halinde çalışır. Her oturumun arasında birkaç dakikalık boşluk olabilir; bu nedenle **gerçek zamanlı ve kesintisiz 7/24 garanti değildir**. GitHub cron gecikebilir, Actions da uzun süre hiç commit/activity olmayan depolarda zamanlamayı durdurabilir.
+### 1. Telegram API bilgisi
 
-1. Telegram'da hedef bir sohbet oluştur veya gönderileri **Kayıtlı Mesajlar**'a göndermek istiyorsan hedefi `me` bırak.
-2. Kaynak kanal kullanıcı adlarını (`@kanaladi`) veya chat ID'lerini ekle. Özel kanallar için ID genellikle `-100...` biçimindedir. Hesabın bu kanallara katılmış olmalı.
-3. [my.telegram.org](https://my.telegram.org) üzerinden API ID ve API Hash al.
-4. Bir bilgisayar/telefon üzerindeki Python ortamında bir kez oturum string'i üret:
+[my.telegram.org](https://my.telegram.org) üzerinden `API_ID` ve `API_HASH` al. Kaynak kanallara kişisel hesabınla katıl.
 
-   ```bash
-   pip install -r requirements.txt
-   API_ID=... API_HASH=... python generate_session.py
-   ```
+### 2. Telefonda session üret
 
-   Telefonuna gelen Telegram kodunu ve varsa iki aşamalı doğrulama parolasını gir. Çıktıdaki `SESSION_STRING`'ı sakla. Bu adım yalnızca ilk kurulumdur; sonra bilgisayar gerekmez.
+Bilgisayar şart değil. Depodaki `session_generator_colab.ipynb` dosyasını GitHub'da açıp **Open in Colab** seç veya dosyayı Google Colab'a yükle. Notebook'u public paylaşma.
 
-5. GitHub'da **Settings → Secrets and variables → Actions** ekranında:
-   - **Secrets**: `API_ID`, `API_HASH`, `SESSION_STRING`
-   - **Variables**: `SOURCE_CHATS`, `DESTINATION`, `INCLUDE_KEYWORDS`, `EXCLUDE_KEYWORDS`, `MATCH_MODE`, `COPY_MODE`
+Tek hücreyi çalıştır:
 
-   Örnek değerler:
+1. API ID gir.
+2. API Hash gir.
+3. Telefon numarasını uluslararası formatta gir (`+90...`).
+4. Telegram'a gelen kodu gir.
+5. İki aşamalı doğrulama varsa parolayı gir.
+6. Çıkan `SESSION_STRING` değerini kopyala.
 
-   | Değişken | Örnek | Açıklama |
-   |---|---|---|
-   | `SOURCE_CHATS` | `@kanal1,-1001234567890` | Virgülle ayrılmış kaynaklar |
-   | `DESTINATION` | `me` veya `-1009876543210` | Filtrelenen mesajların hedefi |
-   | `INCLUDE_KEYWORDS` | `5070ti,ekran kartı,laptop` | Varsayılan: bunlardan biri eşleşsin |
-   | `EXCLUDE_KEYWORDS` | `çekiliş,sponsorlu` | Bunlardan biri varsa gönderme |
-   | `MATCH_MODE` | `any` | `any` veya bütün kelimeler için `all` |
-   | `COPY_MODE` | `forward` | `copy` kaynak etiketini kaldırır |
+Bu, Telegram hesabının giriş anahtarıdır; kimseyle paylaşma ve notebook çıktısını kaydetme.
 
-6. **Actions → Telegram indirim takipçisi → Run workflow** ile elle başlatıp log'u kontrol et. Sonrasında workflow yaklaşık her 6 saatte bir yeniden başlar. `workflow_dispatch` elle yeniden başlatmak içindir.
-
-> Actions log'unda mesaj içeriği yazdırılmıyor. Yine de repo erişimini sınırlı tut ve `SESSION_STRING`'ı kimseye gönderme.
-
-## Yerelde test
+Alternatif olarak Python olan bir ortamda:
 
 ```bash
-cp .env.example .env
-# .env değerlerini doldur
-set -a; . ./.env; set +a
-python bot.py
+pip install -r requirements.txt
+API_ID=... API_HASH=... python generate_session.py
 ```
 
-İlk yerel çalıştırmada `SESSION_STRING` boşsa Telethon interaktif giriş ister. Actions'ta interaktif terminal olmadığı için oraya mutlaka üretilmiş StringSession koyulmalıdır.
+### 3. Yalnızca üç GitHub Secret ekle
 
-## Çalışma mantığı
+Repository → **Settings → Secrets and variables → Actions → New repository secret**:
 
-- Yalnızca `SOURCE_CHATS` içindeki yeni mesajlar izlenir; tüm hesabı dinleyip yanlışlıkla spam üretmez.
-- `EXCLUDE_KEYWORDS` önce uygulanır.
-- `INCLUDE_KEYWORDS` boşsa kaynak mesajlarının hepsi, doluysa `MATCH_MODE` kuralına uyanlar gönderilir.
-- `forward`, Telegram'ın orijinal iletisini ileri gönderir; `copy`, kaynak etiketi olmadan kopyalar.
-- Workflow'daki `concurrency` aynı anda iki runner'ın çalışıp çift mesaj göndermesini engeller.
+```text
+API_ID
+API_HASH
+SESSION_STRING
+```
 
-## Ücretsiz seçeneklerin sınırı
+Artık `Variables` eklemek gerekmiyor.
 
-GitHub Actions sürekli servis (daemon) değildir; ücretsiz ve bilgisayarsız başlangıç için en pratik çözümdür ancak kesintisiz çalışma gerekiyorsa kalıcı diskli bir ücretsiz/ucuz VM gerekir. `tgcf` ve `tg-focus` gibi açık kaynak projeler de benzer filtreleme yaklaşımı kullanıyor; bu repo küçük ve yalnızca indirim filtresi için tutuldu.
+### 4. Tek ayar dosyası
 
-### Lisans ve kullanım notu
+Kanal, hedef ve kelime ayarları kökteki [`config.json`](config.json) dosyasındadır:
 
-Telegram kanal kurallarına, telif haklarına ve GitHub Actions kullanım koşullarına uy. Çok yüksek hacimli otomatik forward işlemleri hesabına rate-limit veya kısıtlama getirebilir.
+```json
+{
+  "source_chats": ["@indirimkanali", "-1001234567890"],
+  "destination": "me",
+  "include_keywords": ["5070ti", "ekran kartı", "laptop"],
+  "exclude_keywords": ["çekiliş", "sponsorlu"],
+  "match_mode": "any",
+  "copy_mode": "forward"
+}
+```
+
+- `source_chats`: Virgül yerine JSON listesi kullanılır. Kanal adı veya `-100...` chat ID olabilir.
+- `destination`: `me` = Kayıtlı Mesajlar; özel sohbet/grup ID'si de kullanılabilir.
+- `include_keywords`: Bunlardan biri eşleşsin (`any`) veya hepsi eşleşsin (`all`).
+- `exclude_keywords`: Bunlardan biri varsa mesaj gönderilmez.
+- `copy_mode`: `forward` kaynak bilgisini korur, `copy` kaynak etiketini kaldırır.
+
+GitHub web arayüzünde `config.json` dosyasını düzenleyip commit etmen yeterlidir. Secret'ları tekrar girmen gerekmez.
+
+### 5. Başlat
+
+**Actions → Telegram indirim takipçisi → Run workflow** seç. İlk çalıştırmada log'larda hesabın bağlandığını görmelisin. Sonrasında workflow schedule ile yaklaşık 6 saatlik döngüler halinde tekrar başlar.
+
+## 1 dakikalık sürekli çalışma için Oracle VM
+
+GitHub Actions'ı tamamen ücretsiz ve sürekli sunucuya çevirmek mümkün değil. Daha sağlam ücretsiz plan:
+
+1. Oracle Cloud Free Tier hesabı oluştur.
+2. Ubuntu ARM/AMD Free Tier VM kur.
+3. Repo'yu VM'ye clone et.
+4. Secret değerlerini VM'de environment veya `.env` olarak tanımla; `.env`yi GitHub'a gönderme.
+5. `python bot.py`yi `systemd` servisi olarak çalıştır.
+6. VM yeniden başlarsa servis otomatik kalkar.
+
+Bu modelde `bot.py` Telegram'a sürekli bağlı kalır ve yeni mesajları anlık işler. Oracle hesap/kapasite uygunluğu bölgeye göre değişebilir; ücretsiz kota garanti edilemez. VM kurulumu için ayrıca `deploy/systemd.service` eklenebilir.
+
+## Güvenlik
+
+- `SESSION_STRING`, API Hash ve telefon kodunu kimseye gönderme.
+- Eski sürümde API bilgileri açıkça yazılmıştı. GitHub'a push edildiyse [my.telegram.org](https://my.telegram.org) üzerinden API uygulamasını yenile.
+- Session geçersiz olursa Colab notebook ile yeni session üretip `SESSION_STRING` Secret'ını güncelle.
+- Kaynak kanalların kurallarına uy; yüksek hacimli otomatik forward işlemleri Telegram rate-limit uygulamasına neden olabilir.
