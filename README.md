@@ -114,3 +114,189 @@ Bu modelde `bot.py` Telegram'a sürekli bağlı kalır ve yeni mesajları anlık
 - Eski sürümde API bilgileri açıkça yazılmıştı. GitHub'a push edildiyse [my.telegram.org](https://my.telegram.org) üzerinden API uygulamasını yenile.
 - Session geçersiz olursa Colab notebook ile yeni session üretip `SESSION_STRING` Secret'ını güncelle.
 - Kaynak kanalların kurallarına uy; yüksek hacimli otomatik forward işlemleri Telegram rate-limit uygulamasına neden olabilir.
+
+## Baştan sona kurulum kontrol listesi
+
+Aşağıdaki sıra, bu projeyi hiç kurmamış biri için önerilen sıradır.
+
+### A. PR'ı ana branch'e al
+
+1. Bu PR'ı GitHub'da aç.
+2. Dosyaların değişikliklerini incele.
+3. **Merge pull request** ile `main` branch'e birleştir.
+4. GitHub Actions schedule yalnızca varsayılan branch'teki workflow dosyasını çalıştırdığı için bu adım önemlidir.
+5. Birleştirmeden sonra repository'de **Actions** sekmesinin açık olduğundan emin ol.
+
+### B. Telegram API ID ve API Hash al
+
+1. `https://my.telegram.org` adresine gir.
+2. Telegram telefon numaranla giriş yap.
+3. **API development tools** bölümünü aç.
+4. Yeni bir uygulama oluştur.
+5. Ekrandaki `api_id` sayısını ve `api_hash` değerini not al.
+6. API Hash'i Telegram mesajı, GitHub issue'su veya herkese açık dosyada paylaşma.
+
+> Önceki sürümde API bilgileri kaynak koduna yazılmıştı. Bu bilgiler eski GitHub commit'lerinde görünüyorsa yeni bir API uygulaması/hash oluşturup eskisini kullanımdan kaldır.
+
+### C. Session String üret
+
+Bu proje kişisel Telegram hesabını dinlediği için bot tokenı değil, kullanıcı oturumu gerekir. Session String Telegram hesabına giriş anahtarıdır.
+
+Telefondan en kolay yöntem:
+
+1. GitHub'da `session_generator_colab.ipynb` dosyasını aç.
+2. **Open in Colab** seçeneğine bas. Seçenek görünmezse dosyayı indirip `https://colab.research.google.com` üzerinde **File → Upload notebook** ile yükle.
+3. Notebook'un üst kısmından **Runtime → Run all** seç.
+4. API ID'yi gir.
+5. API Hash'i gir.
+6. Telefon numaranı ülke koduyla gir: `+905xxxxxxxxx`.
+7. Telegram uygulamasına gelen doğrulama kodunu gir.
+8. İki aşamalı doğrulama etkinse Telegram parolanı gir.
+9. Ekrana basılan `SESSION_STRING` değerinin tamamını kopyala.
+10. Notebook'u paylaşma, çıktıyı kaydetme ve değeri kimseye gönderme.
+
+Colab'da kodu çalıştırmak istemezsen aynı işlem Python kurulu bir bilgisayarda şöyle yapılır:
+
+```bash
+pip install -r requirements.txt
+API_ID=12345678 API_HASH=your_hash python generate_session.py
+```
+
+### D. GitHub Secret'larını oluştur
+
+Repository sayfasında:
+
+**Settings → Secrets and variables → Actions → New repository secret**
+
+Şu üç secret'ı ayrı ayrı oluştur:
+
+| İsim | Değer |
+|---|---|
+| `API_ID` | API development tools içindeki sayı |
+| `API_HASH` | API development tools içindeki hash |
+| `SESSION_STRING` | Colab veya `generate_session.py` çıktısı |
+
+Değerler kaydedildikten sonra GitHub bunları tekrar düz metin olarak göstermez. Yanlış girersen aynı secret için **Update secret** kullan.
+
+### E. Otomatik yenileme için GH_PAT oluştur
+
+Actions job'u yaklaşık 5 saat 30 dakika sonra kendi devamını başlatabilsin diye ek bir GitHub token gerekir. Bu token Telegram tokenı değildir; yalnızca GitHub workflow başlatır.
+
+1. GitHub profil fotoğrafına bas.
+2. **Settings → Developer settings → Fine-grained personal access tokens → Generate new token** seç.
+3. Token için bir isim yaz: `telegram-monitor-restart`.
+4. Mümkünse kısa/uygun bir expiration tarihi seç. Süresi dolunca yenilemek gerekir.
+5. **Repository access → Only select repositories** seç.
+6. Yalnızca `cnbrkc/telegram-bot` repository'sini seç.
+7. **Repository permissions → Actions → Read and write** seç.
+8. Token'ı oluştur ve ekranda bir kez gösterilen değeri kopyala.
+9. Repository'de **Settings → Secrets and variables → Actions → New repository secret** aç.
+10. İsim olarak `GH_PAT`, değer olarak token'ı gir.
+
+Bu token'ı kaynak koda yazma. Token'ın süresi dolarsa otomatik yenileme çalışmaz; workflow manuel olarak başlatılabilir ve token güncellenebilir.
+
+### F. config.json dosyasını düzenle
+
+GitHub'da `config.json` dosyasını açıp kalem simgesiyle düzenle. Örnek:
+
+```json
+{
+  "source_chats": [
+    "@firsatkanali",
+    "-1001234567890"
+  ],
+  "destination": "me",
+  "include_keywords": [
+    "5070ti",
+    "4070",
+    "ekran kartı",
+    "laptop"
+  ],
+  "exclude_keywords": [
+    "çekiliş",
+    "sponsorlu"
+  ],
+  "match_mode": "any",
+  "copy_mode": "forward",
+  "control_chat": "me",
+  "auto_restart": true,
+  "admin_user_id": null
+}
+```
+
+Ayarların anlamı:
+
+- `source_chats`: Hesabının zaten katıldığı kanal/grup kullanıcı adları veya ID'leri. Kullanıcı adı için `@` kullan.
+- `destination`: `me` filtrelenenleri Kayıtlı Mesajlar'a gönderir. Grup/kanal ID'si de yazılabilir.
+- `include_keywords`: Mesajın metninde aranacak kelimeler. Küçük/büyük harf farkı yoktur.
+- `exclude_keywords`: Eşleşen kelimelerden biri varsa mesaj atlanır. Hariç tutma kuralı önce çalışır.
+- `match_mode: any`: Dahil kelimelerden en az biri yeterli. `all`: hepsi aynı mesajda bulunmalı.
+- `copy_mode: forward`: Telegram forward etiketi korunur. `copy`: kaynak etiketi kaldırılır.
+- `control_chat: me`: Komutlar Kayıtlı Mesajlar'dan alınır. Grup ID'si verilirse komutlar o gruptan alınır.
+- `admin_user_id`: Grup kullanıyorsan kendi Telegram kullanıcı ID'n. `null` bırakma; aksi halde gruptan komut çalışmaz.
+- `auto_restart: true`: GH_PAT varsa yenileme zincirini açar.
+
+Chat ID bilmiyorsan önce kanalın kullanıcı adıyla (`@kanaladi`) deneyebilirsin. Özel gruplar için `-100...` formatındaki ID gerekir. Hesabın kaynak kanala katılmamışsa kullanıcı hesabı mesajları göremez.
+
+### G. İlk çalıştırma
+
+1. Repository'de **Actions** sekmesini aç.
+2. Soldan **Telegram indirim takipçisi** workflow'unu seç.
+3. **Run workflow** düğmesine bas.
+4. Branch olarak `main` seç.
+5. Yeşil işaret oluşmasını bekle.
+6. Run'a girip **Mesajları dinle** adımının log'unu aç.
+7. Şu tip bir satır görmelisin:
+
+```text
+... olarak çalışıyor; 1 kaynak dinleniyor; hedef=me
+```
+
+8. Kaynak kanallardan test mesajı gönder veya yeni bir indirim mesajı bekle.
+9. Kelime eşleşirse hedef sohbete iletilir.
+
+Session hatası alırsan yeni bir session üretip `SESSION_STRING` secret'ını güncelle. `SOURCE_CHATS boş olamaz` hatası alırsan `config.json` içindeki listeyi kontrol et.
+
+### H. Yenileme zinciri nasıl çalışır?
+
+GitHub Actions job'u tek başına sonsuza kadar yaşayamaz. Workflow'da 350 dakikalık üst sınır vardır. `bot.py` bu sınıra gelmeden, varsayılan olarak 330. dakikada:
+
+1. Hedef sohbete yenileme uyarısı gönderir.
+2. GitHub Actions API'ye `workflow_dispatch` isteği yapar.
+3. `GH_PAT` ile aynı workflow'un yeni bir çalışmasını başlatır.
+4. Workflow'daki `concurrency` ayarı eski job'u iptal edip yeni job'u devralmasını sağlar.
+
+Yeni job'un başlatılması yoğunluk nedeniyle gecikebilir. GH_PAT yoksa bu otomatik zincir devreye girmez ve workflow yaklaşık 350. dakikada kapanır. Bu durumda Actions sayfasından tekrar **Run workflow** yapılır.
+
+GitHub Actions'ın scheduled workflow minimumu 5 dakikadır ve zamanlama kesin değildir. Bu proje scheduled workflow ile her dakika tarama yapmaz; bot çalışırken Telegram bağlantısını açık tuttuğu için mesajları geliş anında işler. Job'lar arasında GitHub kaynaklı boşluk olabileceği için kritik, kesintisiz 7/24 hizmet garantisi verilemez.
+
+### I. Telegram komutları
+
+Varsayılan `control_chat: me` ayarıyla Kayıtlı Mesajlar'a yaz:
+
+```text
+/status
+```
+
+Bot çalışıyorsa durum cevabı verir.
+
+```text
+/restart
+```
+
+`GH_PAT` tanımlı ve mevcut workflow aktifse yeni workflow başlatır.
+
+Grup komutu için `control_chat` grup ID'si ve `admin_user_id` kendi ID'n olacak şekilde `config.json`ı değiştir. Sonra config değişikliğini commit et. Grup herkese açıksa yalnızca kendi ID'n kabul edilir.
+
+### J. Sorun giderme
+
+| Belirti | Muhtemel neden | Çözüm |
+|---|---|---|
+| Workflow görünmüyor | PR main'e merge edilmedi veya Actions kapalı | PR'ı merge et, Settings → Actions'tan workflow'ları etkinleştir |
+| `SESSION_STRING` yetkisiz | Session yanlış/kesik veya Telegram oturumu iptal edildi | Colab notebook ile yeniden üret |
+| Mesaj gelmiyor | Kanal kaynak listesinde değil, kullanıcı hesapla kanala katılmamış veya kelime eşleşmiyor | `config.json`ı ve kelimeleri kontrol et |
+| `GH_PAT` ile yenileme olmuyor | Token Actions yazma iznine sahip değil veya süresi doldu | Token izinlerini ve expiration tarihini kontrol et |
+| Aynı mesaj iki kez geliyor | Aynı anda iki job çalışmış olabilir | Actions concurrency ayarını ve açık workflow run'larını kontrol et |
+| `FloodWait`/rate limit | Çok fazla forward işlemi | Kaynak sayısını ve kelime filtresini daralt, Telegram bekleme süresine uy |
+| Grup komutu çalışmıyor | Grup ID veya admin kullanıcı ID yanlış | ID'leri kontrol edip config commit et |
+
