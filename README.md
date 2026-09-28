@@ -39,7 +39,7 @@ pip install -r requirements.txt
 API_ID=... API_HASH=... python generate_session.py
 ```
 
-### 3. Yalnızca üç GitHub Secret ekle
+### 3. GitHub Secret'larını ekle
 
 Repository → **Settings → Secrets and variables → Actions → New repository secret**:
 
@@ -49,7 +49,13 @@ API_HASH
 SESSION_STRING
 ```
 
-Artık `Variables` eklemek gerekmiyor.
+Kesintisiz Actions zinciri istiyorsan ayrıca bir GitHub fine-grained token oluşturup yalnızca bu repository için **Actions: Read and write** izni vererek şunu ekle:
+
+```text
+GH_PAT
+```
+
+Bu token, job bitmeden yaklaşık 30 dakika önce yeni workflow çalışmasını başlatır. Böylece Actions 6 saatlik pencereyle sınırlı kalsa da yeni job otomatik devralır. Token eklemezsen sistem normal manuel/scheduled moda devam eder. Artık `Variables` eklemek gerekmiyor.
 
 ### 4. Tek ayar dosyası
 
@@ -74,9 +80,20 @@ Kanal, hedef ve kelime ayarları kökteki [`config.json`](config.json) dosyasın
 
 GitHub web arayüzünde `config.json` dosyasını düzenleyip commit etmen yeterlidir. Secret'ları tekrar girmen gerekmez.
 
-### 5. Başlat
+### 5. Başlat ve komutlar
 
-**Actions → Telegram indirim takipçisi → Run workflow** seç. İlk çalıştırmada log'larda hesabın bağlandığını görmelisin. Sonrasında workflow schedule ile yaklaşık 6 saatlik döngüler halinde tekrar başlar.
+**Actions → Telegram indirim takipçisi → Run workflow** seç. İlk çalıştırmada log'larda hesabın bağlandığını görmelisin.
+
+Varsayılan olarak kendi **Kayıtlı Mesajlar** sohbetine şunları yazabilirsin:
+
+```text
+/status
+/restart
+```
+
+`/restart`, `GH_PAT` eklenmişse yeni Actions çalışmasını hemen başlatır. `control_chat` değerini grup ID'si yapıp `admin_user_id` değerine kendi Telegram kullanıcı ID'ni yazarsan aynı komutları sadece o grupta ve sadece sen çalıştırabilirsin. Herkese açık gruplarda `admin_user_id` ayarlamadan kullanma.
+
+`GH_PAT` varsa takipçi, süre dolmadan yaklaşık 30 dakika önce hedef sohbete yenilenme mesajı yollar ve yeni Actions job'unu kendi başına başlatır. GitHub Actions concurrency ayarı eski job'u kapatıp yenisini devralır. Bu, Actions'ı kalıcı servis gibi zincirler; yine de GitHub yoğunluğu, token iptali veya hesap limitleri nedeniyle mutlak 7/24 garantisi değildir.
 
 ## 1 dakikalık sürekli çalışma için Oracle VM
 
