@@ -1,2 +1,1 @@
-streamlit
-telethon
+telethon>=1.36,<2
