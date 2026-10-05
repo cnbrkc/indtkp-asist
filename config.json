@@ -17,7 +17,7 @@
     "@indirimfirsat3",
     "@firsatlar_onemli"
   ],
-  "destination": -5092968106,
+  "destination": -5569562901,
   "include_keywords": [
     "çay",
     "kahve",
@@ -31,7 +31,7 @@
   "copy_mode": "copy",
   "delivery_modes": ["forward", "copy", "media", "text", "link"],
   "max_media_mb": 25,
-  "control_chat": -5092968106,
+  "control_chat": -5569562901,
   "admin_user_id": 1143378073,
   "auto_restart": true,
   "notify_on_start": true,
