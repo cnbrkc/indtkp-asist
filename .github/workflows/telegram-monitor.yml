@@ -15,12 +15,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     permissions: {}
+    env:
+      # Log satırlarının tamponda bekleyip Actions ekranında gecikmemesi için.
+      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install --disable-pip-version-check -r requirements.txt
+      # Secret/config eksikse Telegram'a hiç bağlanmadan, okunabilir bir raporla dur.
+      # (Eksik API_HASH yüzünden haftalarca sessizce çöken çalışmaları bu adım yakalar.)
+      - name: Ayarları doğrula
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          RESTART_AFTER_MINUTES: 330
+        run: python -u bot.py --check
       - name: Mesajları dinle
         env:
           API_ID: ${{ secrets.API_ID }}
@@ -29,4 +42,4 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           GITHUB_WORKFLOW_FILE: telegram-monitor.yml
           RESTART_AFTER_MINUTES: 330
-        run: python bot.py
+        run: python -u bot.py

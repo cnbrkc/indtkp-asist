@@ -7,7 +7,7 @@
     "@onual_ekstra",
     "@indirimalarmigrup",
     "@indirimalarmi_tr",
-    "@ozelfirsat",    
+    "@ozelfirsat",
     "@firsatlartr",
     "@firsattayfa",
     "@onual_firsat",
@@ -17,7 +17,7 @@
     "@indirimfirsat3",
     "@firsatlar_onemli"
   ],
-  "destination": "me",
+  "destination": -5092968106,
   "include_keywords": [
     "çay",
     "kahve",
@@ -29,7 +29,8 @@
   ],
   "match_mode": "any",
   "copy_mode": "copy",
-  "control_chat": "me",
+  "control_chat": -5092968106,
+  "admin_user_id": 1143378073,
   "auto_restart": true,
-  "admin_user_id": null
+  "notify_on_start": true
 }
