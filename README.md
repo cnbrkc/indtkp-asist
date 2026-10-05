@@ -49,6 +49,10 @@ API_HASH
 SESSION_STRING
 ```
 
+**Üçü de dolu olmalı.** Biri eksikse workflow açılışta durur; workflow'daki
+**Ayarları doğrula** adımı hangi secret'ın boş olduğunu log'a Türkçe olarak yazar.
+Aynı kontrolü yerelde `python bot.py --check` ile de çalıştırabilirsin.
+
 Kesintisiz Actions zinciri istiyorsan ayrıca bir GitHub fine-grained token oluşturup yalnızca bu repository için **Actions: Read and write** izni vererek şunu ekle:
 
 ```text
@@ -65,10 +69,14 @@ Kanal, hedef ve kelime ayarları kökteki [`config.json`](config.json) dosyasın
 {
   "source_chats": ["@indirimkanali", "-1001234567890"],
   "destination": "me",
-  "include_keywords": ["5070ti", "ekran kartı", "laptop"],
-  "exclude_keywords": ["çekiliş", "sponsorlu"],
+  "include_keywords": ["çay", "kahve", "şeker"],
+  "exclude_keywords": ["çekiliş", "hediye"],
   "match_mode": "any",
-  "copy_mode": "forward"
+  "copy_mode": "forward",
+  "control_chat": "me",
+  "admin_user_id": null,
+  "auto_restart": true,
+  "notify_on_start": true
 }
 ```
 
@@ -76,7 +84,16 @@ Kanal, hedef ve kelime ayarları kökteki [`config.json`](config.json) dosyasın
 - `destination`: `me` = Kayıtlı Mesajlar; özel sohbet/grup ID'si de kullanılabilir.
 - `include_keywords`: Bunlardan biri eşleşsin (`any`) veya hepsi eşleşsin (`all`).
 - `exclude_keywords`: Bunlardan biri varsa mesaj gönderilmez.
-- `copy_mode`: `forward` kaynak bilgisini korur, `copy` kaynak etiketini kaldırır.
+- `copy_mode`: `forward` kaynak bilgisini korur, `copy` kaynak etiketini kaldırır. (Eski alan; `delivery_modes` varsa o geçerli.)
+- `delivery_modes`: Korumalı kanallar için denenecek iletim yollarının sırası (bkz. **M** bölümü). Varsayılan: `["forward", "copy", "media", "text", "link"]`.
+- `max_media_mb`: `media` yolunda indirilecek en büyük medya (varsayılan 25).
+- `control_chat`: Komutların (`/status`, `/restart`...) dinleneceği sohbet. `"me"` veya grup ID'si.
+- `admin_user_id`: `control_chat` bir grup ise **zorunlu**; komutları yalnızca bu ID kullanabilir.
+- `notify_on_start`: Her açılışta hedefe "takipçi başladı" mesajı gönderir.
+- `notify_bot_token`: **Bildirim almak için gerekli.** @BotFather bot token'ı; boş/`null` ise bildirim gelmez (bkz. **L** bölümü).
+
+> **ID'ler tırnak içinde de yazılabilir** (`"-5092968106"`); bot bunları sayıya çevirir.
+> Çevirmese Telethon string'i *kullanıcı adı* sanıp `Cannot find any entity` hatası verir.
 
 GitHub web arayüzünde `config.json` dosyasını düzenleyip commit etmen yeterlidir. Secret'ları tekrar girmen gerekmez.
 
@@ -87,11 +104,18 @@ GitHub web arayüzünde `config.json` dosyasını düzenleyip commit etmen yeter
 Varsayılan olarak kendi **Kayıtlı Mesajlar** sohbetine şunları yazabilirsin:
 
 ```text
-/status
-/restart
+/status   (veya /durum)
+/test     (veya /deneme)
+/restart  (veya /yenile)
+/source   (veya /kaynak)
+/help     (veya /yardim)
 ```
 
 `/restart`, `GH_PAT` eklenmişse yeni Actions çalışmasını hemen başlatır. `control_chat` değerini grup ID'si yapıp `admin_user_id` değerine kendi Telegram kullanıcı ID'ni yazarsan aynı komutları sadece o grupta ve sadece sen çalıştırabilirsin. Herkese açık gruplarda `admin_user_id` ayarlamadan kullanma.
+
+> **Bildirim notu (önemli):** Takipçi **kendi Telegram hesabınla** gönderir. Telegram kendi
+> gönderdiğin mesajlar için bildirim üretmez — bu yüzden ne Kayıtlı Mesajlar'da ne de grupta
+> sesli bildirim alırsın. Bildirim istiyorsan `notify_bot_token` ayarını kur (aşağıda anlatılıyor).
 
 `GH_PAT` varsa takipçi, süre dolmadan yaklaşık 30 dakika önce hedef sohbete yenilenme mesajı yollar ve yeni Actions job'unu kendi başına başlatır. GitHub Actions concurrency ayarı eski job'u kapatıp yenisini devralır. Bu, Actions'ı kalıcı servis gibi zincirler; yine de GitHub yoğunluğu, token iptali veya hesap limitleri nedeniyle mutlak 7/24 garantisi değildir.
 
@@ -187,7 +211,7 @@ Actions job'u yaklaşık 5 saat 30 dakika sonra kendi devamını başlatabilsin 
 3. Token için bir isim yaz: `telegram-monitor-restart`.
 4. Mümkünse kısa/uygun bir expiration tarihi seç. Süresi dolunca yenilemek gerekir.
 5. **Repository access → Only select repositories** seç.
-6. Yalnızca `cnbrkc/telegram-bot` repository'sini seç.
+6. Yalnızca bu repository'yi seç (**Only select repositories** → kendi repo'n).
 7. **Repository permissions → Actions → Read and write** seç.
 8. Token'ı oluştur ve ekranda bir kez gösterilen değeri kopyala.
 9. Repository'de **Settings → Secrets and variables → Actions → New repository secret** aç.
@@ -205,38 +229,45 @@ GitHub'da `config.json` dosyasını açıp kalem simgesiyle düzenle. Örnek:
     "@firsatkanali",
     "-1001234567890"
   ],
-  "destination": "me",
+  "destination": -5092968106,
   "include_keywords": [
-    "5070ti",
-    "4070",
-    "ekran kartı",
-    "laptop"
+    "çay",
+    "kahve",
+    "şeker"
   ],
   "exclude_keywords": [
     "çekiliş",
-    "sponsorlu"
+    "hediye"
   ],
   "match_mode": "any",
-  "copy_mode": "forward",
-  "control_chat": "me",
+  "copy_mode": "copy",
+  "control_chat": -5092968106,
+  "admin_user_id": 1143378073,
   "auto_restart": true,
-  "admin_user_id": null
+  "notify_on_start": true
 }
 ```
 
 Ayarların anlamı:
 
 - `source_chats`: Hesabının zaten katıldığı kanal/grup kullanıcı adları veya ID'leri. Kullanıcı adı için `@` kullan.
-- `destination`: `me` filtrelenenleri Kayıtlı Mesajlar'a gönderir. Grup/kanal ID'si de yazılabilir.
-- `include_keywords`: Mesajın metninde aranacak kelimeler. Küçük/büyük harf farkı yoktur.
+- `destination`: `me` filtrelenenleri Kayıtlı Mesajlar'a gönderir (**bildirim gelmez**). Grup/kanal ID'si yazarsan oraya düşer ve bildirim alırsın.
+- `include_keywords`: Mesajın metninde aranacak kelimeler. Küçük/büyük harf farkı yoktur; `İ`/`I` gibi Türkçe büyük harfler de doğru indirgenir.
 - `exclude_keywords`: Eşleşen kelimelerden biri varsa mesaj atlanır. Hariç tutma kuralı önce çalışır.
 - `match_mode: any`: Dahil kelimelerden en az biri yeterli. `all`: hepsi aynı mesajda bulunmalı.
 - `copy_mode: forward`: Telegram forward etiketi korunur. `copy`: kaynak etiketi kaldırılır.
+- `delivery_modes`: Korumalı (`noforwards`) kanallarda sırayla denenecek yollar: `forward → copy → media → text → link`. Biri hata verirse sıradaki denenir (bkz. **M**).
+- `max_media_mb: 25`: `media` yolunda indirilecek en büyük medya boyutu.
 - `control_chat: me`: Komutlar Kayıtlı Mesajlar'dan alınır. Grup ID'si verilirse komutlar o gruptan alınır.
-- `admin_user_id`: Grup kullanıyorsan kendi Telegram kullanıcı ID'n. `null` bırakma; aksi halde gruptan komut çalışmaz.
+- `admin_user_id`: Grup kullanıyorsan kendi Telegram kullanıcı ID'n. `null` bırakma; aksi halde gruptan komut çalışmaz. Sayı, `"123"` metni veya `[123, 456]` listesi kabul edilir.
 - `auto_restart: true`: GH_PAT varsa yenileme zincirini açar.
+- `notify_on_start: true`: Her açılışta hedefe kısa bir "başladım" mesajı gönderir.
+- `notify_bot_token`: Bildirim bot'unun token'ı. `null` ise takipçi çalışır ama bildirim gelmez.
 
-Chat ID bilmiyorsan önce kanalın kullanıcı adıyla (`@kanaladi`) deneyebilirsin. Özel gruplar için `-100...` formatındaki ID gerekir. Hesabın kaynak kanala katılmamışsa kullanıcı hesabı mesajları göremez.
+Chat ID bilmiyorsan önce kanalın kullanıcı adıyla (`@kanaladi`) deneyebilirsin. Özel gruplar için `-100...` formatındaki ID gerekir. Hesabın kaynak kanala katılmamışsa kullanıcı hesabı mesajları göremez — bot açılışta üye olmadığın kaynakları log'da `ÜYE DEĞİLSİN` diye işaretler.
+
+> **ID yazım biçimi:** `"destination": -5092968106` (sayı) ile `"destination": "-5092968106"` (metin) aynıdır;
+> bot metinleri sayıya çevirir. Eski sürümde çevrilmiyordu ve bu yüzden grup hedefi/komutları sessizce çalışmıyordu.
 
 ### G. İlk çalıştırma
 
@@ -245,17 +276,25 @@ Chat ID bilmiyorsan önce kanalın kullanıcı adıyla (`@kanaladi`) deneyebilir
 3. **Run workflow** düğmesine bas.
 4. Branch olarak `main` seç.
 5. Yeşil işaret oluşmasını bekle.
-6. Run'a girip **Mesajları dinle** adımının log'unu aç.
-7. Şu tip bir satır görmelisin:
+6. Run'a girip önce **Ayarları doğrula**, sonra **Mesajları dinle** adımının log'unu aç.
+7. Şu tip satırlar görmelisin:
 
 ```text
-... olarak çalışıyor; 1 kaynak dinleniyor; hedef=me
+Ortam değişkenleri : API_ID=var API_HASH=var SESSION_STRING=var GH_PAT=var
+...
+Bağlanıldı: kullaniciadi (id=1143378073)
+Kaynak hazır: FırsatZ   id=-1001234567890   istenen=@firsatz
+Komutlar şu sohbetlerde dinleniyor: Benim Grup [-5092968106]
+Hedef: Benim Grup [-5092968106]
+Dinleniyor... (kaynak=16, kontrol=[...], hedef=...)
 ```
 
-8. Kaynak kanallardan test mesajı gönder veya yeni bir indirim mesajı bekle.
-9. Kelime eşleşirse hedef sohbete iletilir.
+8. Gruba `/status` yaz — bot yanıt veriyorsa hem bağlantı hem komut yolu çalışıyor demektir.
+9. `/test` yaz — hedefe deneme mesajı düşmeli.
+10. Kaynak kanallardan test mesajı gönder veya yeni bir indirim mesajı bekle.
+11. Kelime eşleşirse hedef sohbete iletilir; log'da `Eşleşti: ...` satırı görünür.
 
-Session hatası alırsan yeni bir session üretip `SESSION_STRING` secret'ını güncelle. `SOURCE_CHATS boş olamaz` hatası alırsan `config.json` içindeki listeyi kontrol et.
+Session hatası alırsan yeni bir session üretip `SESSION_STRING` secret'ını güncelle. `config.json` hatası alırsan **Ayarları doğrula** adımı hangi alanın bozuk olduğunu yazar.
 
 ### H. Yenileme zinciri nasıl çalışır?
 
@@ -274,17 +313,16 @@ GitHub Actions'ın scheduled workflow minimumu 5 dakikadır ve zamanlama kesin d
 
 Varsayılan `control_chat: me` ayarıyla Kayıtlı Mesajlar'a yaz:
 
-```text
-/status
-```
+| Komut | Türkçe takma adı | Ne yapar |
+|---|---|---|
+| `/status` | `/durum` | Çalışma süresi, dinlenen kaynak sayısı, görülen/eşleşen/iletilen sayaçları, son eşleşme, hedef ve kelimeler |
+| `/test` | `/deneme` | Hedefe deneme mesajı gönderir; iletim yolunu doğrular |
+| `/source` | `/kaynak` | İzlenen kanalları çözülen ID'leriyle listeler, çözülemeyenleri işaretler |
+| `/id` | — | Bu sohbetin ve senin kullanıcı ID'ni gösterir; config'e kopyalayabilirsin |
+| `/restart` | `/yenile` | `GH_PAT` varsa yeni Actions çalışmasını hemen başlatır |
+| `/help` | `/yardim` | Komut listesi |
 
-Bot çalışıyorsa durum cevabı verir.
-
-```text
-/restart
-```
-
-`GH_PAT` tanımlı ve mevcut workflow aktifse yeni workflow başlatır.
+Komutlar yalnızca `control_chat` olarak ayarlanan sohbetten **ve** `admin_user_id` ile eşleşen kullanıcıdan kabul edilir. Kayıtlı Mesajlar her zaman açıktır (oraya yazan zaten hesabın sahibidir).
 
 Grup komutu için `control_chat` grup ID'si ve `admin_user_id` kendi ID'n olacak şekilde `config.json`ı değiştir. Sonra config değişikliğini commit et. Grup herkese açıksa yalnızca kendi ID'n kabul edilir.
 
@@ -293,10 +331,144 @@ Grup komutu için `control_chat` grup ID'si ve `admin_user_id` kendi ID'n olacak
 | Belirti | Muhtemel neden | Çözüm |
 |---|---|---|
 | Workflow görünmüyor | PR main'e merge edilmedi veya Actions kapalı | PR'ı merge et, Settings → Actions'tan workflow'ları etkinleştir |
+| Run 10-15 saniyede kırmızı oluyor | Bir secret boş (genelde `API_HASH` veya `SESSION_STRING`) | **Ayarları doğrula** adımının log'una bak; eksik secret'ı ekle |
+| `ValueError: Your API ID or Hash cannot be empty` | `API_ID`/`API_HASH` secret'ı boş | İki secret'ı da Settings → Secrets'a ekle |
 | `SESSION_STRING` yetkisiz | Session yanlış/kesik veya Telegram oturumu iptal edildi | Colab notebook ile yeniden üret |
-| Mesaj gelmiyor | Kanal kaynak listesinde değil, kullanıcı hesapla kanala katılmamış veya kelime eşleşmiyor | `config.json`ı ve kelimeleri kontrol et |
+| `Cannot find any entity corresponding to "-5092968106"` | Grup ID'si **metin** olarak verilmiş, Telethon onu kullanıcı adı sanıyor | ID'yi sayı olarak yaz (`-5092968106`) veya bot'u güncelle (artık otomatik çevriliyor) |
+| Grup komutları hiç çalışmıyor | `admin_user_id` boş/`null` ya da `control_chat` yanlış | `admin_user_id`'ye kendi ID'ni, `control_chat`'e grup ID'sini yaz |
+| Mesajlar geliyor ama bildirim almıyorum | Takipçi **kendi hesabınla** gönderiyor; Telegram kendi mesajın için bildirim üretmez | `notify_bot_token` kur: @BotFather → `/newbot`, botu gruba ekle, token'ı config'e yaz (bkz. **L. Bildirim kurulumu**) |
+| Mesaj gelmiyor | Kanal kaynak listesinde değil, kullanıcı hesapla kanala katılmamış veya kelime eşleşmiyor | `/source` ile çözümü, `/status` ile sayaçları kontrol et; log'daki `ÜYE DEĞİLSİN` uyarılarına bak |
+| Log'da `Task exception was never retrieved` | Bir chat çözülemiyor (eski sürümde tüm dinlemeyi öldürürdü) | Bot'u güncelle; artık çözülemeyen chat atlanır ve loglanır |
 | `GH_PAT` ile yenileme olmuyor | Token Actions yazma iznine sahip değil veya süresi doldu | Token izinlerini ve expiration tarihini kontrol et |
 | Aynı mesaj iki kez geliyor | Aynı anda iki job çalışmış olabilir | Actions concurrency ayarını ve açık workflow run'larını kontrol et |
 | `FloodWait`/rate limit | Çok fazla forward işlemi | Kaynak sayısını ve kelime filtresini daralt, Telegram bekleme süresine uy |
 | Grup komutu çalışmıyor | Grup ID veya admin kullanıcı ID yanlış | ID'leri kontrol edip config commit et |
 
+### K. Testler
+
+Değişiklik yapınca şunları çalıştır (yalnızca `telethon` gerekir, ek bağımlılık yok):
+
+```bash
+python -m unittest discover -s tests -v   # 82 test: eşleştirme, config, açılış akışı, komutlar, bildirim, iletim zinciri
+python bot.py --check                     # secret + config doğrulaması
+```
+
+`push` ve `pull_request` olaylarında **Testler** workflow'u aynı iki komutu GitHub'da da çalıştırır.
+
+### L. Bildirim botu kurulumu (adım adım)
+
+Takipçi **kendi Telegram hesabınla** çalışır. Telegram kendi gönderdiğin mesajlar için
+bildirim üretmez; bu yüzden fırsat mesajı gruba düşse bile telefonuna uyarı gelmez.
+Çözüm: gruba ikinci bir gönderici olarak küçük bir bot eklemek. Bildirimi üreten,
+botun attığı kısa mesajdır.
+
+**1. Bot oluştur (2 dakika)**
+
+1. Telegram'da **@BotFather** sohbetini aç.
+2. `/newbot` yaz.
+3. Görünen isim sorulur → örn. `İndirim Bildirim`.
+4. Kullanıcı adı sorulur → `_bot` ile bitmeli, örn. `benim_indirim_uyari_bot`.
+5. BotFather sana bir token verir:
+
+```text
+7123456789:AAHx... (46 karakter)
+```
+
+Bu token'ı kimseyle paylaşma; botunu tamamen kontrol eder.
+
+**2. Botu gruba ekle**
+
+1. Fırsatların düşeceği grubu aç (ör. `-5092968106`).
+2. Grubun adına bas → **Üyeler / Members** → **Üye ekle / Add members**.
+3. Botunun kullanıcı adını (`@benim_indirim_uyari_bot`) yaz ve ekle.
+4. Yönetici yapmana **gerek yok**; sadece "mesaj gönderme" yetkisi yeterli.
+
+**3. Token'ı config'e yaz**
+
+GitHub'da `config.json`'ı düzenle:
+
+```json
+"notify_bot_token": "7123456789:AAHx..."
+```
+
+Commit et. (Alternatif: `NOTIFY_BOT_TOKEN` adında bir GitHub secret/variable da kullanabilirsin.)
+
+**4. Test et**
+
+1. Workflow'u yeniden başlat (**Actions → Run workflow**).
+2. Gruba `/test` yaz.
+3. Yanıt şunu söylüyorsa tamamdır: `🔔 Bot bildirimi de gönderildi (telefonuna düşmeli).`
+4. Telefona bildirim gelmiyorsa: Telegram → Ayarlar → Bildirimler → grup bildirimlerinin
+   açık olduğundan ve botun gruptan atılmadığından emin ol.
+
+**Sorun giderme**
+
+| `/test` yanıtı | Anlamı | Çözüm |
+|---|---|---|
+| `HTTP 403: bot is not a member of the group chat` | Bot gruba eklenmemiş | 2. adımı tekrarla |
+| `HTTP 400: chat not found` | `destination` ID'si yanlış | Gruba `/id` yaz, çıkan ID'yi config'e koy |
+| `HTTP 401: Unauthorized` | Token yanlış/kopyalanırken bozulmuş | BotFather'dan `/revoke` ile yenisini al |
+| `HTTP 429` | Çok sık mesaj | Bot yalnızca eşleşme başına 1 mesaj atar; kaynak sayısını azalt |
+
+Token'ı `null` bırakırsan takipçi aynı şekilde çalışır, sadece bildirim gelmez.
+
+> Bot API'si grup ID'sini Telethon ile aynı biçimde kullanır (`-5092968106` gibi),
+> bu yüzden `destination` için ayrı bir ID gerekmez.
+
+### M. Korumalı içerik: alternatifli iletim zinciri
+
+Birçok indirim kanalı **"içeriği koru / Restrict saving content"** ayarını açar
+(`noforwards`). O kanallarda:
+
+- **İlet (forward)** → `CHAT_FORWARDS_RESTRICTED` hatası verir.
+- **Kopyala (copy)** → aynı şekilde reddedilebilir.
+
+Bu yüzden tek bir yol denenmez. Bot sırayla dener, hata alırsa bir sonrakine geçer
+ve log'a hangi yolda patladığını yazar:
+
+| Sıra | Yol | Ne yapar | Ne zaman devreye girer |
+|---|---|---|---|
+| 1 | `forward` | Sunucu tarafında iletir; kaynak etiketi ve albüm yapısı korunur | Varsayılan, en ucuz yol |
+| 2 | `copy` | Mesaj nesnesini hedefe yeniden gönderir | forward koruma nedeniyle reddedilirse |
+| 3 | `media` | **Medyayı indirip hedefe sıfırdan yükler** | forward ve copy ikisi de reddedilirse |
+| 4 | `text` | Yalnızca metni/başlığı gönderir, "medya iletilemedi" notu ekler | medya indirilemiyorsa veya `max_media_mb` üstündeyse |
+| 5 | `link` | `t.me` bağlantısı kartı gönderir | metin de yoksa |
+
+```json
+"delivery_modes": ["forward", "copy", "media", "text", "link"],
+"max_media_mb": 25
+```
+
+- `delivery_modes`: sırayı kendin belirleyebilirsin. Yazmadığın yollar yine yedek olarak
+  sona eklenir; bilinmeyen bir isim yazarsan `--check` uyarır.
+- Eski `copy_mode: "copy"` alanı hâlâ çalışır: o yolu **ilk sıraya** koyar, gerisi yedek kalır.
+- `max_media_mb`: `media` yolunda indirilecek en büyük medya. GitHub Actions runner'ı geçici
+  olduğu için varsayılan 25 MB; büyük videolar doğrudan `text` yoluna düşer. `0` = sınırsız.
+
+**Gerçek ekran görüntüsü alınabilir mi?** Hayır — sunucu tarafında çalışan bir istemci ekran
+görüntüsü üretemez. Bunun yerine 3. yol aynı işi görür: fotoğraf/video indirilip hedefe
+yeniden yüklendiği için görsel olarak orijinaliyle aynı mesajı görürsün. Hiçbiri olmazsa
+5. yol tıklanabilir bağlantı bırakır.
+
+> `/status` komutu hangi yolun kaç kez işe yaradığını gösterir:
+> `İletim sırası: forward → copy → media → text → link | kullanılan: forward×120, media×7`
+
+### N. Grup ve kullanıcı ID'sini doğrulama
+
+`config.json`'daki ID'lerin doğru olduğundan emin olmanın en hızlı yolu: **gruba `/id` yaz.**
+
+```text
+🆔 Bu sohbetin ID'si: -5092968106
+• Tür: Chat
+• Senin kullanıcı ID'n: 1143378073
+config.json için:
+  "control_chat": -5092968106,
+  "admin_user_id": 1143378073
+```
+
+Çıkan değerleri doğrudan config'e kopyalayabilirsin. `/id` komutu da `control_chat`
+içinde çalıştığı için, komut hiç yanıt vermiyorsa mevcut ayarlar yanlış demektir — o zaman
+geçici olarak `"control_chat": "me"` yapıp Kayıtlı Mesajlar'dan `/id` ile grup ID'sini al.
+
+> **Dikkat:** temel grup (ID `-5092968106` gibi) sonradan süpergruba dönüştürülürse ID
+> `-100...` biçiminde değişir ve config güncellenmesi gerekir.
