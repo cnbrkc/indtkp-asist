@@ -31,5 +31,5 @@
   "copy_mode": "copy",
   "control_chat": "me",
   "auto_restart": true,
-  "admin_user_id": none
+  "admin_user_id": null
 }
