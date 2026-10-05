@@ -29,7 +29,7 @@
   ],
   "match_mode": "any",
   "copy_mode": "copy",
-  "control_chat": "-5092968106",
+  "control_chat": "me",
   "auto_restart": true,
-  "admin_user_id": 1143378073
+  "admin_user_id": none
 }
