@@ -28,7 +28,7 @@
     "hediye"
   ],
   "match_mode": "any",
-  "copy_mode": "forward",
+  "copy_mode": "copy",
   "control_chat": "me",
   "auto_restart": true,
   "admin_user_id": null
