@@ -87,6 +87,10 @@ Kanal, hedef ve kelime ayarları kökteki [`config.json`](config.json) dosyasın
 - `copy_mode`: `forward` kaynak bilgisini korur, `copy` kaynak etiketini kaldırır. (Eski alan; `delivery_modes` varsa o geçerli.)
 - `delivery_modes`: Korumalı kanallar için denenecek iletim yollarının sırası (bkz. **M** bölümü). Varsayılan: `["forward", "copy", "media", "text", "link"]`.
 - `max_media_mb`: `media` yolunda indirilecek en büyük medya (varsayılan 25).
+- `link_appendix`: Bağlantı ekleri. `"smart"` (varsayılan): gizli hyperlink'ler mesajda **tıklanabilir** kalır (tekrar yazılmaz), yalnızca başka türlü taşınamayan bağlantılar (inline buton, link önizlemesi) metne yazılır. `"all"`: tüm gizli bağlantılar `🔗 ...` satırı olarak da yazılır. `"off"`: hiçbiri (bkz. **O** bölümü).
+- `message_link`: Her iletinin sonuna `🔗 Mesajı Gör: <t.me mesaj linki>` satırını ekler. Varsayılan `true`; ürün linki kaçarsa bu satırdan mesaja, mesajdan fırsata gidilir.
+- `source_footer`: Bildirime en alta `Fırsatı Gönderen: <kaynak>` satırını ekler; kaynak adı **orijinal mesajın t.me bağlantısını gizler**. Varsayılan `true`.
+- `notify_media`: Bildirim botu medyayı (fotoğraf/video) da göndersin. Varsayılan `true`; `false` yaparsan bildirim yalnızca metin olur.
 - `control_chat`: Komutların (`/status`, `/restart`...) dinleneceği sohbet. `"me"` veya grup ID'si.
 - `admin_user_id`: `control_chat` bir grup ise **zorunlu**; komutları yalnızca bu ID kullanabilir.
 - `notify_on_start`: Her açılışta hedefe "takipçi başladı" mesajı gönderir.
@@ -241,6 +245,10 @@ GitHub'da `config.json` dosyasını açıp kalem simgesiyle düzenle. Örnek:
   ],
   "match_mode": "any",
   "copy_mode": "copy",
+  "link_appendix": "smart",
+  "message_link": true,
+  "source_footer": true,
+  "notify_media": true,
   "control_chat": -5092968106,
   "admin_user_id": 1143378073,
   "auto_restart": true,
@@ -258,6 +266,10 @@ Ayarların anlamı:
 - `copy_mode: forward`: Telegram forward etiketi korunur. `copy`: kaynak etiketi kaldırılır.
 - `delivery_modes`: Korumalı (`noforwards`) kanallarda sırayla denenecek yollar: `forward → copy → media → text → link`. Biri hata verirse sıradaki denenir (bkz. **M**).
 - `max_media_mb: 25`: `media` yolunda indirilecek en büyük medya boyutu.
+- `link_appendix: "smart"`: Mesajda **"Fırsata Git" gibi yazıların altına gizlenmiş linkler** mesajın içinde tıklanabilir kalır (tekrar yazılmaz). Inline buton ve önizleme linkleri metne yazılır, çünkü bunlar başka türlü taşınamaz. `"all"` yazarsan tüm gizli linkler `🔗 ...` satırı olarak da eklenir; `"off"` hiçbirini eklemez. Bkz. **O. Gizli bağlantılar**.
+- `message_link: true`: Her iletinin sonuna `🔗 Mesajı Gör: https://t.me/<kanal>/<mesaj>` satırı eklenir. En kötü senaryoda (link bir şekilde alınamazsa) bu satırdan orijinal fırsat mesajına gidilir.
+- `source_footer: true`: Bildirim mesajının en altına `Fırsatı Gönderen: <kaynak adı>` ekler. Kaynak adı tıklanabilirdir ve **orijinal fırsat mesajının Telegram linkini gizler**; ürün linki alınamazsa tek dokunuşla mesaja gidilir.
+- `notify_media: true`: Bildirim botu fotoğraf/videoyu da gönderir (gönderemezse otomatik olarak metin bildirimine düşer).
 - `control_chat: me`: Komutlar Kayıtlı Mesajlar'dan alınır. Grup ID'si verilirse komutlar o gruptan alınır.
 - `admin_user_id`: Grup kullanıyorsan kendi Telegram kullanıcı ID'n. `null` bırakma; aksi halde gruptan komut çalışmaz. Sayı, `"123"` metni veya `[123, 456]` listesi kabul edilir.
 - `auto_restart: true`: GH_PAT varsa yenileme zincirini açar.
@@ -338,6 +350,9 @@ Grup komutu için `control_chat` grup ID'si ve `admin_user_id` kendi ID'n olacak
 | Grup komutları hiç çalışmıyor | `admin_user_id` boş/`null` ya da `control_chat` yanlış | `admin_user_id`'ye kendi ID'ni, `control_chat`'e grup ID'sini yaz |
 | Mesajlar geliyor ama bildirim almıyorum | Takipçi **kendi hesabınla** gönderiyor; Telegram kendi mesajın için bildirim üretmez | `notify_bot_token` kur: @BotFather → `/newbot`, botu gruba ekle, token'ı config'e yaz (bkz. **L. Bildirim kurulumu**) |
 | Mesaj gelmiyor | Kanal kaynak listesinde değil, kullanıcı hesapla kanala katılmamış veya kelime eşleşmiyor | `/source` ile çözümü, `/status` ile sayaçları kontrol et; log'daki `ÜYE DEĞİLSİN` uyarılarına bak |
+| Mesajda "Fırsata Git" yazıyor ama ham link görünmüyor | Link, yazının **altına gizlenmiş** (`MessageEntityTextUrl`) olduğu için düz metinde yok; tıklanabilir olarak taşınır | Yazının üstüne dokun → link açılır. Ham URL de görünsün istersen `link_appendix: "all"`. Her durumda `🔗 Mesajı Gör:` satırı mesaja götürür (bkz. **O**) |
+| Fotoğraf "unnamed" adlı dosya olarak geliyor | Eski sürüm medyayı adsız `bytes` olarak yeniden yüklüyordu; Telethon adı `unnamed` varsayıp belge olarak gönderiyordu | Bot'u güncelle: yeniden yükleme uzantılı isimle yapılır, fotoğraf fotoğraf olarak gider (bkz. **M**) |
+| Bildirim, mesajın kırpılmış/küçük harfli hâlini gösteriyor | Eski bildirim biçimi `🔔 Yeni fırsat (...) – ilk 120 karakter` | Bot'u güncelle: bildirim artık mesajın tamamı + `Fırsatı Gönderen` satırıdır (bkz. **L**) |
 | Log'da `Task exception was never retrieved` | Bir chat çözülemiyor (eski sürümde tüm dinlemeyi öldürürdü) | Bot'u güncelle; artık çözülemeyen chat atlanır ve loglanır |
 | `GH_PAT` ile yenileme olmuyor | Token Actions yazma iznine sahip değil veya süresi doldu | Token izinlerini ve expiration tarihini kontrol et |
 | Aynı mesaj iki kez geliyor | Aynı anda iki job çalışmış olabilir | Actions concurrency ayarını ve açık workflow run'larını kontrol et |
@@ -349,7 +364,7 @@ Grup komutu için `control_chat` grup ID'si ve `admin_user_id` kendi ID'n olacak
 Değişiklik yapınca şunları çalıştır (yalnızca `telethon` gerekir, ek bağımlılık yok):
 
 ```bash
-python -m unittest discover -s tests -v   # 82 test: eşleştirme, config, açılış akışı, komutlar, bildirim, iletim zinciri
+python -m unittest discover -s tests -v   # 147 test: eşleştirme, config, açılış akışı, komutlar, bildirim, iletim zinciri, gizli linkler
 python bot.py --check                     # secret + config doğrulaması
 ```
 
@@ -360,7 +375,27 @@ python bot.py --check                     # secret + config doğrulaması
 Takipçi **kendi Telegram hesabınla** çalışır. Telegram kendi gönderdiğin mesajlar için
 bildirim üretmez; bu yüzden fırsat mesajı gruba düşse bile telefonuna uyarı gelmez.
 Çözüm: gruba ikinci bir gönderici olarak küçük bir bot eklemek. Bildirimi üreten,
-botun attığı kısa mesajdır.
+botun attığı mesajdır.
+
+**Bildirim biçimi (varsayılan):**
+
+```text
+<fırsat mesajının TAMAMI – biçimi, emoji'leri ve gizli linkleriyle>
+   (ör. "Fırsata Git" yazısı hâlâ tıklanabilir: linki yazının altında)
+
+🔗 Mesajı Gör: https://t.me/FirsatZ/31543    ← orijinal mesajın linki (her zaman eklenir)
+🔗 https://amzn.to/yyyyy                     ← yalnızca buton/önizleme linki varsa (link_appendix)
+
+Fırsatı Gönderen: FırsatZ                    ← "FırsatZ" de aynı mesaja giden gizli linki taşır
+```
+
+- Mesaj **kırpılmaz, küçük harfe çevrilmez, yeniden yazılmaz**; kaynaktaki hâliyle gider.
+- Metnin altına gizlenmiş linkler **tıklanabilir kalır**; ayrıca ham URL olarak tekrar yazılmaz (kullanıcı isteği). Ham hâlini de görmek istersen `link_appendix: "all"` yap.
+- Inline butonlar (`Fırsata Git` butonu gibi) bildirimde **aynı buton olarak** yeniden kurulur.
+- Mesajda fotoğraf/video varsa bot onu da gönderir (`notify_media`).
+- `🔗 Mesajı Gör:` satırı, link ne olursa olsun orijinal fırsat mesajına giden **nihai güvencedir**; `message_link: false` ile kapatılabilir (önerilmez).
+- `source_footer: false` yaparsan altbilgi eklenmez.
+- Bu mesaj, hesabının sessizce gönderdiği kopyanın **yanına** eklenir; amacı bildirim üretmektir.
 
 **1. Bot oluştur (2 dakika)**
 
@@ -398,6 +433,7 @@ Commit et. (Alternatif: `NOTIFY_BOT_TOKEN` adında bir GitHub secret/variable da
 1. Workflow'u yeniden başlat (**Actions → Run workflow**).
 2. Gruba `/test` yaz.
 3. Yanıt şunu söylüyorsa tamamdır: `🔔 Bot bildirimi de gönderildi (telefonuna düşmeli).`
+   Gelen deneme mesajında `Fırsatı Gönderen:` satırını da görmelisin.
 4. Telefona bildirim gelmiyorsa: Telegram → Ayarlar → Bildirimler → grup bildirimlerinin
    açık olduğundan ve botun gruptan atılmadığından emin ol.
 
@@ -472,3 +508,43 @@ geçici olarak `"control_chat": "me"` yapıp Kayıtlı Mesajlar'dan `/id` ile gr
 
 > **Dikkat:** temel grup (ID `-5092968106` gibi) sonradan süpergruba dönüştürülürse ID
 > `-100...` biçiminde değişir ve config güncellenmesi gerekir.
+
+### O. Gizli bağlantılar (en kritik ayar)
+
+İndirim kanalları ürün linkini çoğu zaman açıkça yazmaz; şu üç yere gizler:
+
+| Gizleme yolu | Örnek | Bot ne yapar |
+|---|---|---|
+| Metnin altına gizlenmiş hyperlink (`MessageEntityTextUrl`) | "**Fırsata Git**" yazısı görünür, link yazının altındadır | Link mesajın içinde tıklanabilir kalır; ayrıca sonuna `🔗 Mesajı Gör: https://t.me/...` eklenir (`link_appendix: "all"` ise ham URL de yazılır) |
+| Inline buton (`Fırsata Git` butonu) | Yazıda hiç link yok, link mesaj altındaki butondadır | Bildirimde buton aynen yeniden kurulur; hesap kopyasında link `🔗 ...` satırı olarak yazılır (kullanıcı hesapları buton gönderemez) |
+| Link önizlemesi (`webpage`) | Metinde link görünmez, önizleme kartı vardır | Önizlemedeki hedef URL de link listesine girer |
+
+Ek olarak, her iletinin sonuna `🔗 Mesajı Gör: https://t.me/...` satırı eklenir: orijinal
+fırsat mesajının Telegram linkidir.
+
+**Çift taraflı garanti:** bildirimde `Fırsatı Gönderen: <kaynak>` satırındaki kaynak adı
+da orijinal mesajın t.me linkini gizler. Ürün linki herhangi bir nedenle alınamazsa bile
+bildirime dokunup doğrudan fırsat mesajına gidebilirsin.
+
+**Ayarlar**
+
+```json
+"link_appendix": "smart",
+"message_link": true,
+"source_footer": true,
+"notify_media": true
+```
+
+- `link_appendix: "smart"` (varsayılan) → gizli hyperlink'ler mesajda tıklanabilir kalır, tekrar yazılmaz; buton/önizleme linkleri metne yazılır.
+- `link_appendix: "all"` → ek güvence: tüm gizli linkler `🔗 <etiket>: <url>` satırı olarak da yazılır.
+- `link_appendix: "off"` → hiçbir bağlantı eki yazılmaz (önerilmez).
+- `message_link: false` → `🔗 Mesajı Gör:` satırı eklenmez (nihai güvence kapanır; önerilmez).
+- `source_footer: false` → `Fırsatı Gönderen:` satırı ve gizli mesaj linki olmaz.
+- `notify_media: false` → bildirim yalnızca metin olur; medya gönderilmez.
+
+Aynı ayarlar ortam değişkeniyle de verilebilir: `LINK_APPENDIX`, `MESSAGE_LINK`, `SOURCE_FOOTER`, `NOTIFY_MEDIA`.
+(Eski `APPEND_LINKS` anahtarı da çalışır: `true` → `all`, `false` → `off`.)
+
+**Not:** Gizli linklerin entity olarak korunması, kaynak mesajın biçimlendirmesine bağlıdır;
+Telegram'ın metin gönderiminde entity'ler yalnızca `formatting_entities` ile korunur. Bu bot
+bunu yapar; nihai güvence olarak `🔗 Mesajı Gör:` satırı her iletide bulunur.
