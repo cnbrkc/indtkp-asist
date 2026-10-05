@@ -1,16 +1,31 @@
 {
   "source_chats": [
-    "@indirimkanali"
+    "@FIRSATLAR",
+    "-1873932752",
+    "@firsatz",
+    "@TAZEFIRSATmini",
+    "@onual_ekstra",
+    "@indirimalarmigrup",
+    "@indirimalarmi_tr",
+    "@ozelfirsat",    
+    "@firsatlartr",
+    "@firsattayfa",
+    "@onual_firsat",
+    "@amazonozel",
+    "@ozelfirsatdepo",
+    "@amazonfirsatindirim",
+    "@indirimfirsat3",
+    "@firsatlar_onemli"
   ],
   "destination": "me",
   "include_keywords": [
-    "5070ti",
-    "ekran kartı",
-    "laptop"
+    "çay",
+    "kahve",
+    "şeker"
   ],
   "exclude_keywords": [
     "çekiliş",
-    "sponsorlu"
+    "hediye"
   ],
   "match_mode": "any",
   "copy_mode": "forward",
