@@ -294,3 +294,26 @@ class BotPingTest(unittest.TestCase):
                 ok, detail = asyncio.run(bot.send_bot_ping("123:ABC", -1, "x"))
         self.assertFalse(ok)
         self.assertIn("400", detail)
+
+
+class EnvOverrideTest(unittest.TestCase):
+    def _config_file(self):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump({"source_chats": ["@firsatz"], "control_chat": "me"}, handle)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        return handle.name
+
+    def test_delivery_modes_env_overrides_config(self):
+        env = {"DELIVERY_MODES": "copy, forward ,media", "MAX_MEDIA_MB": "10"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            config = bot.load_config(self._config_file())
+        self.assertEqual(config["delivery_modes"], ["copy", "forward", "media"])
+        self.assertEqual(config["max_media_mb"], "10")
+        self.assertEqual(bot.build_delivery_chain(config)[:3], ["copy", "forward", "media"])
+
+    def test_absent_env_leaves_config_alone(self):
+        env = {"DELIVERY_MODES": "", "MAX_MEDIA_MB": ""}
+        with mock.patch.dict(os.environ, env, clear=False):
+            config = bot.load_config(self._config_file())
+        self.assertNotIn("delivery_modes", config)

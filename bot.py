@@ -41,6 +41,7 @@ STATS = {
     "forwarded": 0,   # hedefe iletilen mesaj
     "failed": 0,      # iletimi başarısız mesaj
     "commands": 0,    # çalıştırılan komut
+    "modes": {},      # hangi iletim yolu kaç kez işe yaradı
     "last_match": None,
     "last_match_source": None,
 }
@@ -54,6 +55,8 @@ CONTROL_NAMES: list[str] = []
 DESTINATION_LABEL = "me"
 DESTINATION_ID: int | None = None
 NOTIFY_BOT_TOKEN = ""
+DELIVERY_CHAIN: list[str] = []
+MAX_MEDIA_MB = 0
 SELF_ID: int | None = None
 
 
@@ -71,6 +74,10 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict:
         env_name = key.upper()
         if os.getenv(env_name):
             config[key] = [x.strip() for x in os.environ[env_name].split(",") if x.strip()]
+    if os.getenv("DELIVERY_MODES"):
+        config["delivery_modes"] = [x.strip() for x in os.environ["DELIVERY_MODES"].split(",") if x.strip()]
+    if os.getenv("MAX_MEDIA_MB"):
+        config["max_media_mb"] = os.environ["MAX_MEDIA_MB"]
     for key in ("destination", "match_mode", "copy_mode", "control_chat"):
         if os.getenv(key.upper()):
             config[key] = os.environ[key.upper()]
@@ -208,6 +215,22 @@ def check_environment(config: dict | None = None) -> list[str]:
         problems.append("config.json → match_mode yalnızca 'any' veya 'all' olabilir.")
     if str(config.get("copy_mode", "forward")).lower() not in {"forward", "copy"}:
         problems.append("config.json → copy_mode yalnızca 'forward' veya 'copy' olabilir.")
+    explicit_modes = config.get("delivery_modes")
+    if explicit_modes is not None:
+        if not isinstance(explicit_modes, (list, tuple)) or not explicit_modes:
+            problems.append("config.json → delivery_modes boş olmayan bir liste olmalı.")
+        else:
+            unknown = [str(m) for m in explicit_modes if str(m).strip().lower() not in DELIVERY_MODES]
+            if unknown:
+                problems.append(
+                    "config.json → delivery_modes içinde bilinmeyen değer var: "
+                    f"{unknown} (geçerli: {', '.join(DELIVERY_MODES)})"
+                )
+    try:
+        if int(config.get("max_media_mb", 25)) < 0:
+            problems.append("config.json → max_media_mb negatif olamaz.")
+    except (TypeError, ValueError):
+        problems.append("config.json → max_media_mb bir sayı olmalı.")
     try:
         parse_chat_value(config.get("destination", "me"))
     except ValueError as exc:
@@ -246,7 +269,8 @@ def print_report(config: dict, problems: list[str]) -> None:
     print(f"Anahtar kelimeler  : {config.get('include_keywords') or '(hepsi)'} "
           f"({config.get('match_mode', 'any')})", flush=True)
     print(f"Hariç kelimeler    : {config.get('exclude_keywords') or '(yok)'}", flush=True)
-    print(f"İletim biçimi      : {config.get('copy_mode', 'forward')}", flush=True)
+    print(f"İletim sırası      : {' → '.join(build_delivery_chain(config))}", flush=True)
+    print(f"Medya sınırı       : {config.get('max_media_mb', 25)} MB", flush=True)
     print(f"Otomatik yenileme  : {config.get('auto_restart', True)} "
           f"({os.getenv('RESTART_AFTER_MINUTES', '330')} dk sonra)", flush=True)
     if problems:
@@ -359,6 +383,56 @@ async def send_bot_ping(token: str, chat_id: int | str, text: str) -> tuple[bool
 
 
 # ---------------------------------------------------------------------------
+# İletim zinciri (korumalı içerik için alternatifli yol)
+# ---------------------------------------------------------------------------
+
+# Birçok indirim kanalı "içeriği koru" (noforwards) ayarını açar. O kanallarda
+# forward CHAT_FORWARDS_RESTRICTED hatası verir, copy de aynı şekilde patlayabilir.
+# Bu yüzden tek bir yol denemiyoruz: sırayla dene, hata alırsan bir sonrakine geç.
+DELIVERY_MODES = ("forward", "copy", "media", "text", "link")
+
+
+def build_delivery_chain(config: dict) -> list[str]:
+    """Denenecek iletim yollarının sırasını kur.
+
+    `delivery_modes` açıkça verilmişse o sırayı kullanır; verilmediyse eski
+    `copy_mode` alanından türetir ve geri kalan yolları yedek olarak ekler.
+    """
+    explicit = config.get("delivery_modes")
+    if explicit:
+        chain = [str(m).strip().lower() for m in explicit if str(m).strip()]
+    else:
+        preferred = str(config.get("copy_mode", "forward")).strip().lower()
+        chain = [preferred] if preferred in DELIVERY_MODES else ["forward"]
+    # Bilinmeyen isimleri at, tekrar edenleri koruyarak temizle, yedekleri ekle.
+    seen: list[str] = []
+    for mode in chain:
+        if mode in DELIVERY_MODES and mode not in seen:
+            seen.append(mode)
+        elif mode not in DELIVERY_MODES:
+            log.warning("Bilinmeyen delivery_mode %r yok sayıldı (geçerli: %s).", mode, ", ".join(DELIVERY_MODES))
+    for fallback in DELIVERY_MODES:
+        if fallback not in seen:
+            seen.append(fallback)
+    return seen
+
+
+def build_message_link(event: Any, source: dict | None) -> str | None:
+    """Mesajın t.me bağlantısını kur; kurulamıyorsa None döner."""
+    message_id = getattr(event, "id", None)
+    if not message_id:
+        return None
+    username = (source or {}).get("username")
+    if username:
+        return f"https://t.me/{username}/{message_id}"
+    chat_id = getattr(event, "chat_id", None)
+    # t.me/c/<id>/<mesaj> yalnızca kanal/süpergrup için çalışır (-100... ile başlar).
+    if isinstance(chat_id, int) and chat_id < -1000000000000:
+        return f"https://t.me/c/{abs(chat_id) - 1000000000000}/{message_id}"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Komutlar
 # ---------------------------------------------------------------------------
 
@@ -367,6 +441,7 @@ HELP_TEXT = (
     "/status (/durum)  – çalışma durumu ve sayaçlar\n"
     "/test  (/deneme)  – hedefe deneme mesajı gönderir\n"
     "/source (/kaynak) – izlenen kanallar ve çözümleme durumu\n"
+    "/id               – bu sohbetin ve senin ID'ni gösterir (config için)\n"
     "/restart (/yenile) – yeni GitHub Actions çalışması başlatır\n"
     "/help  (/yardim)  – bu mesaj"
 )
@@ -391,7 +466,10 @@ def build_status_text(config: dict) -> str:
         f"• Hedef: {DESTINATION_LABEL}\n"
         f"• Kontrol sohbeti: {', '.join(CONTROL_NAMES) or 'me'}\n"
         f"• Anahtar kelimeler: {', '.join(keywords) if isinstance(keywords, list) else keywords} "
-        f"({config.get('match_mode', 'any')})"
+        f"({config.get('match_mode', 'any')})\n"
+        f"• İletim sırası: {' → '.join(DELIVERY_CHAIN) or 'yok'}"
+        + (f" | kullanılan: {', '.join(f'{k}×{v}' for k, v in STATS['modes'].items())}"
+           if STATS["modes"] else "")
     )
 
 
@@ -458,7 +536,8 @@ def run_check(config_path: str | None) -> int:
 
 async def main(argv: Sequence[str] | None = None) -> int:
     global SOURCES, SOURCE_IDS, SOURCE_FAILURES, CONTROL_IDS, CONTROL_NAMES
-    global DESTINATION_LABEL, DESTINATION_ID, NOTIFY_BOT_TOKEN, SELF_ID
+    global DESTINATION_LABEL, DESTINATION_ID, NOTIFY_BOT_TOKEN
+    global DELIVERY_CHAIN, MAX_MEDIA_MB, SELF_ID
 
     args = build_parser().parse_args(argv)
     if args.check:
@@ -475,7 +554,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
     include_keywords = [normalize(x) for x in config.get("include_keywords", [])]
     exclude_keywords = [normalize(x) for x in config.get("exclude_keywords", [])]
     match_mode = str(config.get("match_mode", "any")).lower()
-    copy_mode = str(config.get("copy_mode", "forward")).lower()
+    DELIVERY_CHAIN = build_delivery_chain(config)
+    try:
+        MAX_MEDIA_MB = int(config.get("max_media_mb", 25))
+    except (TypeError, ValueError):
+        log.warning("max_media_mb sayı değil, 25 kabul edildi.")
+        MAX_MEDIA_MB = 25
     admin_ids = parse_admin_ids(config.get("admin_user_id"))
     gh_pat = os.getenv("GH_PAT", "").strip()
     auto_restart = bool(config.get("auto_restart", True))
@@ -514,6 +598,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             "id": peer_id,
             "name": name,
             "requested": value,
+            "username": getattr(entity, "username", None),
             "joined": not bool(getattr(entity, "left", False)),
         })
         SOURCE_IDS.add(peer_id)
@@ -579,40 +664,91 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return True
         return event.sender_id in admin_ids
 
-    async def deliver(event: events.NewMessage.Event, source_name: str) -> None:
-        """Mesajı hedefe ilet; copy başarısız olursa forward'a düş, sonra bildirim at."""
-        try:
-            if copy_mode == "copy":
-                await client.send_message(destination, event.message)
-            else:
-                await client.forward_messages(destination, event.message, from_peer=event.chat_id)
-            STATS["forwarded"] += 1
-        except errors.FloodWaitError as exc:
-            STATS["failed"] += 1
-            log.warning("FloodWait (%s sn) – mesaj atlandı.", exc.seconds)
-            await asyncio.sleep(min(exc.seconds, 30))
-            return
-        except Exception as exc:  # noqa: BLE001
-            STATS["failed"] += 1
-            log.exception("Mesaj iletilemedi (%s).", type(exc).__name__)
-            if copy_mode != "copy":
-                return
-            try:
-                await client.forward_messages(destination, event.message, from_peer=event.chat_id)
-                STATS["forwarded"] += 1
-                STATS["failed"] -= 1
-                log.info("Yedek yol (forward) başarılı.")
-            except Exception:  # noqa: BLE001
-                log.exception("Yedek yol da başarısız.")
-                return
+    # --- İletim yolları -----------------------------------------------------
+    # Korumalı (noforwards) kanallarda forward ve copy patlar; o yüzden sırayla
+    # denenir: forward -> copy -> medyayı indirip yeniden yükle -> sadece metin -> link.
 
-        if NOTIFY_BOT_TOKEN and DESTINATION_ID is not None:
-            ok, detail = await send_bot_ping(
-                NOTIFY_BOT_TOKEN, DESTINATION_ID,
-                f"🔔 Yeni fırsat ({source_name}) – {normalize(event.raw_text or '')[:120]}",
-            )
-            if not ok:
-                log.warning("Bildirim ping'i gönderilemedi: %s", detail)
+    async def send_forward(event: events.NewMessage.Event) -> None:
+        await client.forward_messages(destination, event.message, from_peer=event.chat_id)
+
+    async def send_copy(event: events.NewMessage.Event) -> None:
+        await client.send_message(destination, event.message)
+
+    async def send_media(event: events.NewMessage.Event) -> None:
+        """Medyayı indirip hedefe SIFIRDAN yükle (forward kısıtını atlar)."""
+        message = event.message
+        if not getattr(message, "media", None):
+            raise ValueError("mesajda medya yok")
+        size = getattr(getattr(message, "file", None), "size", None) or 0
+        if MAX_MEDIA_MB and size and size > MAX_MEDIA_MB * 1024 * 1024:
+            raise ValueError(f"medya {size // (1024 * 1024)} MB, sınır {MAX_MEDIA_MB} MB")
+        data = await client.download_media(message, bytes)
+        if not data:
+            raise ValueError("medya indirilemedi")
+        caption = (event.raw_text or "")[:1000] or None
+        await client.send_file(destination, data, caption=caption)
+
+    async def send_text_only(event: events.NewMessage.Event) -> None:
+        text = (event.raw_text or "").strip()
+        if not text:
+            raise ValueError("mesajda metin yok")
+        has_media = bool(getattr(event.message, "media", None))
+        note = "\n\n⚠️ Kaynak medyayı korumalı işaretlediği için medya iletilemedi." if has_media else ""
+        await client.send_message(destination, f"{text[:3800]}{note}")
+
+    async def send_link_card(event: events.NewMessage.Event) -> None:
+        """Son çare: kaynak adı + t.me bağlantısı. Ekranda görülebilir tek şey budur."""
+        link = build_message_link(event, next((s for s in SOURCES if s["id"] == event.chat_id), None))
+        if not link:
+            raise ValueError("bu sohbet türü için t.me bağlantısı üretilemiyor")
+        text = (event.raw_text or "").strip()
+        body = f"🔗 {STATS['last_match_source'] or 'kaynak'} kanalındaki mesaj:\n{link}"
+        if text:
+            body = f"{text[:1500]}\n\n🔗 Kaynak: {link}"
+        else:
+            body += "\n(medya korumalı olduğu için iletilemedi, bağlantıdan açabilirsin)"
+        await client.send_message(destination, body, link_preview=True)
+
+    SENDERS = {
+        "forward": send_forward,
+        "copy": send_copy,
+        "media": send_media,
+        "text": send_text_only,
+        "link": send_link_card,
+    }
+
+    async def deliver(event: events.NewMessage.Event, source_name: str) -> tuple[bool, str]:
+        """Sırayla iletim yollarını dene; ilk başarılı olanı kullan."""
+        last_error = "denenmedi"
+        for mode in DELIVERY_CHAIN:
+            try:
+                await SENDERS[mode](event)
+            except errors.FloodWaitError as exc:
+                STATS["failed"] += 1
+                log.warning("FloodWait (%s sn) – %s bekleniyor, mesaj atlandı.", exc.seconds, mode)
+                await asyncio.sleep(min(exc.seconds, 30))
+                return False, f"floodwait:{exc.seconds}"
+            except Exception as exc:  # noqa: BLE001 - bir yol patlarsa sıradakini dene
+                last_error = f"{type(exc).__name__}: {exc}"
+                log.info("İletim yolu '%s' başarısız (%s) → sıradaki deneniyor.", mode, last_error)
+                continue
+            STATS["forwarded"] += 1
+            STATS["modes"][mode] = STATS["modes"].get(mode, 0) + 1
+            if mode not in ("forward", "copy"):
+                log.info("Mesaj '%s' yedeğiyle iletildi (kaynak: %s).", mode, source_name)
+            if NOTIFY_BOT_TOKEN and DESTINATION_ID is not None:
+                ok, detail = await send_bot_ping(
+                    NOTIFY_BOT_TOKEN, DESTINATION_ID,
+                    f"🔔 Yeni fırsat ({source_name}) – {normalize(event.raw_text or '')[:120]}",
+                )
+                if not ok:
+                    log.warning("Bildirim ping'i gönderilemedi: %s", detail)
+            return True, mode
+
+        STATS["failed"] += 1
+        log.error("Hiçbir iletim yolu çalışmadı (kaynak=%s, mesaj=%s). Son hata: %s",
+                  source_name, getattr(event, "id", "?"), last_error)
+        return False, last_error
 
     # Handler'lara `chats=` VERMİYORUZ: Telethon o filtreyi ilk mesajda çözer ve
     # çözümleme hatası tüm update akışını öldürür. Filtreyi burada kendimiz yapıyoruz.
@@ -651,6 +787,20 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await event.reply(reply)
         elif command in {"/source", "/sources", "/kaynak", "/kaynaklar"}:
             await event.reply(build_source_text())
+        elif command == "/id":
+            try:
+                chat = await event.get_chat()
+                chat_kind = type(chat).__name__
+            except Exception:  # noqa: BLE001 - sohbet cache'te olmayabilir
+                chat_kind = "bilinmiyor"
+            await event.reply(
+                f"🆔 Bu sohbetin ID'si: {event.chat_id}\n"
+                f"• Tür: {chat_kind}\n"
+                f"• Senin kullanıcı ID'n: {event.sender_id}\n"
+                f"config.json için:\n"
+                f'  "control_chat": {event.chat_id},\n'
+                f'  "admin_user_id": {event.sender_id}'
+            )
         elif command in {"/restart", "/yenile", "/yeniden"}:
             ok, message = await dispatch_next_run(gh_pat)
             await event.reply(("🔄 " if ok else "⚠️ ") + message)

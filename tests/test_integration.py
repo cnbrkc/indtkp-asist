@@ -40,17 +40,34 @@ def make_channel(name="FırsatZ"):
     return types.Channel(id=abs(CHANNEL_ID), title=name, photo=types.ChatPhotoEmpty(), date=0)
 
 
+class FakeMessage:
+    """Gerçek Telethon Message'ın yerine geçer; str OLMAMASI önemli,
+    aksi halde send_message(copy) senaryosu yanlışlıkla başarılı sayılır."""
+
+    def __init__(self, message_id, media=True):
+        self.id = message_id
+        self.media = types.MessageMediaPhoto(photo=types.PhotoEmpty(id=1)) if media else None
+        self.file = None
+        self.video = None
+
+    def __str__(self):
+        return f"<mesaj:{self.id}>"
+
+
 class FakeEvent:
-    def __init__(self, chat_id, sender_id, text, message_id=1):
+    def __init__(self, chat_id, sender_id, text, message_id=1, media=True):
         self.chat_id = chat_id
         self.sender_id = sender_id
         self.raw_text = text
         self.id = message_id
-        self.message = f"<mesaj:{message_id}>"
+        self.message = FakeMessage(message_id, media)
         self.replies: list[str] = []
 
     async def reply(self, text):
         self.replies.append(text)
+
+    async def get_chat(self):
+        return make_group() if self.chat_id == GROUP_ID else make_channel("kaynak")
 
 
 class FakeClient:
@@ -60,7 +77,9 @@ class FakeClient:
         self.handlers = []
         self.sent = []
         self.forwarded = []
+        self.files = []
         self.unresolved = []
+        self.fail_modes = set()   # test senaryosu için kapatılacak yollar
 
     def on(self, builder):
         def decorator(callback):
@@ -93,10 +112,29 @@ class FakeClient:
         raise ValueError(f"Cannot find any entity corresponding to {value!r}")
 
     async def send_message(self, entity, message, **kwargs):
+        if "copy" in self.fail_modes and not isinstance(message, str):
+            raise self._protected_error("copy")
         self.sent.append((entity, message))
 
     async def forward_messages(self, entity, message, from_peer=None):
+        if "forward" in self.fail_modes:
+            raise self._protected_error("forward")
         self.forwarded.append((entity, message, from_peer))
+
+    async def download_media(self, message, file=None):
+        if "download" in self.fail_modes:
+            raise ValueError("medya indirilemedi (koruma)")
+        return b"\xff\xd8sahte-jpeg-verisi"
+
+    async def send_file(self, entity, file, caption=None, **kwargs):
+        if "media" in self.fail_modes:
+            raise self._protected_error("media")
+        self.files.append((entity, file, caption))
+
+    def _protected_error(self, what):
+        """Korumalı kanalda Telegram'in verdiği gerçek hata."""
+        from telethon import errors
+        return errors.ChatForwardsRestrictedError(request=None)
 
     async def run_until_disconnected(self):
         return None
@@ -119,7 +157,8 @@ def reset_state():
     bot.CONTROL_IDS.clear()
     bot.DESTINATION_ID = None
     bot.STATS.update({"seen": 0, "matched": 0, "forwarded": 0, "failed": 0,
-                      "commands": 0, "last_match": None, "last_match_source": None})
+                      "commands": 0, "modes": {}, "last_match": None,
+                      "last_match_source": None})
 
 
 class IntegrationTest(unittest.TestCase):
@@ -416,3 +455,212 @@ class NotificationTest(unittest.TestCase):
         asyncio.run(client.handlers[0][1](event))
         self.assertIn("Bot bildirimi de gönderildi", event.replies[0])
         self.assertEqual(len(self.calls), 1)
+
+
+class DeliveryChainTest(unittest.TestCase):
+    """Korumalı (noforwards) kanallarda alternatifli iletim zinciri."""
+
+    def setUp(self):
+        reset_state()
+        self.config_path = self._write_config()
+        self.client = self._run_main(self.config_path)
+        self.source_id = next(iter(bot.SOURCE_IDS))
+
+    def tearDown(self):
+        os.unlink(self.config_path)
+        reset_state()
+
+    def _write_config(self, **overrides) -> str:
+        config = {
+            "source_chats": ["@firsatz"],
+            "destination": GROUP_ID,
+            "include_keywords": ["çay"],
+            "exclude_keywords": [],
+            "match_mode": "any",
+            "delivery_modes": ["forward", "copy", "media", "text", "link"],
+            "control_chat": GROUP_ID,
+            "admin_user_id": ADMIN_ID,
+            "auto_restart": False,
+            "notify_on_start": False,
+        }
+        config.update(overrides)
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(config, handle)
+        handle.close()
+        return handle.name
+
+    def _run_main(self, config_path: str) -> FakeClient:
+        created = []
+
+        def factory(*args, **kwargs):
+            client = FakeClient(*args, **kwargs)
+            created.append(client)
+            return client
+
+        with mock.patch.dict(os.environ, BASE_ENV, clear=False), \
+             mock.patch.object(bot, "TelegramClient", factory), \
+             mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
+            asyncio.run(bot.main(["--config", config_path]))
+        return created[0]
+
+    def _send(self, text="Sıcak ÇAY 5 TL"):
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 1234, text)))
+
+    def test_chain_is_built_in_order(self):
+        self.assertEqual(bot.DELIVERY_CHAIN, ["forward", "copy", "media", "text", "link"])
+
+    def test_happy_path_uses_forward(self):
+        self._send()
+        self.assertEqual(len(self.client.forwarded), 1)
+        self.assertEqual(bot.STATS["modes"].get("forward"), 1)
+
+    def test_forward_blocked_falls_back_to_copy(self):
+        """Korumalı kanal: forward CHAT_FORWARDS_RESTRICTED verir, copy denenir."""
+        self.client.fail_modes.add("forward")
+        self._send()
+        self.assertEqual(self.client.forwarded, [])
+        self.assertEqual(len(self.client.sent), 1)
+        self.assertEqual(bot.STATS["modes"].get("copy"), 1)
+
+    def test_forward_and_copy_blocked_falls_back_to_media_reupload(self):
+        """En kritik senaryo: ikisi de korumalıysa medya indirilip yeniden yüklenir."""
+        self.client.fail_modes.update({"forward", "copy"})
+        self._send()
+        self.assertEqual(len(self.client.files), 1, "medya yeniden yüklenmeli")
+        self.assertEqual(bot.STATS["modes"].get("media"), 1)
+
+    def test_media_unavailable_falls_back_to_text(self):
+        self.client.fail_modes.update({"forward", "copy", "media", "download"})
+        self._send("ÇAY 5 TL kampanya")
+        self.assertTrue(any("ÇAY 5 TL" in str(m) for _, m in self.client.sent))
+        self.assertEqual(bot.STATS["modes"].get("text"), 1)
+
+    def test_everything_blocked_falls_back_to_link_card(self):
+        """include_keywords boşken metinsiz (yalnızca medya) mesajlar da akar;
+        metin olmadığı için son çare t.me bağlantısıdır."""
+        reset_state()
+        path = self._write_config(include_keywords=[])
+        self.addCleanup(os.unlink, path)
+        self.client = self._run_main(path)
+        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.client.fail_modes.update({"forward", "copy", "media", "download"})
+        self._send("")
+        link_messages = [m for _, m in self.client.sent if "t.me" in str(m)]
+        self.assertEqual(len(link_messages), 1, "son çare olarak t.me bağlantısı gönderilmeli")
+        self.assertEqual(bot.STATS["modes"].get("link"), 1)
+
+    def test_all_paths_failing_counts_as_failure(self):
+        """Metin yok + bağlantı üretilemiyor -> hiçbir iletim yolu kalmaz."""
+        reset_state()
+        path = self._write_config(include_keywords=[])
+        self.addCleanup(os.unlink, path)
+        self.client = self._run_main(path)
+        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.client.fail_modes.update({"forward", "copy", "media", "download"})
+        with mock.patch.object(bot, "build_message_link", lambda *a, **k: None):
+            self._send("")
+        self.assertEqual(bot.STATS["forwarded"], 0)
+        self.assertEqual(bot.STATS["failed"], 1)
+
+    def test_custom_chain_order_is_respected(self):
+        reset_state()
+        path = self._write_config(delivery_modes=["copy", "forward"])
+        self.addCleanup(os.unlink, path)
+        client = self._run_main(path)
+        self.assertEqual(bot.DELIVERY_CHAIN[:2], ["copy", "forward"])
+        asyncio.run(client.handlers[1][1](FakeEvent(next(iter(bot.SOURCE_IDS)), 5, "çay")))
+        self.assertEqual(len(client.sent), 1)
+
+    def test_legacy_copy_mode_still_works(self):
+        reset_state()
+        path = self._write_config(delivery_modes=None, copy_mode="copy")
+        self.addCleanup(os.unlink, path)
+        client = self._run_main(path)
+        self.assertEqual(bot.DELIVERY_CHAIN[0], "copy", "eski copy_mode alanı ilk sıraya konmalı")
+
+    def test_unknown_mode_is_rejected_by_check(self):
+        config = {"source_chats": ["@firsatz"], "control_chat": "me",
+                  "delivery_modes": ["forward", "ekrangoruntusu"]}
+        with mock.patch.dict(os.environ, BASE_ENV, clear=False):
+            problems = bot.check_environment(config)
+        self.assertTrue(any("delivery_modes" in p for p in problems), problems)
+
+
+class BuildDeliveryChainTest(unittest.TestCase):
+    def test_defaults_to_full_chain(self):
+        self.assertEqual(
+            bot.build_delivery_chain({}),
+            ["forward", "copy", "media", "text", "link"],
+        )
+
+    def test_copy_mode_copy_puts_copy_first(self):
+        self.assertEqual(bot.build_delivery_chain({"copy_mode": "copy"})[0], "copy")
+
+    def test_explicit_list_is_completed_with_fallbacks(self):
+        self.assertEqual(
+            bot.build_delivery_chain({"delivery_modes": ["media"]}),
+            ["media", "forward", "copy", "text", "link"],
+        )
+
+    def test_duplicates_and_junk_are_cleaned(self):
+        with self.assertLogs("telegram-filter", level="WARNING"):
+            chain = bot.build_delivery_chain({"delivery_modes": ["copy", "copy", "saçma", "text"]})
+        self.assertEqual(chain, ["copy", "text", "forward", "media", "link"])
+
+
+class MessageLinkTest(unittest.TestCase):
+    def test_public_channel_link(self):
+        event = FakeEvent(-1001234567890, 1, "x", message_id=42)
+        link = bot.build_message_link(event, {"username": "firsatz"})
+        self.assertEqual(link, "https://t.me/firsatz/42")
+
+    def test_private_channel_link(self):
+        event = FakeEvent(-1001234567890, 1, "x", message_id=7)
+        link = bot.build_message_link(event, {"username": None})
+        self.assertEqual(link, "https://t.me/c/1234567890/7")
+
+    def test_basic_group_has_no_link(self):
+        event = FakeEvent(-5092968106, 1, "x", message_id=9)
+        self.assertIsNone(bot.build_message_link(event, {"username": None}))
+
+
+class IdCommandTest(unittest.TestCase):
+    def setUp(self):
+        reset_state()
+        config = {
+            "source_chats": ["@firsatz"],
+            "destination": GROUP_ID,
+            "include_keywords": ["çay"],
+            "control_chat": GROUP_ID,
+            "admin_user_id": ADMIN_ID,
+            "auto_restart": False,
+            "notify_on_start": False,
+        }
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(config, handle)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        created = []
+
+        def factory(*args, **kwargs):
+            client = FakeClient(*args, **kwargs)
+            created.append(client)
+            return client
+
+        with mock.patch.dict(os.environ, BASE_ENV, clear=False), \
+             mock.patch.object(bot, "TelegramClient", factory), \
+             mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
+            asyncio.run(bot.main(["--config", handle.name]))
+        self.client = created[0]
+
+    def tearDown(self):
+        reset_state()
+
+    def test_id_command_reports_ids_for_config(self):
+        event = FakeEvent(GROUP_ID, ADMIN_ID, "/id")
+        asyncio.run(self.client.handlers[0][1](event))
+        reply = event.replies[0]
+        self.assertIn(str(GROUP_ID), reply)
+        self.assertIn(str(ADMIN_ID), reply)
+        self.assertIn('"control_chat"', reply)
+        self.assertIn('"admin_user_id"', reply)
