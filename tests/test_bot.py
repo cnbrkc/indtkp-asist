@@ -372,7 +372,23 @@ class ExtractLinksTest(unittest.TestCase):
         self.assertEqual(bot.extract_links(message), [
             {"url": "https://amzn.to/1", "label": "Fırsata Git", "kind": "entity"},
         ])
-        self.assertEqual(bot.build_link_appendix(message), "🔗 Fırsata Git: https://amzn.to/1")
+        self.assertEqual(bot.build_link_appendix(message, kinds=("entity",)),
+                         "🔗 Fırsata Git: https://amzn.to/1")
+
+    def test_default_appendix_skips_already_tappable_entity_links(self):
+        """Akıllı mod: gizli hyperlink mesajda tıklanabilir kaldığı için tekrar yazılmaz."""
+        text = "Fırsata Git"
+        message = make_message(text, entities=[
+            tl_types.MessageEntityTextUrl(offset=0, length=len(text), url="https://amzn.to/1"),
+        ])
+        self.assertEqual(bot.missing_links(message), [])
+        self.assertEqual(bot.build_link_appendix(message), "")
+
+    def test_button_links_are_still_written_in_smart_mode(self):
+        """Butonlar kullanıcı hesabından gönderilemez; metne yazılmaları şart."""
+        button = SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)
+        message = make_message("çay", buttons=[button])
+        self.assertEqual(bot.build_link_appendix(message), "🔗 Fırsata Git: https://amzn.to/btn")
 
     def test_visible_url_is_not_repeated_in_appendix(self):
         text = "https://amzn.to/2 çay kampanyası"
@@ -455,6 +471,7 @@ class ComposeMessageTest(unittest.TestCase):
         entity = tl_types.MessageEntityTextUrl(offset=4, length=2, url="https://amzn.to/5")
         composed = bot.compose_message(
             make_message(text, entities=[entity]),
+            link_kinds=("entity",),
             footer_label=bot.FOOTER_LABEL, footer_name="FırsatZ",
             footer_url="https://t.me/firsatz/9",
         )
@@ -465,6 +482,49 @@ class ComposeMessageTest(unittest.TestCase):
             "type": "text_link", "offset": composed["footer_offset"],
             "length": bot.utf16_length("FırsatZ"), "url": "https://t.me/firsatz/9",
         }])
+
+    def test_message_link_line_sits_between_appendix_and_footer(self):
+        """Kullanıcı isteği: altına '🔗 Mesajı Gör: <t.me mesaj linki>' satırı."""
+        button = SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)
+        composed = bot.compose_message(
+            make_message("çay 5 TL", buttons=[button]),
+            message_link="https://t.me/FirsatZ/31543",
+            footer_label=bot.FOOTER_LABEL, footer_name="FirsatZ",
+            footer_url="https://t.me/FirsatZ/31543",
+        )
+        self.assertIn("🔗 Fırsata Git: https://amzn.to/btn", composed["text"])
+        self.assertIn("🔗 Mesajı Gör: https://t.me/FirsatZ/31543", composed["text"])
+        self.assertLess(composed["text"].index("Mesajı Gör"),
+                        composed["text"].index("Fırsatı Gönderen"))
+        self.assertEqual(composed["source_url"], "https://t.me/FirsatZ/31543")
+
+    def test_entity_links_are_not_rewritten_by_default(self):
+        """Varsayılan: gizli link tıklanabilir kalır, 'Fırsata Git: url' satırı eklenmez."""
+        text = "Fırsata Git 👉"
+        offset = bot.utf16_length(text[:text.index("Fırsata Git")])
+        entity = tl_types.MessageEntityTextUrl(offset=offset, length=bot.utf16_length("Fırsata Git"),
+                                               url="https://amzn.to/gizli")
+        composed = bot.compose_message(
+            make_message(text, entities=[entity]),
+            message_link="https://t.me/FirsatZ/31543",
+        )
+        self.assertNotIn("https://amzn.to/gizli", composed["text"], "link tekrar yazılmamalı")
+        self.assertIn("🔗 Mesajı Gör: https://t.me/FirsatZ/31543", composed["text"])
+        # Link yine de tıklanabilir: gövdeye ait entity çağıran tarafından korunur.
+        self.assertEqual(
+            bot.entities_for_text(make_message(text, entities=[entity]), composed["body"]), [entity],
+        )
+
+    def test_source_line_is_dropped_when_it_cannot_fit(self):
+        composed = bot.compose_message(
+            make_message("a" * 500), limit=50,
+            link_kinds=("entity",), message_link="https://t.me/firsatz/1",
+            footer_label=bot.FOOTER_LABEL, footer_name="F",
+        )
+        self.assertIsNone(composed["source_url"])
+        self.assertFalse(composed["source_line"])
+        self.assertTrue(composed["text"].endswith("Fırsatı Gönderen: F"))
+        self.assertLessEqual(len(composed["text"]), 50)
 
     def test_long_body_is_truncated_but_footer_survives(self):
         composed = bot.compose_message(
@@ -633,6 +693,35 @@ class BotApiSendTest(unittest.TestCase):
                 mime_type="application/pdf", data=b"PDF",
             ))
         self.assertTrue(urlopen.call_args[0][0].full_url.endswith("/sendDocument"))
+
+
+class LinkAppendixModeTest(unittest.TestCase):
+    """``link_appendix`` ayarı: smart (varsayılan) / all / off + eski append_links."""
+
+    def test_default_is_smart(self):
+        self.assertEqual(bot.link_appendix_mode({}), "smart")
+        self.assertEqual(bot.link_kinds_for("smart"), ("button", "webpage"))
+        self.assertEqual(bot.link_kinds_for("smart", bot=True), ("webpage",))
+
+    def test_all_and_off_modes(self):
+        for value in ("all", "ALL", "hepsi", "tüm", True, 1):
+            self.assertEqual(bot.link_appendix_mode({"link_appendix": value}), "all", repr(value))
+        for value in ("off", "kapalı", "false", "0", "none"):
+            self.assertEqual(bot.link_appendix_mode({"link_appendix": value}), "off", repr(value))
+        self.assertEqual(bot.link_kinds_for("off"), ())
+        self.assertEqual(bot.link_kinds_for("all"), ("entity", "button", "webpage"))
+
+    def test_legacy_append_links_still_works(self):
+        self.assertEqual(bot.link_appendix_mode({"append_links": True}), "all")
+        self.assertEqual(bot.link_appendix_mode({"append_links": False}), "off")
+        self.assertEqual(bot.link_appendix_mode({"append_links": "evet"}), "all")
+
+    def test_new_key_wins_over_legacy(self):
+        self.assertEqual(bot.link_appendix_mode({"append_links": True, "link_appendix": "off"}), "off")
+
+    def test_unknown_value_falls_back_to_smart_with_warning(self):
+        with self.assertLogs("telegram-filter", level="WARNING"):
+            self.assertEqual(bot.link_appendix_mode({"link_appendix": "saçma"}), "smart")
 
 
 class ConfigFlagTest(unittest.TestCase):

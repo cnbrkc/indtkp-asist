@@ -63,16 +63,39 @@ NOTIFY_BOT_TOKEN = ""
 DELIVERY_CHAIN: list[str] = []
 MAX_MEDIA_MB = 0
 SELF_ID: int | None = None
-APPEND_LINKS = True   # gizli/buton bağlantılarını iletinin sonuna ekle
+APPEND_LINKS = True   # (eski anahtar) gizli/buton bağlantılarını iletinin sonuna ekle
 SOURCE_FOOTER = True  # bildirime "Fırsatı Gönderen: <kaynak>" satırı ekle
 NOTIFY_MEDIA = True   # bildirim botu medyayı da göndersin
+MESSAGE_LINK_LINE = True      # iletinin sonuna "🔗 Mesajı Gör: <t.me linki>" ekle
+LINK_APPENDIX_MODE = "smart"  # smart | all | off (bkz. link_appendix_mode)
 
 # Telegram sınırları (Bot API ve kullanıcı hesabı için ortak olanlar).
 MESSAGE_LIMIT = 4096          # normal mesaj metni
 CAPTION_LIMIT = 1024          # medya açıklaması
 LINK_APPENDIX_LIMIT = 4       # ileti sonuna en fazla kaç gizli bağlantı yazılsın
 FOOTER_LABEL = "Fırsatı Gönderen: "
+MESSAGE_LINK_LABEL = "Mesajı Gör"
 BOT_API_MEDIA_LIMIT_MB = {"photo": 10, "video": 50, "document": 50}
+
+# Hangi link türleri metne yazılsın?
+#   entity  = yazının altına gizlenmiş hyperlink (metinde tıklanabilir kalır)
+#   button  = inline buton linki (kullanıcı hesabı buton gönderemez)
+#   webpage = link önizlemesindeki hedef
+LINK_KIND_GROUPS = {
+    # "smart": taşınamayan linkler yazılır. Gizli hyperlink'ler mesajın içinde
+    # tıklanabilir kaldığı için tekrar yazılmaz (kullanıcı isteği: "Fırsata Git:
+    # https://..." satırı yerine mesajın linki yeter).
+    "smart": ("button", "webpage"),
+    "all": ("entity", "button", "webpage"),
+    "off": (),
+}
+# Bildirim botunda butonlar gerçek inline buton olarak gider; orada yalnızca
+# önizleme linki metne yazılır.
+BOT_LINK_KIND_GROUPS = {
+    "smart": ("webpage",),
+    "all": ("entity", "button", "webpage"),
+    "off": (),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -102,11 +125,44 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict:
         config["auto_restart"] = os.environ["AUTO_RESTART"].strip().lower() in {
             "1", "true", "yes", "evet", "on",
         }
-    for key in ("append_links", "source_footer", "notify_media"):
+    for key in ("append_links", "source_footer", "notify_media", "message_link"):
         env_value = os.getenv(key.upper())
         if env_value is not None and env_value.strip():
             config[key] = env_value
+    if os.getenv("LINK_APPENDIX", "").strip():
+        config["link_appendix"] = os.environ["LINK_APPENDIX"].strip()
     return config
+
+
+def link_appendix_mode(config: dict) -> str:
+    """``link_appendix`` ayarını ``smart`` / ``all`` / ``off`` olarak çöz.
+
+    ``smart`` (varsayılan): yalnızca metne yazılmadığı sürece kaybolacak linkler
+    eklenir (buton, link önizlemesi). Gizli hyperlink'ler zaten mesajın içinde
+    tıklanabilir olduğu için tekrar yazılmaz.
+
+    Eski ``append_links`` anahtarı hâlâ çalışır: ``true`` → ``all``, ``false`` → ``off``.
+    """
+    raw = config.get("link_appendix")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        if "append_links" in config:
+            return "all" if config_flag(config.get("append_links"), True) else "off"
+        return "smart"
+    text = str(raw).strip().lower()
+    if text in {"off", "none", "no", "hayir", "hayır", "false", "0", "kapali", "kapalı", "kapalı."}:
+        return "off"
+    if text in {"all", "hepsi", "tum", "tüm", "true", "1", "evet", "open", "açık", "acik"}:
+        return "all"
+    if text in {"smart", "akilli", "akıllı", "safe", "varsayilan", "varsayılan"}:
+        return "smart"
+    log.warning("Bilinmeyen link_appendix değeri %r; 'smart' kabul edildi (geçerli: smart, all, off).", raw)
+    return "smart"
+
+
+def link_kinds_for(mode: str, bot: bool = False) -> tuple[str, ...]:
+    """Moda göre metne yazılacak link türlerini döndür."""
+    table = BOT_LINK_KIND_GROUPS if bot else LINK_KIND_GROUPS
+    return tuple(table.get(mode, table["smart"]))
 
 
 def config_flag(value: Any, default: bool = True) -> bool:
@@ -304,7 +360,10 @@ def print_report(config: dict, problems: list[str]) -> None:
     print(f"Hariç kelimeler    : {config.get('exclude_keywords') or '(yok)'}", flush=True)
     print(f"İletim sırası      : {' → '.join(build_delivery_chain(config))}", flush=True)
     print(f"Medya sınırı       : {config.get('max_media_mb', 25)} MB", flush=True)
-    print(f"Gizli bağlantılar  : {'eklenir' if config_flag(config.get('append_links')) else 'eklenmez'} "
+    mode = link_appendix_mode(config)
+    mode_label = {"smart": "akıllı (buton/önizleme)", "all": "tüm gizli linkler", "off": "kapalı"}[mode]
+    print(f"Bağlantı ekleri     : {mode_label} "
+          f"| mesaj linki: {'açık' if config_flag(config.get('message_link')) else 'kapalı'} "
           f"| kaynak altbilgisi: {'açık' if config_flag(config.get('source_footer')) else 'kapalı'} "
           f"| bildirim medyası: {'açık' if config_flag(config.get('notify_media')) else 'kapalı'}", flush=True)
     print(f"Otomatik yenileme  : {config.get('auto_restart', True)} "
@@ -683,12 +742,22 @@ def visible_urls(text: str) -> set[str]:
     return {clean_url(url).rstrip("/").lower() for url in URL_RE.findall(text or "")}
 
 
-def missing_links(obj: Any, limit: int = LINK_APPENDIX_LIMIT) -> list[dict[str, str]]:
-    """Metinde görünmeyen bağlantılar: gizli hyperlink, buton, link önizlemesi."""
+def missing_links(
+    obj: Any,
+    limit: int = LINK_APPENDIX_LIMIT,
+    kinds: Sequence[str] | None = ("button", "webpage"),
+) -> list[dict[str, str]]:
+    """Metinde görünmeyen bağlantılar: gizli hyperlink, buton, link önizlemesi.
+
+    ``kinds`` verilirse yalnızca o türler döner (bkz. ``LINK_KIND_GROUPS``).
+    """
     visible = visible_urls(message_text(obj))
+    allowed = None if kinds is None else set(kinds)
     result: list[dict[str, str]] = []
     for item in extract_links(obj):
         if item["kind"] == "text":
+            continue
+        if allowed is not None and item["kind"] not in allowed:
             continue
         if item["url"].rstrip("/").lower() in visible:
             continue
@@ -698,10 +767,10 @@ def missing_links(obj: Any, limit: int = LINK_APPENDIX_LIMIT) -> list[dict[str, 
     return result
 
 
-def build_link_appendix(obj: Any) -> str:
+def build_link_appendix(obj: Any, kinds: Sequence[str] | None = ("button", "webpage")) -> str:
     """Gizli bağlantıları iletinin sonuna eklenecek metne çevir."""
     lines: list[str] = []
-    for item in missing_links(obj):
+    for item in missing_links(obj, kinds=kinds):
         label = (item.get("label") or "").strip()
         if label and label.lower() not in item["url"].lower():
             lines.append(f"🔗 {label[:40]}: {item['url']}")
@@ -732,41 +801,44 @@ def compose_message(
     obj: Any,
     *,
     limit: int = MESSAGE_LIMIT,
-    appendix: bool = True,
+    link_kinds: Sequence[str] | None = ("button", "webpage"),
+    message_link: str | None = None,
+    message_link_label: str = MESSAGE_LINK_LABEL,
     footer_label: str | None = None,
     footer_name: str | None = None,
     footer_url: str | None = None,
 ) -> dict[str, Any]:
-    """İletilecek metni kur: gövde + gizli bağlantılar + (varsa) kaynak altbilgisi.
+    """İletilecek metni kur: gövde + bağlantı ekleri + mesaj linki + kaynak altbilgisi.
 
-    Gövde hiçbir zaman kısaltılmaz; yalnızca sınırı aşarsa kırpılır. Ek ve
-    altbilgi her koşulda korunur, çünkü kullanıcı için en değerli bilgi onlar.
-    Dönen sözlükte ``body`` (kırpılmış olabilecek gövde) ve ``footer_offset``
-    (UTF-16 offset) bulunur; entity'ler bunlara göre kırpılır.
+    Sıra: ``gövde`` → ``🔗 <link>`` satırları → ``🔗 Mesajı Gör: <t.me>`` →
+    ``Fırsatı Gönderen: <kaynak>``. Ek satırlar kısa ama kritiktir; bu yüzden
+    önce onlara yer ayrılır, gövde gerekiyorsa kırpılır (fotoğraf açıklaması
+    1024 karakterle sınırlıdır). Sığmazsa önce link listesi, sonra mesaj linki
+    düşer; nihai güvence olan ``Mesajı Gör`` satırı en sona bırakılır.
+
+    Dönen sözlükte ``body`` (kırpılmış olabilecek gövde), ``footer_offset``
+    (UTF-16 offset) ve ``source_url`` bulunur; entity'ler bunlara göre kurulur.
     """
     body = message_text(obj)
-    appendix_text = build_link_appendix(obj) if appendix else ""
-    footer_text = ""
-    if footer_label and footer_name:
-        footer_text = f"{footer_label}{footer_name}"
+    appendix_text = build_link_appendix(obj, kinds=link_kinds) if link_kinds else ""
+    source_line = f"🔗 {message_link_label}: {message_link}" if message_link else ""
+    footer_text = f"{footer_label}{footer_name}" if (footer_label and footer_name) else ""
 
     sep = "\n\n"
     appendix_block = f"{sep}{appendix_text}" if appendix_text else ""
+    source_block = f"{sep}{source_line}" if source_line else ""
     footer_block = f"{sep}{footer_text}" if footer_text else ""
-    # Ek ve altbilgi kısa ama kritik: önce onlara yer ayır, gövdeyi gerekiyorsa kırp.
-    # (Ek hiç sığmıyorsa, yer açmak için düşürülür.)
-    if len(appendix_block) + len(footer_block) >= limit:
-        appendix_block = ""
-        appendix_text = ""
+    if len(appendix_block) + len(source_block) + len(footer_block) >= limit:
+        appendix_block, appendix_text = "", ""
+    if len(source_block) + len(footer_block) >= limit:
+        source_block, source_line = "", ""
 
-    reserved = len(appendix_block) + len(footer_block)
+    reserved = len(appendix_block) + len(source_block) + len(footer_block)
     room = max(1, limit - reserved)
     if len(body) > room:
         body = body[: max(0, room - 1)].rstrip() + "…"
 
-    text = body
-    if appendix_text:
-        text += appendix_block
+    text = body + appendix_block + source_block
     footer_offset = -1
     if footer_text:
         text += sep
@@ -777,6 +849,8 @@ def compose_message(
         "text": text,
         "body": body,
         "appendix": appendix_text,
+        "source_line": source_line,
+        "source_url": message_link if source_line else None,
         "footer_text": footer_text,
         "footer_offset": footer_offset,
         "footer_length": utf16_length(footer_name) if footer_text else 0,
@@ -1065,6 +1139,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     global DESTINATION_LABEL, DESTINATION_ID, NOTIFY_BOT_TOKEN
     global DELIVERY_CHAIN, MAX_MEDIA_MB, SELF_ID
     global APPEND_LINKS, SOURCE_FOOTER, NOTIFY_MEDIA
+    global MESSAGE_LINK_LINE, LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
 
     args = build_parser().parse_args(argv)
     if args.check:
@@ -1095,11 +1170,20 @@ async def main(argv: Sequence[str] | None = None) -> int:
     NOTIFY_BOT_TOKEN = str(config.get("notify_bot_token") or os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
     if NOTIFY_BOT_TOKEN.lower() in {"null", "none", "yok"}:
         NOTIFY_BOT_TOKEN = ""
-    APPEND_LINKS = config_flag(config.get("append_links"), True)
+    APPEND_LINKS = link_appendix_mode(config) != "off"
+    LINK_APPENDIX_MODE = link_appendix_mode(config)
+    LINK_KINDS = link_kinds_for(LINK_APPENDIX_MODE, bot=False)
+    BOT_LINK_KINDS = link_kinds_for(LINK_APPENDIX_MODE, bot=True)
+    MESSAGE_LINK_LINE = config_flag(config.get("message_link"), True)
     SOURCE_FOOTER = config_flag(config.get("source_footer"), True)
     NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
-    if APPEND_LINKS:
-        log.info("Gizli bağlantılar (metin altı / buton) iletilerin sonuna eklenecek.")
+    if LINK_APPENDIX_MODE == "smart":
+        log.info("Bağlantı ekleri: akıllı mod — gizli hyperlink'ler mesajda tıklanabilir kalır, "
+                 "yalnızca buton/önizleme linkleri metne yazılır.")
+    elif LINK_APPENDIX_MODE == "all":
+        log.info("Bağlantı ekleri: tüm gizli linkler iletinin sonuna yazılacak.")
+    if MESSAGE_LINK_LINE:
+        log.info("Her iletinin sonuna '🔗 %s: <t.me mesaj linki>' satırı eklenecek.", MESSAGE_LINK_LABEL)
     if NOTIFY_BOT_TOKEN:
         log.info("Bildirim biçimi: mesajın kopyası + %s (t.me linki gizli)%s",
                  FOOTER_LABEL.strip() + " <kaynak>" if SOURCE_FOOTER else "altbilgi yok",
@@ -1204,21 +1288,31 @@ async def main(argv: Sequence[str] | None = None) -> int:
     # Korumalı (noforwards) kanallarda forward ve copy patlar; o yüzden sırayla
     # denenir: forward -> copy -> medyayı indirip yeniden yükle -> sadece metin -> link.
 
+    def source_of(event: events.NewMessage.Event) -> dict[str, Any] | None:
+        """Kaynak kaydını bul (kaynak adı, kullanıcı adı, t.me linki için)."""
+        return next((item for item in SOURCES if item["id"] == event.chat_id), None)
+
+    def offer_link(event: events.NewMessage.Event) -> str | None:
+        return build_message_link(event, source_of(event)) if MESSAGE_LINK_LINE else None
+
     async def send_forward(event: events.NewMessage.Event) -> None:
         await client.forward_messages(destination, event.message, from_peer=event.chat_id)
 
     async def send_copy(event: events.NewMessage.Event) -> None:
         """Mesajı biçimiyle birlikte yeniden gönder.
 
-        Kaynaktaki ``reply_markup`` kullanıcı hesabından gönderilemediği için
-        (inline klavyeler yalnızca botlara açıktır) buton linkleri metnin sonuna
-        eklenir; gizli hyperlink'ler ise entity olarak korunur.
+        Gizli hyperlink'ler entity olarak korunur. Kaynaktaki ``reply_markup``
+        kullanıcı hesabından gönderilemediği için (inline klavyeler yalnızca
+        botlara açıktır) buton linkleri metne yazılır; ayrıca en alta
+        ``🔗 Mesajı Gör: <t.me>`` satırı eklenir.
         """
         message = event.message
         media = getattr(message, "media", None)
         is_webpage = isinstance(media, types.MessageMediaWebPage)
+        link = offer_link(event)
         if media and not is_webpage:
-            composed = compose_message(event, limit=CAPTION_LIMIT - 24, appendix=APPEND_LINKS)
+            composed = compose_message(event, limit=CAPTION_LIMIT - 24,
+                                       link_kinds=LINK_KINDS, message_link=link)
             await client.send_file(
                 destination,
                 media,
@@ -1227,7 +1321,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 force_document=False,
             )
             return
-        composed = compose_message(event, limit=MESSAGE_LIMIT - 100, appendix=APPEND_LINKS)
+        composed = compose_message(event, limit=MESSAGE_LIMIT - 100,
+                                   link_kinds=LINK_KINDS, message_link=link)
         await client.send_message(
             destination,
             composed["text"],
@@ -1252,7 +1347,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
         data = await client.download_media(message, bytes)
         if not data:
             raise ValueError("medya indirilemedi")
-        composed = compose_message(event, limit=CAPTION_LIMIT - 24, appendix=APPEND_LINKS)
+        composed = compose_message(event, limit=CAPTION_LIMIT - 24,
+                                   link_kinds=LINK_KINDS, message_link=offer_link(event))
         await client.send_file(
             destination,
             media_buffer(data, media_upload_name(message)),
@@ -1263,32 +1359,29 @@ async def main(argv: Sequence[str] | None = None) -> int:
         )
 
     async def send_text_only(event: events.NewMessage.Event) -> None:
-        composed = compose_message(event, limit=MESSAGE_LIMIT - 400, appendix=APPEND_LINKS)
+        # Gövdeye ek olarak gizli linkler (varsa) ve "Mesajı Gör" satırı eklenir;
+        # ürün linki bir şekilde kaçsa bile tek dokunuşla fırsata ulaşılır.
+        composed = compose_message(event, limit=MESSAGE_LIMIT - 400,
+                                   link_kinds=LINK_KINDS, message_link=offer_link(event))
         if not composed["body"].strip() and not composed["appendix"]:
             raise ValueError("mesajda metin yok")
-        # Metni biz yeniden yazdığımız için orijinal mesaja giden yolu da ekle:
-        # ürün linki bir şekilde kaçarsa tek dokunuşla fırsata ulaşılır.
-        source = next((s for s in SOURCES if s["id"] == event.chat_id), None)
-        link = build_message_link(event, source)
-        source_line = f"\n\n🔗 Kaynak: {link}" if link else ""
         has_media = bool(getattr(event.message, "media", None))
         note = "\n\n⚠️ Kaynak medyayı korumalı işaretlediği için medya iletilemedi." if has_media else ""
         await client.send_message(
             destination,
-            composed["text"] + source_line + note,
+            composed["text"] + note,
             formatting_entities=entities_for_text(event, composed["body"]),
             link_preview=True,
         )
 
     async def send_link_card(event: events.NewMessage.Event) -> None:
         """Son çare: kaynak adı + t.me bağlantısı. Ekranda görülebilir tek şey budur."""
-        source = next((s for s in SOURCES if s["id"] == event.chat_id), None)
-        link = build_message_link(event, source)
+        link = build_message_link(event, source_of(event))
         if not link:
             raise ValueError("bu sohbet türü için t.me bağlantısı üretilemiyor")
-        composed = compose_message(event, limit=2000, appendix=APPEND_LINKS)
+        composed = compose_message(event, limit=2000, link_kinds=LINK_KINDS, message_link=link)
         if composed["body"].strip():
-            body = f"{composed['text']}\n\n🔗 Kaynak: {link}"
+            body = composed["text"]
         else:
             body = f"🔗 {STATS['last_match_source'] or 'kaynak'} kanalındaki mesaj:\n{link}"
             if composed["appendix"]:
@@ -1314,8 +1407,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         """
         if not NOTIFY_BOT_TOKEN or DESTINATION_ID is None:
             return
-        source = next((s for s in SOURCES if s["id"] == event.chat_id), None)
-        message_link = build_message_link(event, source)
+        message_link = offer_link(event)
         keyboard = build_inline_keyboard(event)
         footer_name = source_name if SOURCE_FOOTER else None
 
@@ -1330,7 +1422,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         if descriptor is not None:
             composed = compose_message(
-                event, limit=CAPTION_LIMIT - 24, appendix=APPEND_LINKS,
+                event, limit=CAPTION_LIMIT - 24, link_kinds=BOT_LINK_KINDS, message_link=message_link,
                 footer_label=FOOTER_LABEL, footer_name=footer_name, footer_url=message_link,
             )
             entities = bot_api_entities(event, composed["body"]) + footer_entity(composed, message_link)
@@ -1352,7 +1444,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 log.warning("Bildirim medyası gönderilemedi (%s) → metne düşülüyor.", detail)
 
         composed = compose_message(
-            event, limit=MESSAGE_LIMIT - 200, appendix=APPEND_LINKS,
+            event, limit=MESSAGE_LIMIT - 200, link_kinds=BOT_LINK_KINDS, message_link=message_link,
             footer_label=FOOTER_LABEL, footer_name=footer_name, footer_url=message_link,
         )
         entities = bot_api_entities(event, composed["body"]) + footer_entity(composed, message_link)

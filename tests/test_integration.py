@@ -115,6 +115,8 @@ class FakeClient:
         self.forwarded = []
         self.files = []
         self.file_names = []
+        self.sent_kwargs = []
+        self.file_kwargs = []
         self.unresolved = []
         self.fail_modes = set()   # test senaryosu için kapatılacak yollar
 
@@ -157,6 +159,7 @@ class FakeClient:
         if "copy" in self.fail_modes and not isinstance(message, str):
             raise self._protected_error("copy")
         self.sent.append((entity, message))
+        self.sent_kwargs.append(kwargs)
 
     async def forward_messages(self, entity, message, from_peer=None):
         if "forward" in self.fail_modes:
@@ -178,6 +181,7 @@ class FakeClient:
         payload = file.getvalue() if isinstance(file, io.BytesIO) else file
         self.files.append((entity, payload, caption))
         self.file_names.append(getattr(file, "name", None))
+        self.file_kwargs.append(kwargs)
 
     def _protected_error(self, what):
         """Korumalı kanalda Telegram'in verdiği gerçek hata."""
@@ -508,7 +512,7 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(footer["type"], "text_link")
         self.assertIn("Fırsatı Gönderen: firsatz", self.media_calls[0]["caption"])
 
-    def test_hidden_entity_link_is_carried_in_text_and_entity(self):
+    def test_hidden_entity_link_stays_tappable_and_message_link_is_added(self):
         """'Fırsata Git' yazısının altına gizlenmiş link kaybolmamalı."""
         client = self._run({"notify_bot_token": "123:ABC"})
         text = "Fırsata Git 👉 çay"
@@ -517,12 +521,22 @@ class NotificationTest(unittest.TestCase):
         )
         self._send(client, text, entities=[entity])
         caption = self.media_calls[0]["caption"]
-        self.assertIn("https://amzn.to/3xyz", caption, "gizli link metin olarak da yazılmalı")
-        self.assertIn("🔗", caption)
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", caption)
         hidden = self._links(self.media_calls[0]["entities"])
         urls = {item["url"] for item in hidden}
-        self.assertIn("https://amzn.to/3xyz", urls, "entity korunmalı (tıklanabilir)")
+        self.assertIn("https://amzn.to/3xyz", urls, "gizli link tıklanabilir kalmalı")
         self.assertIn("https://t.me/firsatz/1", urls, "altbilgi linki")
+        self.assertNotIn("https://amzn.to/3xyz", caption,
+                         "gizli link tekrar yazılmaz (akıllı mod)")
+
+    def test_link_appendix_all_lists_raw_urls_in_notification(self):
+        """link_appendix: all → eski davranış: gizli linkler metne de yazılır."""
+        client = self._run({"notify_bot_token": "123:ABC", "notify_media": False,
+                            "link_appendix": "all"})
+        entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/hepsi")
+        self._send(client, "çay", entities=[entity])
+        self.assertIn("https://amzn.to/hepsi", self.calls[0]["text"])
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", self.calls[0]["text"])
 
     def test_button_links_become_inline_keyboard(self):
         client = self._run({"notify_bot_token": "123:ABC", "notify_media": False})
@@ -531,7 +545,9 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(self.media_calls, [])
         self.assertEqual(len(self.calls), 1)
         call = self.calls[0]
-        self.assertIn("https://amzn.to/btn", call["text"], "buton linki metinde de olmalı")
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", call["text"])
+        self.assertNotIn("https://amzn.to/btn", call["text"],
+                         "bildirimde buton gerçek buton olarak gider, metne yazılmaz")
         self.assertEqual(call["keyboard"], {"inline_keyboard": [[
             {"text": "Fırsata Git", "url": "https://amzn.to/btn"},
         ]]})
@@ -560,7 +576,7 @@ class NotificationTest(unittest.TestCase):
 
     def test_flags_can_disable_appendix_and_footer(self):
         client = self._run({"notify_bot_token": "123:ABC", "notify_media": False,
-                            "append_links": False, "source_footer": False})
+                            "link_appendix": "off", "message_link": False, "source_footer": False})
         entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/yok")
         self._send(client, "çay", entities=[entity])
         text = self.calls[0]["text"]
@@ -868,7 +884,8 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         chunks += [str(caption or "") for *_, caption in client.files]
         return "\n".join(chunks)
 
-    def test_hidden_entity_link_survives_text_fallback(self):
+    def test_hidden_entity_link_stays_tappable_in_text_fallback(self):
+        """Akıllı mod: gizli link mesajın içinde tıklanabilir kalır, ayrıca mesaj linki eklenir."""
         self.client.fail_modes.update({"forward", "copy", "media", "download"})
         text = "çay fırsatı – Fırsata Git"
         entity = types.MessageEntityTextUrl(
@@ -876,20 +893,40 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         )
         self._send(text, entities=[entity])
         delivered = self._texts(self.client)
-        self.assertIn("https://amzn.to/gizli", delivered, "gizli link iletide olmalı")
         self.assertIn("Fırsata Git", delivered)
+        self.assertIn("https://t.me/firsatz/1", delivered, "Mesajı Gör satırı eklenmeli")
+        self.assertNotIn("https://amzn.to/gizli", delivered, "link metne tekrar yazılmaz")
+        # Link tıklanabilir kalmalı: entity formatting_entities ile geçirilir.
+        entities = self.client.sent_kwargs[0].get("formatting_entities") or []
+        self.assertIn("https://amzn.to/gizli", [getattr(e, "url", None) for e in entities])
         self.assertEqual(bot.STATS["modes"].get("text"), 1)
 
-    def test_hidden_entity_link_survives_media_reupload(self):
-        """Fotoğraf yeniden yüklenirken açıklamadaki gizli link kaybolmamalı."""
+    def test_hidden_entity_link_stays_tappable_in_media_reupload(self):
+        """Fotoğraf yeniden yüklenirken gizli link tıklanabilir kalır, mesaj linki eklenir."""
         self.client.fail_modes.update({"forward", "copy"})
         text = "çay 5 TL"
         entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/kapak")
         self._send(text, entities=[entity])
         self.assertEqual(len(self.client.files), 1)
         caption = self.client.files[0][2]
-        self.assertIn("https://amzn.to/kapak", caption)
         self.assertIn("çay 5 TL", caption)
+        self.assertIn("https://t.me/firsatz/1", caption)
+        entities = self.client.file_kwargs[0].get("formatting_entities") or []
+        self.assertIn("https://amzn.to/kapak", [getattr(e, "url", None) for e in entities])
+
+    def test_link_appendix_all_writes_entity_links_into_copy(self):
+        """link_appendix: all → gizli link ayrıca metin olarak da yazılır."""
+        reset_state()
+        path = self._write_config(link_appendix="all")
+        self.addCleanup(os.unlink, path)
+        self.client = self._run_main(path)
+        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.client.fail_modes.add("forward")  # metin kopyası incelenecek
+        entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/hepsi")
+        self._send("çay fırsatı", entities=[entity])
+        delivered = self._texts(self.client)
+        self.assertIn("🔗 çay: https://amzn.to/hepsi", delivered)
+        self.assertIn("https://t.me/firsatz/1", delivered)
 
     def test_button_link_is_written_into_copy(self):
         """Kullanıcı hesabı inline klavye gönderemez; link metne yazılmalı."""
@@ -913,13 +950,22 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         self.assertEqual(bot.STATS["modes"].get("text"), 1)
 
     def test_caption_limit_is_respected(self):
-        """Uzun açıklamada bile ek + link korunur, Telegram sınırı aşılmaz."""
+        """Uzun açıklamada bile mesaj linki korunur, Telegram sınırı aşılmaz."""
         self.client.fail_modes.update({"forward", "copy"})
         entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/uzun")
         self._send("ç" * 8 + " " + ("çay " * 400), entities=[entity])
         caption = self.client.files[0][2]
         self.assertLessEqual(len(caption), bot.CAPTION_LIMIT)
-        self.assertIn("https://amzn.to/uzun", caption)
+        self.assertIn("https://t.me/firsatz/1", caption, "Mesajı Gör satırı kırpılmamalı")
+
+    def test_long_message_keeps_source_line_but_not_appendix(self):
+        """Sığmazsa önce link listesi düşer; Mesajı Gör ve altbilgi korunur."""
+        self.client.fail_modes.add("forward")
+        button = FakeRow([FakeButton("Fırsata Git", url="https://amzn.to/buton")])
+        self._send("çay " * 900, media=False, reply_markup=FakeMarkup([button]))
+        message = self._texts(self.client)
+        self.assertIn("https://t.me/firsatz/1", message)
+        self.assertLessEqual(len(message), bot.MESSAGE_LIMIT)
 
 
 if __name__ == "__main__":
