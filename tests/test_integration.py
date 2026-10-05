@@ -9,6 +9,7 @@ Bu test, gerçek hatanın (control_chat string verildiğinde tüm update akış�
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import sys
@@ -36,31 +37,66 @@ def make_group():
                       participants_count=1, date=0, version=0)
 
 
-def make_channel(name="FırsatZ"):
-    return types.Channel(id=abs(CHANNEL_ID), title=name, photo=types.ChatPhotoEmpty(), date=0)
+def make_channel(name="FırsatZ", username=None):
+    return types.Channel(id=abs(CHANNEL_ID), title=name, photo=types.ChatPhotoEmpty(), date=0,
+                         username=username)
+
+
+class FakeButton:
+    """Inline buton yerine geçer; hem eski (``url=``) hem yeni (``type=``) şema."""
+
+    def __init__(self, text, url=None, inner_url=None):
+        self.text = text
+        self.url = url
+        self.type = mock.Mock(url=inner_url) if inner_url else None
+
+
+class FakeRow:
+    def __init__(self, buttons):
+        self.buttons = list(buttons)
+
+
+class FakeMarkup:
+    def __init__(self, rows):
+        self.rows = list(rows)
+
+
+class FakeFile:
+    """Telethon ``Message.file`` yerine geçen basit taşıyıcı."""
+
+    def __init__(self, name=None, ext=".jpg", mime="image/jpeg", size=1024):
+        self.name = name
+        self.ext = ext
+        self.mime_type = mime
+        self.size = size
 
 
 class FakeMessage:
     """Gerçek Telethon Message'ın yerine geçer; str OLMAMASI önemli,
     aksi halde send_message(copy) senaryosu yanlışlıkla başarılı sayılır."""
 
-    def __init__(self, message_id, media=True):
+    def __init__(self, message_id, media=True, text=None, entities=None, reply_markup=None, file=None):
         self.id = message_id
         self.media = types.MessageMediaPhoto(photo=types.PhotoEmpty(id=1)) if media else None
-        self.file = None
+        self.file = file if file is not None else FakeFile()
         self.video = None
+        self.message = text
+        self.entities = list(entities or [])
+        self.reply_markup = reply_markup
 
     def __str__(self):
         return f"<mesaj:{self.id}>"
 
 
 class FakeEvent:
-    def __init__(self, chat_id, sender_id, text, message_id=1, media=True):
+    def __init__(self, chat_id, sender_id, text, message_id=1, media=True,
+                 entities=None, reply_markup=None, file=None):
         self.chat_id = chat_id
         self.sender_id = sender_id
         self.raw_text = text
         self.id = message_id
-        self.message = FakeMessage(message_id, media)
+        self.message = FakeMessage(message_id, media, text=text, entities=entities,
+                                   reply_markup=reply_markup, file=file)
         self.replies: list[str] = []
 
     async def reply(self, text):
@@ -78,8 +114,14 @@ class FakeClient:
         self.sent = []
         self.forwarded = []
         self.files = []
+        self.file_names = []
         self.unresolved = []
         self.fail_modes = set()   # test senaryosu için kapatılacak yollar
+
+    @property
+    def delivered(self) -> list:
+        """Metin/mesaj olarak giden + dosya olarak giden her şey."""
+        return list(self.sent) + [(entity, message) for entity, message, _ in self.files]
 
     def on(self, builder):
         def decorator(callback):
@@ -105,7 +147,7 @@ class FakeClient:
             self.unresolved.append(value)
             raise ValueError(f'No user has "{value}" as username')
         if isinstance(value, str) and value.startswith("@"):
-            return make_channel(value.lstrip("@"))
+            return make_channel(value.lstrip("@"), username=value.lstrip("@"))
         if isinstance(value, int) and value < 0:
             return types.Chat(id=abs(value), title=f"chat{value}", photo=types.ChatPhotoEmpty(),
                               participants_count=1, date=0, version=0)
@@ -127,9 +169,15 @@ class FakeClient:
         return b"\xff\xd8sahte-jpeg-verisi"
 
     async def send_file(self, entity, file, caption=None, **kwargs):
-        if "media" in self.fail_modes:
+        reupload = isinstance(file, (bytes, bytearray, io.BytesIO))
+        if reupload and ("media" in self.fail_modes or "download" in self.fail_modes):
             raise self._protected_error("media")
-        self.files.append((entity, file, caption))
+        if not reupload and "copy" in self.fail_modes:
+            # Korumalı kanalda medyayı referansla yeniden göndermek de engellenir.
+            raise self._protected_error("copy")
+        payload = file.getvalue() if isinstance(file, io.BytesIO) else file
+        self.files.append((entity, payload, caption))
+        self.file_names.append(getattr(file, "name", None))
 
     def _protected_error(self, what):
         """Korumalı kanalda Telegram'in verdiği gerçek hata."""
@@ -281,8 +329,8 @@ class IntegrationTest(unittest.TestCase):
         source_id = next(iter(bot.SOURCE_IDS))
         self._call(self.client.handlers[1][1], FakeEvent(source_id, 999, "Sıcak ÇAY 5 TL"))
         self.assertEqual(bot.STATS["matched"], 1)
-        self.assertEqual(len(self.client.sent), 1)
-        self.assertEqual(self.client.sent[0][0], GROUP_ID, "mesaj gruba gitmeli")
+        self.assertEqual(len(self.client.delivered), 1)
+        self.assertEqual(self.client.delivered[0][0], GROUP_ID, "mesaj gruba gitmeli")
 
     def test_capital_turkish_keyword_matches(self):
         source_id = next(iter(bot.SOURCE_IDS))
@@ -360,16 +408,16 @@ class CheckModeTest(unittest.TestCase):
         self.assertEqual(code, 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class NotificationTest(unittest.TestCase):
-    """notify_bot_token verildiğinde bildirim ping'i atılmalı."""
+    """Bildirim: fırsatın kopyası + gizli linkler + "Fırsatı Gönderen" altbilgisi."""
 
     def setUp(self):
         reset_state()
-        self.calls = []
+        self.calls: list[dict] = []        # send_bot_ping çağrıları
+        self.media_calls: list[dict] = []  # send_bot_media çağrıları
+        self.media_ok = True
         self._patchers = []
 
     def tearDown(self):
@@ -404,9 +452,15 @@ class NotificationTest(unittest.TestCase):
 
         created = []
 
-        async def fake_ping(token, chat_id, text):
-            self.calls.append((token, chat_id, text))
+        async def fake_ping(token, chat_id, text, **kwargs):
+            self.calls.append({"token": token, "chat_id": chat_id, "text": text, **kwargs})
             return True, "bildirim gönderildi"
+
+        async def fake_media(token, chat_id, **kwargs):
+            if not self.media_ok:
+                return False, "HTTP 400: bad request"
+            self.media_calls.append({"token": token, "chat_id": chat_id, **kwargs})
+            return True, "bildirim medyası gönderildi"
 
         def factory(*args, **kwargs):
             client = FakeClient(*args, **kwargs)
@@ -414,34 +468,120 @@ class NotificationTest(unittest.TestCase):
             return client
 
         self._patch("send_bot_ping", fake_ping)
+        self._patch("send_bot_media", fake_media)
         with mock.patch.dict(os.environ, BASE_ENV, clear=False), \
              mock.patch.object(bot, "TelegramClient", factory), \
              mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
             asyncio.run(bot.main(["--config", handle.name]))
         return created[0]
 
-    def test_match_triggers_bot_ping(self):
+    def _send(self, client, text, **kwargs):
+        asyncio.run(client.handlers[1][1](FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text, **kwargs)))
+
+    @staticmethod
+    def _links(entity_list, kind="text_link"):
+        return [e for e in (entity_list or []) if e.get("type") == kind]
+
+    # --- yeni biçim ---------------------------------------------------------
+
+    def test_notification_is_the_message_itself_plus_footer(self):
+        """Kırpılmış/küçültülmüş özet değil, mesajın kendisi + altbilgi gitmeli."""
         client = self._run({"notify_bot_token": "123:ABC"})
-        source_id = next(iter(bot.SOURCE_IDS))
-        asyncio.run(client.handlers[1][1](FakeEvent(source_id, 7, "Sıcak ÇAY 5 TL")))
-        self.assertEqual(len(self.calls), 1, "eşleşmede bildirim atılmalı")
-        token, chat_id, text = self.calls[0]
-        self.assertEqual(token, "123:ABC")
-        self.assertEqual(chat_id, GROUP_ID)
-        self.assertIn("🔔", text)
+        text = "Sıcak ÇAY 5 TL\nKaçırılmayacak fırsat!"
+        self._send(client, text)
+        self.assertEqual(len(self.media_calls), 1, "medya bildirimi denenmeli")
+        call = self.media_calls[0]
+        self.assertEqual(call["token"], "123:ABC")
+        self.assertEqual(call["chat_id"], GROUP_ID)
+        self.assertIn(text, call["caption"], "mesajın tamamı gitmeli")
+        self.assertTrue(call["caption"].endswith("Fırsatı Gönderen: firsatz"), call["caption"])
+        self.assertEqual(call["kind"], "photo")
+        self.assertEqual(call["filename"], "firsat_1.jpg")
+
+    def test_footer_name_hides_the_source_message_link(self):
+        client = self._run({"notify_bot_token": "123:ABC"})
+        self._send(client, "ÇAY fırsatı")
+        links = self._links(self.media_calls[0]["entities"])
+        self.assertEqual(len(links), 1, self.media_calls[0]["entities"])
+        footer = links[0]
+        self.assertEqual(footer["url"], "https://t.me/firsatz/1")
+        self.assertEqual(footer["type"], "text_link")
+        self.assertIn("Fırsatı Gönderen: firsatz", self.media_calls[0]["caption"])
+
+    def test_hidden_entity_link_is_carried_in_text_and_entity(self):
+        """'Fırsata Git' yazısının altına gizlenmiş link kaybolmamalı."""
+        client = self._run({"notify_bot_token": "123:ABC"})
+        text = "Fırsata Git 👉 çay"
+        entity = types.MessageEntityTextUrl(
+            offset=0, length=len("Fırsata Git"), url="https://amzn.to/3xyz",
+        )
+        self._send(client, text, entities=[entity])
+        caption = self.media_calls[0]["caption"]
+        self.assertIn("https://amzn.to/3xyz", caption, "gizli link metin olarak da yazılmalı")
+        self.assertIn("🔗", caption)
+        hidden = self._links(self.media_calls[0]["entities"])
+        urls = {item["url"] for item in hidden}
+        self.assertIn("https://amzn.to/3xyz", urls, "entity korunmalı (tıklanabilir)")
+        self.assertIn("https://t.me/firsatz/1", urls, "altbilgi linki")
+
+    def test_button_links_become_inline_keyboard(self):
+        client = self._run({"notify_bot_token": "123:ABC", "notify_media": False})
+        markup = FakeMarkup([FakeRow([FakeButton("Fırsata Git", inner_url="https://amzn.to/btn")])])
+        self._send(client, "Fırsata git 👇 çay", reply_markup=markup)
+        self.assertEqual(self.media_calls, [])
+        self.assertEqual(len(self.calls), 1)
+        call = self.calls[0]
+        self.assertIn("https://amzn.to/btn", call["text"], "buton linki metinde de olmalı")
+        self.assertEqual(call["keyboard"], {"inline_keyboard": [[
+            {"text": "Fırsata Git", "url": "https://amzn.to/btn"},
+        ]]})
+
+    def test_legacy_button_schema_is_supported(self):
+        """Eski Telethon sürümlerindeki ``KeyboardButtonUrl(url=...)`` şeması."""
+        client = self._run({"notify_bot_token": "123:ABC", "notify_media": False})
+        markup = FakeMarkup([FakeRow([FakeButton("Fırsat", url="https://amzn.to/eski")])])
+        self._send(client, "çay", reply_markup=markup)
+        self.assertEqual(self.calls[0]["keyboard"]["inline_keyboard"][0][0]["url"], "https://amzn.to/eski")
+
+    def test_text_only_message_notification(self):
+        client = self._run({"notify_bot_token": "123:ABC"})
+        self._send(client, "ÇAY 5 TL", media=False)
+        self.assertEqual(self.media_calls, [])
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(self.calls[0]["text"].endswith("Fırsatı Gönderen: firsatz"))
+
+    def test_media_failure_falls_back_to_text_notification(self):
+        self.media_ok = False
+        client = self._run({"notify_bot_token": "123:ABC"})
+        self._send(client, "ÇAY 5 TL")
+        self.assertEqual(len(self.calls), 1, "medya gönderilemezse metin bildirimi gitmeli")
+        self.assertIn("ÇAY 5 TL", self.calls[0]["text"])
+        self.assertTrue(self.calls[0]["text"].endswith("Fırsatı Gönderen: firsatz"))
+
+    def test_flags_can_disable_appendix_and_footer(self):
+        client = self._run({"notify_bot_token": "123:ABC", "notify_media": False,
+                            "append_links": False, "source_footer": False})
+        entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/yok")
+        self._send(client, "çay", entities=[entity])
+        text = self.calls[0]["text"]
+        self.assertEqual(text, "çay")
+        self.assertNotIn("Fırsatı Gönderen", text)
+        self.assertNotIn("https://amzn.to/yok", text)
+
+    # --- eski davranışların korunması --------------------------------------
 
     def test_no_token_means_no_ping(self):
         client = self._run({"notify_bot_token": None})
-        source_id = next(iter(bot.SOURCE_IDS))
-        asyncio.run(client.handlers[1][1](FakeEvent(source_id, 8, "ÇAY")))
+        self._send(client, "ÇAY")
         self.assertEqual(self.calls, [])
+        self.assertEqual(self.media_calls, [])
         self.assertEqual(bot.STATS["matched"], 1, "mesaj yine de iletilmeli")
 
     def test_null_string_token_is_treated_as_empty(self):
         client = self._run({"notify_bot_token": "none"})
-        source_id = next(iter(bot.SOURCE_IDS))
-        asyncio.run(client.handlers[1][1](FakeEvent(source_id, 9, "ÇAY")))
+        self._send(client, "ÇAY")
         self.assertEqual(self.calls, [])
+        self.assertEqual(self.media_calls, [])
 
     def test_test_command_warns_when_no_token(self):
         client = self._run({"notify_bot_token": None})
@@ -519,7 +659,7 @@ class DeliveryChainTest(unittest.TestCase):
         self.client.fail_modes.add("forward")
         self._send()
         self.assertEqual(self.client.forwarded, [])
-        self.assertEqual(len(self.client.sent), 1)
+        self.assertEqual(len(self.client.delivered), 1)
         self.assertEqual(bot.STATS["modes"].get("copy"), 1)
 
     def test_forward_and_copy_blocked_falls_back_to_media_reupload(self):
@@ -528,6 +668,13 @@ class DeliveryChainTest(unittest.TestCase):
         self._send()
         self.assertEqual(len(self.client.files), 1, "medya yeniden yüklenmeli")
         self.assertEqual(bot.STATS["modes"].get("media"), 1)
+
+    def test_reuploaded_photo_keeps_its_name_and_type(self):
+        """Eski hata: bytes olarak yüklenen fotoğraf 'unnamed' adlı belgeye dönüşüyordu."""
+        self.client.fail_modes.update({"forward", "copy"})
+        self._send()
+        self.assertEqual(self.client.file_names, ["firsat_1.jpg"], "uzantılı ad şart")
+        self.assertNotIn("unnamed", self.client.file_names)
 
     def test_media_unavailable_falls_back_to_text(self):
         self.client.fail_modes.update({"forward", "copy", "media", "download"})
@@ -569,7 +716,7 @@ class DeliveryChainTest(unittest.TestCase):
         client = self._run_main(path)
         self.assertEqual(bot.DELIVERY_CHAIN[:2], ["copy", "forward"])
         asyncio.run(client.handlers[1][1](FakeEvent(next(iter(bot.SOURCE_IDS)), 5, "çay")))
-        self.assertEqual(len(client.sent), 1)
+        self.assertEqual(len(client.delivered), 1)
 
     def test_legacy_copy_mode_still_works(self):
         reset_state()
@@ -664,3 +811,116 @@ class IdCommandTest(unittest.TestCase):
         self.assertIn(str(ADMIN_ID), reply)
         self.assertIn('"control_chat"', reply)
         self.assertIn('"admin_user_id"', reply)
+
+
+class HiddenLinkDeliveryTest(unittest.TestCase):
+    """Gizli linkler (metin altı / buton) iletilen mesajla birlikte hedefe gitmeli."""
+
+    def setUp(self):
+        reset_state()
+        self.config_path = self._write_config()
+        self.client = self._run_main(self.config_path)
+        self.source_id = next(iter(bot.SOURCE_IDS))
+
+    def tearDown(self):
+        os.unlink(self.config_path)
+        reset_state()
+
+    def _write_config(self, **overrides) -> str:
+        config = {
+            "source_chats": ["@firsatz"],
+            "destination": GROUP_ID,
+            "include_keywords": ["çay"],
+            "exclude_keywords": [],
+            "match_mode": "any",
+            "delivery_modes": ["forward", "copy", "media", "text", "link"],
+            "control_chat": GROUP_ID,
+            "admin_user_id": ADMIN_ID,
+            "auto_restart": False,
+            "notify_on_start": False,
+        }
+        config.update(overrides)
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(config, handle)
+        handle.close()
+        return handle.name
+
+    def _run_main(self, config_path: str) -> FakeClient:
+        created = []
+
+        def factory(*args, **kwargs):
+            client = FakeClient(*args, **kwargs)
+            created.append(client)
+            return client
+
+        with mock.patch.dict(os.environ, BASE_ENV, clear=False), \
+             mock.patch.object(bot, "TelegramClient", factory), \
+             mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
+            asyncio.run(bot.main(["--config", config_path]))
+        return created[0]
+
+    def _send(self, text, **kwargs):
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 42, text, **kwargs)))
+
+    @staticmethod
+    def _texts(client) -> str:
+        chunks = [str(message) for _, message in client.sent]
+        chunks += [str(caption or "") for *_, caption in client.files]
+        return "\n".join(chunks)
+
+    def test_hidden_entity_link_survives_text_fallback(self):
+        self.client.fail_modes.update({"forward", "copy", "media", "download"})
+        text = "çay fırsatı – Fırsata Git"
+        entity = types.MessageEntityTextUrl(
+            offset=text.index("Fırsata Git"), length=len("Fırsata Git"), url="https://amzn.to/gizli",
+        )
+        self._send(text, entities=[entity])
+        delivered = self._texts(self.client)
+        self.assertIn("https://amzn.to/gizli", delivered, "gizli link iletide olmalı")
+        self.assertIn("Fırsata Git", delivered)
+        self.assertEqual(bot.STATS["modes"].get("text"), 1)
+
+    def test_hidden_entity_link_survives_media_reupload(self):
+        """Fotoğraf yeniden yüklenirken açıklamadaki gizli link kaybolmamalı."""
+        self.client.fail_modes.update({"forward", "copy"})
+        text = "çay 5 TL"
+        entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/kapak")
+        self._send(text, entities=[entity])
+        self.assertEqual(len(self.client.files), 1)
+        caption = self.client.files[0][2]
+        self.assertIn("https://amzn.to/kapak", caption)
+        self.assertIn("çay 5 TL", caption)
+
+    def test_button_link_is_written_into_copy(self):
+        """Kullanıcı hesabı inline klavye gönderemez; link metne yazılmalı."""
+        self.client.fail_modes.add("forward")
+        self._send("çay fırsatı", media=False, reply_markup=FakeMarkup([
+            FakeRow([FakeButton("Fırsata Git", inner_url="https://amzn.to/buton")]),
+        ]))
+        delivered = self._texts(self.client)
+        self.assertIn("https://amzn.to/buton", delivered)
+        self.assertIn("🔗 Fırsata Git", delivered)
+
+    def test_text_fallback_lists_hidden_links_and_source(self):
+        """Son çare metin: hem buton linki hem orijinal mesaja giden link eklenir."""
+        self.client.fail_modes.update({"forward", "copy", "media", "download"})
+        self._send("çay fırsatı", reply_markup=FakeMarkup([
+            FakeRow([FakeButton("Fırsata Git", url="https://amzn.to/kart")]),
+        ]))
+        delivered = self._texts(self.client)
+        self.assertIn("https://amzn.to/kart", delivered)
+        self.assertIn("https://t.me/firsatz/1", delivered, "kaynak mesaj linki de olmalı")
+        self.assertEqual(bot.STATS["modes"].get("text"), 1)
+
+    def test_caption_limit_is_respected(self):
+        """Uzun açıklamada bile ek + link korunur, Telegram sınırı aşılmaz."""
+        self.client.fail_modes.update({"forward", "copy"})
+        entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/uzun")
+        self._send("ç" * 8 + " " + ("çay " * 400), entities=[entity])
+        caption = self.client.files[0][2]
+        self.assertLessEqual(len(caption), bot.CAPTION_LIMIT)
+        self.assertIn("https://amzn.to/uzun", caption)
+
+
+if __name__ == "__main__":
+    unittest.main()

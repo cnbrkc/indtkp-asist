@@ -15,18 +15,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import json
 import logging
+import mimetypes
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from telethon import TelegramClient, errors, events, utils
 from telethon.sessions import StringSession
+from telethon.tl import types
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -58,6 +63,16 @@ NOTIFY_BOT_TOKEN = ""
 DELIVERY_CHAIN: list[str] = []
 MAX_MEDIA_MB = 0
 SELF_ID: int | None = None
+APPEND_LINKS = True   # gizli/buton bağlantılarını iletinin sonuna ekle
+SOURCE_FOOTER = True  # bildirime "Fırsatı Gönderen: <kaynak>" satırı ekle
+NOTIFY_MEDIA = True   # bildirim botu medyayı da göndersin
+
+# Telegram sınırları (Bot API ve kullanıcı hesabı için ortak olanlar).
+MESSAGE_LIMIT = 4096          # normal mesaj metni
+CAPTION_LIMIT = 1024          # medya açıklaması
+LINK_APPENDIX_LIMIT = 4       # ileti sonuna en fazla kaç gizli bağlantı yazılsın
+FOOTER_LABEL = "Fırsatı Gönderen: "
+BOT_API_MEDIA_LIMIT_MB = {"photo": 10, "video": 50, "document": 50}
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +102,25 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict:
         config["auto_restart"] = os.environ["AUTO_RESTART"].strip().lower() in {
             "1", "true", "yes", "evet", "on",
         }
+    for key in ("append_links", "source_footer", "notify_media"):
+        env_value = os.getenv(key.upper())
+        if env_value is not None and env_value.strip():
+            config[key] = env_value
     return config
+
+
+def config_flag(value: Any, default: bool = True) -> bool:
+    """``true``/``"evet"``/``1`` gibi değerleri bool'a çevir; boş/``null`` varsayılana döner."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"", "none", "null", "yok", "yoksa"}:
+        return default
+    return text in {"1", "true", "yes", "evet", "on", "açık", "acik", "aktif"}
 
 
 def parse_chat_value(value: Any) -> int | str:
@@ -271,6 +304,9 @@ def print_report(config: dict, problems: list[str]) -> None:
     print(f"Hariç kelimeler    : {config.get('exclude_keywords') or '(yok)'}", flush=True)
     print(f"İletim sırası      : {' → '.join(build_delivery_chain(config))}", flush=True)
     print(f"Medya sınırı       : {config.get('max_media_mb', 25)} MB", flush=True)
+    print(f"Gizli bağlantılar  : {'eklenir' if config_flag(config.get('append_links')) else 'eklenmez'} "
+          f"| kaynak altbilgisi: {'açık' if config_flag(config.get('source_footer')) else 'kapalı'} "
+          f"| bildirim medyası: {'açık' if config_flag(config.get('notify_media')) else 'kapalı'}", flush=True)
     print(f"Otomatik yenileme  : {config.get('auto_restart', True)} "
           f"({os.getenv('RESTART_AFTER_MINUTES', '330')} dk sonra)", flush=True)
     if problems:
@@ -351,27 +387,42 @@ async def dispatch_next_run(pat: str) -> tuple[bool, str]:
         return False, f"GitHub isteği başarısız: {type(exc).__name__}."
 
 
-async def send_bot_ping(token: str, chat_id: int | str, text: str) -> tuple[bool, str]:
-    """Bot API üzerinden kısa bir bildirim mesajı atar.
+def encode_multipart(fields: dict[str, Any], files: Sequence[tuple[str, str, str, bytes]]) -> tuple[bytes, str]:
+    """Basit multipart/form-data gövdesi kur (Bot API dosya yüklemeleri için).
 
-    Takipçi *kendi hesabınla* gönderdiği için Telegram o mesajları senin kendi
-    mesajın sayar ve bildirim üretmez. Bildirim isteyenler @BotFather'dan bir bot
-    oluşturup hedef gruba ekler; bu fonksiyon o bot adına kısa bir "ping" atar.
+    ``files`` üçlüleri: (alan adı, dosya adı, MIME türü, içerik).
     """
-    if not token:
-        return False, "notify_bot_token tanımlı değil."
-    payload = json.dumps({"chat_id": chat_id, "text": text[:500]}).encode()
+    boundary = "----IndirimTakipci" + uuid.uuid4().hex
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        if value is None or value == "":
+            continue
+        chunks.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode("utf-8")
+        )
+    for field, filename, mime, data in files:
+        chunks.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
+            f"Content-Type: {mime}\r\n\r\n".encode("utf-8") + bytes(data) + b"\r\n"
+        )
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+async def _bot_api_request(
+    token: str, method: str, *, payload: bytes, content_type: str, what: str,
+) -> tuple[bool, str]:
     request = urllib.request.Request(
-        f"https://api.telegram.org/bot{token}/sendMessage",
+        f"https://api.telegram.org/bot{token}/{method}",
         data=payload,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": content_type},
     )
     try:
-        with await asyncio.to_thread(urllib.request.urlopen, request, timeout=15) as response:
+        with await asyncio.to_thread(urllib.request.urlopen, request, timeout=30) as response:
             body = json.loads(response.read().decode("utf-8", "replace") or "{}")
         if body.get("ok"):
-            return True, "bildirim gönderildi"
+            return True, f"{what} gönderildi"
         return False, f"Bot API ok=false: {body.get('description')}"
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:200]
@@ -380,6 +431,69 @@ async def send_bot_ping(token: str, chat_id: int | str, text: str) -> tuple[bool
     except Exception as exc:  # noqa: BLE001 - bildirim başarısızlığı akışı durdurmaz
         log.warning("Bildirim gönderilemedi: %s", type(exc).__name__)
         return False, f"{type(exc).__name__}"
+
+
+async def send_bot_ping(
+    token: str,
+    chat_id: int | str,
+    text: str,
+    *,
+    entities: list[dict[str, Any]] | None = None,
+    keyboard: dict[str, Any] | None = None,
+    link_preview: bool | None = None,
+) -> tuple[bool, str]:
+    """Bot API üzerinden bildirim mesajı atar.
+
+    Takipçi *kendi hesabınla* gönderdiği için Telegram o mesajları senin kendi
+    mesajın sayar ve bildirim üretmez. Bildirim isteyenler @BotFather'dan bir bot
+    oluşturup hedef gruba ekler; bu fonksiyon o bot adına mesajı atar.
+
+    ``entities`` ve ``keyboard`` verilirse mesaj, kaynaktaki biçimlendirmeyi
+    (gizli bağlantılar dâhil) ve buton linklerini korur.
+    """
+    if not token:
+        return False, "notify_bot_token tanımlı değil."
+    payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:MESSAGE_LIMIT]}
+    if entities:
+        payload["entities"] = json.dumps(entities)
+    if keyboard:
+        payload["reply_markup"] = json.dumps(keyboard)
+    if link_preview is not None:
+        payload["link_preview_options"] = json.dumps({"is_disabled": not link_preview})
+    return await _bot_api_request(
+        token, "sendMessage",
+        payload=json.dumps(payload).encode(), content_type="application/json", what="bildirim",
+    )
+
+
+async def send_bot_media(
+    token: str,
+    chat_id: int | str,
+    *,
+    kind: str,
+    filename: str,
+    mime_type: str,
+    data: bytes,
+    caption: str | None = None,
+    entities: list[dict[str, Any]] | None = None,
+    keyboard: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
+    """Bildirim botuyla fotoğraf/video/dosya gönder (medya da bildirim üretsin)."""
+    if not token:
+        return False, "notify_bot_token tanımlı değil."
+    method = {"photo": "sendPhoto", "video": "sendVideo"}.get(kind, "sendDocument")
+    field = {"photo": "photo", "video": "video"}.get(kind, "document")
+    fields: dict[str, Any] = {"chat_id": chat_id}
+    if caption:
+        fields["caption"] = caption[:CAPTION_LIMIT]
+    if entities:
+        fields["caption_entities"] = json.dumps(entities)
+    if keyboard:
+        fields["reply_markup"] = json.dumps(keyboard)
+    body, content_type = encode_multipart(fields, [(field, filename, mime_type, data)])
+    return await _bot_api_request(
+        token, method, payload=body, content_type=content_type, what=f"bildirim medyası ({kind})",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -417,19 +531,431 @@ def build_delivery_chain(config: dict) -> list[str]:
     return seen
 
 
-def build_message_link(event: Any, source: dict | None) -> str | None:
+def build_message_link(event: Any, source: dict | None = None) -> str | None:
     """Mesajın t.me bağlantısını kur; kurulamıyorsa None döner."""
-    message_id = getattr(event, "id", None)
+    message_id = getattr(event, "id", None) or getattr(getattr(event, "message", None), "id", None)
     if not message_id:
         return None
-    username = (source or {}).get("username")
+    username = (source or {}).get("username") or getattr(getattr(event, "chat", None), "username", None)
     if username:
-        return f"https://t.me/{username}/{message_id}"
+        return f"https://t.me/{str(username).lstrip('@')}/{message_id}"
     chat_id = getattr(event, "chat_id", None)
     # t.me/c/<id>/<mesaj> yalnızca kanal/süpergrup için çalışır (-100... ile başlar).
     if isinstance(chat_id, int) and chat_id < -1000000000000:
         return f"https://t.me/c/{abs(chat_id) - 1000000000000}/{message_id}"
     return None
+
+
+# ---------------------------------------------------------------------------
+# Gizli bağlantılar (metin altına gizlenmiş linkler, buton linkleri)
+# ---------------------------------------------------------------------------
+#
+# İndirim kanalları ürün linkini çoğu zaman "Fırsata Git" yazısının ALTINA
+# gizler (MessageEntityTextUrl) ya da mesajın altındaki inline butona koyar.
+# Bu bağlantılar düz metinde görünmediği için eski sürüm yalnızca "Fırsata Git"
+# yazıyordu. Aşağıdaki yardımcılar bağlantıyı nerede olursa olsun bulur,
+# iletiyle birlikte gönderir ve bildirimde tıklanabilir tutar.
+
+URL_RE = re.compile(r"(?:https?://|t\.me/|telegram\.me/|www\.)[^\s<>\"')\]}]+", re.IGNORECASE)
+_URL_TAIL_TRIM = ".,;:!?…\"'”’)]}>»"
+
+
+def utf16_length(text: str) -> int:
+    """Telegram offset/length değerleri UTF-16 kod birimi sayar (emoji 2 birim)."""
+    return len((text or "").encode("utf-16-le")) // 2
+
+
+def utf16_slice(text: str, offset: int, length: int) -> str:
+    """UTF-16 offset'leriyle güvenli metin dilimi (emoji içeren mesajlarda düz dilim kayar)."""
+    if not text or offset is None or length is None or offset < 0 or length <= 0:
+        return ""
+    data = text.encode("utf-16-le")
+    return data[offset * 2:(offset + length) * 2].decode("utf-16-le", "replace")
+
+
+def clean_url(url: Any) -> str:
+    """Bağlantıyı kırp, sonundaki noktalama işaretlerini at, şema ekle."""
+    text = str(url or "").strip()
+    while text and text[-1] in _URL_TAIL_TRIM:
+        text = text[:-1]
+    lowered = text.lower()
+    if lowered.startswith(("t.me/", "telegram.me/", "www.")):
+        text = "https://" + text
+    return text
+
+
+def _as_message(obj: Any) -> Any:
+    """Olay (Event) veya mesaj nesnesi verildiğinde mesajı döndür."""
+    inner = getattr(obj, "message", None)
+    if inner is not None and not isinstance(inner, str):
+        return inner
+    return obj
+
+
+def message_text(obj: Any) -> str:
+    """Mesajın ham metni (biçimlendirmeden bağımsız)."""
+    message = _as_message(obj)
+    text = getattr(message, "message", None)
+    if isinstance(text, str):
+        return text
+    raw = getattr(obj, "raw_text", None)
+    return raw if isinstance(raw, str) else ""
+
+
+def message_entities(obj: Any) -> list[Any]:
+    message = _as_message(obj)
+    entities = getattr(message, "entities", None)
+    return list(entities) if entities else []
+
+
+def button_link(button: Any) -> tuple[str, str] | None:
+    """Bir inline butonun (url, etiket) bilgisini döndür.
+
+    Telethon iki farklı şema kullanabiliyor: eski sürümlerde ``KeyboardButtonUrl``
+    doğrudan ``.url`` taşır; yeni sürümlerde ``KeyboardInlineButton`` içindeki
+    ``.type`` (``InlineButtonTypeUrl``/``InlineButtonTypeWebView``) URL'yi tutar.
+    """
+    label = str(getattr(button, "text", "") or "").strip()
+    url = getattr(button, "url", None)
+    if not url:
+        inner = getattr(button, "type", None)
+        url = getattr(inner, "url", None)
+        if not url:
+            # "Kopyala" butonu bazen bağlantının kendisini kopyalatır.
+            copy_text = getattr(inner, "copy_text", None)
+            if isinstance(copy_text, str) and URL_RE.match(copy_text.strip()):
+                url = copy_text
+    if not url:
+        return None
+    cleaned = clean_url(url)
+    if not cleaned:
+        return None
+    return cleaned, label
+
+
+def extract_links(obj: Any) -> list[dict[str, str]]:
+    """Mesajdaki tüm bağlantıları bul: gizli hyperlink, buton, önizleme, düz URL.
+
+    Her kayıt ``{"url", "label", "kind"}`` sözlüğüdür; ``kind`` şunlardan biri:
+    ``entity`` (yazının altına gizlenmiş), ``button`` (inline buton),
+    ``webpage`` (link önizlemesi), ``text`` (metinde açıkça görünen).
+    """
+    message = _as_message(obj)
+    text = message_text(obj)
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(url: Any, label: Any = None, kind: str = "text") -> None:
+        cleaned = clean_url(url)
+        if not cleaned or not URL_RE.match(cleaned):
+            return
+        key = cleaned.rstrip("/").lower()
+        if key in seen:
+            return
+        seen.add(key)
+        found.append({"url": cleaned, "label": str(label or "").strip() or None, "kind": kind})
+
+    for entity in message_entities(message):
+        url = getattr(entity, "url", None)
+        if url:
+            label = utf16_slice(text, getattr(entity, "offset", 0), getattr(entity, "length", 0))
+            add(url, label, "entity")
+
+    markup = getattr(message, "reply_markup", None)
+    for row in getattr(markup, "rows", None) or []:
+        for button in getattr(row, "buttons", None) or []:
+            info = button_link(button)
+            if info:
+                add(info[0], info[1], "button")
+
+    webpage = getattr(getattr(message, "media", None), "webpage", None)
+    if webpage is not None:
+        add(getattr(webpage, "url", None), getattr(webpage, "title", None), "webpage")
+
+    for url in URL_RE.findall(text):
+        add(url, None, "text")
+
+    return found
+
+
+def visible_urls(text: str) -> set[str]:
+    """Metinde gözle görülen bağlantılar (bunları tekrar yazmaya gerek yok)."""
+    return {clean_url(url).rstrip("/").lower() for url in URL_RE.findall(text or "")}
+
+
+def missing_links(obj: Any, limit: int = LINK_APPENDIX_LIMIT) -> list[dict[str, str]]:
+    """Metinde görünmeyen bağlantılar: gizli hyperlink, buton, link önizlemesi."""
+    visible = visible_urls(message_text(obj))
+    result: list[dict[str, str]] = []
+    for item in extract_links(obj):
+        if item["kind"] == "text":
+            continue
+        if item["url"].rstrip("/").lower() in visible:
+            continue
+        result.append(item)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def build_link_appendix(obj: Any) -> str:
+    """Gizli bağlantıları iletinin sonuna eklenecek metne çevir."""
+    lines: list[str] = []
+    for item in missing_links(obj):
+        label = (item.get("label") or "").strip()
+        if label and label.lower() not in item["url"].lower():
+            lines.append(f"🔗 {label[:40]}: {item['url']}")
+        else:
+            lines.append(f"🔗 {item['url']}")
+    return "\n".join(lines)
+
+
+def build_inline_keyboard(obj: Any) -> dict | None:
+    """Buton linklerini Bot API inline klavyesi olarak yeniden kur."""
+    message = _as_message(obj)
+    markup = getattr(message, "reply_markup", None)
+    rows: list[list[dict[str, str]]] = []
+    for row in getattr(markup, "rows", None) or []:
+        buttons: list[dict[str, str]] = []
+        for button in getattr(row, "buttons", None) or []:
+            info = button_link(button)
+            if not info:
+                continue
+            url, label = info
+            buttons.append({"text": (label or url)[:64], "url": url})
+        if buttons:
+            rows.append(buttons)
+    return {"inline_keyboard": rows} if rows else None
+
+
+def compose_message(
+    obj: Any,
+    *,
+    limit: int = MESSAGE_LIMIT,
+    appendix: bool = True,
+    footer_label: str | None = None,
+    footer_name: str | None = None,
+    footer_url: str | None = None,
+) -> dict[str, Any]:
+    """İletilecek metni kur: gövde + gizli bağlantılar + (varsa) kaynak altbilgisi.
+
+    Gövde hiçbir zaman kısaltılmaz; yalnızca sınırı aşarsa kırpılır. Ek ve
+    altbilgi her koşulda korunur, çünkü kullanıcı için en değerli bilgi onlar.
+    Dönen sözlükte ``body`` (kırpılmış olabilecek gövde) ve ``footer_offset``
+    (UTF-16 offset) bulunur; entity'ler bunlara göre kırpılır.
+    """
+    body = message_text(obj)
+    appendix_text = build_link_appendix(obj) if appendix else ""
+    footer_text = ""
+    if footer_label and footer_name:
+        footer_text = f"{footer_label}{footer_name}"
+
+    sep = "\n\n"
+    appendix_block = f"{sep}{appendix_text}" if appendix_text else ""
+    footer_block = f"{sep}{footer_text}" if footer_text else ""
+    # Ek ve altbilgi kısa ama kritik: önce onlara yer ayır, gövdeyi gerekiyorsa kırp.
+    # (Ek hiç sığmıyorsa, yer açmak için düşürülür.)
+    if len(appendix_block) + len(footer_block) >= limit:
+        appendix_block = ""
+        appendix_text = ""
+
+    reserved = len(appendix_block) + len(footer_block)
+    room = max(1, limit - reserved)
+    if len(body) > room:
+        body = body[: max(0, room - 1)].rstrip() + "…"
+
+    text = body
+    if appendix_text:
+        text += appendix_block
+    footer_offset = -1
+    if footer_text:
+        text += sep
+        footer_offset = utf16_length(text)
+        text += footer_text
+
+    return {
+        "text": text,
+        "body": body,
+        "appendix": appendix_text,
+        "footer_text": footer_text,
+        "footer_offset": footer_offset,
+        "footer_length": utf16_length(footer_name) if footer_text else 0,
+        "footer_url": footer_url if footer_text and footer_url else None,
+    }
+
+
+def entities_for_text(obj: Any, body: str) -> list[Any]:
+    """Gövde kırpıldıysa sınırı aşan entity'leri at (Telegram hata verir)."""
+    limit = utf16_length(body)
+    kept: list[Any] = []
+    for entity in message_entities(obj):
+        offset = int(getattr(entity, "offset", 0) or 0)
+        length = int(getattr(entity, "length", 0) or 0)
+        if length <= 0 or offset < 0 or offset + length > limit:
+            continue
+        kept.append(entity)
+    return kept
+
+
+BOT_ENTITY_TYPES = {
+    "MessageEntityBold": "bold",
+    "MessageEntityItalic": "italic",
+    "MessageEntityUnderline": "underline",
+    "MessageEntityStrike": "strikethrough",
+    "MessageEntitySpoiler": "spoiler",
+    "MessageEntityCode": "code",
+    "MessageEntityPre": "pre",
+    "MessageEntityBlockquote": "blockquote",
+    "MessageEntityTextUrl": "text_link",
+    "MessageEntityUrl": "url",
+    "MessageEntityEmail": "email",
+    "MessageEntityPhone": "phone_number",
+    "MessageEntityMention": "mention",
+    "MessageEntityHashtag": "hashtag",
+    "MessageEntityCashtag": "cashtag",
+    "MessageEntityBotCommand": "bot_command",
+    "MessageEntityBankCard": "bank_card",
+}
+
+
+def bot_api_entity(entity: Any, text_length: int | None = None) -> dict[str, Any] | None:
+    """Telethon entity'sini Bot API biçimine çevir.
+
+    Offsets are already UTF-16 in both worlds, so they can be passed through.
+    Desteklenmeyen türler (custom emoji, text_mention...) sessizce atlanır.
+    """
+    kind = BOT_ENTITY_TYPES.get(type(entity).__name__)
+    if not kind:
+        return None
+    if kind == "blockquote" and getattr(entity, "collapsed", False):
+        kind = "expandable_blockquote"
+    offset = int(getattr(entity, "offset", 0) or 0)
+    length = int(getattr(entity, "length", 0) or 0)
+    if text_length is not None and offset + length > text_length:
+        length = text_length - offset
+    if length <= 0 or offset < 0:
+        return None
+    data: dict[str, Any] = {"type": kind, "offset": offset, "length": length}
+    if kind == "text_link":
+        url = getattr(entity, "url", None)
+        if not url:
+            return None
+        data["url"] = str(url)
+    if kind == "pre":
+        language = getattr(entity, "language", None)
+        if language:
+            data["language"] = str(language)
+    return data
+
+
+def bot_api_entities(obj: Any, body: str) -> list[dict[str, Any]]:
+    """Gövdeye sığan entity'leri Bot API sözlüklerine çevir."""
+    text_length = utf16_length(body)
+    result: list[dict[str, Any]] = []
+    for entity in entities_for_text(obj, body):
+        data = bot_api_entity(entity, text_length)
+        if data:
+            result.append(data)
+    return result
+
+
+def footer_entity(composed: dict[str, Any], message_link: str | None) -> list[dict[str, Any]]:
+    """Altbilgideki kaynak adını tıklanabilir yap: ad t.me mesaj linkini gizler."""
+    if not composed.get("footer_url") or composed.get("footer_offset", -1) < 0 or not message_link:
+        return []
+    return [{
+        "type": "text_link",
+        "offset": composed["footer_offset"],
+        "length": composed["footer_length"],
+        "url": message_link,
+    }]
+
+
+def media_upload_name(obj: Any) -> str:
+    """Yeniden yüklemede kullanılacak dosya adı.
+
+    Telethon, adı olmayan ``bytes``/``BytesIO`` nesnelerini ``"unnamed"`` dosyası
+    olarak gönderir (utils.get_attributes). Bu yüzden uzantılı bir ad şart;
+    aksi halde fotoğraf, adı "unnamed" olan bir belgeye dönüşür.
+    """
+    message = _as_message(obj)
+    file = getattr(message, "file", None)
+    name = getattr(file, "name", None)
+    if name:
+        return str(name)
+    ext = getattr(file, "ext", None)
+    mime = getattr(file, "mime_type", None)
+    if not ext and mime:
+        ext = mimetypes.guess_extension(str(mime))
+    if ext in (".jpe", ".jpeg"):
+        ext = ".jpg"
+    return f"firsat_{getattr(message, 'id', 'medya')}{ext or '.jpg'}"
+
+
+def media_buffer(data: bytes, name: str) -> io.BytesIO:
+    """İndirilen medyayı, türünü koruyan isimli bir akışa çevir."""
+    buffer = io.BytesIO(data)
+    buffer.name = name  # Telethon uzantıyı buradan okur (fotoğraf/video/dosya)
+    return buffer
+
+
+def reupload_attributes(obj: Any) -> list[Any] | None:
+    """Yeniden yüklemede videonun en-boy oranını koru.
+
+    Telethon, dosya adından video algılayıp metadata bulamazsa 1:1 oranlı
+    ``DocumentAttributeVideo`` üretir; video kare görünür. Orijinal attribute'u
+    vererek süre/ölçü bilgisini koruyoruz.
+    """
+    media = getattr(_as_message(obj), "media", None)
+    document = getattr(media, "document", None)
+    if not isinstance(document, types.Document):
+        return None
+    for attribute in getattr(document, "attributes", None) or []:
+        if type(attribute).__name__ == "DocumentAttributeVideo":
+            return [types.DocumentAttributeVideo(
+                duration=float(getattr(attribute, "duration", 0) or 0),
+                w=int(getattr(attribute, "w", 1) or 1),
+                h=int(getattr(attribute, "h", 1) or 1),
+                round_message=bool(getattr(attribute, "round_message", False)),
+                supports_streaming=True,
+            )]
+    return None
+
+
+def bot_media_descriptor(obj: Any) -> dict[str, Any] | None:
+    """Bildirim botuyla gönderilebilecek medyanın türünü/ boyutunu belirle."""
+    message = _as_message(obj)
+    media = getattr(message, "media", None)
+    info: dict[str, Any] = {"kind": "document", "filename": "", "mime": "application/octet-stream"}
+    if isinstance(media, types.MessageMediaPhoto):
+        info.update(kind="photo", filename=f"firsat_{getattr(message, 'id', 'foto')}.jpg", mime="image/jpeg")
+    elif isinstance(media, types.MessageMediaDocument):
+        document = getattr(media, "document", None)
+        if not isinstance(document, types.Document):
+            return None
+        attributes = list(getattr(document, "attributes", None) or [])
+        names = {type(a).__name__ for a in attributes}
+        filename = next(
+            (getattr(a, "file_name", None) for a in attributes
+             if type(a).__name__ == "DocumentAttributeFilename" and getattr(a, "file_name", None)),
+            None,
+        )
+        mime = str(getattr(document, "mime_type", "") or "")
+        if mime.startswith("video/") or "DocumentAttributeVideo" in names:
+            kind = "video"
+            filename = filename or f"firsat_{getattr(message, 'id', 'video')}.mp4"
+        elif mime in {"image/jpeg", "image/jpg", "image/png"} or mime.startswith("image/jp"):
+            kind = "photo"
+            filename = filename or f"firsat_{getattr(message, 'id', 'foto')}.jpg"
+        else:
+            kind = "document"
+            filename = filename or f"firsat_{getattr(message, 'id', 'dosya')}.bin"
+        info.update(kind=kind, filename=filename, mime=mime or mimetypes.guess_type(filename)[0]
+                    or "application/octet-stream")
+    else:
+        return None
+    info["size"] = int(getattr(getattr(message, "file", None), "size", 0) or 0)
+    return info
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +1064,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     global SOURCES, SOURCE_IDS, SOURCE_FAILURES, CONTROL_IDS, CONTROL_NAMES
     global DESTINATION_LABEL, DESTINATION_ID, NOTIFY_BOT_TOKEN
     global DELIVERY_CHAIN, MAX_MEDIA_MB, SELF_ID
+    global APPEND_LINKS, SOURCE_FOOTER, NOTIFY_MEDIA
 
     args = build_parser().parse_args(argv)
     if args.check:
@@ -568,6 +1095,15 @@ async def main(argv: Sequence[str] | None = None) -> int:
     NOTIFY_BOT_TOKEN = str(config.get("notify_bot_token") or os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
     if NOTIFY_BOT_TOKEN.lower() in {"null", "none", "yok"}:
         NOTIFY_BOT_TOKEN = ""
+    APPEND_LINKS = config_flag(config.get("append_links"), True)
+    SOURCE_FOOTER = config_flag(config.get("source_footer"), True)
+    NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
+    if APPEND_LINKS:
+        log.info("Gizli bağlantılar (metin altı / buton) iletilerin sonuna eklenecek.")
+    if NOTIFY_BOT_TOKEN:
+        log.info("Bildirim biçimi: mesajın kopyası + %s (t.me linki gizli)%s",
+                 FOOTER_LABEL.strip() + " <kaynak>" if SOURCE_FOOTER else "altbilgi yok",
+                 " + medya" if NOTIFY_MEDIA else "")
 
     client = TelegramClient(
         StringSession(os.environ["SESSION_STRING"].strip()),
@@ -672,42 +1208,93 @@ async def main(argv: Sequence[str] | None = None) -> int:
         await client.forward_messages(destination, event.message, from_peer=event.chat_id)
 
     async def send_copy(event: events.NewMessage.Event) -> None:
-        await client.send_message(destination, event.message)
+        """Mesajı biçimiyle birlikte yeniden gönder.
+
+        Kaynaktaki ``reply_markup`` kullanıcı hesabından gönderilemediği için
+        (inline klavyeler yalnızca botlara açıktır) buton linkleri metnin sonuna
+        eklenir; gizli hyperlink'ler ise entity olarak korunur.
+        """
+        message = event.message
+        media = getattr(message, "media", None)
+        is_webpage = isinstance(media, types.MessageMediaWebPage)
+        if media and not is_webpage:
+            composed = compose_message(event, limit=CAPTION_LIMIT - 24, appendix=APPEND_LINKS)
+            await client.send_file(
+                destination,
+                media,
+                caption=composed["text"],
+                formatting_entities=entities_for_text(event, composed["body"]),
+                force_document=False,
+            )
+            return
+        composed = compose_message(event, limit=MESSAGE_LIMIT - 100, appendix=APPEND_LINKS)
+        await client.send_message(
+            destination,
+            composed["text"],
+            formatting_entities=entities_for_text(event, composed["body"]),
+            link_preview=True,
+        )
 
     async def send_media(event: events.NewMessage.Event) -> None:
-        """Medyayı indirip hedefe SIFIRDAN yükle (forward kısıtını atlar)."""
+        """Medyayı indirip hedefe SIFIRDAN yükle (forward kısıtını atlar).
+
+        Önemli: indirilen veriyi düz ``bytes`` olarak ``send_file``a vermek
+        fotoğrafın "unnamed" adlı bir belgeye dönüşmesine yol açar (Telethon
+        dosya adını ``getattr(file, 'name', 'unnamed')`` ile tahmin eder).
+        Bu yüzden uzantılı isimli bir akış kullanılır.
+        """
         message = event.message
-        if not getattr(message, "media", None):
-            raise ValueError("mesajda medya yok")
+        if not getattr(message, "media", None) or isinstance(message.media, types.MessageMediaWebPage):
+            raise ValueError("mesajda indirilebilir medya yok")
         size = getattr(getattr(message, "file", None), "size", None) or 0
         if MAX_MEDIA_MB and size and size > MAX_MEDIA_MB * 1024 * 1024:
             raise ValueError(f"medya {size // (1024 * 1024)} MB, sınır {MAX_MEDIA_MB} MB")
         data = await client.download_media(message, bytes)
         if not data:
             raise ValueError("medya indirilemedi")
-        caption = (event.raw_text or "")[:1000] or None
-        await client.send_file(destination, data, caption=caption)
+        composed = compose_message(event, limit=CAPTION_LIMIT - 24, appendix=APPEND_LINKS)
+        await client.send_file(
+            destination,
+            media_buffer(data, media_upload_name(message)),
+            caption=composed["text"] or None,
+            formatting_entities=entities_for_text(event, composed["body"]),
+            attributes=reupload_attributes(message),
+            force_document=False,
+        )
 
     async def send_text_only(event: events.NewMessage.Event) -> None:
-        text = (event.raw_text or "").strip()
-        if not text:
+        composed = compose_message(event, limit=MESSAGE_LIMIT - 400, appendix=APPEND_LINKS)
+        if not composed["body"].strip() and not composed["appendix"]:
             raise ValueError("mesajda metin yok")
+        # Metni biz yeniden yazdığımız için orijinal mesaja giden yolu da ekle:
+        # ürün linki bir şekilde kaçarsa tek dokunuşla fırsata ulaşılır.
+        source = next((s for s in SOURCES if s["id"] == event.chat_id), None)
+        link = build_message_link(event, source)
+        source_line = f"\n\n🔗 Kaynak: {link}" if link else ""
         has_media = bool(getattr(event.message, "media", None))
         note = "\n\n⚠️ Kaynak medyayı korumalı işaretlediği için medya iletilemedi." if has_media else ""
-        await client.send_message(destination, f"{text[:3800]}{note}")
+        await client.send_message(
+            destination,
+            composed["text"] + source_line + note,
+            formatting_entities=entities_for_text(event, composed["body"]),
+            link_preview=True,
+        )
 
     async def send_link_card(event: events.NewMessage.Event) -> None:
         """Son çare: kaynak adı + t.me bağlantısı. Ekranda görülebilir tek şey budur."""
-        link = build_message_link(event, next((s for s in SOURCES if s["id"] == event.chat_id), None))
+        source = next((s for s in SOURCES if s["id"] == event.chat_id), None)
+        link = build_message_link(event, source)
         if not link:
             raise ValueError("bu sohbet türü için t.me bağlantısı üretilemiyor")
-        text = (event.raw_text or "").strip()
-        body = f"🔗 {STATS['last_match_source'] or 'kaynak'} kanalındaki mesaj:\n{link}"
-        if text:
-            body = f"{text[:1500]}\n\n🔗 Kaynak: {link}"
+        composed = compose_message(event, limit=2000, appendix=APPEND_LINKS)
+        if composed["body"].strip():
+            body = f"{composed['text']}\n\n🔗 Kaynak: {link}"
         else:
+            body = f"🔗 {STATS['last_match_source'] or 'kaynak'} kanalındaki mesaj:\n{link}"
+            if composed["appendix"]:
+                body += f"\n{composed['appendix']}"
             body += "\n(medya korumalı olduğu için iletilemedi, bağlantıdan açabilirsin)"
-        await client.send_message(destination, body, link_preview=True)
+        await client.send_message(destination, body[:MESSAGE_LIMIT], link_preview=True)
 
     SENDERS = {
         "forward": send_forward,
@@ -716,6 +1303,68 @@ async def main(argv: Sequence[str] | None = None) -> int:
         "text": send_text_only,
         "link": send_link_card,
     }
+
+    async def notify_offer(event: events.NewMessage.Event, source_name: str) -> None:
+        """Bildirim botuyla fırsatın kopyasını at.
+
+        Tasarım: mesajın kendisi (biçimi ve gizli linkleriyle) → altına
+        "🔗 <gizli linkler>" (varsa) → en alta "Fırsatı Gönderen: <kaynak>".
+        Kaynak adı, orijinal mesajın t.me bağlantısını gizli hyperlink olarak
+        taşır; ürün linki kaçırılsa bile tek dokunuşla mesaja ulaşılır.
+        """
+        if not NOTIFY_BOT_TOKEN or DESTINATION_ID is None:
+            return
+        source = next((s for s in SOURCES if s["id"] == event.chat_id), None)
+        message_link = build_message_link(event, source)
+        keyboard = build_inline_keyboard(event)
+        footer_name = source_name if SOURCE_FOOTER else None
+
+        descriptor = bot_media_descriptor(event) if NOTIFY_MEDIA else None
+        if descriptor is not None:
+            limit_mb = min(BOT_API_MEDIA_LIMIT_MB.get(descriptor["kind"], 50),
+                           MAX_MEDIA_MB or BOT_API_MEDIA_LIMIT_MB.get(descriptor["kind"], 50))
+            if descriptor["size"] and descriptor["size"] > limit_mb * 1024 * 1024:
+                log.info("Bildirim medyası %s MB, sınır %s MB → metin olarak gönderilecek.",
+                         descriptor["size"] // (1024 * 1024), limit_mb)
+                descriptor = None
+
+        if descriptor is not None:
+            composed = compose_message(
+                event, limit=CAPTION_LIMIT - 24, appendix=APPEND_LINKS,
+                footer_label=FOOTER_LABEL, footer_name=footer_name, footer_url=message_link,
+            )
+            entities = bot_api_entities(event, composed["body"]) + footer_entity(composed, message_link)
+            try:
+                data = await client.download_media(event.message, bytes)
+            except Exception as exc:  # noqa: BLE001 - medya inmezse bildirim yine gitsin
+                log.warning("Bildirim medyası indirilemedi (%s): %s", type(exc).__name__, exc)
+                data = None
+            if data:
+                ok, detail = await send_bot_media(
+                    NOTIFY_BOT_TOKEN, DESTINATION_ID,
+                    kind=descriptor["kind"], filename=descriptor["filename"],
+                    mime_type=descriptor["mime"], data=data,
+                    caption=composed["text"], entities=entities, keyboard=keyboard,
+                )
+                if ok:
+                    log.info("Bildirim gönderildi (medya: %s, kaynak: %s).", descriptor["kind"], source_name)
+                    return
+                log.warning("Bildirim medyası gönderilemedi (%s) → metne düşülüyor.", detail)
+
+        composed = compose_message(
+            event, limit=MESSAGE_LIMIT - 200, appendix=APPEND_LINKS,
+            footer_label=FOOTER_LABEL, footer_name=footer_name, footer_url=message_link,
+        )
+        entities = bot_api_entities(event, composed["body"]) + footer_entity(composed, message_link)
+        text = composed["text"] or f"🔔 Yeni fırsat – {source_name}"
+        ok, detail = await send_bot_ping(
+            NOTIFY_BOT_TOKEN, DESTINATION_ID, text,
+            entities=entities, keyboard=keyboard,
+        )
+        if ok:
+            log.info("Bildirim gönderildi (metin, kaynak: %s).", source_name)
+        else:
+            log.warning("Bildirim gönderilemedi: %s", detail)
 
     async def deliver(event: events.NewMessage.Event, source_name: str) -> tuple[bool, str]:
         """Sırayla iletim yollarını dene; ilk başarılı olanı kullan."""
@@ -736,13 +1385,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             STATS["modes"][mode] = STATS["modes"].get(mode, 0) + 1
             if mode not in ("forward", "copy"):
                 log.info("Mesaj '%s' yedeğiyle iletildi (kaynak: %s).", mode, source_name)
-            if NOTIFY_BOT_TOKEN and DESTINATION_ID is not None:
-                ok, detail = await send_bot_ping(
-                    NOTIFY_BOT_TOKEN, DESTINATION_ID,
-                    f"🔔 Yeni fırsat ({source_name}) – {normalize(event.raw_text or '')[:120]}",
-                )
-                if not ok:
-                    log.warning("Bildirim ping'i gönderilemedi: %s", detail)
+            await notify_offer(event, source_name)
             return True, mode
 
         STATS["failed"] += 1
@@ -778,9 +1421,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 await event.reply(f"❌ Deneme mesajı gönderilemedi: {type(exc).__name__}: {exc}")
                 return
             if NOTIFY_BOT_TOKEN and DESTINATION_ID is not None:
-                ok, detail = await send_bot_ping(NOTIFY_BOT_TOKEN, DESTINATION_ID, "🔔 Bildirim denemesi")
+                ok, detail = await send_bot_ping(
+                    NOTIFY_BOT_TOKEN, DESTINATION_ID,
+                    "🔔 Bildirim denemesi\n\nFırsatı Gönderen: (bildirimlerde buraya kaynak adı gelir)",
+                )
                 reply += "\n" + ("🔔 Bot bildirimi de gönderildi (telefonuna düşmeli)." if ok
                                  else f"⚠️ Bot bildirimi gönderilemedi: {detail}")
+                reply += ("\nGizli linkler ve buton linkleri de bildirime eklenir; "
+                          "medya varsa bot onu da gönderir.")
             else:
                 reply += ("\n⚠️ notify_bot_token yok: mesajı kendi hesabın gönderdiği için "
                           "bildirim almazsın. @BotFather'dan bot oluşturup gruba ekle.")
