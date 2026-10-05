@@ -88,6 +88,7 @@ Kanal, hedef ve kelime ayarları kökteki [`config.json`](config.json) dosyasın
 - `control_chat`: Komutların (`/status`, `/restart`...) dinleneceği sohbet. `"me"` veya grup ID'si.
 - `admin_user_id`: `control_chat` bir grup ise **zorunlu**; komutları yalnızca bu ID kullanabilir.
 - `notify_on_start`: Her açılışta hedefe "takipçi başladı" mesajı gönderir.
+- `notify_bot_token`: **Bildirim almak için gerekli.** @BotFather bot token'ı; boş/`null` ise bildirim gelmez (bkz. **L** bölümü).
 
 > **ID'ler tırnak içinde de yazılabilir** (`"-5092968106"`); bot bunları sayıya çevirir.
 > Çevirmese Telethon string'i *kullanıcı adı* sanıp `Cannot find any entity` hatası verir.
@@ -110,8 +111,9 @@ Varsayılan olarak kendi **Kayıtlı Mesajlar** sohbetine şunları yazabilirsin
 
 `/restart`, `GH_PAT` eklenmişse yeni Actions çalışmasını hemen başlatır. `control_chat` değerini grup ID'si yapıp `admin_user_id` değerine kendi Telegram kullanıcı ID'ni yazarsan aynı komutları sadece o grupta ve sadece sen çalıştırabilirsin. Herkese açık gruplarda `admin_user_id` ayarlamadan kullanma.
 
-> **Bildirim notu:** `destination: "me"` (Kayıtlı Mesajlar) için Telegram **bildirim göndermez**;
-> mesajlar sessizce birikir. Bildirim almak istiyorsan `destination` alanına kendi grup ID'ni yaz.
+> **Bildirim notu (önemli):** Takipçi **kendi Telegram hesabınla** gönderir. Telegram kendi
+> gönderdiğin mesajlar için bildirim üretmez — bu yüzden ne Kayıtlı Mesajlar'da ne de grupta
+> sesli bildirim alırsın. Bildirim istiyorsan `notify_bot_token` ayarını kur (aşağıda anlatılıyor).
 
 `GH_PAT` varsa takipçi, süre dolmadan yaklaşık 30 dakika önce hedef sohbete yenilenme mesajı yollar ve yeni Actions job'unu kendi başına başlatır. GitHub Actions concurrency ayarı eski job'u kapatıp yenisini devralır. Bu, Actions'ı kalıcı servis gibi zincirler; yine de GitHub yoğunluğu, token iptali veya hesap limitleri nedeniyle mutlak 7/24 garantisi değildir.
 
@@ -256,6 +258,7 @@ Ayarların anlamı:
 - `admin_user_id`: Grup kullanıyorsan kendi Telegram kullanıcı ID'n. `null` bırakma; aksi halde gruptan komut çalışmaz. Sayı, `"123"` metni veya `[123, 456]` listesi kabul edilir.
 - `auto_restart: true`: GH_PAT varsa yenileme zincirini açar.
 - `notify_on_start: true`: Her açılışta hedefe kısa bir "başladım" mesajı gönderir.
+- `notify_bot_token`: Bildirim bot'unun token'ı. `null` ise takipçi çalışır ama bildirim gelmez.
 
 Chat ID bilmiyorsan önce kanalın kullanıcı adıyla (`@kanaladi`) deneyebilirsin. Özel gruplar için `-100...` formatındaki ID gerekir. Hesabın kaynak kanala katılmamışsa kullanıcı hesabı mesajları göremez — bot açılışta üye olmadığın kaynakları log'da `ÜYE DEĞİLSİN` diye işaretler.
 
@@ -328,7 +331,7 @@ Grup komutu için `control_chat` grup ID'si ve `admin_user_id` kendi ID'n olacak
 | `SESSION_STRING` yetkisiz | Session yanlış/kesik veya Telegram oturumu iptal edildi | Colab notebook ile yeniden üret |
 | `Cannot find any entity corresponding to "-5092968106"` | Grup ID'si **metin** olarak verilmiş, Telethon onu kullanıcı adı sanıyor | ID'yi sayı olarak yaz (`-5092968106`) veya bot'u güncelle (artık otomatik çevriliyor) |
 | Grup komutları hiç çalışmıyor | `admin_user_id` boş/`null` ya da `control_chat` yanlış | `admin_user_id`'ye kendi ID'ni, `control_chat`'e grup ID'sini yaz |
-| Mesajlar geliyor ama bildirim almıyorum | `destination: "me"` (Kayıtlı Mesajlar) bildirim üretmez | `destination`'ı grup ID'si yap |
+| Mesajlar geliyor ama bildirim almıyorum | Takipçi **kendi hesabınla** gönderiyor; Telegram kendi mesajın için bildirim üretmez | `notify_bot_token` kur: @BotFather → `/newbot`, botu gruba ekle, token'ı config'e yaz (bkz. **L. Bildirim kurulumu**) |
 | Mesaj gelmiyor | Kanal kaynak listesinde değil, kullanıcı hesapla kanala katılmamış veya kelime eşleşmiyor | `/source` ile çözümü, `/status` ile sayaçları kontrol et; log'daki `ÜYE DEĞİLSİN` uyarılarına bak |
 | Log'da `Task exception was never retrieved` | Bir chat çözülemiyor (eski sürümde tüm dinlemeyi öldürürdü) | Bot'u güncelle; artık çözülemeyen chat atlanır ve loglanır |
 | `GH_PAT` ile yenileme olmuyor | Token Actions yazma iznine sahip değil veya süresi doldu | Token izinlerini ve expiration tarihini kontrol et |
@@ -341,9 +344,34 @@ Grup komutu için `control_chat` grup ID'si ve `admin_user_id` kendi ID'n olacak
 Değişiklik yapınca şunları çalıştır (yalnızca `telethon` gerekir, ek bağımlılık yok):
 
 ```bash
-python -m unittest discover -s tests -v   # 56 test: eşleştirme, config, açılış akışı, komutlar
+python -m unittest discover -s tests -v   # 64 test: eşleştirme, config, açılış akışı, komutlar, bildirim
 python bot.py --check                     # secret + config doğrulaması
 ```
 
 `push` ve `pull_request` olaylarında **Testler** workflow'u aynı iki komutu GitHub'da da çalıştırır.
 
+### L. Bildirim kurulumu (sesli uyarı almak için)
+
+Takipçi **kendi Telegram hesabınla** çalışır (Telethon senin session'ını kullanır). Telegram,
+kendi gönderdiğin mesajlar için bildirim üretmez. Yani fırsat mesajı Kayıtlı Mesajlar'a da
+gruba da düşse telefonuna uyarı gelmez. Bunu aşmanın temiz yolu, gruba **ikinci bir gönderici**
+olarak küçük bir bot eklemek:
+
+1. Telegram'da **@BotFather**'a `/newbot` yaz, bir isim ve kullanıcı adı ver.
+2. Sana verilen token'ı kopyala (`123456789:AA...` biçiminde).
+3. Botu **fırsatların düşeceği gruba üye yap** (mesaj gönderme yetkisi yeterli).
+4. `config.json` içine token'ı yaz:
+
+```json
+"notify_bot_token": "123456789:AA...bot_token"
+```
+
+5. Commit et, workflow'u yeniden başlat, gruba `/test` yaz.
+
+Bundan sonra her eşleşmede gruba iki şey düşer: fırsatın kendisi (senin hesabından) ve
+`🔔 Yeni fırsat (@firsatz) – ...` biçiminde kısa bir bot mesajı. **Bildirim üreten bot mesajıdır.**
+
+Token'ı boş bırakırsan (`null`) takipçi aynı şekilde çalışır, sadece bildirim gelmez.
+
+> Bot API'si grup ID'sini Telethon ile aynı biçimde kullanır (`-5092968106` gibi),
+> bu yüzden `destination` için ayrı bir ID gerekmez.

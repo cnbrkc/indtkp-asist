@@ -323,3 +323,96 @@ class CheckModeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotificationTest(unittest.TestCase):
+    """notify_bot_token verildiğinde bildirim ping'i atılmalı."""
+
+    def setUp(self):
+        reset_state()
+        self.calls = []
+        self._patchers = []
+
+    def tearDown(self):
+        for patcher in self._patchers:
+            patcher.stop()
+        reset_state()
+
+    def _patch(self, target, replacement):
+        """Handler'lar main() döndükten SONRA çağrıldığı için yamalar açık kalmalı."""
+        patcher = mock.patch.object(bot, target, replacement)
+        patcher.start()
+        self._patchers.append(patcher)
+
+    def _run(self, config_extra):
+        config = {
+            "source_chats": ["@firsatz"],
+            "destination": GROUP_ID,
+            "include_keywords": ["çay"],
+            "exclude_keywords": [],
+            "match_mode": "any",
+            "copy_mode": "copy",
+            "control_chat": GROUP_ID,
+            "admin_user_id": ADMIN_ID,
+            "auto_restart": False,
+            "notify_on_start": False,
+        }
+        config.update(config_extra)
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(config, handle)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+
+        created = []
+
+        async def fake_ping(token, chat_id, text):
+            self.calls.append((token, chat_id, text))
+            return True, "bildirim gönderildi"
+
+        def factory(*args, **kwargs):
+            client = FakeClient(*args, **kwargs)
+            created.append(client)
+            return client
+
+        self._patch("send_bot_ping", fake_ping)
+        with mock.patch.dict(os.environ, BASE_ENV, clear=False), \
+             mock.patch.object(bot, "TelegramClient", factory), \
+             mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
+            asyncio.run(bot.main(["--config", handle.name]))
+        return created[0]
+
+    def test_match_triggers_bot_ping(self):
+        client = self._run({"notify_bot_token": "123:ABC"})
+        source_id = next(iter(bot.SOURCE_IDS))
+        asyncio.run(client.handlers[1][1](FakeEvent(source_id, 7, "Sıcak ÇAY 5 TL")))
+        self.assertEqual(len(self.calls), 1, "eşleşmede bildirim atılmalı")
+        token, chat_id, text = self.calls[0]
+        self.assertEqual(token, "123:ABC")
+        self.assertEqual(chat_id, GROUP_ID)
+        self.assertIn("🔔", text)
+
+    def test_no_token_means_no_ping(self):
+        client = self._run({"notify_bot_token": None})
+        source_id = next(iter(bot.SOURCE_IDS))
+        asyncio.run(client.handlers[1][1](FakeEvent(source_id, 8, "ÇAY")))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(bot.STATS["matched"], 1, "mesaj yine de iletilmeli")
+
+    def test_null_string_token_is_treated_as_empty(self):
+        client = self._run({"notify_bot_token": "none"})
+        source_id = next(iter(bot.SOURCE_IDS))
+        asyncio.run(client.handlers[1][1](FakeEvent(source_id, 9, "ÇAY")))
+        self.assertEqual(self.calls, [])
+
+    def test_test_command_warns_when_no_token(self):
+        client = self._run({"notify_bot_token": None})
+        event = FakeEvent(GROUP_ID, ADMIN_ID, "/test")
+        asyncio.run(client.handlers[0][1](event))
+        self.assertIn("notify_bot_token yok", event.replies[0])
+
+    def test_test_command_confirms_ping(self):
+        client = self._run({"notify_bot_token": "123:ABC"})
+        event = FakeEvent(GROUP_ID, ADMIN_ID, "/test")
+        asyncio.run(client.handlers[0][1](event))
+        self.assertIn("Bot bildirimi de gönderildi", event.replies[0])
+        self.assertEqual(len(self.calls), 1)

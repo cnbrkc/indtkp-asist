@@ -53,6 +53,7 @@ CONTROL_IDS: set[int] = set()
 CONTROL_NAMES: list[str] = []
 DESTINATION_LABEL = "me"
 DESTINATION_ID: int | None = None
+NOTIFY_BOT_TOKEN = ""
 SELF_ID: int | None = None
 
 
@@ -326,6 +327,37 @@ async def dispatch_next_run(pat: str) -> tuple[bool, str]:
         return False, f"GitHub isteği başarısız: {type(exc).__name__}."
 
 
+async def send_bot_ping(token: str, chat_id: int | str, text: str) -> tuple[bool, str]:
+    """Bot API üzerinden kısa bir bildirim mesajı atar.
+
+    Takipçi *kendi hesabınla* gönderdiği için Telegram o mesajları senin kendi
+    mesajın sayar ve bildirim üretmez. Bildirim isteyenler @BotFather'dan bir bot
+    oluşturup hedef gruba ekler; bu fonksiyon o bot adına kısa bir "ping" atar.
+    """
+    if not token:
+        return False, "notify_bot_token tanımlı değil."
+    payload = json.dumps({"chat_id": chat_id, "text": text[:500]}).encode()
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with await asyncio.to_thread(urllib.request.urlopen, request, timeout=15) as response:
+            body = json.loads(response.read().decode("utf-8", "replace") or "{}")
+        if body.get("ok"):
+            return True, "bildirim gönderildi"
+        return False, f"Bot API ok=false: {body.get('description')}"
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:200]
+        log.error("Bildirim bot'u hata verdi: HTTP %s %s", exc.code, detail)
+        return False, f"HTTP {exc.code}: {detail}"
+    except Exception as exc:  # noqa: BLE001 - bildirim başarısızlığı akışı durdurmaz
+        log.warning("Bildirim gönderilemedi: %s", type(exc).__name__)
+        return False, f"{type(exc).__name__}"
+
+
 # ---------------------------------------------------------------------------
 # Komutlar
 # ---------------------------------------------------------------------------
@@ -426,7 +458,7 @@ def run_check(config_path: str | None) -> int:
 
 async def main(argv: Sequence[str] | None = None) -> int:
     global SOURCES, SOURCE_IDS, SOURCE_FAILURES, CONTROL_IDS, CONTROL_NAMES
-    global DESTINATION_LABEL, DESTINATION_ID, SELF_ID
+    global DESTINATION_LABEL, DESTINATION_ID, NOTIFY_BOT_TOKEN, SELF_ID
 
     args = build_parser().parse_args(argv)
     if args.check:
@@ -449,6 +481,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
     auto_restart = bool(config.get("auto_restart", True))
     restart_minutes = max(1, int(os.getenv("RESTART_AFTER_MINUTES", "330")))
     notify_on_start = bool(config.get("notify_on_start", True))
+    NOTIFY_BOT_TOKEN = str(config.get("notify_bot_token") or os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
+    if NOTIFY_BOT_TOKEN.lower() in {"null", "none", "yok"}:
+        NOTIFY_BOT_TOKEN = ""
 
     client = TelegramClient(
         StringSession(os.environ["SESSION_STRING"].strip()),
@@ -528,12 +563,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
         destination = "me"
         DESTINATION_LABEL = "me (Kayıtlı Mesajlar)"
         DESTINATION_ID = None
-    if destination == "me":
-        log.warning(
-            "Hedef 'me' (Kayıtlı Mesajlar): Telegram buraya gelen mesajlar için BİLDİRİM GÖNDERMEZ. "
-            "Bildirim almak istiyorsan config.json → destination alanına kendi grup ID'ni (ör. -1001234567890) yaz."
-        )
     log.info("Hedef: %s", DESTINATION_LABEL)
+    if not NOTIFY_BOT_TOKEN:
+        log.warning(
+            "notify_bot_token tanımlı değil: mesajları kendi hesabın gönderdiği için Telegram "
+            "BİLDİRİM ÜRETMEZ (Kayıtlı Mesajlar'da da grupta da). Sesli bildirim istiyorsan "
+            "@BotFather'dan bir bot oluşturup gruba ekle ve notify_bot_token alanına token'ı yaz."
+        )
 
     def is_control_event(event: events.NewMessage.Event) -> bool:
         """Komutu yalnızca kontrol sohbetinden VE admin'den kabul et."""
@@ -543,8 +579,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return True
         return event.sender_id in admin_ids
 
-    async def deliver(event: events.NewMessage.Event) -> None:
-        """Mesajı hedefe ilet; copy başarısız olursa forward'a düş."""
+    async def deliver(event: events.NewMessage.Event, source_name: str) -> None:
+        """Mesajı hedefe ilet; copy başarısız olursa forward'a düş, sonra bildirim at."""
         try:
             if copy_mode == "copy":
                 await client.send_message(destination, event.message)
@@ -555,17 +591,28 @@ async def main(argv: Sequence[str] | None = None) -> int:
             STATS["failed"] += 1
             log.warning("FloodWait (%s sn) – mesaj atlandı.", exc.seconds)
             await asyncio.sleep(min(exc.seconds, 30))
+            return
         except Exception as exc:  # noqa: BLE001
             STATS["failed"] += 1
             log.exception("Mesaj iletilemedi (%s).", type(exc).__name__)
-            if copy_mode == "copy":
-                try:
-                    await client.forward_messages(destination, event.message, from_peer=event.chat_id)
-                    STATS["forwarded"] += 1
-                    STATS["failed"] -= 1
-                    log.info("Yedek yol (forward) başarılı.")
-                except Exception:  # noqa: BLE001
-                    log.exception("Yedek yol da başarısız.")
+            if copy_mode != "copy":
+                return
+            try:
+                await client.forward_messages(destination, event.message, from_peer=event.chat_id)
+                STATS["forwarded"] += 1
+                STATS["failed"] -= 1
+                log.info("Yedek yol (forward) başarılı.")
+            except Exception:  # noqa: BLE001
+                log.exception("Yedek yol da başarısız.")
+                return
+
+        if NOTIFY_BOT_TOKEN and DESTINATION_ID is not None:
+            ok, detail = await send_bot_ping(
+                NOTIFY_BOT_TOKEN, DESTINATION_ID,
+                f"🔔 Yeni fırsat ({source_name}) – {normalize(event.raw_text or '')[:120]}",
+            )
+            if not ok:
+                log.warning("Bildirim ping'i gönderilemedi: %s", detail)
 
     # Handler'lara `chats=` VERMİYORUZ: Telethon o filtreyi ilk mesajda çözer ve
     # çözümleme hatası tüm update akışını öldürür. Filtreyi burada kendimiz yapıyoruz.
@@ -590,9 +637,18 @@ async def main(argv: Sequence[str] | None = None) -> int:
             )
             try:
                 await client.send_message(destination, text)
-                await event.reply(f"✅ Deneme mesajı gönderildi: {DESTINATION_LABEL}")
+                reply = f"✅ Deneme mesajı gönderildi: {DESTINATION_LABEL}"
             except Exception as exc:  # noqa: BLE001
                 await event.reply(f"❌ Deneme mesajı gönderilemedi: {type(exc).__name__}: {exc}")
+                return
+            if NOTIFY_BOT_TOKEN and DESTINATION_ID is not None:
+                ok, detail = await send_bot_ping(NOTIFY_BOT_TOKEN, DESTINATION_ID, "🔔 Bildirim denemesi")
+                reply += "\n" + ("🔔 Bot bildirimi de gönderildi (telefonuna düşmeli)." if ok
+                                 else f"⚠️ Bot bildirimi gönderilemedi: {detail}")
+            else:
+                reply += ("\n⚠️ notify_bot_token yok: mesajı kendi hesabın gönderdiği için "
+                          "bildirim almazsın. @BotFather'dan bot oluşturup gruba ekle.")
+            await event.reply(reply)
         elif command in {"/source", "/sources", "/kaynak", "/kaynaklar"}:
             await event.reply(build_source_text())
         elif command in {"/restart", "/yenile", "/yeniden"}:
@@ -620,7 +676,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         source_name = next((item["name"] for item in SOURCES if item["id"] == event.chat_id), str(event.chat_id))
         STATS["last_match_source"] = source_name
         log.info("Eşleşti: %s / mesaj %s / %.80s", source_name, event.id, text)
-        await deliver(event)
+        await deliver(event, source_name)
 
     if notify_on_start:
         try:

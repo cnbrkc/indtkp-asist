@@ -10,7 +10,9 @@ import json
 import os
 import sys
 import tempfile
+import asyncio
 import unittest
+import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -254,9 +256,41 @@ class RealConfigTest(unittest.TestCase):
         self.assertIsInstance(config["control_chat"], int)
         self.assertIsInstance(config["destination"], int)
         self.assertEqual(bot.parse_admin_ids(config["admin_user_id"]), {1143378073})
+        self.assertIn("notify_bot_token", config)
         with mock.patch.dict(os.environ, CheckEnvironmentTest.good_env, clear=False):
             self.assertEqual(bot.check_environment(config), [])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BotPingTest(unittest.TestCase):
+    """notify_bot_token ile gönderilen bildirim ping'i."""
+
+    def test_no_token_returns_false_without_calling_api(self):
+        with mock.patch("bot.urllib.request.urlopen") as urlopen:
+            ok, detail = asyncio.run(bot.send_bot_ping("", -5092968106, "selam"))
+        self.assertFalse(ok)
+        self.assertIn("tanımlı değil", detail)
+        urlopen.assert_not_called()
+
+    def test_successful_ping_posts_to_bot_api(self):
+        fake_response = io.BytesIO(json.dumps({"ok": True, "result": {}}).encode())
+        fake_response.__enter__ = lambda self: self
+        fake_response.__exit__ = lambda self, *a: False
+        with mock.patch("bot.urllib.request.urlopen", return_value=fake_response) as urlopen:
+            ok, detail = asyncio.run(bot.send_bot_ping("123:ABC", -5092968106, "🔔 deneme"))
+        self.assertTrue(ok, detail)
+        request = urlopen.call_args[0][0]
+        self.assertEqual(request.full_url, "https://api.telegram.org/bot123:ABC/sendMessage")
+        self.assertEqual(json.loads(request.data.decode())["chat_id"], -5092968106)
+
+    def test_api_error_is_reported_not_raised(self):
+        with mock.patch("bot.urllib.request.urlopen",
+                        side_effect=urllib.error.HTTPError(
+                            "u", 400, "Bad Request", {}, io.BytesIO(b'{"description":"chat not found"}'))):
+            with self.assertLogs("telegram-filter", level="ERROR"):
+                ok, detail = asyncio.run(bot.send_bot_ping("123:ABC", -1, "x"))
+        self.assertFalse(ok)
+        self.assertIn("400", detail)
