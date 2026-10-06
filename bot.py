@@ -69,13 +69,11 @@ NOTIFY_BOT_TOKEN = ""
 DELIVERY_CHAIN: list[str] = []
 MAX_MEDIA_MB = 0
 SELF_ID: int | None = None
-# Telegram'dan canlı değiştirilen filtre/komut durumları (apply_runtime_config yazar).
+# Aktif filtre/komut durumları (apply_runtime_config yazar).
 FILTER_INCLUDE: list[str] = []
 FILTER_EXCLUDE: list[str] = []
 FILTER_MODE = "any"
 ADMIN_IDS: set[int] = set()
-CONFIG_STORE: Any = None      # ConfigStore (main doldurur)
-APPEND_LINKS = True   # (eski anahtar) gizli/buton bağlantılarını iletinin sonuna ekle
 SOURCE_FOOTER = True  # bildirime "Fırsatı Gönderen: <kaynak>" satırı ekle
 NOTIFY_MEDIA = True   # bildirim botu medyayı da göndersin
 MESSAGE_LINK_LINE = True      # iletinin sonuna "🔗 Mesajı Gör: <t.me linki>" ekle
@@ -119,18 +117,11 @@ def config_path(path: str | os.PathLike[str] | None = None) -> Path:
     return Path(path or os.getenv("CONFIG_FILE", "config.json"))
 
 
-# Ortam değişkeninin üzerine yazdığı config alanları (yalnızca bilgi amaçlı).
-# Telegram'dan kaydederken bu değerler dosyaya da işlenir; kullanıcı görebilsin.
-ENV_OVERRIDES: set[str] = set()
-
-
 def load_config(path: str | os.PathLike[str] | None = None) -> dict:
     """config.json'ı oku; ortam değişkenleriyle (eski kurulumlar için) üzerine yaz."""
     file_path = config_path(path)
     with file_path.open(encoding="utf-8") as handle:
         config = json.load(handle)
-    original = copy.deepcopy(config)
-
     for key in ("source_chats", "include_keywords", "exclude_keywords"):
         env_name = key.upper()
         if os.getenv(env_name):
@@ -154,10 +145,6 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict:
             config[key] = env_value
     if os.getenv("LINK_APPENDIX", "").strip():
         config["link_appendix"] = os.environ["LINK_APPENDIX"].strip()
-    ENV_OVERRIDES.clear()
-    ENV_OVERRIDES.update(
-        key for key in set(original) | set(config) if original.get(key) != config.get(key)
-    )
     return config
 
 
@@ -282,8 +269,6 @@ def normalize(text: str | None) -> str:
 #   all         = include_keywords'ün hepsi geçsin
 #   forward_all = filtre KAPALI; kaynaklardaki her mesaj iletilir
 #                 (exclude_keywords bu modda da engellemeye devam eder)
-MATCH_MODES = ("any", "all", "forward_all")
-
 # Kullanıcının yazabileceği alternatif yazımlar → kurallı mod adı.
 MATCH_MODE_ALIASES = {
     # --- any: kelimelerden biri yeterli
@@ -390,7 +375,7 @@ def check_environment(config: dict | None = None) -> list[str]:
     if canonical_match_mode(config.get("match_mode", "any")) is None:
         problems.append(
             "config.json → match_mode yalnızca 'any', 'all' veya 'forward_all' olabilir "
-            "(forward_all = tüm mesajları ilet)."
+            "(forward_all, dahili kelimeleri yok sayar; hariç kelimeler yine engeller)."
         )
     if str(config.get("copy_mode", "forward")).lower() not in {"forward", "copy"}:
         problems.append("config.json → copy_mode yalnızca 'forward' veya 'copy' olabilir.")
@@ -449,7 +434,7 @@ def print_report(config: dict, problems: list[str]) -> None:
     filter_label = {
         "any": "any (biri yeterli)",
         "all": "all (hepsi zorunlu)",
-        "forward_all": "forward_all (TÜM mesajlar iletilir, filtre kapalı)",
+        "forward_all": "forward_all (dahili kelimeler yok sayılır)",
     }[filter_mode]
     print(f"Anahtar kelimeler  : {config.get('include_keywords') or '(hepsi)'} ({filter_label})", flush=True)
     print(f"Hariç kelimeler    : {config.get('exclude_keywords') or '(yok)'}", flush=True)
@@ -1133,14 +1118,16 @@ def bot_media_descriptor(obj: Any) -> dict[str, Any] | None:
 
 HELP_TEXT = (
     "Komutlar:\n"
-    "/status (/durum)  – çalışma durumu ve sayaçlar\n"
-    "/test  (/deneme)  – hedefe deneme mesajı gönderir\n"
-    "/source (/kaynak) – izlenen kanallar ve çözümleme durumu\n"
-    "/id               – bu sohbetin ve senin ID'ni gösterir (config için)\n"
-    "/restart (/yenile) – yeni GitHub Actions çalışması başlatır\n"
-    "/ayar             – ayar menüsü: gruplar (/filtre, /iletim…) ve işlemler\n"
-    "                    (/ekle, /sil, /set, /goster). Alan adı ezberlemek gerekmez.\n"
-    "/help  (/yardim)  – bu mesaj"
+    "/status (/durum) – çalışma durumu\n"
+    "/test (/deneme) – hedefe deneme mesajı\n"
+    "/source (/kaynaklar) – izlenen kaynaklar\n"
+    "/id – sohbet ve kullanıcı ID'leri\n"
+    "/restart (/yenile) – yeni çalışma başlat\n"
+    "/hepsinial – tüm mesajları ilet (harici kelimeler hariç; kaydeder)\n"
+    "/filtrelial – dahili kelime filtresini aç (kaydeder)\n"
+    "/ayar, /ekle, /çıkar – listeleri düzenle\n"
+    "/kaydet, /iptal – taslağı kaydet / iptal et\n"
+    "/help (/yardim) – bu mesaj"
 )
 
 
@@ -1152,7 +1139,7 @@ def build_status_text(config: dict) -> str:
     keywords = config.get("include_keywords") or "(hepsi)"
     mode = match_mode_of(config)
     if mode == "forward_all":
-        filter_line = "🔓 Tüm mesajlar iletiliyor (filtre kapalı)"
+        filter_line = "🔓 Dahili kelimeler yok sayılıyor (harici kelimeler yine engeller)"
     else:
         filter_line = (f"• Anahtar kelimeler: "
                        f"{', '.join(keywords) if isinstance(keywords, list) else keywords} ({mode})")
@@ -1185,272 +1172,273 @@ def build_source_text() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Ayar yönetimi (Telegram'dan canlı düzenleme)
+# Telegram liste düzenleme akışı
 # ---------------------------------------------------------------------------
 #
-# Amaç: config.json'ı Telegram kontrol sohbetinden değiştirebilmek.
-#   • Değişiklik ÇALIŞAN botta anında aktif olur (restart beklemez).
-#   • Değişiklik config.json'a atomik yazılır ve mümkse git ile repo'ya
-#     işlenir; böylece GitHub Actions yeniden başlasa da kaybolmaz.
-#
-# Risk yönetimi: her alan için tip/aralık doğrulaması var; bilinmeyen alan
-# yazılamaz. Sohbet gerektiren alanlar (source_chats, destination,
-# control_chat) değişince Telegram'da yeniden çözülür, çözülemezse değişiklik
-# geri alınır.
+# Telegram'da yalnızca üç liste taslak akışıyla düzenlenir; filtre modu da
+# iki açık komutla değiştirilir. Diğer ayarlar yalnızca config/kod üzerinden.
 
 def build_main_menu_text() -> str:
-    """/ayar çıktısı: grupları ve işlem komutlarını özetler."""
-    lines = [
-        "⚙️ Ayar menüsü",
+    """/ayar çıktısı: Telegram'dan düzenlenebilen üç listeyi açıklar."""
+    return "\n".join([
+        "⚙️  TELEGRAM AYARLARI",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "Liste olarak Telegram'dan yalnızca şu üç alan düzenlenebilir:",
         "",
-        "Değişiklik anında aktif olur ve config.json'a yazılır "
-        "(repo'ya da işlenirse kalıcı olur).",
+        "➕  /ekle   · Listeye kayıt ekle",
+        "➖  /çıkar  · Listeden kayıt çıkar",
         "",
-        "Ayar grupları — birine dokun, o gruptaki ayarları ve komutları gör:",
+        "Akış: işlem seç → listeyi seç → değeri gönder.",
+        "Son adımda değişikliği kaydetmen veya iptal etmen istenir.",
         "",
-    ]
-    for group in SETTING_GROUPS:
-        lines.append(f"{group['icon']} /{group['key']} – {group['desc']}")
-    lines += [
+        "✅  /kaydet  · Taslağı config.json'a yazıp GitHub'a gönder",
+        "↩️  /iptal   · Bekleyen taslağı iptal et",
         "",
-        "İşlem komutları — alan adı ezberlemen gerekmez, bot sorar:",
+        "🔓 /hepsinial  · Tümünü al (harici kelimeler hariç; anında kaydeder)",
+        "🔎 /filtrelial · Dahili kelime filtresi (anında kaydeder)",
         "",
-        " /ekle    – bir listeye değer ekle (hangi liste? menü çıkar)",
-        " /sil     – bir listeden değer çıkar",
-        " /set     – bir ayarın değerini değiştir",
-        " /goster  – bir ayarı göster (/ayar_goster hepsi için)",
-        " /kaydet  – dosyayı tekrar yaz / repo'ya gönder",
-        " /iptal   – bekleyen işlemi iptal et / son değişikliği geri al",
+        "Düzenlenebilir listeler:",
+        "  🔎 Dahili kelimeler",
+        "  🚫 Harici kelimeler",
+        "  📣 Grup isimleri (kanal/grup kullanıcı adı veya ID)",
         "",
-        "Nasıl kullanılıyor? Komuta dokun → alanı seç → değeri yaz.",
-        " Örnek: /mod → 3                    (match_mode = forward_all)",
-        " Örnek: /kelime_ekle çay            (tek mesajda biter)",
-        " Örnek: /ekle → 1 → çay, kahve      (menüden seçerek)",
-        "",
-        "İpucu: her ayarın kendi komutu da var — /kelime_ekle, /kanal_sil,",
-        "/hedef, /token … Bir grubun tüm komutlarını görmek için /filtre, /iletim…",
-    ]
-    return "\n".join(lines)
+        "Diğer tüm teknik ayarlar yalnızca config.json/kod üzerinden değiştirilir.",
+    ])
 
-# Telegram'dan değiştirilebilecek alanlar.
-#   kind     : doğrulama biçimi
-#   resolve  : değişince Telegram'da yeniden çözülmesi gereken grup
-#   help     : /ayar_goster çıktısında gösterilen açıklama
-SETTING_FIELDS: dict[str, dict[str, Any]] = {
-    "source_chats": {
-        "kind": "chat_list", "resolve": "sources",
-        "help": "Dinlenen kanal/grup listesi (@kullanici veya -100... ID)",
-    },
-    "destination": {
-        "kind": "chat", "resolve": "destination",
-        "help": "Fırsatların iletildiği sohbet",
-    },
-    "control_chat": {
-        "kind": "chat", "resolve": "control",
-        "help": "Komutların dinlendiği sohbet (me = Kayıtlı Mesajlar)",
-    },
-    "admin_user_id": {
-        "kind": "id_list",
-        "help": "Komut kullanabilecek kullanıcı ID'leri",
-    },
+
+# Telegram'dan değiştirilebilen tek ayarlar; her yeni alan buraya bilinçli eklenmeli.
+TELEGRAM_LIST_FIELDS = ("include_keywords", "exclude_keywords", "source_chats")
+TELEGRAM_LIST_META: dict[str, dict[str, str]] = {
     "include_keywords": {
-        "kind": "str_list", "fold": True,
-        "help": "Aranan kelimeler (match_mode any/all ile kullanılır)",
+        "title": "Dahili kelimeler",
+        "icon": "🔎",
+        "description": "Mesajlarda eşleşmesi aranan kelimeler",
     },
     "exclude_keywords": {
-        "kind": "str_list", "fold": True,
-        "help": "Görüldüğünde iletilmeyecek kelimeler (her modda engeller)",
+        "title": "Harici kelimeler",
+        "icon": "🚫",
+        "description": "Mesajda geçerse iletim yapılmaz",
     },
-    "match_mode": {
-        "kind": "enum", "choices": MATCH_MODES, "aliases": MATCH_MODE_ALIASES,
-        "help": "any (biri yeterli) | all (hepsi zorunlu) | forward_all (tüm mesajlar)",
-    },
-    "delivery_modes": {
-        "kind": "enum_list", "choices": DELIVERY_MODES,
-        "help": "İletim yollarının deneme sırası",
-    },
-    "copy_mode": {
-        "kind": "enum", "choices": ("forward", "copy"),
-        "help": "delivery_modes boşsa tercih edilen ilk yol",
-    },
-    "max_media_mb": {
-        "kind": "int", "min": 0, "max": 2000,
-        "help": "Yeniden yüklenecek medyanın üst sınırı (MB)",
-    },
-    "link_appendix": {
-        "kind": "enum", "choices": ("smart", "all", "off"),
-        "help": "Gizli linklerin iletiye eklenme biçimi",
-    },
-    "message_link": {
-        "kind": "bool",
-        "help": "İletinin sonuna 'Mesajı Gör' bağlantısı",
-    },
-    "source_footer": {
-        "kind": "bool",
-        "help": "Bildirimde 'Fırsatı Gönderen: <kaynak>' satırı",
-    },
-    "notify_media": {
-        "kind": "bool",
-        "help": "Bildirim botu fotoğraf/videoyu da göndersin",
-    },
-    "notify_on_start": {
-        "kind": "bool",
-        "help": "Açılışta bilgi mesajı gönder (bir sonraki açılışta geçerli)",
-    },
-    "auto_restart": {
-        "kind": "bool",
-        "help": "Actions zinciriyle otomatik yenileme (bir sonraki açılışta geçerli)",
-    },
-    "notify_bot_token": {
-        "kind": "secret",
-        "help": "Bildirim botu token'ı (boş = bildirim kapalı)",
+    "source_chats": {
+        "title": "Grup isimleri",
+        "icon": "📣",
+        "description": "İzlenecek kanal ve gruplar",
     },
 }
-
-# Kullanıcıların yazması muhtemel kısa/Türkçe alan adları.
-FIELD_ALIASES = {
-    "kaynak": "source_chats", "kaynaklar": "source_chats", "kanallar": "source_chats",
-    "kanal": "source_chats", "source": "source_chats", "sources": "source_chats",
-    "hedef": "destination", "hedefsohbet": "destination", "hedef_sohbet": "destination",
-    "kontrol": "control_chat", "kontrolsohbeti": "control_chat", "control": "control_chat",
-    "admin": "admin_user_id", "adminid": "admin_user_id", "adminler": "admin_user_id",
-    "kelime": "include_keywords", "kelimeler": "include_keywords",
-    "anahtar": "include_keywords", "anahtarkelime": "include_keywords",
-    "aranan": "include_keywords", "include": "include_keywords",
-    "dahil": "include_keywords", "dahil_liste": "include_keywords",
-    "dahil_listesi": "include_keywords", "dahil_kelime": "include_keywords",
-    "dahilkelime": "include_keywords", "dahil_kelimeler": "include_keywords",
-    "haric": "exclude_keywords", "hariç": "exclude_keywords",
-    "haric_liste": "exclude_keywords", "haric_listesi": "exclude_keywords",
-    "haric_kelime": "exclude_keywords", "harickkelime": "exclude_keywords",
-    "haric_kelimeler": "exclude_keywords",
-    "yasak": "exclude_keywords", "yasakli": "exclude_keywords", "yasaklı": "exclude_keywords",
-    "exclude": "exclude_keywords", "engelli": "exclude_keywords", "engellenen": "exclude_keywords",
-    "mod": "match_mode", "modu": "match_mode", "eslesme": "match_mode", "eşleşme": "match_mode",
-    "filtre": "match_mode", "filtremodu": "match_mode", "matchmode": "match_mode",
-    "iletim": "delivery_modes", "yollar": "delivery_modes", "iletimyollari": "delivery_modes",
-    "medya": "max_media_mb", "medyasınırı": "max_media_mb", "medyasiniri": "max_media_mb",
-    "boyut": "max_media_mb", "maxmedya": "max_media_mb",
-    "link": "link_appendix", "linkeki": "link_appendix", "baglanti": "link_appendix",
-    "mesajlinki": "message_link", "mesaj_linki": "message_link",
-    "altbilgi": "source_footer", "kaynakadi": "source_footer",
-    "bildirimmedya": "notify_media", "bildirim_medya": "notify_media",
-    "acilisbildirimi": "notify_on_start", "yenileme": "auto_restart",
-    "otomatikyenileme": "auto_restart", "otoyenileme": "auto_restart",
-    "token": "notify_bot_token", "bottoken": "notify_bot_token", "bot_token": "notify_bot_token",
+TELEGRAM_LIST_ALIASES = {
+    "include_keywords": {"dahili", "dahili_kelimeler", "kelime", "kelimeler", "include_keywords"},
+    "exclude_keywords": {"harici", "harici_kelimeler", "hariç", "haric", "exclude_keywords"},
+    "source_chats": {"grup", "gruplar", "grup_isimleri", "kanal", "kanallar", "kaynak", "kaynaklar", "source_chats"},
 }
+LIST_ITEM_MAX_LENGTH = 100
 
-LIST_KINDS = {"str_list", "chat_list", "id_list", "enum_list"}
 
-BOOL_TRUE = {"1", "true", "yes", "evet", "on", "açık", "acik", "aktif", "var",
-             "a", "enable", "enabled", "open"}
-BOOL_FALSE = {"0", "false", "no", "hayir", "hayır", "off", "kapali", "kapalı",
-              "pasif", "yok", "kapat", "disable", "disabled", "none", "null", "k"}
+def telegram_list_items(config: dict, field: str) -> list[Any]:
+    """İzinli Telegram listesini güvenli biçimde liste olarak döndür."""
+    value = config.get(field)
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
 
+
+def resolve_telegram_list(text: Any) -> str | None:
+    """Menüdeki 1–3 seçimini veya Türkçe liste adını kurallı alana çevir."""
+    raw = normalize(str(text or "")).strip().lstrip("/")
+    if raw.isdigit():
+        index = int(raw)
+        if 1 <= index <= len(TELEGRAM_LIST_FIELDS):
+            return TELEGRAM_LIST_FIELDS[index - 1]
+    key = re.sub(r"[\s-]+", "_", raw)
+    for field, aliases in TELEGRAM_LIST_ALIASES.items():
+        if key == field or key in aliases:
+            return field
+    return None
+
+
+def build_list_category_prompt(action: str, config: dict) -> str:
+    """/ekle veya /çıkar sonrası gösterilen sade, numaralı liste seçimi."""
+    is_add = action == "add"
+    title = "➕  LİSTEYE EKLE" if is_add else "➖  LİSTEDEN ÇIKAR"
+    instruction = "Hangi listeye ekleyelim?" if is_add else "Hangi listeden kayıt çıkaralım?"
+    lines = [title, "━━━━━━━━━━━━━━━━━━━━", instruction, ""]
+    for index, field in enumerate(TELEGRAM_LIST_FIELDS, start=1):
+        meta = TELEGRAM_LIST_META[field]
+        count = len(telegram_list_items(config, field))
+        lines.append(f"{index}. {meta['icon']}  {meta['title']}  ·  {count} kayıt")
+        lines.append(f"   {meta['description']}")
+    lines += ["", "Seçmek için 1, 2, 3 ya da liste adını yaz.", "Vazgeçmek için /iptal."]
+    return "\n".join(lines)
+
+
+def telegram_list_item_key(field: str, value: Any) -> str:
+    """Kayıt karşılaştırması: Türkçe kelimeler ve ASCII Telegram kullanıcı adları."""
+    text = str(value)
+    # Telegram kullanıcı adları ASCII ve büyük/küçük harfe duyarsızdır; burada
+    # Türkçe I/İ eşlemesi uygulanmamalı (I ile i farklı dönüşür).
+    return text.casefold() if field == "source_chats" else normalize(text)
+
+
+def build_list_value_prompt(action: str, field: str, config: dict) -> str:
+    """Liste seçildikten sonra mevcut kayıtları ve tek adımlık yönergeyi göster."""
+    meta = TELEGRAM_LIST_META[field]
+    items = telegram_list_items(config, field)
+    lines = [f"{meta['icon']}  {meta['title']}", meta["description"], "━━━━━━━━━━━━━━━━━━━━"]
+    if items:
+        lines.append(f"Mevcut liste · {len(items)} kayıt")
+        lines.append("")
+        lines.extend(
+            f"{index:02}. {str(item).replace(chr(10), ' ').replace(chr(13), ' ')}"
+            for index, item in enumerate(items, start=1)
+        )
+    else:
+        lines.append("Mevcut liste boş.")
+    lines.append("")
+    if action == "add":
+        if field == "source_chats":
+            lines += ["Eklenecek kanal/grup kullanıcı adını veya ID'sini gönder:",
+                      "Örnek: @kanaladi  ya da  -1001234567890"]
+        else:
+            lines.append("Eklenecek kelimeyi gönder.")
+        lines.append("Her mesajda tek kayıt eklenir.")
+    else:
+        lines += ["Çıkarmak istediğin kaydın numarasını veya listedeki tam değerini gönder.",
+                  "Yalnızca seçtiğin tek kayıt çıkarılır."]
+    lines += ["", "Bu adımda ayar henüz kaydedilmez.", "İptal etmek için /iptal."]
+    return "\n".join(lines)
+
+
+def stage_telegram_list_change(
+    config: dict, field: str, action: str, raw_value: Any,
+) -> tuple[bool, dict, Any, str]:
+    """İzinli bir liste değişikliğini config'e dokunmadan taslak olarak hazırla."""
+    if field not in TELEGRAM_LIST_FIELDS:
+        return False, copy.deepcopy(config), None, "Bu liste Telegram'dan düzenlenemez."
+    if action not in {"add", "remove"}:
+        return False, copy.deepcopy(config), None, "Geçersiz liste işlemi."
+
+    current = telegram_list_items(config, field)
+    text = str(raw_value or "").strip()
+    values = split_values(text)
+    if len(values) != 1:
+        return False, copy.deepcopy(config), None, "Her mesajda tek kayıt gönder; virgülle birden fazla değer yazma."
+    text = values[0]
+    if not text:
+        return False, copy.deepcopy(config), None, "Boş kayıt eklenemez veya çıkarılamaz."
+    if len(text) > LIST_ITEM_MAX_LENGTH:
+        return False, copy.deepcopy(config), None, f"Kayıt en fazla {LIST_ITEM_MAX_LENGTH} karakter olabilir."
+
+    if action == "add":
+        if field == "source_chats":
+            try:
+                value = parse_chat_value(text)
+            except ValueError as exc:
+                return False, copy.deepcopy(config), None, f"Geçersiz kayıt: {exc}."
+        else:
+            value = normalize(text)
+        key = telegram_list_item_key(field, value)
+        if any(telegram_list_item_key(field, item) == key for item in current):
+            return False, copy.deepcopy(config), value, f"ℹ️ {value} zaten bu listede."
+        changed_item = value
+        updated = [*current, value]
+        message = f"{TELEGRAM_LIST_META[field]['title']} listesine eklenecek: {value}"
+    else:
+        # Numara, ekranda gösterilen satır numarasıdır. Tam metin de kabul edilir.
+        index: int | None = None
+        if text.isdigit():
+            selected = int(text)
+            if 1 <= selected <= len(current):
+                index = selected - 1
+        if index is None:
+            wanted = telegram_list_item_key(field, text)
+            index = next((i for i, item in enumerate(current)
+                          if telegram_list_item_key(field, item) == wanted), None)
+        if index is None:
+            return False, copy.deepcopy(config), None, f"ℹ️ {text} mevcut listede bulunamadı. Listedeki numarayı kullanabilirsin."
+        if field == "source_chats" and len(current) <= 1:
+            return False, copy.deepcopy(config), None, "En az bir takip edilen grup/kanal kalmalı; son kaydı çıkaramazsın."
+        changed_item = current[index]
+        updated = [item for i, item in enumerate(current) if i != index]
+        message = f"{TELEGRAM_LIST_META[field]['title']} listesinden çıkarılacak: {changed_item}"
+
+    candidate = copy.deepcopy(config)
+    candidate[field] = updated
+    return True, candidate, changed_item, message
+
+
+def resolve_confirmation_choice(text: Any) -> str | None:
+    """Onay mesajındaki etiket veya kısa yanıtı eyleme çevir."""
+    choice = re.sub(r"[^\w]+", " ", normalize(str(text or ""))).strip()
+    choice = " ".join(choice.split())
+    if choice in {
+        "kaydet", "kaydet ve gonder", "kaydet ve gönder", "kaydet ve githuba gonder",
+        "kaydet ve githuba gönder", "kaydet ve github a gönder", "onayla", "evet",
+    }:
+        return "save"
+    if choice in {
+        "iptal", "ıptal", "iptal et", "ıptal et", "iptal et ve taslagi sil",
+        "iptal et ve taslağı sil", "vazgec", "vazgeç", "vazgec et", "vazgeç et",
+        "hayir", "hayır", "cancel",
+    }:
+        return "cancel"
+    return None
+
+
+def build_list_change_confirmation(action: str, field: str, value: Any, config: dict) -> str:
+    """Değişiklik taslağı için Telegram'da okunaklı onay mesajı kur."""
+    meta = TELEGRAM_LIST_META[field]
+    verb = "Eklenecek" if action == "add" else "Çıkarılacak"
+    count = len(telegram_list_items(config, field))
+    return "\n".join([
+        "📝  DEĞİŞİKLİK TASLAĞI",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"📂 {meta['title']}",
+        f"{('➕' if action == 'add' else '➖')} {verb}: {value}",
+        f"📊 Kaydedilince listedeki kayıt sayısı: {count}",
+        "",
+        "Bu değişiklik henüz aktif değil ve config.json'a yazılmadı.",
+        "",
+        "✅ Kaydet ve GitHub'a gönder  →  /kaydet",
+        "↩️ İptal et ve taslağı sil     →  /iptal",
+        "",
+        "Komut gönderebilir veya sadece “kaydet” / “iptal” yazabilirsin.",
+    ])
+
+
+# Telegram ayar komutları yalnızca üç liste ve taslak kontrolleridir.
 def _expand_commands(names: set[str]) -> frozenset[str]:
-    """Türkçe büyük harf farkını da kabul et: /SİL yazımı '/sıl' olarak gelir."""
+    """Türkçe büyük I/İ yazımlarını da komut eşleşmesine dahil et."""
     expanded = set(names)
     for name in names:
         expanded.add(name.replace("i", "ı"))
     return frozenset(expanded)
 
 
-# Komut adları → işlev. normalize() edilmiş hâlde karşılaştırılır.
-CMD_SETTINGS_MENU = _expand_commands({"/ayar", "/ayarlar", "/settings", "/konfig", "/configur"})
-CMD_SETTINGS_SHOW = _expand_commands({"/ayar_goster", "/ayargoster", "/ayargor", "/ayar_gör",
-                                      "/goster", "/göster", "/gör", "/gor", "/ayarlarim", "/ayarlarım"})
-CMD_SETTINGS_SET = _expand_commands({"/ayar_set", "/ayarset", "/set", "/ayarla", "/degistir", "/değiştir"})
-CMD_SETTINGS_ADD = _expand_commands({"/ayar_ekle", "/ayarekle", "/ekle", "/add"})
-CMD_SETTINGS_REMOVE = _expand_commands({"/ayar_sil", "/ayarsil", "/sil", "/cikar", "/çıkar", "/remove", "/delete"})
-CMD_SETTINGS_SAVE = _expand_commands({"/ayar_kaydet", "/ayarkaydet", "/kaydet", "/save"})
-CMD_SETTINGS_REVERT = _expand_commands({"/ayar_iptal", "/ayariptal", "/iptal", "/geri", "/geri_al", "/undo"})
-SETTINGS_COMMANDS = (CMD_SETTINGS_MENU | CMD_SETTINGS_SHOW | CMD_SETTINGS_SET
-                     | CMD_SETTINGS_ADD | CMD_SETTINGS_REMOVE | CMD_SETTINGS_SAVE
-                     | CMD_SETTINGS_REVERT)
-
-# Ayar grupları: kullanıcı alan adlarını ezberlemek zorunda kalmasın diye
-# ayarlar birkaç akılda kalıcı gruba bölündü. Her grubun kendi komutu var
-# (/filtre, /bildirim …) ve komut yazıldığında o gruptaki ayarlar, güncel
-# değerleri ve "dokunulmaya hazır" kısa komutlarıyla listelenir.
-SETTING_GROUPS: tuple[dict[str, Any], ...] = (
-    {"key": "filtre", "icon": "🔎", "title": "Filtre",
-     "desc": "aranan/hariç kelimeler ve eşleşme modu",
-     "fields": ("match_mode", "include_keywords", "exclude_keywords")},
-    {"key": "kanallar", "icon": "📥", "title": "Kaynaklar",
-     "desc": "dinlenen kanal ve gruplar (liste: /kaynaklar)",
-     "fields": ("source_chats",)},
-    {"key": "hedef", "icon": "📤", "title": "Hedef",
-     "desc": "fırsatların iletildiği sohbet",
-     "fields": ("destination",)},
-    {"key": "bildirim", "icon": "🔔", "title": "Bildirim",
-     "desc": "bildirim botu, medya ve altbilgi",
-     "fields": ("notify_bot_token", "notify_media", "source_footer", "notify_on_start")},
-    {"key": "iletim", "icon": "🚚", "title": "İletim",
-     "desc": "iletim yolları ve medya boyutu",
-     "fields": ("delivery_modes", "copy_mode", "max_media_mb")},
-    {"key": "linkler", "icon": "🔗", "title": "Bağlantılar",
-     "desc": "gizli linkler ve mesaj linki",
-     "fields": ("link_appendix", "message_link")},
-    {"key": "yetki", "icon": "🛡", "title": "Yetki",
-     "desc": "komutların dinlendiği sohbet ve yetkili ID'ler",
-     "fields": ("control_chat", "admin_user_id")},
-    {"key": "sistem", "icon": "⚙️", "title": "Sistem",
-     "desc": "otomatik yenileme",
-     "fields": ("auto_restart",)},
+CMD_SETTINGS_MENU = _expand_commands({"/ayar", "/ayarlar"})
+CMD_SETTINGS_ADD = _expand_commands({"/ekle"})
+CMD_SETTINGS_REMOVE = _expand_commands({"/çıkar", "/cikar"})
+CMD_SETTINGS_SAVE = _expand_commands({"/kaydet"})
+CMD_SETTINGS_REVERT = _expand_commands({"/iptal"})
+CMD_FILTER_ALL = _expand_commands({"/hepsinial"})
+CMD_FILTER_KEYWORDS = _expand_commands({"/filtrelial"})
+SETTINGS_COMMANDS = frozenset().union(
+    CMD_SETTINGS_MENU, CMD_SETTINGS_ADD, CMD_SETTINGS_REMOVE,
+    CMD_SETTINGS_SAVE, CMD_SETTINGS_REVERT,
 )
 
-# Grup komutlarının alternatif yazımları → grup anahtarı.
-GROUP_ALIASES = {
-    "filtre": "filtre", "filter": "filtre", "kelimeler": "filtre", "kelime": "filtre",
-    "kanallar": "kanallar", "kanal": "kanallar", "kanallarim": "kanallar",
-    "kanallarım": "kanallar", "grup": "kanallar",
-    "hedef": "hedef", "hedefsohbet": "hedef", "hedef_sohbet": "hedef", "gonderim": "hedef",
-    "bildirim": "bildirim", "bildirimler": "bildirim", "notification": "bildirim",
-    "iletim": "iletim", "yollar": "iletim", "teslimat": "iletim",
-    "linkler": "linkler", "baglantilar": "linkler", "bağlantılar": "linkler",
-    "yetki": "yetki", "yetkiler": "yetki", "izin": "yetki", "admin": "yetki",
-    "sistem": "sistem", "system": "sistem",
-}
-
-# Menülerde gösterilen kısa komut adı: /kelime_ekle, /mod, /kanal_sil gibi
-# komutlar otomatik olarak üretiliyor (alan adı + eylem).
-FIELD_SHORT_NAMES = {
-    "source_chats": "kanal", "destination": "hedef", "control_chat": "kontrol",
-    "admin_user_id": "admin", "include_keywords": "kelime",
-    "exclude_keywords": "haric", "match_mode": "mod", "delivery_modes": "yol",
-    "copy_mode": "kopya", "max_media_mb": "medya", "link_appendix": "linkeki",
-    "message_link": "mesajlinki", "source_footer": "altbilgi",
-    "notify_media": "bildirimmedya", "notify_on_start": "acilisbildirimi",
-    "auto_restart": "yenileme", "notify_bot_token": "token",
-}
-
-# "/kelime_ekle" gibi alan+eylem komutlarındaki eylem ekleri.
-FIELD_ACTION_SUFFIXES = {"ekle": "add", "sil": "remove", "set": "set",
-                         "goster": "show", "göster": "show", "gor": "show",
-                         "gör": "show", "degistir": "set", "değiştir": "set"}
-
-# Grup anahtarı → grup sözlüğü (hızlı erişim).
-GROUP_BY_KEY = {group["key"]: group for group in SETTING_GROUPS}
-
-# Çok adımlı akış: "/ekle" yazıldığında bot hangi alana ekleneceğini sorar,
-# kullanıcı cevap yazınca işlem tamamlanır. Bekleyen işlem şu sözlükte tutulur;
-# yalnızca bellekte olduğu için bot yeniden başlarsa kaybolur (zararsız).
 PENDING: dict[tuple[int, int], dict[str, Any]] = {}
 PENDING_TTL_SECONDS = 600  # 10 dakika sonra bekleyen işlem düşer
 
-# Eski sabit korunuyor: /ayar çıktısı artık dinamik üretiliyor.
-SETTINGS_HELP_TEXT = build_main_menu_text()
-
-# config.json'a yazma sonucuna göre kullanıcıya gösterilen satırlar.
 SAVE_STATUS_TEXT = {
     "pushed": "✅ config.json yazıldı ve repo'ya işlendi ({detail}) — yeniden başlasa da kalıcı.",
     "clean": "💾 config.json yazıldı; depoda ayrıca işlenecek değişiklik yoktu ({detail}).",
     "local": ("⚠️ config.json yazıldı ve commit edildi ama gönderilemedi ({detail}). "
-              "Bot yeniden başlarsa bu değişiklik kaybolur; /ayar_kaydet ile tekrar dene."),
+              "Bot yeniden başlarsa bu değişiklik kaybolur; GitHub erişimini kontrol et."),
     "no-repo": ("⚠️ config.json yazıldı ama depoya işlenemedi ({detail}). "
                 "Değişiklik yalnızca bu oturumda geçerli."),
     "error": ("⚠️ config.json yazıldı ama repo'ya işlenemedi ({detail}). "
-              "/ayar_kaydet ile tekrar deneyebilirsin."),
+              "GitHub erişim/izinlerini kontrol et; değişiklik bu oturumda aktif."),
 }
 
 
@@ -1465,230 +1453,6 @@ def split_values(raw: Any) -> list[str]:
     return values
 
 
-def coerce_item(spec: dict, raw: Any) -> tuple[bool, Any]:
-    """Liste öğesini alanın tipine çevir: (ok, değer | hata)."""
-    kind = spec["kind"]
-    text = str(raw).strip()
-    if kind == "str_list":
-        value = normalize(text) if spec.get("fold") else text
-        return (True, value) if value else (False, "boş değer")
-    if kind == "enum_list":
-        return _coerce_choice(text, spec["choices"], spec.get("aliases"))
-    if kind == "chat_list":
-        try:
-            return True, parse_chat_value(text)
-        except ValueError as exc:
-            return False, str(exc)
-    if kind == "id_list":
-        try:
-            return True, int(text)
-        except ValueError:
-            return False, "bir kullanıcı ID'si (sayı) olmalı"
-    return False, f"{kind} listesi desteklenmiyor"
-
-
-def _coerce_choice(text: Any, choices: Sequence[str], aliases: dict | None = None) -> tuple[bool, Any]:
-    """Sabit listeden bir değer seç; yazım farklarını ve takma adları kabul et."""
-    for key in choice_keys(text):
-        value = (aliases or {}).get(key)
-        if value is None and key in choices:
-            value = key
-        if value is not None:
-            return True, value
-    return False, f"geçersiz değer {str(text)!r} (geçerli: {', '.join(choices)})"
-
-
-def coerce_scalar(spec: dict, raw: Any) -> tuple[bool, Any, str]:
-    """Tek değerli alanı çevir: (ok, değer, hata)."""
-    kind = spec["kind"]
-    text = str(raw).strip()
-    if kind == "enum":
-        ok, value = _coerce_choice(text, spec["choices"], spec.get("aliases"))
-        return (True, value, "") if ok else (False, None, str(value))
-    if kind == "int":
-        match = re.search(r"-?\d+", text)
-        if not match:
-            return False, None, f"{text!r} bir sayı değil"
-        number = int(match.group())
-        low, high = spec.get("min"), spec.get("max")
-        if low is not None and number < low:
-            return False, None, f"en az {low} olmalı"
-        if high is not None and number > high:
-            return False, None, f"en fazla {high} olmalı"
-        return True, number, ""
-    if kind == "bool":
-        key = normalize(text)
-        if key in BOOL_TRUE:
-            return True, True, ""
-        if key in BOOL_FALSE:
-            return True, False, ""
-        return False, None, f"geçersiz değer {text!r} (açık/kapalı, true/false, 1/0)"
-    if kind == "chat":
-        try:
-            return True, parse_chat_value(text), ""
-        except ValueError as exc:
-            return False, None, str(exc)
-    if kind == "secret":
-        return True, ("" if normalize(text) in {"null", "none", "yok", "-"} else text), ""
-    return False, None, f"{kind} alanı Telegram'dan değiştirilemez"
-
-
-def coerce_list(spec: dict, raw: Any) -> tuple[bool, Any, str]:
-    """Liste alanını çevir: (ok, liste, hata)."""
-    values = split_values(raw)
-    if not values:
-        return False, None, "en az bir değer ver"
-    result: list[Any] = []
-    for item in values:
-        ok, value = coerce_item(spec, item)
-        if not ok:
-            return False, None, f"{item!r} geçersiz: {value}"
-        result.append(value)
-    return True, result, ""
-
-
-def field_help() -> str:
-    """Değiştirilebilir alanların listesi (hata mesajlarında kullanılır)."""
-    names = sorted(SETTING_FIELDS)
-    return "Değiştirilebilir alanlar: " + ", ".join(names) + "\nAyrıntı: /ayar"
-
-
-def alias_keys(text: Any) -> tuple[str, ...]:
-    """Komut/alan adının olası yazımları: "/FILTRE" → filtre, fıltre, filtra…
-
-    Türkçe büyük harf indirgemesi "I"yı "ı" yapar; kullanıcı klavyeden büyük
-    harfle yazdığında "filtre" yerine "fıltre" gelir. İki yönü de deneyelim.
-    """
-    base = normalize(str(text or "")).strip().lstrip("/")
-    return (base, base.replace("ı", "i"), base.replace("i", "ı"))
-
-
-def resolve_setting_field(raw: str) -> str | None:
-    """Yazılan alan adını kurallı isme çevir (kısa/Türkçe adlar dahil)."""
-    for key in alias_keys(raw):
-        if key in SETTING_FIELDS:
-            return key
-        alias = FIELD_ALIASES.get(key)
-        if alias:
-            return alias
-    return None
-
-
-def short_command(field: str, action: str = "") -> str:
-    """Alan için üretilen kısa komut: /kelime_ekle, /mod, /kanal_sil…"""
-    name = FIELD_SHORT_NAMES.get(field, field)
-    return f"/{name}" + (f"_{action}" if action else "")
-
-
-def group_of(field: str) -> dict[str, Any] | None:
-    """Alanın bağlı olduğu grup (menülerde gezinmek için)."""
-    for group in SETTING_GROUPS:
-        if field in group["fields"]:
-            return group
-    return None
-
-
-# Alan menüsünde gösterilme sırası: en sık değiştirilenler üstte, böylece
-# "/ekle → 1" gibi bir kısayol tahmin edilebilir olur.
-FIELD_MENU_ORDER = (
-    "match_mode", "include_keywords", "exclude_keywords", "source_chats",
-    "destination", "control_chat", "admin_user_id", "delivery_modes",
-    "copy_mode", "max_media_mb", "link_appendix", "message_link",
-    "source_footer", "notify_media", "notify_on_start", "auto_restart",
-    "notify_bot_token",
-)
-
-
-def fields_for_action(action: str) -> tuple[str, ...]:
-    """Bir eylem için seçilebilir alanlar (liste eylemleri yalnızca listeleri sunar)."""
-    if action in ("add", "remove"):
-        names = [name for name, spec in SETTING_FIELDS.items()
-                 if spec["kind"] in LIST_KINDS]
-    else:
-        names = list(SETTING_FIELDS)
-    return tuple(sorted(names, key=lambda name: (FIELD_MENU_ORDER.index(name)
-                                                 if name in FIELD_MENU_ORDER else 99)))
-
-
-def parse_field_command(command: str) -> tuple[str, str] | None:
-    """/kelime_ekle → (alan, eylem). /mod gibi eylemsiz yazım 'set' sayılır.
-
-    Böylece her ayarın ayrı bir komutu varmış gibi davranır: istenen alan adı
-    + istenen eylem tek bir komutta birleşir (``/dahil_liste_ekle`` gibi).
-    """
-    raw = normalize(str(command or "")).strip().lstrip("/")
-    if not raw:
-        return None
-    if "_" in raw:
-        head, _, tail = raw.rpartition("_")
-        action = next((FIELD_ACTION_SUFFIXES[key] for key in alias_keys(tail)
-                       if key in FIELD_ACTION_SUFFIXES), None)
-        if action and head:
-            field = resolve_setting_field(head)
-            if field:
-                return field, action
-    field = resolve_setting_field(raw)
-    return (field, "set") if field else None
-
-
-def resolve_group_command(command: str) -> dict[str, Any] | None:
-    """/filtre, /bildirim … gibi grup komutunu gruba çevir; değilse None."""
-    for key in alias_keys(command):
-        group = GROUP_ALIASES.get(key)
-        if group:
-            return GROUP_BY_KEY.get(group)
-    return None
-
-
-# Ayar komutu olmayan sabit komutlar: /source gibi adlar alan takma adıyla
-# çakıştığı için bunlar ayar işleyicisine girmez.
-RESERVED_COMMANDS = frozenset({
-    "/status", "/durum", "/test", "/deneme", "/source", "/sources", "/kaynak",
-    "/kaynaklar", "/id", "/restart", "/yenile", "/yeniden", "/help", "/yardim",
-    "/yardım",
-})
-
-
-def is_settings_command(command: str) -> bool:
-    """Bu komut ayar işleyicisine ait mi? (grup ve alan komutları dahil)"""
-    if command in RESERVED_COMMANDS:
-        return False
-    return (command in SETTINGS_COMMANDS
-            or resolve_group_command(command) is not None
-            or parse_field_command(command) is not None)
-
-
-def pick_from_menu(text: str, options: Sequence[Any]) -> str:
-    """Menü seçimini çöz: önce birebir eşleşme, sonra satır numarası."""
-    raw = str(text or "").strip()
-    for option in options:
-        if normalize(raw) == normalize(str(option)):
-            return str(option)
-    if raw.isdigit():
-        index = int(raw)
-        if 1 <= index <= len(options):
-            return str(options[index - 1])
-    return raw
-
-
-def value_options_for(field: str, action: str, config: dict) -> list[str]:
-    """Bir alan için numarayla seçilebilecek değerler.
-
-    Hem çok adımlı akışta hem de tek mesajda biten komutlarda aynı davranış:
-    enum alanlarda ve listeden silerken numara yazmak çalışır.
-    """
-    spec = SETTING_FIELDS.get(field, {})
-    if spec.get("kind") == "enum":
-        return [str(choice) for choice in spec["choices"]]
-    if action == "remove" and spec.get("kind") in LIST_KINDS:
-        return [str(item) for item in (config.get(field) or [])]
-    if action == "set" and spec.get("kind") == "bool":
-        return ["açık", "kapalı"]
-    return []
-
-
-# --- bekleyen (çok adımlı) işlem ------------------------------------------
-
 def pending_key(event: Any) -> tuple[int, int]:
     return (int(getattr(event, "chat_id", 0) or 0),
             int(getattr(event, "sender_id", 0) or 0))
@@ -1699,12 +1463,13 @@ def set_pending(key: tuple[int, int], **data: Any) -> None:
     PENDING[key] = data
 
 
-def take_pending(key: tuple[int, int]) -> dict[str, Any] | None:
-    """Bekleyen işlemi al ve sil; süresi dolduysa yok say."""
-    item = PENDING.pop(key, None)
+def peek_pending(key: tuple[int, int]) -> dict[str, Any] | None:
+    """Süresi dolmamış işlemi al; süresi dolduysa bellekten temizle."""
+    item = PENDING.get(key)
     if item is None:
         return None
     if time.time() - float(item.get("at", 0)) > PENDING_TTL_SECONDS:
+        PENDING.pop(key, None)
         return None
     return item
 
@@ -1713,383 +1478,29 @@ def drop_pending(key: tuple[int, int]) -> None:
     PENDING.pop(key, None)
 
 
-def build_group_text(group: dict[str, Any], config: dict) -> str:
-    """Bir grubun ayarlarını, değerleri ve kısa komutlarıyla listeler."""
-    lines = [f"{group['icon']} {group['title']} — {group['desc']}", ""]
-    for index, field in enumerate(group["fields"], start=1):
-        spec = SETTING_FIELDS[field]
-        lines.append(f"{index}. {field} — {spec['help']}")
-        lines.append(f"   değer: {format_value(field, config.get(field))}")
-        if spec["kind"] in LIST_KINDS:
-            lines.append(f"   ➕ {short_command(field, 'ekle')} <değer>"
-                         f"   ➖ {short_command(field, 'sil')} <değer>"
-                         f"   👁 {short_command(field, 'goster')}")
-        else:
-            lines.append(f"   ✏️ {short_command(field)} <değer>"
-                         f"   👁 {short_command(field, 'goster')}")
-        lines.append("")
-    lines.append("Komuta dokunup değeri yaz ya da yalnızca komutu gönder: "
-                 "bot değeri sana sorar.")
-    lines.append("Diğer gruplar: /ayar · Bekleyen işlemi iptal: /iptal")
-    return "\n".join(lines)
-
-
-def build_field_menu(action: str, config: dict) -> tuple[str, list[str]]:
-    """'/ekle' gibi argümansız bir eylemde gösterilecek alan menüsü.
-
-    Dönen ikinci değer menüdeki alanların sırası: kullanıcı numarayla da
-    seçebilsin diye kaydediliyor.
-    """
-    titles = {"add": ("➕", "Hangi listeye ekleyelim?"),
-              "remove": ("➖", "Hangi listeden çıkaralım?"),
-              "set": ("✏️", "Hangi ayarı değiştirelim?"),
-              "show": ("👁", "Hangi ayarı gösterelim?")}
-    icon, title = titles.get(action, titles["set"])
-    options = list(fields_for_action(action))
-    example = FIELD_SHORT_NAMES.get(options[0], options[0]) if options else "kelime"
-    # Menüde gösterilen komut eyleme göre: /kelime_ekle, /kelime_sil, /kelime…
-    suffix = {"add": "ekle", "remove": "sil", "show": "goster"}.get(action, "")
-    lines = [f"{icon} {title}", ""]
-    for index, field in enumerate(options, start=1):
-        lines.append(f"{index}. {field} — {SETTING_FIELDS[field]['help']}")
-        lines.append(f"   şu an: {format_value(field, config.get(field))}"
-                     f"   ·   {short_command(field, suffix)}")
-    lines += ["", f"Numarayı yaz ya da kısa adı yaz (örn. 2 veya {example}).",
-              "İptal: /iptal"]
-    return "\n".join(lines), options
-
-
-def build_value_prompt(field: str, action: str, config: dict) -> tuple[str, list[str]]:
-    """Alan seçildikten sonra gösterilen 'değeri yaz' sorusu.
-
-    Dönen ikinci değer numarayla seçilebilecek seçenekler (enum değerleri ya da
-    listedeki mevcut kayıtlar); boşsa kullanıcı serbest metin yazar.
-    """
-    spec = SETTING_FIELDS[field]
-    kind = spec["kind"]
-    lines = [f"✍️ {field} — {spec['help']}", ""]
-
-    if action == "remove" and kind in LIST_KINDS:
-        value = config.get(field) or []
-        if not value:
-            return (f"ℹ️ {field} zaten boş; silinecek bir şey yok.", [])
-        lines.append("Hangisini silelim?")
-        lines.append("")
-        for index, item in enumerate(value[:40], start=1):
-            lines.append(f" {index}. {item}")
-        if len(value) > 40:
-            lines.append(f" … (+{len(value) - 40} kayıt daha; değerini yaz)")
-        lines += ["", "Numara veya değer yaz · hepsi için: hepsi · İptal: /iptal"]
-        return "\n".join(lines), [str(item) for item in value]
-
-    if kind == "enum":
-        choices = list(spec["choices"])
-        lines.append("Seçenekler:")
-        lines.append("")
-        for index, choice in enumerate(choices, start=1):
-            lines.append(f" {index}. {choice}")
-        lines += ["", f"Şu an: {format_value(field, config.get(field))}",
-                  "Numarayı yaz ya da değerin kendisini yaz · İptal: /iptal"]
-        return "\n".join(lines), [str(choice) for choice in choices]
-
-    if kind == "enum_list":
-        choices = list(spec["choices"])
-        lines.append(f"Geçerli değerler: {', '.join(choices)}")
-        lines.append("Virgülle sırala (örn. copy,forward) · İptal: /iptal")
-        return "\n".join(lines), [str(choice) for choice in choices]
-
-    if kind == "bool":
-        lines.append("açık / kapalı yaz (true/false, 1/0 da olur)")
-        lines.append(f"Şu an: {format_value(field, config.get(field))} · İptal: /iptal")
-        return "\n".join(lines), ["açık", "kapalı"]
-
-    if kind in ("chat", "chat_list"):
-        lines.append("@kullaniciadi veya -100... ID yaz"
-                     + (" (virgülle çoklu)" if kind == "chat_list" else ""))
-        lines.append("İptal: /iptal")
-        return "\n".join(lines), []
-
-    if kind == "id_list":
-        lines.append("Kullanıcı ID'si (sayı) yaz · İptal: /iptal")
-        return "\n".join(lines), []
-
-    if kind == "int":
-        lines.append(f"Sayı yaz (min {spec.get('min', 0)}"
-                     f"{', max ' + str(spec['max']) if spec.get('max') is not None else ''})"
-                     " · İptal: /iptal")
-        return "\n".join(lines), []
-
-    if kind == "secret":
-        lines.append("Token'ı yapıştır (silmek için: yok) · İptal: /iptal")
-        return "\n".join(lines), []
-
-    if kind in LIST_KINDS:
-        lines.append(("Şimdi değeri yaz" if action == "add" else "Yeni listeyi yaz")
-                     + " (virgülle çoklu: çay, kahve) · İptal: /iptal")
-        return "\n".join(lines), []
-
-    lines.append("Şimdi yeni değeri yaz · İptal: /iptal")
-    return "\n".join(lines), []
-
-
-def format_value(field: str, value: Any) -> str:
-    """Ayar değerini okunabilir tek satıra indir (sırları gizler)."""
-    spec = SETTING_FIELDS.get(field, {})
-    if spec.get("kind") == "secret":
-        return "var" if str(value or "").strip() else "yok"
-    if isinstance(value, bool):
-        return "açık" if value else "kapalı"
-    if value is None:
-        return "(boş)"
-    if isinstance(value, (list, tuple)):
-        if not value:
-            return "(boş liste)"
-        items = [str(item) for item in value]
-        shown = ", ".join(items[:8])
-        return f"{len(items)} kayıt: {shown}" + (f" … (+{len(items) - 8})" if len(items) > 8 else "")
-    return str(value)
+def new_telegram_edit(action: str, config: dict) -> dict[str, Any]:
+    """Bir kişi için geçici düzenleme oturumu oluştur; asıl config değişmez."""
+    snapshot = copy.deepcopy(config)
+    return {
+        "stage": "category",
+        "action": action,
+        "base_config": snapshot,
+        "draft_config": copy.deepcopy(snapshot),
+    }
 
 
 class ConfigStore:
-    """config.json'ı tutar: doğrular, çalışan bot'a uygular, kalıcı yazar.
-
-    Değişiklik akışı: doğrula → config'i güncelle → çalışan bot'a uygula →
-    dosyaya/repo'ya yaz. Herhangi bir adım kalıcı yazmadan önce başarısız
-    olursa çağıran taraf ``restore()`` ile eski hâle döner.
-    """
+    """Config dosyasını ve liste taslağı sırasında gereken anlık görüntüyü tut."""
 
     def __init__(self, path: str | os.PathLike[str], config: dict) -> None:
         self.path = Path(path)
         self.config: dict = config
-        self.undo: dict | None = None
-        self.last_saved_at = 0.0
-        self.last_save_note = "bu oturumda henüz kaydedilmedi"
 
-    # --- alan adı -------------------------------------------------------
-    def resolve_field(self, raw: str) -> str | None:
-        """Yazılan alan adını kurallı isme çevir (kısa/Türkçe adlar dahil)."""
-        key = normalize(str(raw or "")).strip().lstrip("/")
-        if key in SETTING_FIELDS:
-            return key
-        return FIELD_ALIASES.get(key)
-
-    # --- anlık görüntü --------------------------------------------------
     def snapshot(self) -> dict:
         return copy.deepcopy(self.config)
 
     def restore(self, snapshot: dict) -> None:
-        """Config'i verilen görüntüye döndür (geri alma için)."""
         self.config = copy.deepcopy(snapshot)
-        self.undo = None
-
-    def _begin(self) -> None:
-        """Değişiklikten önceki hâli geri alma tamponuna yaz."""
-        self.undo = copy.deepcopy(self.config)
-
-    def revert(self) -> str:
-        """Son değişikliği geri al; geri alınacak şey yoksa bilgi döner."""
-        if self.undo is None:
-            return "ℹ️ Geri alınacak bir değişiklik yok."
-        before, after = self.undo, self.snapshot()
-        self.config = before
-        self.undo = None
-        changed = [name for name in SETTING_FIELDS
-                   if before.get(name) != after.get(name)]
-        return "↩️ Geri alındı: " + (", ".join(changed) if changed else "değişiklik yok")
-
-    def mark_saved(self) -> None:
-        self.last_saved_at = time.time()
-
-    def _as_list(self, field: str) -> list[Any]:
-        """Alanın liste hâli.
-
-        ``admin_user_id`` config'te çoğu zaman tek sayı olarak durur
-        (``1143378073``); liste komutlarının bunu da liste gibi görmesi gerekir,
-        aksi halde ``list(1143378073)`` TypeError verir.
-        """
-        value = self.config.get(field)
-        if value is None:
-            return []
-        if isinstance(value, (list, tuple, set)):
-            return list(value)
-        return [value]
-
-    # --- değiştirme -----------------------------------------------------
-    def set_field(self, raw_field: str, raw_value: Any) -> tuple[bool, str, str | None]:
-        """Alanı doğrula ve değiştir: (ok, mesaj, alan)."""
-        field = self.resolve_field(raw_field)
-        if field is None:
-            return False, f"❌ Bilinmeyen alan: {raw_field}\n\n{field_help()}", None
-        spec = SETTING_FIELDS[field]
-        if spec["kind"] in LIST_KINDS:
-            ok, value, error = coerce_list(spec, raw_value)
-        else:
-            ok, value, error = coerce_scalar(spec, raw_value)
-        if not ok:
-            return False, f"❌ {field}: {error}\n{spec['help']}", None
-        old = self.config.get(field)
-        if old == value:
-            return False, f"ℹ️ {field} zaten {format_value(field, value)}", None
-        self._begin()
-        self.config[field] = value
-        return True, f"✅ {field}: {format_value(field, old)} → {format_value(field, value)}", field
-
-    def add_to_field(self, raw_field: str, raw_value: Any) -> tuple[bool, str, str | None]:
-        """Liste alanına öğe ekle: (ok, mesaj, alan)."""
-        field = self.resolve_field(raw_field)
-        if field is None:
-            return False, f"❌ Bilinmeyen alan: {raw_field}\n\n{field_help()}", None
-        spec = SETTING_FIELDS[field]
-        if spec["kind"] not in LIST_KINDS:
-            return False, (f"❌ {field} bir liste değil; eklemek yerine şunu kullan: "
-                           f"/ayar_set {field} <deger>"), None
-        ok, items, error = coerce_list(spec, raw_value)
-        if not ok:
-            return False, f"❌ {field}: {error}", None
-        existing = self._as_list(field)
-        known = {self._item_key(spec, item) for item in existing}
-        added: list[Any] = []
-        for item in items:
-            key = self._item_key(spec, item)
-            if key in known:
-                continue
-            existing.append(item)
-            known.add(key)
-            added.append(item)
-        if not added:
-            return False, f"ℹ️ {', '.join(str(x) for x in items)} zaten {field} içinde.", None
-        self._begin()
-        self.config[field] = existing
-        return True, (f"➕ {field}: {', '.join(format_value(field, x) for x in added)} eklendi "
-                      f"(toplam {len(existing)})"), field
-
-    def remove_from_field(self, raw_field: str, raw_value: Any) -> tuple[bool, str, str | None]:
-        """Liste alanından öğe çıkar: değer, satır numarası veya 'hepsi'."""
-        field = self.resolve_field(raw_field)
-        if field is None:
-            return False, f"❌ Bilinmeyen alan: {raw_field}\n\n{field_help()}", None
-        spec = SETTING_FIELDS[field]
-        if spec["kind"] not in LIST_KINDS:
-            return False, f"❌ {field} bir liste değil; silmek için /ayar_set {field} <deger>", None
-        current = self._as_list(field)
-        if not current:
-            return False, f"ℹ️ {field} zaten boş.", None
-        targets = split_values(raw_value)
-        if not targets:
-            return False, (f"❌ Silmek için bir değer veya satır numarası ver. "
-                           f"Örnek: /ayar_sil {field} 1"), None
-        if len(targets) == 1 and normalize(targets[0]) in {"hepsi", "tumu", "tümü", "all",
-                                                           "*", "clear", "bos", "boş", "hepsini"}:
-            self._begin()
-            self.config[field] = []
-            return True, f"🧹 {field} temizlendi ({len(current)} kayıt silindi).", field
-
-        doomed: set[int] = set()
-        unknown: list[str] = []
-        for target in targets:
-            digits = str(target).strip()
-            if digits.isdigit():
-                index = int(digits)
-                if 1 <= index <= len(current):
-                    doomed.add(index - 1)
-                    continue
-            ok, typed = coerce_item(spec, target)
-            if not ok:
-                unknown.append(str(target))
-                continue
-            key = self._item_key(spec, typed)
-            for index, item in enumerate(current):
-                if self._item_key(spec, item) == key:
-                    doomed.add(index)
-        if not doomed:
-            hint = f" (bilinmeyen: {', '.join(unknown)})" if unknown else ""
-            return False, f"ℹ️ {', '.join(targets)} {field} içinde bulunamadı{hint}.", None
-        removed = [current[index] for index in sorted(doomed)]
-        remaining = [item for index, item in enumerate(current) if index not in doomed]
-        self._begin()
-        self.config[field] = remaining
-        return True, (f"➖ {field}: {', '.join(format_value(field, x) for x in removed)} silindi "
-                      f"(kalan {len(remaining)})"), field
-
-    @staticmethod
-    def _item_key(spec: dict, value: Any) -> str:
-        """Liste öğelerini karşılaştırma anahtarı (yazım farkını yok sayar)."""
-        return normalize(str(value)) if spec.get("fold") else str(value)
-
-    # --- gösterim -------------------------------------------------------
-    def status_line(self) -> str:
-        if not self.last_saved_at:
-            line = "📄 Kaynak: config.json (bu oturumda değişiklik yapılmadı)"
-        else:
-            line = (f"📄 config.json · son kayıt: {humanize(time.time() - self.last_saved_at)} önce "
-                    f"· {self.last_save_note}")
-        if ENV_OVERRIDES:
-            line += (f"\n⚠️ Ortam değişkenleri şu alanları eziyor: {', '.join(sorted(ENV_OVERRIDES))}. "
-                     "Kaydedilen dosyada ortam değerleri yazılı olur.")
-        return line
-
-
-def build_settings_text(store: ConfigStore, only: str | None = None) -> str:
-    """/ayar_goster çıktısını kur."""
-    config = store.config
-    if only:
-        spec = SETTING_FIELDS[only]
-        value = config.get(only)
-        lines = [f"⚙️ {only}", "", f"• değer: {format_value(only, value)}",
-                 f"• açıklama: {spec['help']}"]
-        if spec["kind"] in LIST_KINDS and isinstance(value, (list, tuple)) and value:
-            lines.append("")
-            for index, item in enumerate(value, start=1):
-                if index > 40:
-                    lines.append(f"  … (+{len(value) - 40} kayıt daha)")
-                    break
-                lines.append(f"  {index}. {item}")
-            lines += ["", f"Silmek için: /ayar_sil {only} <numara veya değer>",
-                      f"Eklemek için: /ayar_ekle {only} <deger>"]
-        elif spec["kind"] == "enum":
-            lines += ["", f"Geçerli değerler: {', '.join(spec['choices'])}"]
-        lines += ["", store.status_line()]
-        return "\n".join(lines)
-
-    mode = match_mode_of(config)
-    mode_label = {
-        "any": "any (kelimelerden biri yeterli)",
-        "all": "all (kelimelerin hepsi zorunlu)",
-        "forward_all": "forward_all → 🔓 TÜM mesajlar iletiliyor",
-    }[mode]
-    lines = [
-        "⚙️ Aktif ayarlar (çalışan bot)",
-        "",
-        "🔎 Filtre",
-        f"• match_mode: {mode_label}",
-        f"• include_keywords: {format_value('include_keywords', config.get('include_keywords'))}",
-        f"• exclude_keywords: {format_value('exclude_keywords', config.get('exclude_keywords'))}",
-        "",
-        "📤 İletim",
-        f"• destination: {DESTINATION_LABEL}",
-        f"• delivery_modes: {' → '.join(DELIVERY_CHAIN) or 'yok'}",
-        f"• copy_mode: {config.get('copy_mode', 'forward')}",
-        f"• max_media_mb: {MAX_MEDIA_MB}",
-        f"• link_appendix: {LINK_APPENDIX_MODE} | mesaj linki: "
-        f"{'açık' if MESSAGE_LINK_LINE else 'kapalı'}",
-        "",
-        "🔔 Bildirim",
-        f"• notify_bot_token: {format_value('notify_bot_token', config.get('notify_bot_token'))}",
-        f"• kaynak altbilgisi: {'açık' if SOURCE_FOOTER else 'kapalı'} | "
-        f"bildirim medyası: {'açık' if NOTIFY_MEDIA else 'kapalı'}",
-        "",
-        "🛠 Çalışma",
-        f"• source_chats: {format_value('source_chats', config.get('source_chats'))} "
-        f"(çözülen {len(SOURCE_IDS)})",
-        f"• control_chat: {', '.join(CONTROL_NAMES) or 'me'}",
-        f"• admin_user_id: {', '.join(str(i) for i in sorted(ADMIN_IDS)) or 'tanımsız'}",
-        f"• auto_restart: {format_value('auto_restart', config.get('auto_restart'))} | "
-        f"notify_on_start: {format_value('notify_on_start', config.get('notify_on_start'))}",
-        "",
-        store.status_line(),
-        "Ayrıntı için: /ayar_goster <alan> · Menü: /ayar",
-    ]
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -2296,11 +1707,7 @@ async def save_config(store: ConfigStore, note: str = "") -> tuple[bool, str]:
     except OSError as exc:
         return False, (f"⚠️ Ayar çalışan botta aktif ama config.json yazılamadı "
                        f"({type(exc).__name__}: {exc}) — yeniden başlatınca kaybolur.")
-    store.mark_saved()
     status, detail = await asyncio.to_thread(commit_and_push, store.path, note)
-    store.last_save_note = {"pushed": "repo'ya işlendi", "clean": "depo zaten güncel",
-                            "local": "yerelde kaldı", "no-repo": "depoya işlenemedi",
-                            "error": "depoya işlenemedi"}.get(status, "kaydedildi")
     return True, SAVE_STATUS_TEXT.get(status, SAVE_STATUS_TEXT["error"]).format(detail=detail)
 
 
@@ -2312,7 +1719,7 @@ def apply_runtime_config(config: dict) -> list[str]:
     """Global çalışma ayarlarını config'ten yenile (Telegram bağlantısı gerekmez)."""
     global FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE, ADMIN_IDS
     global DELIVERY_CHAIN, MAX_MEDIA_MB
-    global LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS, APPEND_LINKS
+    global LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
     global MESSAGE_LINK_LINE, SOURCE_FOOTER, NOTIFY_MEDIA, NOTIFY_BOT_TOKEN
 
     notes: list[str] = []
@@ -2327,7 +1734,6 @@ def apply_runtime_config(config: dict) -> list[str]:
         log.warning("max_media_mb sayı değil, 25 kabul edildi.")
         MAX_MEDIA_MB = 25
     LINK_APPENDIX_MODE = link_appendix_mode(config)
-    APPEND_LINKS = LINK_APPENDIX_MODE != "off"
     LINK_KINDS = link_kinds_for(LINK_APPENDIX_MODE, bot=False)
     BOT_LINK_KINDS = link_kinds_for(LINK_APPENDIX_MODE, bot=True)
     MESSAGE_LINK_LINE = config_flag(config.get("message_link"), True)
@@ -2337,19 +1743,14 @@ def apply_runtime_config(config: dict) -> list[str]:
     NOTIFY_BOT_TOKEN = "" if token.lower() in {"null", "none", "yok"} else token
 
     if FILTER_MODE == "forward_all":
-        notes.append("🔓 Filtre kapalı: kaynaklardaki TÜM mesajlar iletiliyor"
-                     + (" (exclude_keywords yine de engeller)." if FILTER_EXCLUDE else "."))
+        notes.append("🔓 Dahili kelimeler yok sayılıyor; kaynak mesajları iletiliyor"
+                     + (" (harici kelimeler yine engeller)." if FILTER_EXCLUDE else "."))
     return notes
 
 
 def changed_groups(before: dict, after: dict) -> set[str]:
-    """İki config arasında Telegram'da yeniden çözülmesi gereken gruplar."""
-    groups: set[str] = set()
-    for field, spec in SETTING_FIELDS.items():
-        group = spec.get("resolve")
-        if group and before.get(field) != after.get(field):
-            groups.add(group)
-    return groups
+    """Liste akışında kaynak listesi değiştiyse kaynakları yeniden çöz."""
+    return {"sources"} if before.get("source_chats") != after.get("source_chats") else set()
 
 
 async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = False) -> list[str]:
@@ -2461,23 +1862,6 @@ async def resolve_chat_groups(
     return notes, None
 
 
-def parse_setting_args(rest: str) -> tuple[str, str]:
-    """/ayar_set alan=deger ve /ayar_set alan deger yazımlarının ikisini de kabul et."""
-    text = (rest or "").strip()
-    if "=" in text:
-        field, _, value = text.partition("=")
-        if field.strip():
-            return field.strip(), value.strip()
-    field, _, value = text.partition(" ")
-    return field.strip(), value.strip()
-
-
-def strip_prefix(text: str) -> str:
-    """'✅ match_mode: any → all' → 'match_mode: any → all' (baştaki işareti at)."""
-    first_line = text.splitlines()[0] if text else ""
-    return re.sub(r"^[\W_]+", "", first_line) or first_line
-
-
 async def reply_chunked(event: Any, text: str, limit: int = 3500) -> None:
     """Uzun yanıtı Telegram'ın 4096 karakter sınırına göre parçalara böl."""
     chunks = chunk_text(text, limit)
@@ -2563,8 +1947,7 @@ def run_check(config_path: str | None) -> int:
 
 
 async def main(argv: Sequence[str] | None = None) -> int:
-    global SELF_ID, CONFIG_STORE
-    global APPEND_LINKS, SOURCE_FOOTER, NOTIFY_MEDIA
+    global SELF_ID, SOURCE_FOOTER, NOTIFY_MEDIA
     global MESSAGE_LINK_LINE, LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
 
     args = build_parser().parse_args(argv)
@@ -2579,10 +1962,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
             log.error("Yapılandırma sorunu: %s", problem)
         raise SystemExit(1)
 
-    # Ayar mağazası: Telegram'dan gelen değişiklikler burada tutulur ve hem
-    # çalışan bot'a uygulanır hem de config.json'a geri yazılır.
+    # Config nesnesi çalışan filtre ve geçici liste taslakları için kullanılır.
     store = ConfigStore(config_path(args.config), config)
-    CONFIG_STORE = store
 
     gh_pat = os.getenv("GH_PAT", "").strip()
     auto_restart = bool(config.get("auto_restart", True))
@@ -2669,209 +2050,237 @@ async def main(argv: Sequence[str] | None = None) -> int:
         resolved, fatal = await resolve_chat_groups(client, store.config, targets, strict=bool(targets))
         return notes + resolved, fatal
 
-    async def apply_settings_change(event: events.NewMessage.Event, field: str,
-                                    value: str, action: str) -> None:
-        """Doğrulanmış bir ayar değişikliğini uygula, kaydet ve bildir.
+    settings_lock = asyncio.Lock()
 
-        Hem tek mesajda biten komutlar (/kelime_ekle çay) hem de çok adımlı
-        akış (/ekle → menü → değer) sonunda buraya gelir.
-        """
+    async def save_pending_change(event: events.NewMessage.Event,
+                                 key: tuple[int, int]) -> None:
+        """Taslağı çakışma kontrolünden geçir, uygula ve sadece şimdi GitHub'a yaz."""
+        async with settings_lock:
+            pending = peek_pending(key)
+            if pending is None:
+                await event.reply("ℹ️ Kaydedilecek bekleyen bir değişiklik yok. Önce /ekle veya /çıkar.")
+                return
+            if pending.get("stage") != "confirm":
+                await event.reply("ℹ️ İşlem henüz tamamlanmadı. Önce istenen liste/değer seçimini yap veya /iptal.")
+                return
 
-        async def finish(lines: list[str]) -> None:
-            await reply_chunked(event, "\n".join(line for line in lines if line))
+            field = str(pending.get("field") or "")
+            base = pending.get("base_config") or {}
+            draft = pending.get("draft_config") or {}
+            if field not in TELEGRAM_LIST_FIELDS or field not in draft:
+                drop_pending(key)
+                await event.reply("❌ Taslak geçersiz olduğu için iptal edildi. Yeniden /ekle veya /çıkar ile başla.")
+                return
 
-        # Numarayla seçim: hem "/mod 3" hem de "/mod → 3" aynı sonucu verir.
-        options = value_options_for(field, action, store.config)
-        if options:
-            value = pick_from_menu(str(value), options)
+            before = store.snapshot()
+            if before.get(field) != base.get(field):
+                drop_pending(key)
+                await event.reply(
+                    f"⚠️ {TELEGRAM_LIST_META[field]['title']} taslağı hazırlanırken başka bir değişiklik yapılmış.\n"
+                    "Güncel listeyi korudum; lütfen /ekle veya /çıkar ile yeniden başla."
+                )
+                return
 
-        before = store.snapshot()
-        if action == "set":
-            ok, message, field = store.set_field(field, value)
-        elif action == "add":
-            ok, message, field = store.add_to_field(field, value)
-        else:  # remove
-            ok, message, field = store.remove_from_field(field, value)
-        if not ok:
-            await finish([message])
+            candidate = copy.deepcopy(before)
+            candidate[field] = copy.deepcopy(draft[field])
+            groups = changed_groups(before, candidate)
+            store.config = candidate
+            notes, fatal = await apply_setting_change(before)
+            if fatal:
+                store.restore(before)
+                apply_runtime_config(store.config)
+                if groups:
+                    await resolve_chat_groups(client, store.config, groups, strict=False)
+                drop_pending(key)
+                await event.reply(
+                    f"❌ Değişiklik uygulanamadı: {fatal}\n"
+                    "Önceki ayarlar korundu; taslağı iptal ettim. Grup/kanal bilgisini kontrol edip yeniden dene."
+                )
+                return
+
+            ok, save_note = await save_config(store, f"{TELEGRAM_LIST_META[field]['title']} güncellendi")
+            if not ok:
+                store.restore(before)
+                apply_runtime_config(store.config)
+                if groups:
+                    await resolve_chat_groups(client, store.config, groups, strict=False)
+                set_pending(key, **pending)
+                await reply_chunked(event, "\n".join([
+                    "❌ Değişiklik dosyaya yazılamadı; çalışan ayarlar geri yüklendi.",
+                    save_note,
+                    "Taslak korundu. Dosya erişimini düzelttikten sonra /kaydet ile tekrar deneyebilir veya /iptal edebilirsin.",
+                ]))
+                return
+
+            drop_pending(key)
+            log.info("Telegram liste ayarı kaydedildi: %s (%s)", field, pending.get("action"))
+            await reply_chunked(event, "\n".join([
+                "✅ Değişiklik kaydedildi ve çalışan ayarlara uygulandı.",
+                f"📂 {TELEGRAM_LIST_META[field]['title']}",
+                f"📊 Güncel kayıt sayısı: {len(telegram_list_items(store.config, field))}",
+                *notes,
+                save_note,
+            ]))
+
+    async def change_filter_mode(event: events.NewMessage.Event, mode: str, rest: str) -> None:
+        """Filtreyi iki kısa komutla değiştir, config'e kaydet ve runtime'a uygula."""
+        if rest:
+            await event.reply("Bu komut ek argüman almaz; yalnızca /hepsinial veya /filtrelial yaz.")
             return
 
-        notes, fatal = await apply_setting_change(before)
-        if fatal:
-            groups = changed_groups(before, store.config)
-            store.restore(before)
-            await apply_setting_change(store.config, groups)
-            await finish([f"❌ {strip_prefix(message)} — uygulanamadı: {fatal}",
-                          "↩️ Eski ayar geri yüklendi, dosyaya yazılmadı."])
-            return
+        async with settings_lock:
+            before = store.snapshot()
+            current = match_mode_of(before)
+            if current == mode:
+                already = "Tüm mesaj modu zaten açık." if mode == "forward_all" else "Kelime filtresi zaten açık."
+                await event.reply(f"ℹ️ {already}")
+                return
 
-        _, save_note = await save_config(store, f"{field} güncellendi")
-        log.info("Ayar değişti: %s", message)
-        await finish([message, *notes, save_note])
+            candidate = copy.deepcopy(before)
+            candidate["match_mode"] = mode
+            store.config = candidate
+            apply_runtime_config(store.config)
+            ok, save_note = await save_config(
+                store,
+                "tüm mesaj modu açıldı" if mode == "forward_all" else "kelime filtresi açıldı",
+            )
+            if not ok:
+                store.restore(before)
+                apply_runtime_config(store.config)
+                await reply_chunked(event, "❌ Mod değişikliği kaydedilemedi; önceki filtre geri yüklendi.\n" + save_note)
+                return
+
+            if mode == "forward_all":
+                summary = "🔓 Tüm mesaj modu açık. Dahili kelimeler yok sayılır; harici kelimeler yine engeller."
+            elif store.config.get("include_keywords"):
+                summary = "🔎 Kelime filtresi açık. Dahili kelimelerden en az biri eşleşmeli; harici kelimeler yine engeller."
+            else:
+                summary = "🔎 Kelime filtresi açık, ancak dahili liste boş olduğu için tüm mesajlar geçer."
+            await reply_chunked(event, summary + "\n" + save_note)
 
     async def handle_settings_command(event: events.NewMessage.Event,
                                       command: str, rest: str) -> None:
-        """/ayar* komutlarını çalıştır (yetki kontrolü çağıran tarafta yapıldı).
+        """Üç izinli liste için taslak akışını yönet."""
+        key = pending_key(event)
+        pending = peek_pending(key)
 
-        Üç kullanım biçimi desteklenir:
-          • doğrudan:  /kelime_ekle çay      → alan+eylem tek komutta
-          • dallı:     /ekle                 → menü → alan seç → değer yaz
-          • gruplu:    /filtre               → grubun tüm ayarları ve komutları
-        """
-
-        async def finish(lines: list[str]) -> None:
-            await reply_chunked(event, "\n".join(line for line in lines if line))
-
-        async def ask_value(field: str, action: str) -> None:
-            """Alan belli, değer yok: kullanıcıya sor ve cevabı bekle."""
-            text, options = build_value_prompt(field, action, store.config)
-            set_pending(pending_key(event), stage="value", action=action,
-                        field=field, options=options)
-            await finish([text])
-
-        async def ask_field(action: str) -> None:
-            """Hiç argüman yok: alan menüsünü göster ve seçimi bekle."""
-            text, options = build_field_menu(action, store.config)
-            set_pending(pending_key(event), stage="field", action=action,
-                        options=options)
-            await finish([text])
-
-        # --- ana menü ----------------------------------------------------
         if command in CMD_SETTINGS_MENU:
-            await finish([build_main_menu_text(), "", store.status_line()])
+            await reply_chunked(event, build_main_menu_text())
             return
 
-        # --- grup menüsü (/filtre, /bildirim …) --------------------------
-        group = resolve_group_command(command)
-        if group is not None:
-            await finish([build_group_text(group, store.config), "",
-                          store.status_line()])
-            return
+        if command in CMD_SETTINGS_ADD or command in CMD_SETTINGS_REMOVE:
+            if pending and pending.get("stage") == "confirm":
+                await event.reply(
+                    "📝 Önce bekleyen taslağı sonuçlandır.\n"
+                    "✅ /kaydet ile kaydet veya ↩️ /iptal ile vazgeç."
+                )
+                return
+            if rest.strip():
+                await event.reply(
+                    "Komutu tek başına gönder: /ekle veya /çıkar.\n"
+                    "Ardından listelerden birini seçip değeri ayrı mesaj olarak yaz."
+                )
+                return
 
-        # --- göster / kaydet / geri al -----------------------------------
-        if command in CMD_SETTINGS_SHOW:
-            wanted = rest.strip()
-            if not wanted:
-                await ask_field("show")
-                return
-            field = store.resolve_field(wanted)
-            if field is None:
-                await finish([f"❌ Bilinmeyen alan: {wanted}", "", field_help()])
-                return
-            await finish([build_settings_text(store, field)])
+            action = "add" if command in CMD_SETTINGS_ADD else "remove"
+            set_pending(key, **new_telegram_edit(action, store.config))
+            await reply_chunked(event, build_list_category_prompt(action, store.config))
             return
 
         if command in CMD_SETTINGS_SAVE:
-            _, note = await save_config(store, "ayarlar Telegram üzerinden kaydedildi")
-            await finish([note, store.status_line()])
+            if pending is None:
+                await event.reply("ℹ️ Kaydedilecek bekleyen bir değişiklik yok. Başlamak için /ekle veya /çıkar.")
+            else:
+                await save_pending_change(event, key)
             return
 
         if command in CMD_SETTINGS_REVERT:
-            key = pending_key(event)
-            if key in PENDING:
-                drop_pending(key)
-                await finish(["↩️ Bekleyen işlem iptal edildi."])
-                return
-            if store.undo is None:
-                await finish(["ℹ️ Geri alınacak bir değişiklik yok.",
-                              "İpucu: /ayar_kaydet ile mevcut ayarları yeniden yazabilirsin."])
-                return
-            before = store.snapshot()
-            message = store.revert()
-            notes, fatal = await apply_setting_change(before, None)
-            if fatal:
-                await finish([f"⚠️ {message}", fatal])
-                return
-            _, note = await save_config(store, "ayar değişikliği geri alındı")
-            await finish([message, *notes, note])
-            return
-
-        # Yeni bir komut geldi: yarım kalmış bekleyen işlem varsa düşür.
-        drop_pending(pending_key(event))
-
-        # --- eylem: ekle / sil / değiştir --------------------------------
-        if command in CMD_SETTINGS_ADD:
-            action = "add"
-        elif command in CMD_SETTINGS_REMOVE:
-            action = "remove"
-        elif command in CMD_SETTINGS_SET:
-            action = "set"
-        else:
-            parsed = parse_field_command(command)
-            if parsed is None:
-                await finish([f"❌ Bilinmeyen komut: {command}", "", build_main_menu_text()])
-                return
-            action = parsed[1]
-            # /kelime_ekle gibi komutlarda alan baştan belli; kalan metin değer.
-            field_raw, value = parsed[0], rest.strip()
-            if action == "show":
-                await finish([build_settings_text(store, parsed[0])])
-                return
-            if value:
-                await apply_settings_change(event, field_raw, value, action)
+            if pending is None:
+                await event.reply("ℹ️ İptal edilecek bekleyen bir işlem yok.")
             else:
-                await ask_value(field_raw, action)
+                drop_pending(key)
+                await event.reply("↩️ İşlem iptal edildi. Taslak silindi; ayarlar ve GitHub değişmedi.")
             return
 
-        # --- /ekle, /sil, /set: alan adı verilmiş mi? ---------------------
-        field_raw, value = parse_setting_args(rest)
-        if not field_raw:
-            await ask_field(action)
-            return
-
-        field = store.resolve_field(field_raw)
-        if field is None:
-            await finish([f"❌ Bilinmeyen alan: {field_raw}", "", field_help()])
-            return
-
-        if not value:
-            await ask_value(field, action)
-            return
-
-        await apply_settings_change(event, field, value, action)
+        return
 
     async def handle_pending_message(event: events.NewMessage.Event,
                                      raw: str) -> bool:
-        """Bekleyen çok adımlı işlem varsa bu mesajı o işlemin girdisi say.
-
-        Dönen değer mesajın işlendiğini gösterir; ``False`` ise çağıran taraf
-        mesajı yok sayar (komut değil, sadece sohbette yazılmış bir şey).
-        """
+        """Liste menüsü/değer bekleniyorsa bu mesajı taslak akışına uygula."""
         key = pending_key(event)
-        item = take_pending(key)
+        item = peek_pending(key)
         if item is None:
             return False
 
-        action = item.get("action", "set")
         text = raw.strip()
-
-        if item.get("stage") == "field":
-            options = item.get("options") or []
-            resolved = store.resolve_field(pick_from_menu(text, options))
-            if resolved is None:
-                await event.reply(
-                    f"❌ Geçerli bir seçim değil: {text}\n"
-                    "Numarayı ya da listede görünen adı yaz. İptal: /iptal")
+        if item.get("stage") == "category":
+            field = resolve_telegram_list(text)
+            if field is None:
                 set_pending(key, **item)
+                await reply_chunked(event, "❌ Seçimi anlayamadım. 1, 2, 3 yazabilir ya da listedeki adı seçebilirsin.\n\n"
+                                    + build_list_category_prompt(str(item.get("action")), store.config))
                 return True
-            prompt, value_options = build_value_prompt(resolved, action, store.config)
-            set_pending(key, stage="value", action=action, field=resolved,
-                        options=value_options)
-            if not value_options and prompt.startswith("ℹ️"):
-                await event.reply(prompt)
+
+            config = item.get("draft_config") or store.config
+            items = telegram_list_items(config, field)
+            if item.get("action") == "remove" and not items:
                 drop_pending(key)
+                await event.reply(f"ℹ️ {TELEGRAM_LIST_META[field]['title']} listesi boş; çıkarılacak kayıt yok.")
                 return True
-            await event.reply(prompt)
+
+            item["stage"] = "value"
+            item["field"] = field
+            set_pending(key, **item)
+            await reply_chunked(event, build_list_value_prompt(str(item.get("action")), field, config))
             return True
 
-        field = item.get("field") or ""
-        options = item.get("options") or []
-        value = pick_from_menu(text, options) if options else text
-        if action == "show":
-            await event.reply(build_settings_text(store, field))
+        if item.get("stage") == "value":
+            action = str(item.get("action") or "")
+            field = str(item.get("field") or "")
+            draft = item.get("draft_config") or store.config
+            ok, candidate, value, message = stage_telegram_list_change(draft, field, action, text)
+            if not ok:
+                set_pending(key, **item)
+                prompt = build_list_value_prompt(action, field, draft) if field in TELEGRAM_LIST_FIELDS else ""
+                await reply_chunked(event, "\n".join(part for part in [message, prompt] if part))
+                return True
+
+            if action == "add" and field == "source_chats":
+                try:
+                    await resolve_chat(client, value)
+                except Exception as exc:  # noqa: BLE001 - geçersiz kaynak taslağa alınmasın
+                    set_pending(key, **item)
+                    await reply_chunked(event, "\n".join([
+                        f"❌ Bu kanal/grup çözülemedi ({type(exc).__name__}).",
+                        "@kullanıcıadı veya -100... ID gönder; hesabın sohbete erişebildiğini kontrol et.",
+                        "",
+                        build_list_value_prompt(action, field, draft),
+                    ]))
+                    return True
+
+            item["stage"] = "confirm"
+            item["draft_config"] = candidate
+            item["field"] = field
+            item["value"] = value
+            set_pending(key, **item)
+            await reply_chunked(event, build_list_change_confirmation(action, field, value, candidate))
             return True
-        await apply_settings_change(event, field, value, action)
-        return True
+
+        if item.get("stage") == "confirm":
+            choice = resolve_confirmation_choice(text)
+            if choice == "save":
+                await save_pending_change(event, key)
+                return True
+            if choice == "cancel":
+                drop_pending(key)
+                await event.reply("↩️ İşlem iptal edildi. Taslak silindi; ayarlar ve GitHub değişmedi.")
+                return True
+            set_pending(key, **item)
+            await event.reply("📝 Taslak hazır. ✅ /kaydet (veya kaydet) ile kaydet; ↩️ /iptal (veya iptal) ile vazgeç.")
+            return True
+
+        drop_pending(key)
+        return False
 
     # --- İletim yolları -----------------------------------------------------
     # Korumalı (noforwards) kanallarda forward ve copy patlar; o yüzden sırayla
@@ -3099,8 +2508,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 f"• Kontrol sohbeti: {event.chat_id}\n"
                 f"• Senin kullanıcı ID'n: {event.sender_id}\n"
                 f"• Yetkili ID'ler: {', '.join(str(i) for i in sorted(ADMIN_IDS)) or 'tanımsız'}\n"
-                "Yetki almak için hesabın sahibine şunu yazdır:\n"
-                f"/admin_ekle {event.sender_id}"
+                "Yetki için hesap sahibinden admin_user_id değerini config.json'da güncellemesini iste."
             )
             return
 
@@ -3110,10 +2518,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return
 
         STATS["commands"] += 1
-        # Yeni bir komut yarım kalmış akışı düşürür (/iptal hariç: o akışı
-        # görmek için PENDING'e bakıyor).
-        if command not in CMD_SETTINGS_REVERT:
-            drop_pending(pending_key(event))
+        # Bekleyen liste düzenleme taslağını yalnızca /kaydet veya /iptal kapatır;
+        # /status gibi başka komutlar taslağı sessizce düşürmez.
         rest = raw[len(raw.split()[0]):].strip()
         log.info("Komut alındı: %s (chat=%s, sender=%s)", command, event.chat_id, event.sender_id)
 
@@ -3166,9 +2572,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await event.reply(("🔄 " if ok else "⚠️ ") + message)
         elif command in {"/help", "/yardim", "/yardım"}:
             await event.reply(HELP_TEXT)
-        elif is_settings_command(command):
-            # Ayar komutları en sonda: /ayar*, grup komutları (/filtre …) ve
-            # alan komutları (/kelime_ekle, /mod …) burada işlenir.
+        elif command in CMD_FILTER_ALL:
+            await change_filter_mode(event, "forward_all", rest)
+        elif command in CMD_FILTER_KEYWORDS:
+            await change_filter_mode(event, "any", rest)
+        elif command in SETTINGS_COMMANDS:
             await handle_settings_command(event, command, rest)
         else:
             await event.reply(f"Bilinmeyen komut: {raw}\n\n{HELP_TEXT}")

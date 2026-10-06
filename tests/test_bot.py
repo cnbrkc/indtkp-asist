@@ -244,9 +244,12 @@ class StatusTextTest(unittest.TestCase):
         self.assertIn("FırsatZ", sources)
         self.assertIn("çözülemedi", sources)
 
-    def test_help_text_lists_every_command(self):
-        for command in ("/status", "/test", "/source", "/restart", "/help"):
-            self.assertIn(command, bot.HELP_TEXT)
+    def test_help_text_lists_every_active_command_group(self):
+        for command in ("/status", "/test", "/source", "/id", "/restart", "/ayar",
+                        "/hepsinial", "/filtrelial", "/ekle", "/çıkar", "/kaydet",
+                        "/iptal", "/help"):
+            with self.subTest(command=command):
+                self.assertIn(command, bot.HELP_TEXT)
 
     def test_status_shows_forward_all_mode(self):
         bot.SOURCES.clear()
@@ -255,7 +258,7 @@ class StatusTextTest(unittest.TestCase):
         bot.CONTROL_NAMES.clear()
         bot.CONTROL_IDS.clear()
         status = bot.build_status_text({"match_mode": "forward_all", "include_keywords": ["çay"]})
-        self.assertIn("Tüm mesajlar", status)
+        self.assertIn("Dahili kelimeler yok sayılıyor", status)
         self.assertNotIn("Anahtar kelimeler", status)
 
 
@@ -304,277 +307,181 @@ class MatchModeTest(unittest.TestCase):
         self.assertTrue(any("forward_all" in p for p in problems), problems)
 
 
-class SettingsMenuTest(unittest.TestCase):
-    """Dallı ayar menüsünün saf (girdi/çıktı) yardımcıları."""
+class TelegramCommandTest(unittest.TestCase):
+    """Yalnızca belgelenen Telegram komutları tanınır."""
 
-    def test_group_commands_resolve(self):
-        self.assertEqual(bot.resolve_group_command("/filtre")["key"], "filtre")
-        self.assertEqual(bot.resolve_group_command("/FILTRE")["key"], "filtre")
-        self.assertEqual(bot.resolve_group_command("/iletim")["key"], "iletim")
-        self.assertIsNone(bot.resolve_group_command("/olmayan"))
-        self.assertIsNone(bot.resolve_group_command("/status"))
+    def test_filter_toggle_commands_are_active(self):
+        self.assertIn("/hepsinial", bot.CMD_FILTER_ALL)
+        self.assertIn("/filtrelial", bot.CMD_FILTER_KEYWORDS)
+        self.assertIn("/ekle", bot.SETTINGS_COMMANDS)
+        self.assertIn("/çıkar", bot.SETTINGS_COMMANDS)
+        self.assertIn("/kaydet", bot.SETTINGS_COMMANDS)
+        self.assertIn("/iptal", bot.SETTINGS_COMMANDS)
 
-    def test_field_commands_carry_their_own_action(self):
-        """/kelime_ekle gibi komutlar alanı ve eylemi birlikte taşır."""
-        self.assertEqual(bot.parse_field_command("/kelime_ekle"),
-                         ("include_keywords", "add"))
-        self.assertEqual(bot.parse_field_command("/kelime_sil"),
-                         ("include_keywords", "remove"))
-        self.assertEqual(bot.parse_field_command("/kelime_goster"),
-                         ("include_keywords", "show"))
-        self.assertEqual(bot.parse_field_command("/dahil_liste_ekle"),
-                         ("include_keywords", "add"))
-        self.assertEqual(bot.parse_field_command("/haric_liste_ekle"),
-                         ("exclude_keywords", "add"))
-        self.assertEqual(bot.parse_field_command("/KANAL_SİL"),
-                         ("source_chats", "remove"))
-
-    def test_bare_field_command_means_set(self):
-        self.assertEqual(bot.parse_field_command("/mod"), ("match_mode", "set"))
-        self.assertEqual(bot.parse_field_command("/hedef"), ("destination", "set"))
-        self.assertIsNone(bot.parse_field_command("/olmayan_alan"))
-
-    def test_settings_command_detection(self):
-        for command in ("/ayar", "/ayar_set", "/ekle", "/filtre", "/kelime_ekle", "/mod"):
+    def test_removed_general_settings_commands_are_not_active(self):
+        for command in ("/mod", "/token", "/kelime_ekle", "/filtre", "/ayar_set"):
             with self.subTest(command=command):
-                self.assertTrue(bot.is_settings_command(command))
-        for command in ("/status", "/test", "/source", "/id", "/restart", "/help"):
-            with self.subTest(command=command):
-                self.assertFalse(bot.is_settings_command(command))
+                self.assertNotIn(command, bot.SETTINGS_COMMANDS)
 
-    def test_menu_order_puts_the_usual_fields_first(self):
-        fields = bot.fields_for_action("add")
-        self.assertEqual(fields[0], "include_keywords", "en sık kullanılan üstte")
-        self.assertIn("source_chats", fields)
-        self.assertNotIn("match_mode", fields, "liste eylemi tek değerli alanı sunmaz")
-        self.assertIn("match_mode", bot.fields_for_action("set"))
+    def test_main_menu_and_help_show_only_active_settings(self):
+        menu = bot.build_main_menu_text()
+        help_text = bot.HELP_TEXT
+        for text in (menu, help_text):
+            for command in ("/hepsinial", "/filtrelial", "/ekle", "/çıkar", "/kaydet", "/iptal"):
+                with self.subTest(command=command, text=text[:12]):
+                    self.assertIn(command, text)
+        for command in ("/mod", "/token", "/kelime_ekle", "/ayar_set"):
+            self.assertNotIn(command, menu)
 
-    def test_pick_from_menu_prefers_exact_match_then_number(self):
-        self.assertEqual(bot.pick_from_menu("2", ["çay", "kahve"]), "kahve")
-        self.assertEqual(bot.pick_from_menu("kahve", ["çay", "kahve"]), "kahve")
-        self.assertEqual(bot.pick_from_menu("9", ["çay"]), "9")
-        self.assertEqual(bot.pick_from_menu("serbest", []), "serbest")
-        # ID listelerinde değerin kendisi numarayla karışmaz.
-        self.assertEqual(bot.pick_from_menu("424242", ["1143378073", "424242"]), "424242")
 
-    def test_value_options_only_where_a_number_makes_sense(self):
-        self.assertEqual(bot.value_options_for("match_mode", "set", {}),
-                         ["any", "all", "forward_all"])
-        self.assertEqual(bot.value_options_for("include_keywords", "remove",
-                                               {"include_keywords": ["çay"]}),
-                         ["çay"])
-        self.assertEqual(bot.value_options_for("include_keywords", "add", {}), [])
+class TelegramListWorkflowTest(unittest.TestCase):
+    """Telegram'daki üç listelik, taslak/onaylı düzenleme akışı."""
 
-    def test_short_commands_are_generated_per_field(self):
-        self.assertEqual(bot.short_command("include_keywords", "ekle"), "/kelime_ekle")
-        self.assertEqual(bot.short_command("match_mode"), "/mod")
-        self.assertEqual(bot.short_command("notify_bot_token"), "/token")
+    def setUp(self):
+        self.config = {
+            "include_keywords": ["çay", "kahve"],
+            "exclude_keywords": ["çekiliş"],
+            "source_chats": ["@firsat", "-1001234567890"],
+            "destination": -5569562901,
+            "match_mode": "any",
+        }
 
-    def test_every_field_has_a_short_command_and_a_group(self):
-        for field in bot.SETTING_FIELDS:
-            with self.subTest(field=field):
-                self.assertIn(field, bot.FIELD_SHORT_NAMES)
-                self.assertIsNotNone(bot.group_of(field), "her ayar bir grupta olmalı")
+    def test_exactly_three_fields_are_telegram_editable(self):
+        self.assertEqual(bot.TELEGRAM_LIST_FIELDS,
+                         ("include_keywords", "exclude_keywords", "source_chats"))
 
-    def test_main_menu_lists_every_group(self):
-        text = bot.build_main_menu_text()
-        for group in bot.SETTING_GROUPS:
-            with self.subTest(group=group["key"]):
-                self.assertIn("/" + group["key"], text)
+    def test_category_selection_supports_numbers_and_turkish_labels(self):
+        expected = ["include_keywords", "exclude_keywords", "source_chats"]
+        for index, field in enumerate(expected, start=1):
+            self.assertEqual(bot.resolve_telegram_list(str(index)), field)
+        self.assertEqual(bot.resolve_telegram_list("Dahili kelimeler"), "include_keywords")
+        self.assertEqual(bot.resolve_telegram_list("harici kelimeler"), "exclude_keywords")
+        self.assertEqual(bot.resolve_telegram_list("grup isimleri"), "source_chats")
+        self.assertEqual(bot.resolve_telegram_list("kaynaklar"), "source_chats")
+        self.assertIsNone(bot.resolve_telegram_list("4"))
+        self.assertIsNone(bot.resolve_telegram_list("hedef"))
+
+    def test_category_menu_is_compact_and_shows_current_counts(self):
+        text = bot.build_list_category_prompt("add", self.config)
+        self.assertIn("1. 🔎  Dahili kelimeler  ·  2 kayıt", text)
+        self.assertIn("2. 🚫  Harici kelimeler  ·  1 kayıt", text)
+        self.assertIn("3. 📣  Grup isimleri  ·  2 kayıt", text)
+        self.assertIn("1, 2, 3", text)
+
+    def test_selected_category_shows_list_before_asking_for_value(self):
+        add_prompt = bot.build_list_value_prompt("add", "include_keywords", self.config)
+        self.assertIn("01. çay", add_prompt)
+        self.assertIn("02. kahve", add_prompt)
+        self.assertIn("Eklenecek kelimeyi gönder", add_prompt)
+        remove_prompt = bot.build_list_value_prompt("remove", "source_chats", self.config)
+        self.assertIn("01. @firsat", remove_prompt)
+        self.assertIn("02. -1001234567890", remove_prompt)
+        self.assertIn("numarasını", remove_prompt)
+
+    def test_add_is_staged_without_changing_the_original_config(self):
+        ok, candidate, value, note = bot.stage_telegram_list_change(
+            self.config, "include_keywords", "add", "KAHVE ŞEKER",
+        )
+        self.assertTrue(ok, note)
+        self.assertEqual(value, "kahve şeker")
+        self.assertEqual(candidate["include_keywords"], ["çay", "kahve", "kahve şeker"])
+        self.assertEqual(self.config["include_keywords"], ["çay", "kahve"])
+
+    def test_add_chat_id_becomes_an_integer_and_names_are_case_insensitive(self):
+        ok, candidate, value, note = bot.stage_telegram_list_change(
+            self.config, "source_chats", "add", "-1009876543210",
+        )
+        self.assertTrue(ok, note)
+        self.assertEqual(value, -1009876543210)
+        self.assertIsInstance(candidate["source_chats"][-1], int)
+        ok, _, _, note = bot.stage_telegram_list_change(
+            self.config, "source_chats", "add", "@FIRSAT",
+        )
+        self.assertFalse(ok)
+        self.assertIn("zaten", note)
+
+    def test_add_rejects_multiple_or_overlong_values(self):
+        for raw in ("çay, kahve", "x" * (bot.LIST_ITEM_MAX_LENGTH + 1)):
+            with self.subTest(raw=raw[:20]):
+                ok, candidate, _, _ = bot.stage_telegram_list_change(
+                    self.config, "include_keywords", "add", raw,
+                )
+                self.assertFalse(ok)
+                self.assertEqual(candidate, self.config)
+
+    def test_remove_by_row_number_or_exact_value_removes_one_entry(self):
+        ok, candidate, value, note = bot.stage_telegram_list_change(
+            self.config, "include_keywords", "remove", "2",
+        )
+        self.assertTrue(ok, note)
+        self.assertEqual(value, "kahve")
+        self.assertEqual(candidate["include_keywords"], ["çay"])
+
+        ok, candidate, value, note = bot.stage_telegram_list_change(
+            self.config, "exclude_keywords", "remove", "ÇEKİLİŞ",
+        )
+        self.assertTrue(ok, note)
+        self.assertEqual(value, "çekiliş")
+        self.assertEqual(candidate["exclude_keywords"], [])
+
+    def test_last_source_cannot_be_removed(self):
+        only_source = dict(self.config, source_chats=["@firsat"])
+        ok, candidate, _, note = bot.stage_telegram_list_change(
+            only_source, "source_chats", "remove", "1",
+        )
+        self.assertFalse(ok)
+        self.assertIn("En az bir", note)
+        self.assertEqual(candidate["source_chats"], ["@firsat"])
+
+    def test_non_whitelisted_fields_cannot_be_staged(self):
+        ok, candidate, _, note = bot.stage_telegram_list_change(
+            self.config, "destination", "add", "-100123",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(candidate, self.config)
+        self.assertIn("düzenlenemez", note)
+
+    def test_confirmation_offers_explicit_save_and_cancel(self):
+        text = bot.build_list_change_confirmation(
+            "add", "include_keywords", "şeker", dict(self.config, include_keywords=["çay", "kahve", "şeker"]),
+        )
+        self.assertIn("henüz aktif değil", text)
+        self.assertIn("/kaydet", text)
+        self.assertIn("/iptal", text)
+        self.assertIn("sadece “kaydet” / “iptal”", text)
+
+    def test_confirmation_choice_accepts_command_labels_and_plain_text(self):
+        for value in ("kaydet", "✅ Kaydet", "kaydet ve github'a gönder", "ONAYLA"):
+            with self.subTest(value=value):
+                self.assertEqual(bot.resolve_confirmation_choice(value), "save")
+        for value in ("iptal", "↩️ İptal et", "vazgeç", "CANCEL"):
+            with self.subTest(value=value):
+                self.assertEqual(bot.resolve_confirmation_choice(value), "cancel")
+        self.assertIsNone(bot.resolve_confirmation_choice("sonra bakarım"))
+
+    def test_new_edit_keeps_a_separate_snapshot(self):
+        pending = bot.new_telegram_edit("remove", self.config)
+        pending["draft_config"]["include_keywords"].append("taslak")
+        self.assertNotIn("taslak", self.config["include_keywords"])
+        self.assertEqual(pending["stage"], "category")
 
 
 class ConfigStoreTest(unittest.TestCase):
-    """Telegram'dan gelen ayar komutlarının doğrulama katmanı."""
-
-    def make_store(self, **config):
-        base = {
-            "source_chats": ["@firsatz"],
-            "destination": -5092968106,
-            "include_keywords": ["çay"],
-            "exclude_keywords": ["çekiliş"],
-            "match_mode": "any",
-            "copy_mode": "copy",
-            "control_chat": -5092968106,
-            "admin_user_id": 1143378073,
-            "max_media_mb": 25,
-            "message_link": True,
-        }
-        base.update(config)
-        return bot.ConfigStore("config.json", base)
-
-    # --- alan adları ----------------------------------------------------
-    def test_field_aliases_resolve(self):
-        store = self.make_store()
-        self.assertEqual(store.resolve_field("match_mode"), "match_mode")
-        self.assertEqual(store.resolve_field("MATCH_MODE"), "match_mode")
-        self.assertEqual(store.resolve_field("mod"), "match_mode")
-        self.assertEqual(store.resolve_field("kelime"), "include_keywords")
-        self.assertEqual(store.resolve_field("haric"), "exclude_keywords")
-        self.assertEqual(store.resolve_field("hedef"), "destination")
-        self.assertIsNone(store.resolve_field("bilinmeyen_alan"))
-
-    # --- set ------------------------------------------------------------
-    def test_set_validates_enum(self):
-        store = self.make_store()
-        ok, message, field = store.set_field("match_mode", "forward_all")
-        self.assertTrue(ok, message)
-        self.assertEqual(field, "match_mode")
-        self.assertEqual(store.config["match_mode"], "forward_all")
-
-        ok, message, _ = store.set_field("match_mode", "uzay")
-        self.assertFalse(ok)
-        self.assertIn("geçersiz", message)
-        self.assertEqual(store.config["match_mode"], "forward_all", "hatalı değer yazılmamalı")
-
-    def test_set_unknown_field_is_rejected(self):
-        store = self.make_store()
-        ok, message, field = store.set_field("gizli_ayar", "1")
-        self.assertFalse(ok)
-        self.assertIsNone(field)
-        self.assertIn("Bilinmeyen alan", message)
-        self.assertNotIn("gizli_ayar", store.config)
-
-    def test_set_int_and_bool(self):
-        store = self.make_store()
-        self.assertTrue(store.set_field("max_media_mb", "40")[0])
-        self.assertEqual(store.config["max_media_mb"], 40)
-        self.assertFalse(store.set_field("max_media_mb", "çok")[0])
-        self.assertTrue(store.set_field("message_link", "kapalı")[0])
-        self.assertFalse(store.config["message_link"])
-        self.assertFalse(store.set_field("message_link", "belki")[0])
-
-    def test_set_chat_id_string_becomes_int(self):
-        store = self.make_store()
-        ok, _, _ = store.set_field("destination", "-1001234567890")
-        self.assertTrue(ok)
-        self.assertEqual(store.config["destination"], -1001234567890)
-
-    def test_same_value_is_a_no_op(self):
-        store = self.make_store()
-        ok, message, field = store.set_field("match_mode", "any")
-        self.assertFalse(ok)
-        self.assertIsNone(field)
-        self.assertIn("zaten", message)
-
-    def test_set_accepts_equals_syntax(self):
-        field, value = bot.parse_setting_args("match_mode=forward_all")
-        self.assertEqual((field, value), ("match_mode", "forward_all"))
-        field, value = bot.parse_setting_args("match_mode forward_all")
-        self.assertEqual((field, value), ("match_mode", "forward_all"))
-
-    # --- listeler -------------------------------------------------------
-    def test_add_folds_case_and_deduplicates(self):
-        store = self.make_store()
-        ok, message, field = store.add_to_field("include_keywords", "KAHVE")
-        self.assertTrue(ok, message)
-        self.assertEqual(store.config["include_keywords"], ["çay", "kahve"])
-        ok, message, _ = store.add_to_field("include_keywords", "kahve")
-        self.assertFalse(ok)
-        self.assertIn("zaten", message)
-
-    def test_add_accepts_comma_separated_values(self):
-        store = self.make_store()
-        ok, _, _ = store.add_to_field("include_keywords", "kahve, şeker,çay")
-        self.assertTrue(ok)
-        self.assertEqual(store.config["include_keywords"], ["çay", "kahve", "şeker"])
-
-    def test_add_rejects_non_list_field(self):
-        store = self.make_store()
-        ok, message, _ = store.add_to_field("match_mode", "hepsi")
-        self.assertFalse(ok)
-        self.assertIn("liste değil", message)
-
-    def test_remove_by_value_and_index(self):
-        store = self.make_store(include_keywords=["çay", "kahve", "şeker"])
-        ok, message, _ = store.remove_from_field("include_keywords", "KAHVE")
-        self.assertTrue(ok, message)
-        self.assertEqual(store.config["include_keywords"], ["çay", "şeker"])
-        ok, _, _ = store.remove_from_field("include_keywords", "1")
-        self.assertTrue(ok)
-        self.assertEqual(store.config["include_keywords"], ["şeker"])
-
-    def test_remove_all(self):
-        store = self.make_store(include_keywords=["çay", "kahve"])
-        ok, message, _ = store.remove_from_field("include_keywords", "hepsi")
-        self.assertTrue(ok)
-        self.assertEqual(store.config["include_keywords"], [])
-        self.assertIn("temizlendi", message)
-
-    def test_remove_unknown_value(self):
-        store = self.make_store()
-        ok, message, _ = store.remove_from_field("include_keywords", "tuz")
-        self.assertFalse(ok)
-        self.assertIn("bulunamadı", message)
-
-    def test_admin_ids_are_ints(self):
-        store = self.make_store(admin_user_id=[1143378073])
-        ok, _, _ = store.add_to_field("admin_user_id", "424242")
-        self.assertTrue(ok)
-        self.assertEqual(store.config["admin_user_id"], [1143378073, 424242])
-        self.assertFalse(store.add_to_field("admin_user_id", "abc")[0])
-
-    def test_admin_id_stored_as_a_single_number(self):
-        """config.json'da admin_user_id çoğu zaman tek sayıdır; komutlar bunu bozmamalı."""
-        store = self.make_store(admin_user_id=1143378073)
-        ok, _, _ = store.add_to_field("admin_user_id", "424242")
-        self.assertTrue(ok)
-        self.assertEqual(store.config["admin_user_id"], [1143378073, 424242])
-
-        ok, message, _ = store.remove_from_field("admin_user_id", "424242")
-        self.assertTrue(ok, message)
-        self.assertEqual(store.config["admin_user_id"], [1143378073])
-
-        ok, message, _ = store.remove_from_field("admin_user_id", "hepsi")
-        self.assertTrue(ok, message)
-        self.assertEqual(store.config["admin_user_id"], [])
-
-    # --- geri alma ------------------------------------------------------
-    def test_undo_restores_previous_value(self):
-        store = self.make_store()
-        self.assertIsNone(store.undo)
-        store.set_field("match_mode", "forward_all")
-        self.assertIsNotNone(store.undo)
-        message = store.revert()
-        self.assertEqual(store.config["match_mode"], "any")
-        self.assertIsNone(store.undo)
-        self.assertIn("Geri alındı", message)
-        self.assertIn("match_mode", message)
+    """ConfigStore yalnızca config yolu ve rollback anlık görüntüsü tutar."""
 
     def test_snapshot_and_restore(self):
-        store = self.make_store()
+        store = bot.ConfigStore("config.json", {"match_mode": "any", "include_keywords": ["çay"]})
         before = store.snapshot()
-        store.set_field("match_mode", "all")
+        store.config["match_mode"] = "forward_all"
+        store.config["include_keywords"].append("kahve")
         store.restore(before)
-        self.assertEqual(store.config["match_mode"], "any")
-        self.assertIsNone(store.undo)
+        self.assertEqual(store.config, {"match_mode": "any", "include_keywords": ["çay"]})
 
-    # --- gösterim -------------------------------------------------------
-    def test_secret_values_are_masked(self):
-        self.assertEqual(bot.format_value("notify_bot_token", "123:ABC"), "var")
-        self.assertEqual(bot.format_value("notify_bot_token", ""), "yok")
-
-    def test_settings_text_lists_fields(self):
-        store = self.make_store()
-        text = bot.build_settings_text(store)
-        self.assertIn("match_mode", text)
-        self.assertIn("include_keywords", text)
-
-    def test_settings_text_for_single_field(self):
-        store = self.make_store(include_keywords=["çay", "kahve"])
-        text = bot.build_settings_text(store, "include_keywords")
-        self.assertIn("1. çay", text)
-        self.assertIn("2. kahve", text)
-        self.assertIn("/ayar_sil include_keywords", text)
-
-    def test_changed_groups_detects_chat_fields(self):
-        store = self.make_store()
-        before = store.snapshot()
-        store.set_field("match_mode", "forward_all")
-        self.assertEqual(bot.changed_groups(before, store.config), set())
-        store.set_field("destination", -1009999)
-        self.assertEqual(bot.changed_groups(before, store.config), {"destination"})
-        store.add_to_field("source_chats", "@yeni")
-        self.assertEqual(bot.changed_groups(before, store.config), {"destination", "sources"})
+    def test_only_source_list_changes_require_chat_resolution(self):
+        before = {"source_chats": ["@eski"], "destination": 1, "match_mode": "any"}
+        self.assertEqual(bot.changed_groups(before, {**before, "match_mode": "forward_all"}), set())
+        self.assertEqual(bot.changed_groups(before, {**before, "destination": 2}), set())
+        self.assertEqual(bot.changed_groups(before, {**before, "source_chats": ["@yeni"]}), {"sources"})
 
 
 class AtomicWriteTest(unittest.TestCase):
@@ -860,20 +767,10 @@ class EnvOverrideTest(unittest.TestCase):
             config = bot.load_config(self._config_file())
         self.assertNotIn("delivery_modes", config)
 
-    def test_env_overrides_are_reported_to_the_user(self):
-        """Ortam değişkeni ezen alanlar kaydedilen dosyaya da geçer; kullanıcı görmeli."""
-        env = {"DELIVERY_MODES": "", "MAX_MEDIA_MB": "", "MATCH_MODE": "forward_all",
-               "SOURCE_CHATS": "", "DESTINATION": "", "ADMIN_USER_ID": "",
-               "INCLUDE_KEYWORDS": "", "EXCLUDE_KEYWORDS": "", "COPY_MODE": "",
-               "CONTROL_CHAT": "", "AUTO_RESTART": "", "LINK_APPENDIX": "",
-               "APPEND_LINKS": "", "SOURCE_FOOTER": "", "NOTIFY_MEDIA": "",
-               "MESSAGE_LINK": ""}
-        with mock.patch.dict(os.environ, env, clear=False):
+    def test_match_mode_environment_override_is_loaded(self):
+        with mock.patch.dict(os.environ, {"MATCH_MODE": "forward_all"}, clear=False):
             config = bot.load_config(self._config_file())
-            self.assertEqual(config["match_mode"], "forward_all")
-            line = bot.ConfigStore("config.json", config).status_line()
-        self.assertIn("match_mode", line)
-        self.assertIn("eziyor", line)
+        self.assertEqual(config["match_mode"], "forward_all")
 
 
 # ---------------------------------------------------------------------------
