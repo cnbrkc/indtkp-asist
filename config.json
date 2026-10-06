@@ -28,7 +28,7 @@
   ],
   "match_mode": "any",
   "include_enabled": false,
-  "exclude_enabled": true,
+  "exclude_enabled": false,
   "copy_mode": "copy",
   "delivery_modes": [
     "forward",
