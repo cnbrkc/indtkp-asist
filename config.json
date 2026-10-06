@@ -27,9 +27,15 @@
     "çekiliş",
     "hediye"
   ],
-  "match_mode": "any",
+  "match_mode": "forward_all",
   "copy_mode": "copy",
-  "delivery_modes": ["forward", "copy", "media", "text", "link"],
+  "delivery_modes": [
+    "forward",
+    "copy",
+    "media",
+    "text",
+    "link"
+  ],
   "max_media_mb": 25,
   "link_appendix": "smart",
   "message_link": true,
