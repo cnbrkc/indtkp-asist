@@ -14,7 +14,10 @@ jobs:
   monitor:
     runs-on: ubuntu-latest
     timeout-minutes: 350
-    permissions: {}
+    # contents: write → Telegram'dan gelen ayar değişiklikleri (/ayar_set …)
+    # config.json'a yazıldıktan sonra depoya geri işlenebilsin.
+    permissions:
+      contents: write
     env:
       # Log satırlarının tamponda bekleyip Actions ekranında gecikmemesi için.
       PYTHONUNBUFFERED: "1"
@@ -40,6 +43,9 @@ jobs:
           API_HASH: ${{ secrets.API_HASH }}
           SESSION_STRING: ${{ secrets.SESSION_STRING }}
           GH_PAT: ${{ secrets.GH_PAT }}
+          # Telegram'dan değiştirilen ayarların config.json'a yazıldıktan sonra
+          # depoya işlenmesi için (yoksa değişiklik yalnızca o oturumda kalır).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_WORKFLOW_FILE: telegram-monitor.yml
           RESTART_AFTER_MINUTES: 330
         run: python -u bot.py
