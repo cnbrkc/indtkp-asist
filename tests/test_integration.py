@@ -101,6 +101,8 @@ class FakeMessage:
 
 
 class FakeEvent:
+    _next_reply_id = 500
+
     def __init__(self, chat_id, sender_id, text, message_id=1, media=True,
                  entities=None, reply_markup=None, file=None):
         self.chat_id = chat_id
@@ -110,9 +112,14 @@ class FakeEvent:
         self.message = FakeMessage(message_id, media, text=text, entities=entities,
                                    reply_markup=reply_markup, file=file)
         self.replies: list[str] = []
+        self.sent_replies: list[FakeSent] = []
 
     async def reply(self, text):
         self.replies.append(text)
+        FakeEvent._next_reply_id += 1
+        sent = FakeSent(FakeEvent._next_reply_id, text)
+        self.sent_replies.append(sent)
+        return sent
 
     async def get_chat(self):
         return make_group() if self.chat_id == GROUP_ID else make_channel("kaynak")
@@ -130,6 +137,7 @@ class FakeClient:
         self.sent_kwargs = []
         self.file_kwargs = []
         self.unresolved = []
+        self.sent_ids = []        # send_message/send_file ile giden mesaj ID'leri
         self.deleted = []         # (entity, [id...], revoke) silme çağrıları
         self.history = []         # (chat_id, metin) — iter_messages için sahte geçmiş
         self.fail_modes = set()   # test senaryosu için kapatılacak yollar
@@ -179,7 +187,9 @@ class FakeClient:
             raise self._protected_error("copy")
         self.sent.append((entity, message))
         self.sent_kwargs.append(kwargs)
-        return FakeSent(self._new_id(), message if isinstance(message, str) else "")
+        sent = FakeSent(self._new_id(), message if isinstance(message, str) else "")
+        self.sent_ids.append(sent.id)
+        return sent
 
     async def forward_messages(self, entity, message, from_peer=None):
         if "forward" in self.fail_modes:
@@ -223,7 +233,9 @@ class FakeClient:
         self.files.append((entity, payload, caption))
         self.file_names.append(getattr(file, "name", None))
         self.file_kwargs.append(kwargs)
-        return FakeSent(self._new_id(), caption or "")
+        sent = FakeSent(self._new_id(), caption or "")
+        self.sent_ids.append(sent.id)
+        return sent
 
     def _protected_error(self, what):
         """Korumalı kanalda Telegram'in verdiği gerçek hata."""
@@ -251,6 +263,8 @@ def reset_state():
     bot.CONTROL_IDS.clear()
     bot.DESTINATION_ID = None
     bot.PENDING.clear()
+    bot.COMMAND_MESSAGES.clear()
+    bot.STATS["cleaned_commands"] = 0
     bot.STATS.update({"seen": 0, "matched": 0, "forwarded": 0, "failed": 0,
                       "commands": 0, "modes": {}, "cleaned": 0, "last_match": None,
                       "last_match_source": None})
@@ -876,8 +890,156 @@ class CheckModeTest(unittest.TestCase):
 
 
 
+class CommandCleanupTest(MainHarness, unittest.TestCase):
+    """Komut sohbetinde ekranda yalnızca son alışveriş kalır.
+
+    Kullanıcı isteği: slash komutundan sonra gelen açıklama/menü yanıtları ve
+    kendi komut mesajı, yeni bir komut yazıldığında silinir. İndirim
+    bildirimleri komut kaydına girmediği için ASLA silinmez.
+    """
+
+    def setUp(self):
+        reset_state()
+        self.command_log = []
+
+        def fake_commit(path, message):
+            self.command_log.append((str(path), message))
+            return "no-repo", "test ortamı"
+
+        patcher = mock.patch.object(bot, "commit_and_push", fake_commit)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.config_path = self._write_config()
+        self.client = self._run_main(self.config_path)
+        self.source_id = next(iter(bot.SOURCE_IDS))
+
+    def tearDown(self):
+        os.unlink(self.config_path)
+        reset_state()
+
+    def _command(self, text, message_id, sender=ADMIN_ID):
+        event = FakeEvent(GROUP_ID, sender, text, message_id=message_id)
+        asyncio.run(self.client.handlers[0][1](event))
+        return event
+
+    def _deliver_offer(self, text="Sıcak ÇAY 5 TL"):
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 7, text)))
+        return self.client.sent_ids[0]
+
+    @staticmethod
+    def _exchange_ids(event) -> list[int]:
+        return [event.id, *[sent.id for sent in event.sent_replies]]
+
+    def _deleted_ids(self) -> list[int]:
+        return [mid for _, ids, _ in self.client.deleted for mid in ids]
+
+    # --- temel davranış -----------------------------------------------------
+
+    def test_first_command_has_nothing_to_delete(self):
+        self._command("/status", 11)
+        self.assertEqual(self.client.deleted, [], "ilk komutta silinecek eski mesaj yok")
+
+    def test_previous_command_and_its_reply_are_deleted(self):
+        first = self._command("/status", 11)
+        first_ids = self._exchange_ids(first)
+        self._command("/kaynak", 12)
+        self.assertEqual(sorted(self._deleted_ids()), sorted(first_ids),
+                         "önceki komut + yanıtı silinmeli")
+        entity, ids, revoke = self.client.deleted[0]
+        self.assertEqual(entity, GROUP_ID)
+        self.assertTrue(revoke, "mesaj her iki taraftan da silinmeli")
+
+    def test_console_keeps_only_the_last_exchange(self):
+        first = self._command("/status", 11)
+        second = self._command("/kaynak", 12)
+        last = self._command("/yardim", 13)
+        deleted = self._deleted_ids()
+        for step in (first, second):
+            for mid in self._exchange_ids(step):
+                self.assertIn(mid, deleted, "eski alışveriş silinmeli")
+        for mid in self._exchange_ids(last):
+            self.assertNotIn(mid, deleted, "ekranda yalnızca son alışveriş kalmalı")
+
+    def test_multi_step_settings_flow_is_cleaned_step_by_step(self):
+        steps = []
+        for index, text in enumerate(("/ekle", "1", "kahve"), start=1):
+            step = self._command(text, 50 + index)
+            steps.append(step)
+            for mid in self._exchange_ids(step):
+                self.assertNotIn(mid, self._deleted_ids(),
+                                 f"'{text}' adımı henüz silinmemeli")
+        saved = self._command("/kaydet", 54)
+        deleted = self._deleted_ids()
+        for step in steps:
+            self.assertIn(step.id, deleted, "ara adım komutları silinmeli")
+            self.assertIn(step.sent_replies[0].id, deleted, "ara adım menüleri silinmeli")
+        self.assertNotIn(saved.id, deleted)
+        self.assertNotIn(saved.sent_replies[-1].id, deleted, "son onay mesajı kalmalı")
+        self.assertEqual(len(self.command_log), 1, "taslak /kaydet ile yazılmalı")
+        self.assertIn("Dahili kelimeler", self.command_log[0][1])
+
+    def test_analysis_progress_message_goes_away_report_stays(self):
+        self.client.history = [(self.source_id, "çay 5 TL"), (self.source_id, "kahve makinesi")]
+        event = self._command("/analiz 50", 40)
+        deleted = self._deleted_ids()
+        self.assertGreaterEqual(len(event.sent_replies), 2, "önce ilerleme, sonra rapor")
+        self.assertIn(event.sent_replies[0].id, deleted, "ilerleme mesajı silinmeli")
+        self.assertNotIn(event.sent_replies[-1].id, deleted, "rapor ekranda kalmalı")
+
+    # --- bildirimler korunur -------------------------------------------------
+
+    def test_offer_notification_is_never_deleted(self):
+        offer_id = self._deliver_offer()
+        self._command("/status", 20)
+        self._command("/kaynak", 21)
+        self.assertNotIn(offer_id, self._deleted_ids(),
+                         "indirim bildirimi komut temizliğiyle silinmemeli")
+        self.client.deleted.clear()
+
+    def test_each_control_chat_has_its_own_dialogue(self):
+        """Kayıtlı Mesajlar ve grup ayrı tutulur; biri diğerini silmez."""
+        group_command = self._command("/status", 90)
+        self.assertEqual(bot.COMMAND_MESSAGES.get(GROUP_ID), self._exchange_ids(group_command))
+        asyncio.run(self.client.handlers[0][1](FakeEvent(ADMIN_ID, ADMIN_ID, "/durum", message_id=91)))
+        self.assertEqual(self.client.deleted, [],
+                         "Kayıtlı Mesajlar'daki ilk komut gruptaki diyaloğu silmemeli")
+        self.assertEqual(bot.COMMAND_MESSAGES.get(GROUP_ID), self._exchange_ids(group_command))
+
+    # --- bayrak ve hata durumu ----------------------------------------------
+
+    def test_cleanup_can_be_disabled_with_config(self):
+        reset_state()
+        path = self._write_config(clean_commands=False)
+        self.addCleanup(os.unlink, path)
+        client = self._run_main(path)
+        for index, command in enumerate(("/status", "/kaynak"), start=1):
+            event = FakeEvent(GROUP_ID, ADMIN_ID, command, message_id=60 + index)
+            asyncio.run(client.handlers[0][1](event))
+        self.assertEqual(client.deleted, [], "clean_commands=false iken silme yapılmamalı")
+        self.assertEqual(bot.STATS["cleaned_commands"], 0)
+
+    def test_delete_failure_does_not_break_the_command(self):
+        self.client.fail_modes.add("delete")
+        self._command("/status", 30)
+        second = self._command("/kaynak", 31)
+        self.assertTrue(second.replies, "silme başarısız olsa da yanıt gelmeli")
+        self.assertEqual(self.client.deleted, [])
+
+    def test_status_reports_cleanup_state(self):
+        self._command("/status", 70)
+        self._command("/durum", 71)
+        reply = "\n".join(self._command("/durum", 72).replies)
+        self.assertIn("Komut temizliği: açık", reply)
+        self.assertIn("silinen eski komut mesajı: 2", reply,
+                      "önceki alışverişin iki mesajı silinmiş olmalı")
+
+
 class NotificationTest(unittest.TestCase):
-    """Bildirim: fırsatın kopyası + gizli linkler + "Fırsatı Gönderen" altbilgisi."""
+    """Bildirim: fırsatın kopyası + gizli linkler + "🔗 Mesajı Gör" satırı.
+
+    Kullanıcı isteğiyle "Fırsatı Gönderen" altbilgisi tamamen kaldırıldı;
+    kaynak adı zaten Mesajı Gör linkinin içinde (t.me/<kanal>/...) görünüyor.
+    """
 
     def setUp(self):
         reset_state()
@@ -950,8 +1112,8 @@ class NotificationTest(unittest.TestCase):
 
     # --- yeni biçim ---------------------------------------------------------
 
-    def test_notification_is_the_message_itself_plus_footer(self):
-        """Kırpılmış/küçültülmüş özet değil, mesajın kendisi + altbilgi gitmeli."""
+    def test_notification_is_the_message_itself_plus_message_link(self):
+        """Kırpılmış/küçültülmüş özet değil, mesajın kendisi + Mesajı Gör satırı."""
         client = self._run({"notify_bot_token": "123:ABC"})
         text = "Sıcak ÇAY 5 TL\nKaçırılmayacak fırsat!"
         self._send(client, text)
@@ -960,19 +1122,21 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(call["token"], "123:ABC")
         self.assertEqual(call["chat_id"], GROUP_ID)
         self.assertIn(text, call["caption"], "mesajın tamamı gitmeli")
-        self.assertTrue(call["caption"].endswith("Fırsatı Gönderen: firsatz"), call["caption"])
+        self.assertTrue(call["caption"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/1"),
+                        call["caption"])
+        self.assertNotIn("Fırsatı Gönderen", call["caption"], "altbilgi artık yazılmaz")
         self.assertEqual(call["kind"], "photo")
         self.assertEqual(call["filename"], "firsat_1.jpg")
 
-    def test_footer_name_hides_the_source_message_link(self):
+    def test_no_footer_entity_is_added_anymore(self):
+        """'Fırsatı Gönderen' altbilgisi ve gizli link entity'si tamamen kaldırıldı."""
         client = self._run({"notify_bot_token": "123:ABC"})
         self._send(client, "ÇAY fırsatı")
-        links = self._links(self.media_calls[0]["entities"])
-        self.assertEqual(len(links), 1, self.media_calls[0]["entities"])
-        footer = links[0]
-        self.assertEqual(footer["url"], "https://t.me/firsatz/1")
-        self.assertEqual(footer["type"], "text_link")
-        self.assertIn("Fırsatı Gönderen: firsatz", self.media_calls[0]["caption"])
+        entities = self.media_calls[0]["entities"]
+        self.assertEqual(self._links(entities), [], entities)
+        caption = self.media_calls[0]["caption"]
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", caption)
+        self.assertNotIn("Fırsatı Gönderen", caption)
 
     def test_hidden_entity_link_stays_tappable_and_message_link_is_added(self):
         """'Fırsata Git' yazısının altına gizlenmiş link kaybolmamalı."""
@@ -987,7 +1151,7 @@ class NotificationTest(unittest.TestCase):
         hidden = self._links(self.media_calls[0]["entities"])
         urls = {item["url"] for item in hidden}
         self.assertIn("https://amzn.to/3xyz", urls, "gizli link tıklanabilir kalmalı")
-        self.assertIn("https://t.me/firsatz/1", urls, "altbilgi linki")
+        self.assertNotIn("https://t.me/firsatz/1", urls, "altbilgi linki artık eklenmez")
         self.assertNotIn("https://amzn.to/3xyz", caption,
                          "gizli link tekrar yazılmaz (akıllı mod)")
 
@@ -1026,7 +1190,7 @@ class NotificationTest(unittest.TestCase):
         self._send(client, "ÇAY 5 TL", media=False)
         self.assertEqual(self.media_calls, [])
         self.assertEqual(len(self.calls), 1)
-        self.assertTrue(self.calls[0]["text"].endswith("Fırsatı Gönderen: firsatz"))
+        self.assertTrue(self.calls[0]["text"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/1"))
 
     def test_media_failure_falls_back_to_text_notification(self):
         self.media_ok = False
@@ -1034,11 +1198,12 @@ class NotificationTest(unittest.TestCase):
         self._send(client, "ÇAY 5 TL")
         self.assertEqual(len(self.calls), 1, "medya gönderilemezse metin bildirimi gitmeli")
         self.assertIn("ÇAY 5 TL", self.calls[0]["text"])
-        self.assertTrue(self.calls[0]["text"].endswith("Fırsatı Gönderen: firsatz"))
+        self.assertTrue(self.calls[0]["text"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/1"))
+        self.assertNotIn("Fırsatı Gönderen", self.calls[0]["text"])
 
-    def test_flags_can_disable_appendix_and_footer(self):
+    def test_flags_can_disable_appendix_and_message_link(self):
         client = self._run({"notify_bot_token": "123:ABC", "notify_media": False,
-                            "link_appendix": "off", "message_link": False, "source_footer": False})
+                            "link_appendix": "off", "message_link": False})
         entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/yok")
         self._send(client, "çay", entities=[entity])
         text = self.calls[0]["text"]
