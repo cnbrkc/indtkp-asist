@@ -18,7 +18,9 @@
     "@firsatlar_onemli"
   ],
   "destination": -5569562901,
-  "include_keywords": [],
+  "include_keywords": [
+    "kahve dünyası"
+  ],
   "exclude_keywords": [
     "çekiliş",
     "hediye"
