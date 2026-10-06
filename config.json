@@ -32,7 +32,7 @@
   ],
   "match_mode": "any",
   "include_enabled": false,
-  "exclude_enabled": false,
+  "exclude_enabled": true,
   "copy_mode": "copy",
   "delivery_modes": [
     "forward",
