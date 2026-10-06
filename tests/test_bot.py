@@ -8,6 +8,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import asyncio
@@ -246,6 +248,546 @@ class StatusTextTest(unittest.TestCase):
         for command in ("/status", "/test", "/source", "/restart", "/help"):
             self.assertIn(command, bot.HELP_TEXT)
 
+    def test_status_shows_forward_all_mode(self):
+        bot.SOURCES.clear()
+        bot.SOURCE_FAILURES.clear()
+        bot.SOURCE_IDS.clear()
+        bot.CONTROL_NAMES.clear()
+        bot.CONTROL_IDS.clear()
+        status = bot.build_status_text({"match_mode": "forward_all", "include_keywords": ["çay"]})
+        self.assertIn("Tüm mesajlar", status)
+        self.assertNotIn("Anahtar kelimeler", status)
+
+
+class MatchModeTest(unittest.TestCase):
+    """include_keywords + match_mode(any/all) + 'tüm mesajları ilet' modu."""
+
+    def test_aliases_resolve_to_canonical_mode(self):
+        self.assertEqual(bot.canonical_match_mode("any"), "any")
+        self.assertEqual(bot.canonical_match_mode("ALL"), "all")
+        self.assertEqual(bot.canonical_match_mode("hepsi"), "all")
+        self.assertEqual(bot.canonical_match_mode("forward_all"), "forward_all")
+        self.assertEqual(bot.canonical_match_mode("TÜM MESAJLAR"), "forward_all")
+        self.assertEqual(bot.canonical_match_mode("hepsini_gonder"), "forward_all")
+        self.assertEqual(bot.canonical_match_mode("filtresiz"), "forward_all")
+        self.assertIsNone(bot.canonical_match_mode("uzay"))
+
+    def test_match_mode_of_defaults_to_any(self):
+        self.assertEqual(bot.match_mode_of({}), "any")
+        self.assertEqual(bot.match_mode_of({"match_mode": None}), "any")
+        self.assertEqual(bot.match_mode_of({"match_mode": "forward_all"}), "forward_all")
+
+    def test_forward_all_ignores_include(self):
+        self.assertTrue(bot.matches("iPhone 17 kampanya", ["çay"], [], "forward_all"))
+        self.assertTrue(bot.matches("", ["çay"], [], "forward_all"))
+
+    def test_forward_all_still_honours_exclude(self):
+        """Hariç kelimeler her modda engeller: istenmeyen içerik asla geçmez."""
+        self.assertFalse(bot.matches("çay çekilişi", [], ["çekiliş"], "forward_all"))
+        self.assertTrue(bot.matches("çay kampanya", [], ["çekiliş"], "forward_all"))
+
+    def test_classic_modes_are_unchanged(self):
+        self.assertTrue(bot.matches("çay kahve", ["çay", "şeker"], [], "any"))
+        self.assertFalse(bot.matches("çay kahve", ["çay", "şeker"], [], "all"))
+        self.assertTrue(bot.matches("çay şeker", ["çay", "şeker"], [], "all"))
+
+    def test_check_environment_accepts_forward_all(self):
+        config = dict(CheckEnvironmentTest.base_config, match_mode="forward_all")
+        with mock.patch.dict(os.environ, CheckEnvironmentTest.good_env, clear=False):
+            self.assertEqual(bot.check_environment(config), [])
+
+    def test_check_environment_rejects_unknown_mode(self):
+        config = dict(CheckEnvironmentTest.base_config, match_mode="uzay")
+        with mock.patch.dict(os.environ, CheckEnvironmentTest.good_env, clear=False):
+            problems = bot.check_environment(config)
+        self.assertTrue(any("match_mode" in p for p in problems), problems)
+        self.assertTrue(any("forward_all" in p for p in problems), problems)
+
+
+class SettingsMenuTest(unittest.TestCase):
+    """Dallı ayar menüsünün saf (girdi/çıktı) yardımcıları."""
+
+    def test_group_commands_resolve(self):
+        self.assertEqual(bot.resolve_group_command("/filtre")["key"], "filtre")
+        self.assertEqual(bot.resolve_group_command("/FILTRE")["key"], "filtre")
+        self.assertEqual(bot.resolve_group_command("/iletim")["key"], "iletim")
+        self.assertIsNone(bot.resolve_group_command("/olmayan"))
+        self.assertIsNone(bot.resolve_group_command("/status"))
+
+    def test_field_commands_carry_their_own_action(self):
+        """/kelime_ekle gibi komutlar alanı ve eylemi birlikte taşır."""
+        self.assertEqual(bot.parse_field_command("/kelime_ekle"),
+                         ("include_keywords", "add"))
+        self.assertEqual(bot.parse_field_command("/kelime_sil"),
+                         ("include_keywords", "remove"))
+        self.assertEqual(bot.parse_field_command("/kelime_goster"),
+                         ("include_keywords", "show"))
+        self.assertEqual(bot.parse_field_command("/dahil_liste_ekle"),
+                         ("include_keywords", "add"))
+        self.assertEqual(bot.parse_field_command("/haric_liste_ekle"),
+                         ("exclude_keywords", "add"))
+        self.assertEqual(bot.parse_field_command("/KANAL_SİL"),
+                         ("source_chats", "remove"))
+
+    def test_bare_field_command_means_set(self):
+        self.assertEqual(bot.parse_field_command("/mod"), ("match_mode", "set"))
+        self.assertEqual(bot.parse_field_command("/hedef"), ("destination", "set"))
+        self.assertIsNone(bot.parse_field_command("/olmayan_alan"))
+
+    def test_settings_command_detection(self):
+        for command in ("/ayar", "/ayar_set", "/ekle", "/filtre", "/kelime_ekle", "/mod"):
+            with self.subTest(command=command):
+                self.assertTrue(bot.is_settings_command(command))
+        for command in ("/status", "/test", "/source", "/id", "/restart", "/help"):
+            with self.subTest(command=command):
+                self.assertFalse(bot.is_settings_command(command))
+
+    def test_menu_order_puts_the_usual_fields_first(self):
+        fields = bot.fields_for_action("add")
+        self.assertEqual(fields[0], "include_keywords", "en sık kullanılan üstte")
+        self.assertIn("source_chats", fields)
+        self.assertNotIn("match_mode", fields, "liste eylemi tek değerli alanı sunmaz")
+        self.assertIn("match_mode", bot.fields_for_action("set"))
+
+    def test_pick_from_menu_prefers_exact_match_then_number(self):
+        self.assertEqual(bot.pick_from_menu("2", ["çay", "kahve"]), "kahve")
+        self.assertEqual(bot.pick_from_menu("kahve", ["çay", "kahve"]), "kahve")
+        self.assertEqual(bot.pick_from_menu("9", ["çay"]), "9")
+        self.assertEqual(bot.pick_from_menu("serbest", []), "serbest")
+        # ID listelerinde değerin kendisi numarayla karışmaz.
+        self.assertEqual(bot.pick_from_menu("424242", ["1143378073", "424242"]), "424242")
+
+    def test_value_options_only_where_a_number_makes_sense(self):
+        self.assertEqual(bot.value_options_for("match_mode", "set", {}),
+                         ["any", "all", "forward_all"])
+        self.assertEqual(bot.value_options_for("include_keywords", "remove",
+                                               {"include_keywords": ["çay"]}),
+                         ["çay"])
+        self.assertEqual(bot.value_options_for("include_keywords", "add", {}), [])
+
+    def test_short_commands_are_generated_per_field(self):
+        self.assertEqual(bot.short_command("include_keywords", "ekle"), "/kelime_ekle")
+        self.assertEqual(bot.short_command("match_mode"), "/mod")
+        self.assertEqual(bot.short_command("notify_bot_token"), "/token")
+
+    def test_every_field_has_a_short_command_and_a_group(self):
+        for field in bot.SETTING_FIELDS:
+            with self.subTest(field=field):
+                self.assertIn(field, bot.FIELD_SHORT_NAMES)
+                self.assertIsNotNone(bot.group_of(field), "her ayar bir grupta olmalı")
+
+    def test_main_menu_lists_every_group(self):
+        text = bot.build_main_menu_text()
+        for group in bot.SETTING_GROUPS:
+            with self.subTest(group=group["key"]):
+                self.assertIn("/" + group["key"], text)
+
+
+class ConfigStoreTest(unittest.TestCase):
+    """Telegram'dan gelen ayar komutlarının doğrulama katmanı."""
+
+    def make_store(self, **config):
+        base = {
+            "source_chats": ["@firsatz"],
+            "destination": -5092968106,
+            "include_keywords": ["çay"],
+            "exclude_keywords": ["çekiliş"],
+            "match_mode": "any",
+            "copy_mode": "copy",
+            "control_chat": -5092968106,
+            "admin_user_id": 1143378073,
+            "max_media_mb": 25,
+            "message_link": True,
+        }
+        base.update(config)
+        return bot.ConfigStore("config.json", base)
+
+    # --- alan adları ----------------------------------------------------
+    def test_field_aliases_resolve(self):
+        store = self.make_store()
+        self.assertEqual(store.resolve_field("match_mode"), "match_mode")
+        self.assertEqual(store.resolve_field("MATCH_MODE"), "match_mode")
+        self.assertEqual(store.resolve_field("mod"), "match_mode")
+        self.assertEqual(store.resolve_field("kelime"), "include_keywords")
+        self.assertEqual(store.resolve_field("haric"), "exclude_keywords")
+        self.assertEqual(store.resolve_field("hedef"), "destination")
+        self.assertIsNone(store.resolve_field("bilinmeyen_alan"))
+
+    # --- set ------------------------------------------------------------
+    def test_set_validates_enum(self):
+        store = self.make_store()
+        ok, message, field = store.set_field("match_mode", "forward_all")
+        self.assertTrue(ok, message)
+        self.assertEqual(field, "match_mode")
+        self.assertEqual(store.config["match_mode"], "forward_all")
+
+        ok, message, _ = store.set_field("match_mode", "uzay")
+        self.assertFalse(ok)
+        self.assertIn("geçersiz", message)
+        self.assertEqual(store.config["match_mode"], "forward_all", "hatalı değer yazılmamalı")
+
+    def test_set_unknown_field_is_rejected(self):
+        store = self.make_store()
+        ok, message, field = store.set_field("gizli_ayar", "1")
+        self.assertFalse(ok)
+        self.assertIsNone(field)
+        self.assertIn("Bilinmeyen alan", message)
+        self.assertNotIn("gizli_ayar", store.config)
+
+    def test_set_int_and_bool(self):
+        store = self.make_store()
+        self.assertTrue(store.set_field("max_media_mb", "40")[0])
+        self.assertEqual(store.config["max_media_mb"], 40)
+        self.assertFalse(store.set_field("max_media_mb", "çok")[0])
+        self.assertTrue(store.set_field("message_link", "kapalı")[0])
+        self.assertFalse(store.config["message_link"])
+        self.assertFalse(store.set_field("message_link", "belki")[0])
+
+    def test_set_chat_id_string_becomes_int(self):
+        store = self.make_store()
+        ok, _, _ = store.set_field("destination", "-1001234567890")
+        self.assertTrue(ok)
+        self.assertEqual(store.config["destination"], -1001234567890)
+
+    def test_same_value_is_a_no_op(self):
+        store = self.make_store()
+        ok, message, field = store.set_field("match_mode", "any")
+        self.assertFalse(ok)
+        self.assertIsNone(field)
+        self.assertIn("zaten", message)
+
+    def test_set_accepts_equals_syntax(self):
+        field, value = bot.parse_setting_args("match_mode=forward_all")
+        self.assertEqual((field, value), ("match_mode", "forward_all"))
+        field, value = bot.parse_setting_args("match_mode forward_all")
+        self.assertEqual((field, value), ("match_mode", "forward_all"))
+
+    # --- listeler -------------------------------------------------------
+    def test_add_folds_case_and_deduplicates(self):
+        store = self.make_store()
+        ok, message, field = store.add_to_field("include_keywords", "KAHVE")
+        self.assertTrue(ok, message)
+        self.assertEqual(store.config["include_keywords"], ["çay", "kahve"])
+        ok, message, _ = store.add_to_field("include_keywords", "kahve")
+        self.assertFalse(ok)
+        self.assertIn("zaten", message)
+
+    def test_add_accepts_comma_separated_values(self):
+        store = self.make_store()
+        ok, _, _ = store.add_to_field("include_keywords", "kahve, şeker,çay")
+        self.assertTrue(ok)
+        self.assertEqual(store.config["include_keywords"], ["çay", "kahve", "şeker"])
+
+    def test_add_rejects_non_list_field(self):
+        store = self.make_store()
+        ok, message, _ = store.add_to_field("match_mode", "hepsi")
+        self.assertFalse(ok)
+        self.assertIn("liste değil", message)
+
+    def test_remove_by_value_and_index(self):
+        store = self.make_store(include_keywords=["çay", "kahve", "şeker"])
+        ok, message, _ = store.remove_from_field("include_keywords", "KAHVE")
+        self.assertTrue(ok, message)
+        self.assertEqual(store.config["include_keywords"], ["çay", "şeker"])
+        ok, _, _ = store.remove_from_field("include_keywords", "1")
+        self.assertTrue(ok)
+        self.assertEqual(store.config["include_keywords"], ["şeker"])
+
+    def test_remove_all(self):
+        store = self.make_store(include_keywords=["çay", "kahve"])
+        ok, message, _ = store.remove_from_field("include_keywords", "hepsi")
+        self.assertTrue(ok)
+        self.assertEqual(store.config["include_keywords"], [])
+        self.assertIn("temizlendi", message)
+
+    def test_remove_unknown_value(self):
+        store = self.make_store()
+        ok, message, _ = store.remove_from_field("include_keywords", "tuz")
+        self.assertFalse(ok)
+        self.assertIn("bulunamadı", message)
+
+    def test_admin_ids_are_ints(self):
+        store = self.make_store(admin_user_id=[1143378073])
+        ok, _, _ = store.add_to_field("admin_user_id", "424242")
+        self.assertTrue(ok)
+        self.assertEqual(store.config["admin_user_id"], [1143378073, 424242])
+        self.assertFalse(store.add_to_field("admin_user_id", "abc")[0])
+
+    def test_admin_id_stored_as_a_single_number(self):
+        """config.json'da admin_user_id çoğu zaman tek sayıdır; komutlar bunu bozmamalı."""
+        store = self.make_store(admin_user_id=1143378073)
+        ok, _, _ = store.add_to_field("admin_user_id", "424242")
+        self.assertTrue(ok)
+        self.assertEqual(store.config["admin_user_id"], [1143378073, 424242])
+
+        ok, message, _ = store.remove_from_field("admin_user_id", "424242")
+        self.assertTrue(ok, message)
+        self.assertEqual(store.config["admin_user_id"], [1143378073])
+
+        ok, message, _ = store.remove_from_field("admin_user_id", "hepsi")
+        self.assertTrue(ok, message)
+        self.assertEqual(store.config["admin_user_id"], [])
+
+    # --- geri alma ------------------------------------------------------
+    def test_undo_restores_previous_value(self):
+        store = self.make_store()
+        self.assertIsNone(store.undo)
+        store.set_field("match_mode", "forward_all")
+        self.assertIsNotNone(store.undo)
+        message = store.revert()
+        self.assertEqual(store.config["match_mode"], "any")
+        self.assertIsNone(store.undo)
+        self.assertIn("Geri alındı", message)
+        self.assertIn("match_mode", message)
+
+    def test_snapshot_and_restore(self):
+        store = self.make_store()
+        before = store.snapshot()
+        store.set_field("match_mode", "all")
+        store.restore(before)
+        self.assertEqual(store.config["match_mode"], "any")
+        self.assertIsNone(store.undo)
+
+    # --- gösterim -------------------------------------------------------
+    def test_secret_values_are_masked(self):
+        self.assertEqual(bot.format_value("notify_bot_token", "123:ABC"), "var")
+        self.assertEqual(bot.format_value("notify_bot_token", ""), "yok")
+
+    def test_settings_text_lists_fields(self):
+        store = self.make_store()
+        text = bot.build_settings_text(store)
+        self.assertIn("match_mode", text)
+        self.assertIn("include_keywords", text)
+
+    def test_settings_text_for_single_field(self):
+        store = self.make_store(include_keywords=["çay", "kahve"])
+        text = bot.build_settings_text(store, "include_keywords")
+        self.assertIn("1. çay", text)
+        self.assertIn("2. kahve", text)
+        self.assertIn("/ayar_sil include_keywords", text)
+
+    def test_changed_groups_detects_chat_fields(self):
+        store = self.make_store()
+        before = store.snapshot()
+        store.set_field("match_mode", "forward_all")
+        self.assertEqual(bot.changed_groups(before, store.config), set())
+        store.set_field("destination", -1009999)
+        self.assertEqual(bot.changed_groups(before, store.config), {"destination"})
+        store.add_to_field("source_chats", "@yeni")
+        self.assertEqual(bot.changed_groups(before, store.config), {"destination", "sources"})
+
+
+class AtomicWriteTest(unittest.TestCase):
+    """config.json yarım yazılmamalı; sır değerleri bozulmamalı."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "config.json"
+
+    def test_writes_valid_utf8_json(self):
+        data = {"include_keywords": ["çay", "kahve"], "match_mode": "forward_all"}
+        bot.atomic_write_json(self.path, data)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), data)
+        self.assertIn("çay", self.path.read_text(encoding="utf-8"), "Türkçe karakter bozulmamalı")
+
+    def test_leaves_no_temp_files_behind(self):
+        bot.atomic_write_json(self.path, {"a": 1})
+        leftovers = [p.name for p in Path(self.tmp.name).iterdir() if p.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [], "geçici dosya temizlenmedi")
+
+    def test_overwrites_existing_file(self):
+        self.path.write_text('{"eski": true}', encoding="utf-8")
+        bot.atomic_write_json(self.path, {"yeni": True})
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"yeni": True})
+
+    def test_failure_leaves_original_file_intact(self):
+        self.path.write_text('{"eski": true}', encoding="utf-8")
+        with mock.patch.object(bot.json, "dumps", side_effect=ValueError("boom")):
+            with self.assertRaises(ValueError):
+                bot.atomic_write_json(self.path, {"yeni": True})
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"eski": True})
+        leftovers = [p.name for p in Path(self.tmp.name).iterdir() if p.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
+
+    def test_save_config_reports_push_status(self):
+        store = bot.ConfigStore(self.path, {"match_mode": "any"})
+        store.config["match_mode"] = "forward_all"
+        with mock.patch.object(bot, "commit_and_push", lambda *a, **k: ("pushed", "origin/main")):
+            ok, note = asyncio.run(bot.save_config(store, "test"))
+        self.assertTrue(ok)
+        self.assertIn("repo'ya işlendi", note)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["match_mode"], "forward_all")
+
+    def test_save_config_reports_unwritable_file(self):
+        store = bot.ConfigStore(self.path, {"match_mode": "any"})
+        with mock.patch.object(bot, "atomic_write_json", side_effect=OSError("disk dolu")):
+            ok, note = asyncio.run(bot.save_config(store, "test"))
+        self.assertFalse(ok)
+        self.assertIn("yazılamadı", note)
+
+
+class ChunkTextTest(unittest.TestCase):
+    def test_short_text_is_untouched(self):
+        self.assertEqual(bot.chunk_text("merhaba"), ["merhaba"])
+
+    def test_long_text_is_split_under_limit(self):
+        text = "\n".join(f"satır {i}" for i in range(500))
+        chunks = bot.chunk_text(text, 500)
+        self.assertTrue(len(chunks) > 1)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), 500)
+        self.assertEqual("\n".join(chunks), text)
+
+    def test_single_very_long_line_is_forced_split(self):
+        chunks = bot.chunk_text("x" * 1200, 500)
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual("".join(chunks), "x" * 1200)
+
+
+class GitPersistTest(unittest.TestCase):
+    """Telegram'dan gelen değişiklik gerçekten depoya işleniyor mu?"""
+
+    @classmethod
+    def setUpClass(cls):
+        if shutil.which("git") is None:
+            raise unittest.SkipTest("git kurulu değil")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.origin = root / "origin.git"
+        self.work = root / "work"
+        env = {**os.environ,
+               "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@example.com",
+               "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "test@example.com"}
+        self._git(["init", "--bare", "-q", "-b", "main", str(self.origin)], cwd=root)
+        self._git(["clone", "-q", str(self.origin), str(self.work)], cwd=root)
+        self.config_path = self.work / "config.json"
+        self.config_path.write_text(json.dumps({"match_mode": "any"}), encoding="utf-8")
+        self._git(["add", "config.json"], cwd=self.work, env=env)
+        self._git(["commit", "-qm", "init"], cwd=self.work, env=env)
+        self._git(["push", "-q", "-u", "origin", "main"], cwd=self.work, env=env)
+
+    def _git(self, args, cwd, env=None):
+        proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
+                              env=env or os.environ, check=False)
+        self.assertEqual(proc.returncode, 0, f"git {args}: {proc.stderr}")
+        return proc.stdout
+
+    def _change(self, **updates):
+        data = json.loads(self.config_path.read_text(encoding="utf-8"))
+        data.update(updates)
+        self.config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _remote_config(self):
+        return self._git(["show", "main:config.json"], cwd=self.origin)
+
+    def test_change_is_committed_and_pushed(self):
+        self._change(match_mode="forward_all")
+        with mock.patch.dict(os.environ, {"CONFIG_PUSH_TOKEN": "dummy"}, clear=False):
+            status, detail = bot.commit_and_push(self.config_path, "match_mode değişti")
+        self.assertEqual(status, "pushed", detail)
+        self.assertIn("forward_all", self._remote_config())
+
+    def test_unchanged_file_is_not_committed(self):
+        with mock.patch.dict(os.environ, {"CONFIG_PUSH_TOKEN": "dummy"}, clear=False):
+            status, detail = bot.commit_and_push(self.config_path, "deneme")
+        self.assertEqual(status, "clean", detail)
+
+    def test_push_uses_the_local_branch_not_the_ci_merge_ref(self):
+        """PR çalışmalarında GITHUB_REF_NAME '4/merge' olur; dal adı olarak kullanılmamalı.
+
+        Aksi halde push başarılı görünür ama değişiklik boş bir dala gider.
+        """
+        self._change(match_mode="forward_all")
+        env = {"CONFIG_PUSH_TOKEN": "dummy", "GITHUB_REF_NAME": "4/merge",
+               "GITHUB_EVENT_NAME": "pull_request"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            status, detail = bot.commit_and_push(self.config_path, "deneme")
+        self.assertEqual(status, "pushed", detail)
+        self.assertIn("forward_all", self._remote_config(), "değişiklik main dalına gitmeli")
+        refs = self._git(["show-ref"], cwd=self.origin)
+        self.assertIn("refs/heads/main", refs)
+        self.assertNotIn("4/merge", refs, "birleştirme referansı dal olarak açılmamalı")
+
+    def test_without_token_commit_stays_local(self):
+        """Push edilemiyorsa ve token yoksa değişiklik yalnızca yerelde kalır."""
+        self._change(match_mode="all")
+        # Uzak erişilemez olsun: düz push başarısız, token da yok → yerel kalır.
+        self._git(["remote", "set-url", "origin", str(Path(self.tmp.name) / "yok.git")],
+                  cwd=self.work)
+        cleared = {"CONFIG_PUSH_TOKEN": "", "GITHUB_TOKEN": "", "GH_PAT": ""}
+        with mock.patch.dict(os.environ, cleared, clear=False):
+            status, detail = bot.commit_and_push(self.config_path, "deneme")
+        self.assertEqual(status, "local", detail)
+        self.assertIn("config: deneme", self._git(["log", "--oneline"], cwd=self.work))
+
+    def test_plain_push_is_tried_before_injecting_a_token(self):
+        """Actions'ta checkout kimliği zaten var; üstüne başlık eklemek çift
+        Authorization üretip push'u bozabilir, bu yüzden önce düz push."""
+        calls: list[list[str]] = []
+
+        def fake_run_git(args, cwd, timeout=30):
+            calls.append(list(args))
+            return 0, ""
+
+        with mock.patch.object(bot, "_run_git", fake_run_git):
+            code, _ = bot.push_branch(self.work, "main", "dummy")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [["push", "origin", "HEAD:main"]], calls)
+        self.assertNotIn("extraheader", " ".join(calls[0]))
+
+    def test_token_is_injected_when_plain_push_fails(self):
+        """Kimlik bilgisi olmayan bir ortamda (VM) token ile tekrar denenir."""
+        calls: list[list[str]] = []
+
+        def fake_run_git(args, cwd, timeout=30):
+            calls.append(list(args))
+            return (1, "Permission denied") if len(calls) == 1 else (0, "")
+
+        with mock.patch.object(bot, "_run_git", fake_run_git):
+            code, _ = bot.push_branch(self.work, "main", "dummy")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 2, calls)
+        joined = " ".join(calls[1])
+        self.assertIn("AUTHORIZATION: basic", joined)
+        self.assertIn("push", joined)
+
+    def test_failing_push_without_token_does_not_crash(self):
+        calls: list[list[str]] = []
+
+        def fake_run_git(args, cwd, timeout=30):
+            calls.append(list(args))
+            return 1, "Permission denied"
+
+        with mock.patch.object(bot, "_run_git", fake_run_git):
+            code, out = bot.push_branch(self.work, "main", "")
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 1, "token yoksa ikinci deneme yapılmamalı")
+
+    def test_file_outside_a_repo_is_reported(self):
+        outside = Path(self.tmp.name) / "baska.json"
+        outside.write_text("{}", encoding="utf-8")
+        cleared = {"CONFIG_PUSH_TOKEN": "", "GITHUB_TOKEN": "", "GH_PAT": "",
+                   "GITHUB_REPOSITORY": ""}
+        with mock.patch.dict(os.environ, cleared, clear=False):
+            status, detail = bot.commit_and_push(outside, "deneme")
+        self.assertEqual(status, "no-repo", detail)
+
+    def test_save_config_end_to_end(self):
+        store = bot.ConfigStore(self.config_path, {"match_mode": "any", "include_keywords": ["çay"]})
+        store.config["match_mode"] = "forward_all"
+        with mock.patch.dict(os.environ, {"CONFIG_PUSH_TOKEN": "dummy"}, clear=False):
+            ok, note = asyncio.run(bot.save_config(store, "tüm mesajlar açıldı"))
+        self.assertTrue(ok, note)
+        self.assertIn("repo'ya işlendi", note)
+        written = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["match_mode"], "forward_all")
+        self.assertEqual(written["include_keywords"], ["çay"])
+        self.assertIn("çay", self._remote_config())
+
 
 class RealConfigTest(unittest.TestCase):
     def test_repository_config_is_usable(self):
@@ -317,6 +859,21 @@ class EnvOverrideTest(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=False):
             config = bot.load_config(self._config_file())
         self.assertNotIn("delivery_modes", config)
+
+    def test_env_overrides_are_reported_to_the_user(self):
+        """Ortam değişkeni ezen alanlar kaydedilen dosyaya da geçer; kullanıcı görmeli."""
+        env = {"DELIVERY_MODES": "", "MAX_MEDIA_MB": "", "MATCH_MODE": "forward_all",
+               "SOURCE_CHATS": "", "DESTINATION": "", "ADMIN_USER_ID": "",
+               "INCLUDE_KEYWORDS": "", "EXCLUDE_KEYWORDS": "", "COPY_MODE": "",
+               "CONTROL_CHAT": "", "AUTO_RESTART": "", "LINK_APPENDIX": "",
+               "APPEND_LINKS": "", "SOURCE_FOOTER": "", "NOTIFY_MEDIA": "",
+               "MESSAGE_LINK": ""}
+        with mock.patch.dict(os.environ, env, clear=False):
+            config = bot.load_config(self._config_file())
+            self.assertEqual(config["match_mode"], "forward_all")
+            line = bot.ConfigStore("config.json", config).status_line()
+        self.assertIn("match_mode", line)
+        self.assertIn("eziyor", line)
 
 
 # ---------------------------------------------------------------------------
