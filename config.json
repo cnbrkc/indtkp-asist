@@ -27,6 +27,8 @@
     "hediye"
   ],
   "match_mode": "any",
+  "include_enabled": true,
+  "exclude_enabled": true,
   "copy_mode": "copy",
   "delivery_modes": [
     "forward",

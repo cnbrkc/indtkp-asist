@@ -467,7 +467,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
     def test_settings_menu_is_small_and_lists_only_three_editable_groups(self):
         reply = self._reply("/ayar")
         for label in ("Dahili kelimeler", "Harici kelimeler", "Grup isimleri",
-                      "/ekle", "/çıkar", "/kaydet", "/iptal", "/hepsinial", "/filtrelial"):
+                      "/ekle", "/çıkar", "/kaydet", "/iptal", "/open", "/close"):
             self.assertIn(label, reply)
         self.assertNotIn("/mod", reply)
 
@@ -648,24 +648,31 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "value")
         self.assertEqual(self._config()["include_keywords"], ["çay"])
 
-    def test_hepsinial_bypasses_include_keeps_excludes_and_saves(self):
-        reply = self._reply("/hepsinial")
-        self.assertIn("Tüm mesaj modu açık", reply)
-        self.assertEqual(self._config()["match_mode"], "forward_all")
-        self.assertEqual(bot.FILTER_MODE, "forward_all")
-        self.assertEqual(len(self.command_log), 1)
+    def test_close_include_asks_then_lets_everything_through(self):
+        """Dahili filtre kapatılınca kelimeler yok sayılır; harici engel sürer."""
+        prompt = self._reply("/close")
+        self.assertIn("Hangi filtreyi kapatalım?", prompt)
+        self.assertIn("1. 🔎  Dahili kelimeler", prompt)
+        reply = self._say("1")
+        self.assertIn("Dahili kelimeler filtresi KAPATILDI", reply)
+        self.assertIn("Harici kelimeler: AÇIK", reply)
+        self.assertEqual(self._config()["include_enabled"], False)
+        self.assertNotIn("exclude_enabled", self._config())
+        self.assertFalse(bot.FILTER_INCLUDE_ENABLED)
+        self.assertTrue(bot.FILTER_EXCLUDE_ENABLED)
+        self.assertEqual(len(self.command_log), 1, "anında kaydedilmeli")
 
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 301, "iPhone kampanyası")))
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 302, "iPhone çekiliş")))
-        self.assertEqual(bot.STATS["matched"], 1)
+        self.assertEqual(bot.STATS["matched"], 1, "harici kelime yine engellemeli")
         self.assertEqual(len(self.client.delivered), 1)
 
-    def test_filtrelial_restores_keyword_filter_and_saves(self):
-        self._reply("/hepsinial")
-        reply = self._reply("/filtrelial")
-        self.assertIn("Kelime filtresi açık", reply)
-        self.assertEqual(self._config()["match_mode"], "any")
-        self.assertEqual(bot.FILTER_MODE, "any")
+    def test_open_include_restores_keyword_filter(self):
+        self._reply("/close dahili")
+        reply = self._reply("/open dahili")
+        self.assertIn("Dahili kelimeler filtresi AÇILDI", reply)
+        self.assertEqual(self._config()["include_enabled"], True)
+        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
         self.assertEqual(len(self.command_log), 2)
 
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 303, "iPhone kampanyası")))
@@ -673,12 +680,94 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.STATS["matched"], 1)
         self.assertEqual(len(self.client.delivered), 1)
 
-    def test_filter_mode_write_failure_restores_previous_mode(self):
+    def test_close_exclude_stops_blocking_while_include_keeps_filtering(self):
+        """Asıl istek: iki filtre ayrı ayrı kontrol edilebilsin."""
+        reply = self._reply("/close harici")
+        self.assertIn("Harici kelimeler filtresi KAPATILDI", reply)
+        self.assertIn("engelleme yapılmaz", reply)
+        self.assertFalse(bot.FILTER_EXCLUDE_ENABLED)
+        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+        self.assertEqual(self._config()["exclude_enabled"], False)
+
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 305, "Sıcak çay çekiliş")))
+        self.assertEqual(bot.STATS["matched"], 1,
+                         "harici engel kapalıyken dahili kelime geçen mesaj iletilmeli")
+        self.assertEqual(len(self.client.delivered), 1)
+
+    def test_open_and_close_both_targets_at_once(self):
+        reply = self._reply("/close ikisi")
+        self.assertIn("Dahili ve harici filtreler KAPATILDI", reply)
+        self.assertIn("HER mesaj iletilir", reply)
+        self.assertFalse(bot.FILTER_INCLUDE_ENABLED)
+        self.assertFalse(bot.FILTER_EXCLUDE_ENABLED)
+
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 306, "iPhone çekiliş")))
+        self.assertEqual(bot.STATS["matched"], 1, "iki filtre kapalıyken her mesaj geçmeli")
+
+        reply = self._reply("/open ikisi")
+        self.assertIn("AÇILDI", reply)
+        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+        self.assertTrue(bot.FILTER_EXCLUDE_ENABLED)
+
+    def test_open_with_unknown_argument_shows_the_menu(self):
+        original = self._config()
+        reply = self._reply("/open hedef")
+        self.assertIn("anlaşılmadı", reply)
+        self.assertIn("Hangi filtreyi açalım?", reply)
+        self.assertEqual(self._config(), original)
+        self.assertEqual(self.command_log, [])
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "filter",
+                         "soru açık kalmalı: 1/2/3 ya da /iptal")
+        self._reply("/iptal")
+        self.assertFalse(bot.PENDING)
+
+    def test_invalid_answer_keeps_the_filter_question_open(self):
+        self._reply("/open")
+        reply = self._say("kahve")
+        self.assertIn("Seçimi anlayamadım", reply)
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "filter")
+        self.assertEqual(self.command_log, [])
+
+    def test_filter_change_can_be_cancelled(self):
+        original = self._config()
+        self._reply("/open")
+        reply = self._reply("/iptal")
+        self.assertIn("Taslak silindi", reply)
+        self.assertEqual(self._config(), original)
+        self.assertFalse(bot.PENDING)
+        self.assertEqual(self.command_log, [])
+
+    def test_no_change_reports_without_writing(self):
+        original = self._config()
+        reply = self._reply("/open dahili")
+        self.assertIn("zaten açık", reply)
+        self.assertEqual(self._config(), original)
+        self.assertEqual(self.command_log, [])
+
+    def test_filter_write_failure_restores_previous_state(self):
         with mock.patch.object(bot, "atomic_write_json", side_effect=OSError("disk dolu")):
-            reply = self._reply("/hepsinial")
-        self.assertIn("önceki filtre geri yüklendi", reply)
-        self.assertEqual(self._config()["match_mode"], "any")
-        self.assertEqual(bot.FILTER_MODE, "any")
+            reply = self._reply("/close dahili")
+        self.assertIn("önceki durum geri yüklendi", reply)
+        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+        self.assertNotIn("include_enabled", self._config())
+        self.assertEqual(self.command_log, [])
+
+    def test_open_is_blocked_while_a_list_draft_is_pending(self):
+        self._reply("/ekle")
+        self._say("1")
+        self._say("kahve")
+        reply = self._reply("/close dahili")
+        self.assertIn("Önce bekleyen liste taslağını sonuçlandır", reply)
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "confirm")
+        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+
+    def test_removed_filter_commands_are_unknown_now(self):
+        original = self._config()
+        for command in ("/hepsinial", "/filtrelial"):
+            with self.subTest(command=command):
+                reply = self._reply(command)
+                self.assertIn("Bilinmeyen komut", reply)
+                self.assertEqual(self._config(), original)
         self.assertEqual(self.command_log, [])
 
     def test_removed_general_settings_commands_do_not_change_config(self):

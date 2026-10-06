@@ -157,8 +157,10 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `source_chats` | liste | Dinlenen kanal/grup listesi: `@kullaniciadi` veya `-100...` ID. **Hesabın üye olmadığı kanaldan mesaj gelmez.** |
 | `destination` | sayı / `"me"` | Filtrelenen mesajların gideceği sohbet. `me` = Kayıtlı Mesajlar (**bildirim gelmez**); grup ID'si yazarsan oraya düşer. |
 | `include_keywords` | liste | Aranacak kelimeler. Büyük/küçük harf farkı yoktur; `İ`/`I` doğru indirgenir. |
-| `exclude_keywords` | liste | Bunlardan biri geçerse mesaj atlanır. **Her modda önce bu kural çalışır.** |
-| `match_mode` | `any` / `all` / `forward_all` | `any`: kelimelerden biri yeterli. `all`: hepsi aynı mesajda olmalı. `forward_all`: dahili kelimeler yok sayılır; harici kelimeler yine engeller. `/hepsinial` ve `/filtrelial` arasında geçiş yapar. |
+| `exclude_keywords` | liste | Bunlardan biri geçerse mesaj atlanır (harici filtre **açıkken**). |
+| `include_enabled` | `true` / `false` | 🔎 **Dahili kelime filtresi açık mı?** `false` ise `include_keywords` yok sayılır. `/open` ve `/close` ile değiştirilir. Varsayılan `true`. |
+| `exclude_enabled` | `true` / `false` | 🚫 **Harici kelime filtresi açık mı?** `false` ise hiçbir mesaj harici kelimelerle engellenmez. `/open` ve `/close` ile değiştirilir. Varsayılan `true`. |
+| `match_mode` | `any` / `all` | Dahili kelimeler nasıl eşleşsin: `any` = biri yeterli, `all` = hepsi aynı mesajda. (Eski `forward_all` değeri hâlâ okunur: dahili filtre kapalı demektir; `/open dahili` yazınca `any`'ye döner.) |
 | `copy_mode` | `forward` / `copy` | Eski alan. `delivery_modes` yoksa ilk denenecek yolu belirler. |
 | `delivery_modes` | liste | Korumalı kanallarda sırayla denenecek iletim yolları: `forward → copy → media → text → link` ([7. bölüm](#7-iletim-zinciri-korumalı-kanallar)). |
 | `max_media_mb` | sayı | `media` yolunda indirilecek en büyük medya (varsayılan 25, `0` = sınırsız). |
@@ -190,8 +192,8 @@ yazarsa bot nedenini, o kişinin kullanıcı ID'sini ve nasıl yetki alacağın�
 
 ```text
 Kaynak mesajlarını hedef gruba iletir.
-/hepsinial — Dahili kelimelerden bağımsız tüm mesajlar (harici kelimeler yine engeller).
-/filtrelial — Dahili kelime filtresini açar.
+/open — Filtre aç (sorar: dahili, harici veya ikisi).
+/close — Filtre kapat (sorar: dahili, harici veya ikisi).
 /ayar, /ekle, /çıkar — kelime ve kaynak listelerini yönetir.
 /kaydet, /iptal — taslağı kaydet / iptal et.
 /analiz — Geçmiş başlıklarını tarar; en çok geçen kelimeleri istatistik olarak verir.
@@ -209,23 +211,50 @@ Kaynak mesajlarını hedef gruba iletir.
 | `/restart` (`/yenile`, `/yeniden`) | Yeni Actions çalışması başlatır |
 | `/analiz` (`/kelimeanalizi`) | Geçmiş mesajların **başlığını** tarar; en çok geçen 25 kelimeyi ve en çok geçen 25 ilk kelimeyi verir |
 | `/ayar` (`/ayarlar`) | Düzenlenebilir listeleri ve ayar komutlarını gösterir |
-| `/hepsinial` | Dahili kelimeleri yok sayar; harici kelimeler yine engellenir. Config/GitHub'a kaydeder. |
-| `/filtrelial` | Dahili kelime filtresini açar (en az bir kelime eşleşir); config/GitHub'a kaydeder. |
+| `/open` | Filtre **açar**. Argümansız yazarsan "dahili mi, harici mi, ikisi mi?" diye sorar. Anında kaydeder. |
+| `/close` | Filtre **kapatır**. Argümansız yazarsan "hangisini kapatalım?" diye sorar. Anında kaydeder. |
 | `/ekle` | Dahili/harici kelime veya kaynak listesine kayıt ekler; tek mesajda virgülle **birden çok** kayıt gönderilebilir |
 | `/çıkar` (`/cikar`) | Seçilen listeden kayıt çıkarır; numaraları veya değerleri virgülle ayırıp **birden çok** kaydı birlikte çıkarabilirsin |
 | `/kaydet` (veya onayda `kaydet`) | Taslak değişikliği config'e yazar ve GitHub'a gönderir |
 | `/iptal` (veya onayda `iptal`) | Bekleyen taslağı siler |
 | `/help` (`/yardim`, `/yardım`) | Bu komut özetini gösterir |
 
-`/hepsinial` ve `/filtrelial` anında uygulanır ve kaydedilir; liste düzenlemeleri ise
-`/kaydet` seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir.
+`/open` ve `/close` anında uygulanır ve kaydedilir; liste düzenlemeleri ise `/kaydet`
+seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir. Türkçe `I`/`İ` yazımları
+(`/ANALİZ`, `/Iptal` gibi) otomatik olarak eşleşir.
+
+### Tüm komutlar (açıklamalı)
+
+| Komut | Açıklama |
+|---|---|
+| `/status`, `/durum` | Çalışma süresi, kaynak sayısı, sayaçlar, son eşleşme, hedef ve iki filtrenin açık/kapalı durumu |
+| `/test`, `/deneme` | Hedefe deneme iletisi gönderir; bildirim botu da denenir |
+| `/source`, `/sources`, `/kaynak`, `/kaynaklar` | İzlenen kaynakları ve çözülemeyenleri listeler |
+| `/id` | Bu sohbetin ve senin kullanıcı ID'ni gösterir (config için hazır satırlar) |
+| `/restart`, `/yenile`, `/yeniden` | Yeni GitHub Actions çalışması başlatır (`GH_PAT` gerekir) |
+| `/analiz`, `/kelimeanalizi` | Geçmiş mesajların başlığını tarar; en çok geçen 25 kelime + 25 ilk kelime |
+| `/open` | Filtre açar; argümansız sorar (dahili / harici / ikisi), argümanla anında uygular |
+| `/close` | Filtre kapatır; argümansız sorar (dahili / harici / ikisi), argümanla anında uygular |
+| `/ayar`, `/ayarlar` | Düzenlenebilir listeleri ve komutları gösterir |
+| `/ekle` | Seçilen listeye kayıt ekler (virgülle birden çok kayıt) |
+| `/çıkar`, `/cikar` | Seçilen listeden kayıt çıkarır (numara veya değer; virgülle birden çok) |
+| `/kaydet` | Bekleyen taslağı `config.json`'a yazar ve GitHub'a gönderir |
+| `/iptal` | Bekleyen taslağı/seçimi siler; hiçbir ayar değişmez |
+| `/help`, `/yardim`, `/yardım` | Komut özetini gösterir |
+
+**Tamamı virgülle ayrılmış hâli** (BotFather açıklamasına, sabitlenmiş mesaja ya da
+grubun komut menüsüne doğrudan yapıştırabilirsin):
+
+```text
+/status, /durum, /test, /deneme, /source, /sources, /kaynak, /kaynaklar, /id, /restart, /yenile, /yeniden, /analiz, /kelimeanalizi, /open, /close, /ayar, /ayarlar, /ekle, /çıkar, /cikar, /kaydet, /iptal, /help, /yardim, /yardım
+```
 
 ---
 
 ## 5. Ayarları Telegram'dan düzenleme
 
-Telegram akışını bilerek sade tuttuk: sohbetten yalnızca şu üç liste düzenlenebilir.
-Filtre modu ise sadece `/hepsinial` ve `/filtrelial` komutlarıyla açılıp kapatılır; diğer teknik ayarlar config/kod üzerinden yönetilir.
+Telegram akışını bilerek sade tuttuk: sohbetten şu üç liste düzenlenebilir, iki filtre de
+`/open` ve `/close` ile bağımsız açılıp kapatılır; diğer teknik ayarlar config/kod üzerinden yönetilir.
 
 | Menüde görünen ad | `config.json` alanı | Ne işe yarar |
 |---|---|---|
@@ -233,10 +262,31 @@ Filtre modu ise sadece `/hepsinial` ve `/filtrelial` komutlarıyla açılıp kap
 | 🚫 Harici kelimeler | `exclude_keywords` | Bunlardan biri geçerse mesajı engeller |
 | 📣 Grup isimleri | `source_chats` | Takip edilecek kanal/grup kullanıcı adı veya ID'si |
 
-- **`/hepsinial`**: `include_keywords` listesini yok sayar ve mesajları iletir; `exclude_keywords`
-  eşleşenleri yine engeller. Bu mod config'e kaydedilir.
-- **`/filtrelial`**: normal `any` filtresine döner; dahili kelimelerden biri geçerse iletir.
-  Dahili liste boşsa mevcut eşleştirme kuralı gereği tüm mesajlar geçer.
+#### Filtreler: `/open` ve `/close`
+
+İki filtre **birbirinden bağımsızdır**; hangisinin çalışacağına tam olarak sen karar verirsin:
+
+| Filtre | Config alanı | Açıkken | Kapalıyken |
+|---|---|---|---|
+| 🔎 Dahili kelimeler | `include_enabled` | Mesajda kelimelerden en az biri geçmeli (`any`) / hepsi geçmeli (`all`) | Anahtar kelimeler yok sayılır |
+| 🚫 Harici kelimeler | `exclude_enabled` | Bu kelimelerden biri geçen mesaj engellenir | Hiç engelleme yapılmaz |
+
+```text
+/open              → "Hangi filtreyi açalım?" diye sorar
+/open dahili       → yalnızca dahili kelime filtresini açar
+/open harici       → yalnızca harici engeli açar
+/open ikisi        → ikisini birlikte açar
+/close dahili      → dahili filtreyi kapatır (harici engel çalışmaya devam eder)
+/close harici      → engellemeyi kapatır (dahili kelimeler aranmaya devam eder)
+/close ikisi       → ikisini de kapatır: kaynaklardaki HER mesaj iletilir
+```
+
+Menüden seçim yaparken `1` (dahili), `2` (harici), `3` (ikisi) yazabilirsin; filtre
+adını yazmak da yeterli. Her iki komut değişikliği **anında** uygular, `config.json`'a
+yazar ve GitHub'a gönderir; yanıtta iki filtrenin güncel durumu görünür. Yanlış bir şey
+yazarsan menü açık kalır, `/iptal` ile vazgeçebilirsin. Bekleyen bir liste taslağı
+(`/ekle` → `/kaydet` bekleyen) varken filtre komutları çalışmaz, önce taslağı
+sonuçlandırman istenir.
 
 Diğer ayarlar (`destination`, iletim yolları, bildirimler, token'lar vb.) Telegram'dan
 değiştirilemez; bunları `config.json`/kod üzerinden düzenle.
@@ -491,7 +541,8 @@ Dosyalar: `bot.py` (tüm mantık), `config.json` (ayarlar), `generate_session.py
 ## 13. Bu güncellemeden sonra yapılacaklar
 
 Bu sürüm üç liste düzenlemesini ve iki filtre komutunu sunar: `/ekle` veya `/çıkar` →
-seçim → değer → `/kaydet` ya da `/iptal`; filtre modu için `/hepsinial` ve `/filtrelial`.
+seçim → değer (virgülle birden çok) → `/kaydet` ya da `/iptal`; filtreler için `/open` ve
+`/close`; geçmiş istatistiği için `/analiz`.
 Diğer teknik ayarlar `config.json` üzerinden yönetilir. Ayrıntılar [4. bölümde](#4-telegram-komutları)
 ve [5. bölümde](#5-ayarları-telegramdan-düzenleme).
 
@@ -520,8 +571,11 @@ Kontrol sohbetinde yeni akışı doğrula:
 
 ```text
 /ayar       → üç liste ve filtre kısayolları gösterilmeli
-/hepsinial  → include kelimeleri yok sayıp modu kaydetmeli
-/filtrelial → dahili kelime filtresini geri açıp kaydetmeli
+/close      → menü sormalı: 1 dahili · 2 harici · 3 ikisi
+1           → dahili filtre kapanmalı, harici engel sürmeli
+/open dahili→ dahili filtre geri açılmalı (anında kaydeder)
+/close ikisi→ iki filtre de kapanmalı; her mesaj iletilmeli
+/open ikisi → ikisi birden açılmalı
 /ekle       → üç liste seçimi, ardından mevcut liste
 kahve, şeker, süt → taslakta üçü görünmeli; henüz kaydedilmemeli
 /kaydet     → config.json yazılmalı ve GitHub sonucu görünmeli
@@ -544,6 +598,7 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 - [ ] Güncel PR'ı `main`'e merge et
 - [ ] Actions'tan workflow'u bir kez elle başlat
 - [ ] `/ayar` → sade menü geliyor mu?
+- [ ] `/open` ve `/close` → menü soruyor mu? Dahili/harici filtre ayrı ayrı kapanıyor mu?
 - [ ] `/ekle` → kategori seç → `a, b, c` gönder → `/kaydet` ile GitHub'a yaz
 - [ ] `/çıkar` → listeyi gösteriyor mu? `1, 3` gibi çoklu çıkarma çalışıyor mu?
 - [ ] `/analiz` → iki istatistik geliyor mu? Kelimeleri harici listeye ekleyebiliyor musun?

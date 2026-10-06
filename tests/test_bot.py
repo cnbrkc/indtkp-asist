@@ -247,20 +247,31 @@ class StatusTextTest(unittest.TestCase):
 
     def test_help_text_lists_every_active_command_group(self):
         for command in ("/status", "/test", "/source", "/id", "/restart", "/analiz",
-                        "/ayar", "/hepsinial", "/filtrelial", "/ekle", "/çıkar",
+                        "/open", "/close", "/ayar", "/ekle", "/çıkar",
                         "/kaydet", "/iptal", "/help"):
             with self.subTest(command=command):
                 self.assertIn(command, bot.HELP_TEXT)
 
-    def test_status_shows_forward_all_mode(self):
+    def test_status_shows_both_filter_toggles(self):
         bot.SOURCES.clear()
         bot.SOURCE_FAILURES.clear()
         bot.SOURCE_IDS.clear()
         bot.CONTROL_NAMES.clear()
         bot.CONTROL_IDS.clear()
-        status = bot.build_status_text({"match_mode": "forward_all", "include_keywords": ["çay"]})
-        self.assertIn("Dahili kelimeler yok sayılıyor", status)
-        self.assertNotIn("Anahtar kelimeler", status)
+        closed = bot.build_status_text({"match_mode": "forward_all", "include_keywords": ["çay"]})
+        self.assertIn("Dahili filtre: KAPALI", closed)
+        self.assertIn("kelimeler yok sayılıyor", closed)
+        opened = bot.build_status_text({"include_keywords": ["çay"], "exclude_keywords": ["çekiliş"]})
+        self.assertIn("Dahili filtre: AÇIK", opened)
+        self.assertIn("çay (any)", opened)
+        self.assertIn("Harici filtre: AÇIK", opened)
+        self.assertIn("çekiliş", opened)
+        self.assertIn("/open ve /close", opened)
+
+    def test_status_marks_disabled_exclude_filter(self):
+        status = bot.build_status_text({"exclude_keywords": ["çekiliş"], "exclude_enabled": False})
+        self.assertIn("Harici filtre: KAPALI", status)
+        self.assertIn("engelleme yapılmıyor", status)
 
 
 class MatchModeTest(unittest.TestCase):
@@ -295,10 +306,49 @@ class MatchModeTest(unittest.TestCase):
         self.assertFalse(bot.matches("çay kahve", ["çay", "şeker"], [], "all"))
         self.assertTrue(bot.matches("çay şeker", ["çay", "şeker"], [], "all"))
 
+    def test_include_filter_can_be_disabled_independently(self):
+        """İki filtre bağımsız: dahili kapalıyken harici engelleme sürer."""
+        include, exclude = ["çay"], ["çekiliş"]
+        self.assertFalse(bot.matches("iPhone çekiliş", include, exclude, "any",
+                                     include_enabled=False, exclude_enabled=True))
+        self.assertTrue(bot.matches("iPhone kampanya", include, exclude, "any",
+                                    include_enabled=False, exclude_enabled=True))
+
+    def test_exclude_filter_can_be_disabled_independently(self):
+        include, exclude = ["çay"], ["çekiliş"]
+        self.assertTrue(bot.matches("çay çekilişi", include, exclude, "any",
+                                    include_enabled=True, exclude_enabled=False))
+        self.assertFalse(bot.matches("iPhone kampanya", include, exclude, "any",
+                                     include_enabled=True, exclude_enabled=False))
+
+    def test_both_filters_disabled_lets_everything_through(self):
+        self.assertTrue(bot.matches("iPhone çekilişi", ["çay"], ["çekiliş"], "any",
+                                    include_enabled=False, exclude_enabled=False))
+        self.assertTrue(bot.matches("", [], [], "any",
+                                    include_enabled=False, exclude_enabled=False))
+
     def test_check_environment_accepts_forward_all(self):
         config = dict(CheckEnvironmentTest.base_config, match_mode="forward_all")
         with mock.patch.dict(os.environ, CheckEnvironmentTest.good_env, clear=False):
             self.assertEqual(bot.check_environment(config), [])
+
+    def test_filter_state_defaults_to_both_enabled(self):
+        self.assertEqual(bot.filter_state_of({}), {"include": True, "exclude": True})
+        self.assertEqual(bot.filter_state_of({"match_mode": "all"}),
+                         {"include": True, "exclude": True})
+
+    def test_filter_state_reads_flags_and_legacy_forward_all(self):
+        self.assertEqual(bot.filter_state_of({"include_enabled": False}),
+                         {"include": False, "exclude": True})
+        self.assertEqual(bot.filter_state_of({"exclude_enabled": False}),
+                         {"include": True, "exclude": False})
+        self.assertEqual(bot.filter_state_of({"include_enabled": "hayır"}),
+                         {"include": False, "exclude": True})
+        self.assertEqual(bot.filter_state_of({"match_mode": "forward_all"}),
+                         {"include": False, "exclude": True},
+                         "eski 'tümünü al' modu dahili filtreyi kapatmalı")
+        self.assertEqual(bot.filter_state_of({"match_mode": "forward_all", "exclude_enabled": False}),
+                         {"include": False, "exclude": False})
 
     def test_check_environment_rejects_unknown_mode(self):
         config = dict(CheckEnvironmentTest.base_config, match_mode="uzay")
@@ -312,12 +362,22 @@ class TelegramCommandTest(unittest.TestCase):
     """Yalnızca belgelenen Telegram komutları tanınır."""
 
     def test_filter_toggle_commands_are_active(self):
-        self.assertIn("/hepsinial", bot.CMD_FILTER_ALL)
-        self.assertIn("/filtrelial", bot.CMD_FILTER_KEYWORDS)
+        self.assertIn("/open", bot.CMD_FILTER_OPEN)
+        self.assertIn("/close", bot.CMD_FILTER_CLOSE)
+        self.assertEqual(bot.FILTER_COMMANDS, bot.CMD_FILTER_OPEN | bot.CMD_FILTER_CLOSE)
         self.assertIn("/ekle", bot.SETTINGS_COMMANDS)
         self.assertIn("/çıkar", bot.SETTINGS_COMMANDS)
         self.assertIn("/kaydet", bot.SETTINGS_COMMANDS)
         self.assertIn("/iptal", bot.SETTINGS_COMMANDS)
+
+    def test_removed_filter_commands_are_gone(self):
+        """Eski /hepsinial ve /filtrelial komutları tamamen kaldırıldı."""
+        for command in ("/hepsinial", "/filtrelial"):
+            with self.subTest(command=command):
+                self.assertNotIn(command, bot.FILTER_COMMANDS)
+                self.assertNotIn(command, bot.SETTINGS_COMMANDS)
+                self.assertNotIn(command, bot.HELP_TEXT)
+                self.assertNotIn(command, bot.build_main_menu_text())
 
     def test_removed_general_settings_commands_are_not_active(self):
         for command in ("/mod", "/token", "/kelime_ekle", "/filtre", "/ayar_set"):
@@ -328,7 +388,7 @@ class TelegramCommandTest(unittest.TestCase):
         menu = bot.build_main_menu_text()
         help_text = bot.HELP_TEXT
         for text in (menu, help_text):
-            for command in ("/hepsinial", "/filtrelial", "/ekle", "/çıkar", "/kaydet", "/iptal"):
+            for command in ("/open", "/close", "/ekle", "/çıkar", "/kaydet", "/iptal"):
                 with self.subTest(command=command, text=text[:12]):
                     self.assertIn(command, text)
         for command in ("/mod", "/token", "/kelime_ekle", "/ayar_set"):
@@ -572,6 +632,94 @@ class TelegramListWorkflowTest(unittest.TestCase):
         pending["draft_config"]["include_keywords"].append("taslak")
         self.assertNotIn("taslak", self.config["include_keywords"])
         self.assertEqual(pending["stage"], "category")
+
+
+class FilterToggleTest(unittest.TestCase):
+    """`/open` ve `/close`: dahili/harici filtreyi bağımsız açıp kapatma."""
+
+    def setUp(self):
+        self.config = {
+            "include_keywords": ["çay", "kahve"],
+            "exclude_keywords": ["çekiliş"],
+            "source_chats": ["@firsat"],
+            "match_mode": "any",
+        }
+
+    def test_numbers_and_names_resolve_to_targets(self):
+        for text, expected in (("1", "include"), ("2", "exclude"), ("3", "both"),
+                               ("dahili", "include"), ("DAHİLİ KELİMELER", "include"),
+                               ("harici", "exclude"), ("hariç kelimeler", "exclude"),
+                               ("ikisi", "both"), ("her ikisi", "both")):
+            with self.subTest(text=text):
+                self.assertEqual(bot.resolve_filter_target(text), expected)
+        for text in ("", "   ", "hedef", "kahve"):
+            with self.subTest(text=text):
+                self.assertIsNone(bot.resolve_filter_target(text))
+
+    def test_prompt_shows_current_state_and_both_choices(self):
+        prompt = bot.build_filter_toggle_prompt("open", self.config)
+        self.assertIn("FİLTRE AÇ", prompt)
+        self.assertIn("Hangi filtreyi açalım?", prompt)
+        self.assertIn("1. 🔎  Dahili kelimeler  ·  şu an açık  ·  2 kayıt", prompt)
+        self.assertIn("2. 🚫  Harici kelimeler  ·  şu an açık  ·  1 kayıt", prompt)
+        self.assertIn("3. 🔁  İkisi birlikte", prompt)
+        self.assertIn("/open dahili", prompt)
+        close_prompt = bot.build_filter_toggle_prompt("close", self.config)
+        self.assertIn("FİLTRE KAPAT", close_prompt)
+        self.assertIn("Hangi filtreyi kapatalım?", close_prompt)
+
+    def test_closing_include_keeps_exclude_running(self):
+        ok, candidate, note = bot.stage_filter_toggle(self.config, "close", "include")
+        self.assertTrue(ok, note)
+        self.assertEqual(candidate["include_enabled"], False)
+        self.assertNotIn("exclude_enabled", candidate, "harici filtreye dokunulmamalı")
+        self.assertEqual(self.config.get("include_enabled"), None, "asıl config değişmemeli")
+        self.assertIn("KAPATILDI", note)
+        self.assertIn("🔎 Dahili kelimeler: KAPALI", note)
+        self.assertIn("🚫 Harici kelimeler: AÇIK", note)
+
+    def test_closing_exclude_keeps_include_running(self):
+        ok, candidate, note = bot.stage_filter_toggle(self.config, "close", "exclude")
+        self.assertTrue(ok, note)
+        self.assertEqual(candidate["exclude_enabled"], False)
+        self.assertNotIn("include_enabled", candidate)
+        self.assertIn("🚫 Harici kelimeler: KAPALI", note)
+        self.assertIn("Harici filtre kapalı: engelleme yapılmaz", note)
+
+    def test_both_can_be_closed_and_reopened(self):
+        ok, candidate, note = bot.stage_filter_toggle(self.config, "close", "both")
+        self.assertTrue(ok, note)
+        self.assertEqual(candidate["include_enabled"], False)
+        self.assertEqual(candidate["exclude_enabled"], False)
+        self.assertIn("HER mesaj iletilir", note)
+
+        ok, reopened, note = bot.stage_filter_toggle(candidate, "open", "both")
+        self.assertTrue(ok, note)
+        self.assertEqual(reopened["include_enabled"], True)
+        self.assertEqual(reopened["exclude_enabled"], True)
+
+    def test_no_change_is_reported_without_touching_config(self):
+        for action, target in (("open", "include"), ("open", "exclude"), ("open", "both")):
+            with self.subTest(action=action, target=target):
+                ok, candidate, note = bot.stage_filter_toggle(self.config, action, target)
+                self.assertFalse(ok)
+                self.assertIn("değişiklik yok", note)
+                self.assertEqual(candidate, self.config)
+
+    def test_opening_include_clears_legacy_forward_all_mode(self):
+        legacy = dict(self.config, match_mode="forward_all")
+        ok, candidate, note = bot.stage_filter_toggle(legacy, "open", "include")
+        self.assertTrue(ok, note)
+        self.assertEqual(candidate["include_enabled"], True)
+        self.assertEqual(candidate["match_mode"], "any",
+                         "eski 'tümünü al' modu bırakılmalı, yoksa kelimeler yine yok sayılırdı")
+        self.assertEqual(bot.filter_state_of(candidate)["include"], True)
+
+    def test_unknown_target_is_rejected(self):
+        ok, candidate, note = bot.stage_filter_toggle(self.config, "open", "hedef")
+        self.assertFalse(ok)
+        self.assertIn("1 (dahili), 2 (harici) veya 3", note)
+        self.assertEqual(candidate, self.config)
 
 
 class WordAnalysisTest(unittest.TestCase):

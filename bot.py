@@ -74,7 +74,9 @@ SELF_ID: int | None = None
 # Aktif filtre/komut durumları (apply_runtime_config yazar).
 FILTER_INCLUDE: list[str] = []
 FILTER_EXCLUDE: list[str] = []
-FILTER_MODE = "any"
+FILTER_MODE = "any"           # any | all (dahili kelimeler nasıl eşleşsin)
+FILTER_INCLUDE_ENABLED = True  # 🔎 dahili kelime filtresi açık mı?
+FILTER_EXCLUDE_ENABLED = True  # 🚫 harici kelime engeli açık mı?
 ADMIN_IDS: set[int] = set()
 SOURCE_FOOTER = True  # bildirime "Fırsatı Gönderen: <kaynak>" satırı ekle
 NOTIFY_MEDIA = True   # bildirim botu medyayı da göndersin
@@ -325,15 +327,27 @@ def matches(
     include: Sequence[str],
     exclude: Sequence[str],
     mode: str = "any",
+    *,
+    include_enabled: bool = True,
+    exclude_enabled: bool = True,
 ) -> bool:
     """Mesaj metnini anahtar kelimelere göre değerlendir.
 
-    ``forward_all`` modunda ``include`` tamamen yok sayılır; ``exclude`` her
-    zaman önce uygulanır (istenmeyen içerik hiçbir modda geçmez).
+    İki filtre birbirinden bağımsızdır (/open ve /close ile yönetilir):
+      * ``exclude_enabled`` açıkken ``exclude`` kelimelerinden biri geçen mesaj
+        engellenir (varsayılan davranış).
+      * ``include_enabled`` kapalıysa ``include`` listesi tamamen yok sayılır;
+        yalnızca harici filtre uygulanır.
+      * İkisi de kapalıysa kaynaklardaki her mesaj iletilir.
+
+    Eski ``match_mode: forward_all`` ayarı da dahili filtreyi kapatır (geriye
+    dönük uyumluluk).
     """
     normalized = normalize(text)
-    if exclude and any(word in normalized for word in exclude):
+    if exclude_enabled and exclude and any(word in normalized for word in exclude):
         return False
+    if not include_enabled:
+        return True
     resolved = canonical_match_mode(mode) or "any"
     if resolved == "forward_all":
         return True
@@ -341,6 +355,21 @@ def matches(
         return True
     found = [word in normalized for word in include]
     return all(found) if resolved == "all" else any(found)
+
+
+def filter_state_of(config: dict) -> dict[str, bool]:
+    """İki filtrenin açık/kapalı durumunu config'ten oku.
+
+    ``include_enabled`` / ``exclude_enabled`` asıl anahtarlardır; eski
+    ``match_mode: forward_all`` ayarı dahili filtreyi kapalı sayar.
+    """
+    include_enabled = config_flag(config.get("include_enabled"), True)
+    if match_mode_of(config) == "forward_all":
+        include_enabled = False
+    return {
+        "include": include_enabled,
+        "exclude": config_flag(config.get("exclude_enabled"), True),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +472,10 @@ def print_report(config: dict, problems: list[str]) -> None:
     }[filter_mode]
     print(f"Anahtar kelimeler  : {config.get('include_keywords') or '(hepsi)'} ({filter_label})", flush=True)
     print(f"Hariç kelimeler    : {config.get('exclude_keywords') or '(yok)'}", flush=True)
+    filter_state = filter_state_of(config)
+    print(f"Filtre durumu      : dahili {'AÇIK' if filter_state['include'] else 'KAPALI'} | "
+          f"harici {'AÇIK' if filter_state['exclude'] else 'KAPALI'} "
+          f"(/open ve /close ile değiştirilir)", flush=True)
     print(f"İletim sırası      : {' → '.join(build_delivery_chain(config))}", flush=True)
     print(f"Medya sınırı       : {config.get('max_media_mb', 25)} MB", flush=True)
     mode = link_appendix_mode(config)
@@ -1144,8 +1177,8 @@ HELP_TEXT = (
     "/id – sohbet ve kullanıcı ID'leri\n"
     "/restart (/yenile) – yeni çalışma başlat\n"
     "/analiz [adet] [tümü] – geçmiş başlıkları tara, kelime istatistiği ver\n"
-    "/hepsinial – tüm mesajları ilet (harici kelimeler hariç; kaydeder)\n"
-    "/filtrelial – dahili kelime filtresini aç (kaydeder)\n"
+    "/open [dahili|harici|ikisi] – filtre aç (sormazsan menü sorar; kaydeder)\n"
+    "/close [dahili|harici|ikisi] – filtre kapat (sormazsan menü sorar; kaydeder)\n"
     "/ayar, /ekle, /çıkar – listeleri düzenle (virgülle birden çok kayıt)\n"
     "/kaydet, /iptal – taslağı kaydet / iptal et\n"
     "/help (/yardim) – bu mesaj"
@@ -1157,13 +1190,21 @@ def build_status_text(config: dict) -> str:
     last_line = "henüz eşleşme yok"
     if last:
         last_line = f"{humanize(time.time() - last)} önce ({STATS['last_match_source']})"
-    keywords = config.get("include_keywords") or "(hepsi)"
+    keywords = telegram_list_items(config, "include_keywords")
+    exclude_words = telegram_list_items(config, "exclude_keywords")
     mode = match_mode_of(config)
-    if mode == "forward_all":
-        filter_line = "🔓 Dahili kelimeler yok sayılıyor (harici kelimeler yine engeller)"
+    state = filter_state_of(config)
+    keyword_text = ", ".join(str(item) for item in keywords) or "(kelime yok)"
+    exclude_text = ", ".join(str(item) for item in exclude_words) or "(kelime yok)"
+    if state["include"]:
+        filter_line = f"• 🔎 Dahili filtre: AÇIK · {keyword_text} ({mode})"
     else:
-        filter_line = (f"• Anahtar kelimeler: "
-                       f"{', '.join(keywords) if isinstance(keywords, list) else keywords} ({mode})")
+        filter_line = "• 🔎 Dahili filtre: KAPALI · kelimeler yok sayılıyor"
+    if state["exclude"]:
+        filter_line += f"\n• 🚫 Harici filtre: AÇIK · {exclude_text}"
+    else:
+        filter_line += "\n• 🚫 Harici filtre: KAPALI · engelleme yapılmıyor"
+    filter_line += "\n• Değiştirmek için /open ve /close"
     return (
         "✅ Takipçi aktif\n"
         f"• Çalışma süresi: {humanize(time.time() - STARTED_AT)}\n"
@@ -1200,8 +1241,8 @@ def build_source_text() -> str:
 # Telegram liste düzenleme akışı
 # ---------------------------------------------------------------------------
 #
-# Telegram'da yalnızca üç liste taslak akışıyla düzenlenir; filtre modu da
-# iki açık komutla değiştirilir. Diğer ayarlar yalnızca config/kod üzerinden.
+# Telegram'da yalnızca üç liste taslak akışıyla düzenlenir; iki filtre ise
+# /open ve /close ile bağımsız açılıp kapatılır. Diğer ayarlar config/kod üzerinden.
 
 def build_main_menu_text() -> str:
     """/ayar çıktısı: Telegram'dan düzenlenebilen üç listeyi açıklar."""
@@ -1222,8 +1263,10 @@ def build_main_menu_text() -> str:
         "✅  /kaydet  · Taslağı config.json'a yazıp GitHub'a gönder",
         "↩️  /iptal   · Bekleyen taslağı iptal et",
         "",
-        "🔓 /hepsinial  · Tümünü al (harici kelimeler hariç; anında kaydeder)",
-        "🔎 /filtrelial · Dahili kelime filtresi (anında kaydeder)",
+        "🔓 /open   · Filtre aç  (sorar: dahili mi, harici mi, ikisi mi?)",
+        "🔒 /close  · Filtre kapat (sorar: hangisi kapansın?)",
+        "   İkisi bağımsızdır: dahili ve harici filtre ayrı ayrı açılıp kapanır.",
+        "   Örnek: /open dahili · /close harici · /open ikisi",
         "",
         "Düzenlenebilir listeler:",
         "  🔎 Dahili kelimeler",
@@ -1483,6 +1526,164 @@ def resolve_confirmation_choice(text: Any) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Filtre aç/kapat (/open, /close)
+# ---------------------------------------------------------------------------
+#
+# Dahili (🔎 include_keywords) ve harici (🚫 exclude_keywords) filtreler
+# birbirinden BAĞIMSIZ açılıp kapatılır; böylece hangi filtrenin çalıştığı tam
+# olarak kontrol edilebilir. Durum config.json'daki ``include_enabled`` ve
+# ``exclude_enabled`` alanlarında tutulur (varsayılan: ikisi de açık).
+
+FILTER_TARGET_META: dict[str, dict[str, str]] = {
+    "include": {
+        "icon": "🔎",
+        "title": "Dahili kelimeler",
+        "field": "include_enabled",
+        "keywords": "include_keywords",
+        "description": "Mesajda aranan kelimeler (kapalıysa kelimeler yok sayılır)",
+    },
+    "exclude": {
+        "icon": "🚫",
+        "title": "Harici kelimeler",
+        "field": "exclude_enabled",
+        "keywords": "exclude_keywords",
+        "description": "Geçen mesajı engelleyen kelimeler (kapalıysa engelleme yapılmaz)",
+    },
+}
+FILTER_TARGET_ORDER = ("include", "exclude")
+FILTER_TARGET_NUMBER: dict[str, str] = {"1": "include", "2": "exclude", "3": "both"}
+FILTER_TARGET_ALIASES: dict[str, set[str]] = {
+    "include": {
+        "dahili", "dahil", "dahili_kelimeler", "dahil_kelimeler", "include",
+        "include_keywords", "icerik", "içerik", "kelime", "kelimeler", "aranan",
+        "yesil", "yeşil",
+    },
+    "exclude": {
+        "harici", "hariç", "haric", "harici_kelimeler", "hariç_kelimeler", "haric_kelimeler",
+        "exclude", "exclude_keywords", "engel", "engeller", "engelleme", "yasak",
+        "yasakli", "yasaklı", "kara",
+    },
+    "both": {
+        "ikisi", "ikisi_birlikte", "her_ikisi", "herikisi", "hepsi", "tumu", "tümü",
+        "both", "all",
+    },
+}
+
+
+def resolve_filter_target(text: Any) -> str | None:
+    """``/open`` / ``/close`` yanıtını hedefe çevir: include | exclude | both.
+
+    Kabul edilenler: ``1``/``2``/``3``, ``dahili``, ``harici``, ``ikisi``,
+    ``hariç kelimeler`` gibi yazımlar (boşluk/tire/büyük-küçük farkı yok sayılır).
+    """
+    raw = normalize(str(text or "")).strip().lstrip("/").strip(".,;:!?")
+    if not raw:
+        return None
+    if raw in FILTER_TARGET_NUMBER:
+        return FILTER_TARGET_NUMBER[raw]
+    key = re.sub(r"[\s\-]+", "_", raw)
+    flat = key.replace("_", "")
+    for target, aliases in FILTER_TARGET_ALIASES.items():
+        if key == target or key in aliases:
+            return target
+        if flat in {alias.replace("_", "") for alias in aliases}:
+            return target
+    return None
+
+
+def filter_state_lines(config: dict) -> list[str]:
+    """İki filtrenin güncel durumunu okunaklı satırlar hâlinde ver."""
+    state = filter_state_of(config)
+    lines: list[str] = []
+    for target in FILTER_TARGET_ORDER:
+        meta = FILTER_TARGET_META[target]
+        count = len(telegram_list_items(config, meta["keywords"]))
+        label = "AÇIK" if state[target] else "KAPALI"
+        lines.append(f"• {meta['icon']} {meta['title']}: {label} · {count} kayıt")
+    return lines
+
+
+def build_filter_toggle_prompt(action: str, config: dict) -> str:
+    """`/open` veya `/close` argümansız yazıldığında hangi filtreyi sorar."""
+    state = filter_state_of(config)
+    is_open = action == "open"
+    lines = [
+        "🔓  FİLTRE AÇ" if is_open else "🔒  FİLTRE KAPAT",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "Hangi filtreyi açalım?" if is_open else "Hangi filtreyi kapatalım?",
+        "",
+    ]
+    for index, target in enumerate(FILTER_TARGET_ORDER, start=1):
+        meta = FILTER_TARGET_META[target]
+        count = len(telegram_list_items(config, meta["keywords"]))
+        label = "açık" if state[target] else "kapalı"
+        lines.append(f"{index}. {meta['icon']}  {meta['title']}  ·  şu an {label}  ·  {count} kayıt")
+        lines.append(f"   {meta['description']}")
+    lines += [
+        f"3. 🔁  İkisi birlikte  ·  şu an "
+        f"{'açık' if state['include'] and state['exclude'] else 'kapalı'}",
+        "",
+        "1, 2, 3 yaz ya da filtre adını yaz (dahili / harici / ikisi).",
+        "Doğrudan da yazabilirsin: /open dahili · /close harici · /open ikisi",
+        "Vazgeçmek için /iptal.",
+    ]
+    return "\n".join(lines)
+
+
+def stage_filter_toggle(config: dict, action: str, target: str) -> tuple[bool, dict, str]:
+    """Filtre anahtarını açar/kapatır; config'e dokunmadan taslak döndürür."""
+    if action not in {"open", "close"}:
+        return False, copy.deepcopy(config), "Geçersiz filtre işlemi."
+    if target not in {"include", "exclude", "both"}:
+        return False, copy.deepcopy(config), (
+            "Filtre seçilemedi. 1 (dahili), 2 (harici) veya 3 (ikisi) yaz."
+        )
+    enabled = action == "open"
+    targets = FILTER_TARGET_ORDER if target == "both" else (target,)
+    what = "Filtreler" if target == "both" else FILTER_TARGET_META[target]["title"] + " filtresi"
+    state = filter_state_of(config)
+    if all(state[item] is enabled for item in targets):
+        return False, copy.deepcopy(config), (
+            f"ℹ️ {what} zaten {'açık' if enabled else 'kapalı'}; değişiklik yok."
+        )
+
+    candidate = copy.deepcopy(config)
+    for item in targets:
+        candidate[FILTER_TARGET_META[item]["field"]] = enabled
+    # Dahili filtre açılırken eski "tümünü al" modu bırakılır; yoksa include
+    # kelimeleri yine yok sayılırdı.
+    if enabled and "include" in targets and match_mode_of(candidate) == "forward_all":
+        candidate["match_mode"] = "any"
+    return True, candidate, build_filter_result_text(action, target, candidate)
+
+
+def build_filter_result_text(action: str, target: str, config: dict) -> str:
+    """Filtre değişikliğinden sonra gösterilen özet."""
+    state = filter_state_of(config)
+    if target == "both":
+        what = "Dahili ve harici filtreler"
+    else:
+        what = FILTER_TARGET_META[target]["title"] + " filtresi"
+    icon = "🔓" if action == "open" else "🔒"
+    verb = "AÇILDI" if action == "open" else "KAPATILDI"
+    lines = [f"{icon} {what} {verb}.", "", *filter_state_lines(config)]
+    if not state["include"] and not state["exclude"]:
+        lines += ["", "⚠️ İki filtre de kapalı: kaynaklardaki HER mesaj iletilir."]
+    elif not state["include"]:
+        lines += ["", "🔓 Dahili filtre kapalı: anahtar kelime aranmaz; yalnızca harici kelimeler engeller."]
+    elif not state["exclude"]:
+        lines += ["", "ℹ️ Harici filtre kapalı: engelleme yapılmaz; yalnızca dahili kelimeler aranır."]
+    else:
+        lines += ["", "🔎 Dahili: en az bir kelime eşleşmeli · 🚫 Harici: eşleşen mesaj engellenir."]
+    return "\n".join(lines)
+
+
+def new_filter_edit(action: str) -> dict[str, Any]:
+    """`/open` ve `/close` için bekleyen seçim oturumu (config değişmez)."""
+    return {"stage": "filter", "action": action}
+
+
 def build_list_change_confirmation(action: str, field: str, value: Any, config: dict,
                                    message: str = "") -> str:
     """Değişiklik taslağı için Telegram'da okunaklı onay mesajı kur.
@@ -1536,9 +1737,10 @@ CMD_SETTINGS_ADD = _expand_commands({"/ekle"})
 CMD_SETTINGS_REMOVE = _expand_commands({"/çıkar", "/cikar"})
 CMD_SETTINGS_SAVE = _expand_commands({"/kaydet"})
 CMD_SETTINGS_REVERT = _expand_commands({"/iptal"})
-CMD_FILTER_ALL = _expand_commands({"/hepsinial"})
-CMD_FILTER_KEYWORDS = _expand_commands({"/filtrelial"})
+CMD_FILTER_OPEN = _expand_commands({"/open"})
+CMD_FILTER_CLOSE = _expand_commands({"/close"})
 CMD_ANALYZE = _expand_commands({"/analiz", "/kelimeanalizi"})
+FILTER_COMMANDS = frozenset().union(CMD_FILTER_OPEN, CMD_FILTER_CLOSE)
 SETTINGS_COMMANDS = frozenset().union(
     CMD_SETTINGS_MENU, CMD_SETTINGS_ADD, CMD_SETTINGS_REMOVE,
     CMD_SETTINGS_SAVE, CMD_SETTINGS_REVERT,
@@ -1835,6 +2037,7 @@ async def save_config(store: ConfigStore, note: str = "") -> tuple[bool, str]:
 def apply_runtime_config(config: dict) -> list[str]:
     """Global çalışma ayarlarını config'ten yenile (Telegram bağlantısı gerekmez)."""
     global FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE, ADMIN_IDS
+    global FILTER_INCLUDE_ENABLED, FILTER_EXCLUDE_ENABLED
     global DELIVERY_CHAIN, MAX_MEDIA_MB
     global LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
     global MESSAGE_LINK_LINE, SOURCE_FOOTER, NOTIFY_MEDIA, NOTIFY_BOT_TOKEN
@@ -1844,6 +2047,9 @@ def apply_runtime_config(config: dict) -> list[str]:
     FILTER_INCLUDE = [normalize(x) for x in config.get("include_keywords") or []]
     FILTER_EXCLUDE = [normalize(x) for x in config.get("exclude_keywords") or []]
     FILTER_MODE = match_mode_of(config)
+    filter_state = filter_state_of(config)
+    FILTER_INCLUDE_ENABLED = filter_state["include"]
+    FILTER_EXCLUDE_ENABLED = filter_state["exclude"]
     ADMIN_IDS = parse_admin_ids(config.get("admin_user_id"))
     DELIVERY_CHAIN = build_delivery_chain(config)
     try:
@@ -1861,9 +2067,12 @@ def apply_runtime_config(config: dict) -> list[str]:
     token = str(config.get("notify_bot_token") or os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
     NOTIFY_BOT_TOKEN = "" if token.lower() in {"null", "none", "yok"} else token
 
-    if FILTER_MODE == "forward_all":
-        notes.append("🔓 Dahili kelimeler yok sayılıyor; kaynak mesajları iletiliyor"
-                     + (" (harici kelimeler yine engeller)." if FILTER_EXCLUDE else "."))
+    if not FILTER_INCLUDE_ENABLED:
+        notes.append("🔓 Dahili kelime filtresi kapalı; anahtar kelimeler yok sayılıyor"
+                     + (" (harici kelimeler yine engeller)." if FILTER_EXCLUDE_ENABLED
+                        else " ve harici engelleme de kapalı: her mesaj iletilir."))
+    if not FILTER_EXCLUDE_ENABLED:
+        notes.append("🚫 Harici kelime filtresi kapalı; engelleme yapılmıyor.")
     return notes
 
 
@@ -2471,41 +2680,67 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 save_note,
             ]))
 
-    async def change_filter_mode(event: events.NewMessage.Event, mode: str, rest: str) -> None:
-        """Filtreyi iki kısa komutla değiştir, config'e kaydet ve runtime'a uygula."""
-        if rest:
-            await event.reply("Bu komut ek argüman almaz; yalnızca /hepsinial veya /filtrelial yaz.")
-            return
+    async def apply_filter_toggle(event: events.NewMessage.Event, action: str, target: str) -> None:
+        """Filtreyi aç/kapat, config'e yaz ve GitHub'a gönder (anında uygulanır).
 
+        Dahili ve harici filtre ayrı ayrı yönetilir; ikisi de kapatılabilir.
+        Dosyaya yazma başarısız olursa önceki durum geri yüklenir.
+        """
         async with settings_lock:
             before = store.snapshot()
-            current = match_mode_of(before)
-            if current == mode:
-                already = "Tüm mesaj modu zaten açık." if mode == "forward_all" else "Kelime filtresi zaten açık."
-                await event.reply(f"ℹ️ {already}")
+            ok, candidate, note = stage_filter_toggle(before, action, target)
+            if not ok:
+                drop_pending(pending_key(event))
+                await reply_chunked(event, note)
                 return
 
-            candidate = copy.deepcopy(before)
-            candidate["match_mode"] = mode
             store.config = candidate
             apply_runtime_config(store.config)
-            ok, save_note = await save_config(
-                store,
-                "tüm mesaj modu açıldı" if mode == "forward_all" else "kelime filtresi açıldı",
+            what = "Filtreler" if target == "both" else FILTER_TARGET_META[target]["title"] + " filtresi"
+            ok_save, save_note = await save_config(
+                store, f"{what} {'açıldı' if action == 'open' else 'kapatıldı'}",
             )
-            if not ok:
+            if not ok_save:
                 store.restore(before)
                 apply_runtime_config(store.config)
-                await reply_chunked(event, "❌ Mod değişikliği kaydedilemedi; önceki filtre geri yüklendi.\n" + save_note)
+                await reply_chunked(event, "❌ Filtre değişikliği kaydedilemedi; önceki durum geri yüklendi.\n" + save_note)
                 return
 
-            if mode == "forward_all":
-                summary = "🔓 Tüm mesaj modu açık. Dahili kelimeler yok sayılır; harici kelimeler yine engeller."
-            elif store.config.get("include_keywords"):
-                summary = "🔎 Kelime filtresi açık. Dahili kelimelerden en az biri eşleşmeli; harici kelimeler yine engeller."
-            else:
-                summary = "🔎 Kelime filtresi açık, ancak dahili liste boş olduğu için tüm mesajlar geçer."
-            await reply_chunked(event, summary + "\n" + save_note)
+            drop_pending(pending_key(event))
+            log.info("Filtre %s: %s (hedef=%s)", "açıldı" if action == "open" else "kapatıldı",
+                     what, target)
+            await reply_chunked(event, note + "\n" + save_note)
+
+    async def handle_filter_command(event: events.NewMessage.Event, action: str, rest: str) -> None:
+        """`/open` ve `/close`: argümanla hemen uygula, argüman yoksa sor."""
+        key = pending_key(event)
+        pending = peek_pending(key)
+        if pending and pending.get("stage") == "confirm":
+            await event.reply(
+                "📝 Önce bekleyen liste taslağını sonuçlandır.\n"
+                "✅ /kaydet ile kaydet veya ↩️ /iptal ile vazgeç."
+            )
+            return
+
+        raw = rest.strip()
+        if not raw:
+            set_pending(key, **new_filter_edit(action))
+            await reply_chunked(event, build_filter_toggle_prompt(action, store.config))
+            return
+
+        target = resolve_filter_target(raw)
+        if target is None:
+            # Soru açık kalsın: kullanıcı 1/2/3 yazabilir ya da /iptal edebilir.
+            set_pending(key, **new_filter_edit(action))
+            await reply_chunked(event, "\n".join([
+                f"❌ '{raw}' anlaşılmadı.",
+                "1 (dahili), 2 (harici) veya 3 (ikisi) yazabilirsin.",
+                "",
+                build_filter_toggle_prompt(action, store.config),
+            ]))
+            return
+
+        await apply_filter_toggle(event, action, target)
 
     async def analyze_history(event: events.NewMessage.Event, rest: str) -> None:
         """Kaynak geçmişinin başlıklarını tara; kelime istatistiklerini gönder.
@@ -2624,6 +2859,20 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return False
 
         text = raw.strip()
+        if item.get("stage") == "filter":
+            action = str(item.get("action") or "open")
+            target = resolve_filter_target(text)
+            if target is None:
+                set_pending(key, **item)
+                await reply_chunked(event, "\n".join([
+                    "❌ Seçimi anlayamadım. 1, 2, 3 yazabilir ya da filtre adını yazabilirsin.",
+                    "",
+                    build_filter_toggle_prompt(action, store.config),
+                ]))
+                return True
+            await apply_filter_toggle(event, action, target)
+            return True
+
         if item.get("stage") == "category":
             field = resolve_telegram_list(text)
             if field is None:
@@ -2992,10 +3241,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await event.reply(HELP_TEXT)
         elif command in CMD_ANALYZE:
             await analyze_history(event, rest)
-        elif command in CMD_FILTER_ALL:
-            await change_filter_mode(event, "forward_all", rest)
-        elif command in CMD_FILTER_KEYWORDS:
-            await change_filter_mode(event, "any", rest)
+        elif command in CMD_FILTER_OPEN:
+            await handle_filter_command(event, "open", rest)
+        elif command in CMD_FILTER_CLOSE:
+            await handle_filter_command(event, "close", rest)
         elif command in SETTINGS_COMMANDS:
             await handle_settings_command(event, command, rest)
         else:
@@ -3009,7 +3258,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return  # hedefe kendi gönderdiğimiz mesajı tekrar iletmeyelim
         STATS["seen"] += 1
         text = event.raw_text or ""
-        if not matches(text, FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE):
+        if not matches(text, FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE,
+                       include_enabled=FILTER_INCLUDE_ENABLED,
+                       exclude_enabled=FILTER_EXCLUDE_ENABLED):
             log.debug("Eşleşmedi (chat=%s id=%s): %.80s", event.chat_id, event.id, text)
             return
 
