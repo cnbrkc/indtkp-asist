@@ -1274,38 +1274,111 @@ class ExtractLinksTest(unittest.TestCase):
         self.assertEqual(bot.extract_links(message), [])
 
 
+class NoteCommandMessagesTest(unittest.TestCase):
+    """Komut sohbeti kaydı: yalnızca son alışveriş tutulur, eskiler silinir."""
+
+    def setUp(self):
+        bot.COMMAND_MESSAGES.clear()
+
+    def tearDown(self):
+        bot.COMMAND_MESSAGES.clear()
+
+    def test_first_exchange_has_nothing_to_delete(self):
+        self.assertEqual(bot.note_command_messages(-100, [1, 2]), [])
+        self.assertEqual(bot.COMMAND_MESSAGES[-100], [1, 2])
+
+    def test_previous_exchange_is_returned_for_deletion(self):
+        bot.note_command_messages(-100, [1, 2])
+        self.assertEqual(bot.note_command_messages(-100, [3, 4]), [1, 2])
+
+    def test_current_ids_are_never_marked_for_deletion(self):
+        bot.note_command_messages(-100, [1, 2])
+        self.assertEqual(bot.note_command_messages(-100, [2, 3]), [1])
+
+    def test_chats_are_kept_apart(self):
+        bot.note_command_messages(-100, [1])
+        self.assertEqual(bot.note_command_messages(-200, [9]), [])
+        self.assertEqual(bot.note_command_messages(-100, [5]), [1])
+
+    def test_empty_and_zero_ids_are_ignored(self):
+        self.assertEqual(bot.note_command_messages(-100, [0, None]), [])
+        self.assertEqual(bot.COMMAND_MESSAGES[-100], [])
+        self.assertEqual(bot.note_command_messages(-100, [7, 0]), [])
+
+
 class ComposeMessageTest(unittest.TestCase):
-    def test_message_appendix_and_footer_together(self):
+    def test_message_appendix_and_message_link_together(self):
         text = "ÇAY 5 TL"
         entity = tl_types.MessageEntityTextUrl(offset=4, length=2, url="https://amzn.to/5")
         composed = bot.compose_message(
             make_message(text, entities=[entity]),
             link_kinds=("entity",),
-            footer_label=bot.FOOTER_LABEL, footer_name="FırsatZ",
-            footer_url="https://t.me/firsatz/9",
+            message_link="https://t.me/firsatz/9",
         )
         self.assertTrue(composed["text"].startswith(text))
         self.assertIn("🔗 https://amzn.to/5", composed["text"])
-        self.assertTrue(composed["text"].endswith("Fırsatı Gönderen: FırsatZ"))
-        self.assertEqual(bot.footer_entity(composed, "https://t.me/firsatz/9"), [{
-            "type": "text_link", "offset": composed["footer_offset"],
-            "length": bot.utf16_length("FırsatZ"), "url": "https://t.me/firsatz/9",
-        }])
+        self.assertTrue(composed["text"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/9"))
+        # "Fırsatı Gönderen" etiketi yazılmaz (kullanıcı isteği).
+        self.assertNotIn("Fırsatı Gönderen", composed["text"])
+        self.assertFalse(hasattr(bot, "footer_entity"))
+        self.assertIsNone(composed["source_name"])
+        self.assertEqual(bot.source_name_entity(composed), [])
 
-    def test_message_link_line_sits_between_appendix_and_footer(self):
-        """Kullanıcı isteği: altına '🔗 Mesajı Gör: <t.me mesaj linki>' satırı."""
+    def test_message_link_line_sits_after_appendix(self):
+        """Kullanıcı isteği: en alta '🔗 Mesajı Gör: <t.me mesaj linki>' satırı."""
         button = SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)
         composed = bot.compose_message(
             make_message("çay 5 TL", buttons=[button]),
             message_link="https://t.me/FirsatZ/31543",
-            footer_label=bot.FOOTER_LABEL, footer_name="FirsatZ",
-            footer_url="https://t.me/FirsatZ/31543",
         )
         self.assertIn("🔗 Fırsata Git: https://amzn.to/btn", composed["text"])
         self.assertIn("🔗 Mesajı Gör: https://t.me/FirsatZ/31543", composed["text"])
-        self.assertLess(composed["text"].index("Mesajı Gör"),
-                        composed["text"].index("Fırsatı Gönderen"))
+        self.assertLess(composed["text"].index("Fırsata Git"),
+                        composed["text"].index("Mesajı Gör"))
+        self.assertTrue(composed["text"].endswith("🔗 Mesajı Gör: https://t.me/FirsatZ/31543"))
         self.assertEqual(composed["source_url"], "https://t.me/FirsatZ/31543")
+
+    def test_source_name_is_bold_at_the_bottom_without_label_or_link(self):
+        """Kullanıcı isteği: en altta yalnızca grup adı, kalın; etiket ve link yok."""
+        composed = bot.compose_message(
+            make_message("ÇAY 5 TL"),
+            message_link="https://t.me/firsatz/9",
+            source_name="FırsatZ",
+        )
+        self.assertTrue(composed["text"].endswith("\n\nFırsatZ"), repr(composed["text"]))
+        self.assertNotIn("Fırsatı Gönderen", composed["text"])
+        self.assertNotIn("🔗 FırsatZ", composed["text"])
+        self.assertEqual(composed["source_name"], "FırsatZ")
+        self.assertEqual(bot.source_name_entity(composed), [{
+            "type": "bold",
+            "offset": composed["source_name_offset"],
+            "length": bot.utf16_length("FırsatZ"),
+        }])
+        self.assertEqual(
+            bot.utf16_slice(composed["text"], composed["source_name_offset"],
+                            composed["source_name_length"]),
+            "FırsatZ",
+        )
+
+    def test_source_name_entity_is_empty_without_a_name(self):
+        composed = bot.compose_message(make_message("ÇAY 5 TL"))
+        self.assertEqual(bot.source_name_entity(composed), [])
+        self.assertEqual(bot.source_name_entity({"source_name_offset": -1, "source_name_length": 0}), [])
+
+    def test_source_name_survives_truncation_and_stays_bold(self):
+        composed = bot.compose_message(
+            make_message("a" * 5000), limit=120, link_kinds=("entity",),
+            message_link="https://t.me/firsatz/1", source_name="FırsatZ",
+        )
+        self.assertLessEqual(len(composed["text"]), 120)
+        self.assertTrue(composed["text"].endswith("FırsatZ"))
+        self.assertEqual(bot.source_name_entity(composed)[0]["type"], "bold")
+        self.assertIn("Mesajı Gör", composed["text"], "Mesajı Gör satırı en son düşer")
+
+    def test_empty_source_name_is_ignored(self):
+        composed = bot.compose_message(make_message("çay"), source_name="   ")
+        self.assertIsNone(composed["source_name"])
+        self.assertEqual(bot.source_name_entity(composed), [])
 
     def test_entity_links_are_not_rewritten_by_default(self):
         """Varsayılan: gizli link tıklanabilir kalır, 'Fırsata Git: url' satırı eklenmez."""
@@ -1326,23 +1399,24 @@ class ComposeMessageTest(unittest.TestCase):
 
     def test_source_line_is_dropped_when_it_cannot_fit(self):
         composed = bot.compose_message(
-            make_message("a" * 500), limit=50,
+            make_message("a" * 500), limit=30,
             link_kinds=("entity",), message_link="https://t.me/firsatz/1",
-            footer_label=bot.FOOTER_LABEL, footer_name="F",
         )
         self.assertIsNone(composed["source_url"])
         self.assertFalse(composed["source_line"])
-        self.assertTrue(composed["text"].endswith("Fırsatı Gönderen: F"))
-        self.assertLessEqual(len(composed["text"]), 50)
+        self.assertNotIn("Mesajı Gör", composed["text"])
+        self.assertLessEqual(len(composed["text"]), 30)
 
-    def test_long_body_is_truncated_but_footer_survives(self):
+    def test_long_body_is_truncated_but_message_link_survives(self):
         composed = bot.compose_message(
             make_message("a" * 5000), limit=200,
-            footer_label=bot.FOOTER_LABEL, footer_name="FırsatZ", footer_url="https://t.me/x/1",
+            message_link="https://t.me/firsatz/1",
         )
         self.assertLessEqual(len(composed["text"]), 200)
-        self.assertTrue(composed["text"].endswith("Fırsatı Gönderen: FırsatZ"))
-        self.assertEqual(len(composed["body"]), 200 - len("\n\nFırsatı Gönderen: FırsatZ"))
+        self.assertTrue(composed["text"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/1"))
+        self.assertEqual(len(composed["body"]),
+                         200 - len("\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"))
+        self.assertNotIn("Fırsatı Gönderen", composed["text"])
 
     def test_entities_outside_truncated_body_are_dropped(self):
         entity = tl_types.MessageEntityBold(offset=0, length=4000)
@@ -1467,7 +1541,7 @@ class BotApiSendTest(unittest.TestCase):
     def test_ping_sends_entities_and_keyboard(self):
         with mock.patch("bot.urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
             ok, _ = asyncio.run(bot.send_bot_ping(
-                "123:ABC", -100, "ÇAY\n\nFırsatı Gönderen: FırsatZ",
+                "123:ABC", -100, "ÇAY 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1",
                 entities=[{"type": "text_link", "offset": 5, "length": 3, "url": "https://t.me/x/1"}],
                 keyboard={"inline_keyboard": [[{"text": "Fırsata Git", "url": "https://amzn.to/b"}]]},
             ))

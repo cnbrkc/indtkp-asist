@@ -54,6 +54,7 @@ STATS = {
     "commands": 0,    # çalıştırılan komut
     "modes": {},      # hangi iletim yolu kaç kez işe yaradı
     "cleaned": 0,     # bildirim gittikten sonra silinen hesap kopyası
+    "cleaned_commands": 0,  # komut sohbetinde silinen eski komut/yanıt mesajı
     "last_match": None,
     "last_match_source": None,
 }
@@ -78,19 +79,24 @@ FILTER_MODE = "any"           # any | all (dahili kelimeler nasıl eşleşsin)
 FILTER_INCLUDE_ENABLED = True  # 🔎 dahili kelime filtresi açık mı?
 FILTER_EXCLUDE_ENABLED = True  # 🚫 harici kelime engeli açık mı?
 ADMIN_IDS: set[int] = set()
-SOURCE_FOOTER = True  # bildirime "Fırsatı Gönderen: <kaynak>" satırı ekle
+SOURCE_FOOTER = True  # bildirimin en altına kaynak grup adını KALIN yaz (etiket/link yok)
 NOTIFY_MEDIA = True   # bildirim botu medyayı da göndersin
 MESSAGE_LINK_LINE = True      # iletinin sonuna "🔗 Mesajı Gör: <t.me linki>" ekle
 LINK_APPENDIX_MODE = "smart"  # smart | all | off (bkz. link_appendix_mode)
 # Tek mesaj modu: bildirim botu mesajı gruba attıysa, hesabın attığı kopya silinir.
 # Böylece her fırsat grupta tek mesaj olarak kalır (botun bildirimi = uyarı düşen mesaj).
 SINGLE_MESSAGE = True
+# Komut sohbeti temizliği: yeni bir komut/yanıt geldiğinde bir önceki komut
+# alışverişi (senin komutun + botun yanıtı) silinir; ekranda yalnızca son mesaj
+# kalır. İndirim bildirimleri bu kayda girmediği için ASLA silinmez.
+CLEAN_COMMANDS = True
+# chat_id -> son komut alışverişinin mesaj ID'leri (yalnızca komut diyaloğu).
+COMMAND_MESSAGES: dict[int, list[int]] = {}
 
 # Telegram sınırları (Bot API ve kullanıcı hesabı için ortak olanlar).
 MESSAGE_LIMIT = 4096          # normal mesaj metni
 CAPTION_LIMIT = 1024          # medya açıklaması
 LINK_APPENDIX_LIMIT = 4       # ileti sonuna en fazla kaç gizli bağlantı yazılsın
-FOOTER_LABEL = "Fırsatı Gönderen: "
 MESSAGE_LINK_LABEL = "Mesajı Gör"
 BOT_API_MEDIA_LIMIT_MB = {"photo": 10, "video": 50, "document": 50}
 
@@ -146,7 +152,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict:
         config["auto_restart"] = os.environ["AUTO_RESTART"].strip().lower() in {
             "1", "true", "yes", "evet", "on",
         }
-    for key in ("append_links", "source_footer", "notify_media", "message_link", "single_message"):
+    for key in ("append_links", "clean_commands", "source_footer", "notify_media", "message_link", "single_message"):
         env_value = os.getenv(key.upper())
         if env_value is not None and env_value.strip():
             config[key] = env_value
@@ -482,9 +488,10 @@ def print_report(config: dict, problems: list[str]) -> None:
     mode_label = {"smart": "akıllı (buton/önizleme)", "all": "tüm gizli linkler", "off": "kapalı"}[mode]
     print(f"Bağlantı ekleri     : {mode_label} "
           f"| mesaj linki: {'açık' if config_flag(config.get('message_link')) else 'kapalı'} "
-          f"| kaynak altbilgisi: {'açık' if config_flag(config.get('source_footer')) else 'kapalı'} "
           f"| bildirim medyası: {'açık' if config_flag(config.get('notify_media')) else 'kapalı'} "
-          f"| tek mesaj: {'açık' if config_flag(config.get('single_message')) else 'kapalı'}", flush=True)
+          f"| tek mesaj: {'açık' if config_flag(config.get('single_message')) else 'kapalı'} "
+          f"| kaynak adı (kalın): {'açık' if config_flag(config.get('source_footer')) else 'kapalı'} "
+          f"| komut temizliği: {'açık' if config_flag(config.get('clean_commands')) else 'kapalı'}", flush=True)
     print(f"Otomatik yenileme  : {config.get('auto_restart', True)} "
           f"({os.getenv('RESTART_AFTER_MINUTES', '330')} dk sonra)", flush=True)
     if problems:
@@ -937,46 +944,51 @@ def compose_message(
     link_kinds: Sequence[str] | None = ("button", "webpage"),
     message_link: str | None = None,
     message_link_label: str = MESSAGE_LINK_LABEL,
-    footer_label: str | None = None,
-    footer_name: str | None = None,
-    footer_url: str | None = None,
+    source_name: str | None = None,
 ) -> dict[str, Any]:
-    """İletilecek metni kur: gövde + bağlantı ekleri + mesaj linki + kaynak altbilgisi.
+    """İletilecek metni kur: gövde + bağlantı ekleri + mesaj linki + kaynak adı.
 
     Sıra: ``gövde`` → ``🔗 <link>`` satırları → ``🔗 Mesajı Gör: <t.me>`` →
-    ``Fırsatı Gönderen: <kaynak>``. Ek satırlar kısa ama kritiktir; bu yüzden
-    önce onlara yer ayrılır, gövde gerekiyorsa kırpılır (fotoğraf açıklaması
-    1024 karakterle sınırlıdır). Sığmazsa önce link listesi, sonra mesaj linki
-    düşer; nihai güvence olan ``Mesajı Gör`` satırı en sona bırakılır.
+    en altta **kaynak grup adı**. Kaynak adı etiketsizdir ("Fırsatı Gönderen"
+    gibi bir açıklama yazılmaz), bir linke bağlanmaz; yalnızca kalın yazılır
+    (entity'si ``source_name_entity`` ile kurulur). Ek satırlar kısa ama
+    kritiktir; bu yüzden önce onlara yer ayrılır, gövde gerekiyorsa kırpılır
+    (fotoğraf açıklaması 1024 karakterle sınırlıdır). Sığmazsa sırasıyla link
+    listesi, kaynak adı ve mesaj linki düşer; nihai güvence olan ``Mesajı Gör``
+    satırı en sona bırakılır.
 
-    Dönen sözlükte ``body`` (kırpılmış olabilecek gövde), ``footer_offset``
-    (UTF-16 offset) ve ``source_url`` bulunur; entity'ler bunlara göre kurulur.
+    Dönen sözlükte ``body`` (kırpılmış olabilecek gövde), ``source_url`` ve
+    kaynak adının UTF-16 ``source_name_offset`` / ``source_name_length``
+    değerleri bulunur; entity'ler bunlara göre kurulur.
     """
     body = message_text(obj)
     appendix_text = build_link_appendix(obj, kinds=link_kinds) if link_kinds else ""
     source_line = f"🔗 {message_link_label}: {message_link}" if message_link else ""
-    footer_text = f"{footer_label}{footer_name}" if (footer_label and footer_name) else ""
+    name = (source_name or "").strip() or None
 
     sep = "\n\n"
     appendix_block = f"{sep}{appendix_text}" if appendix_text else ""
     source_block = f"{sep}{source_line}" if source_line else ""
-    footer_block = f"{sep}{footer_text}" if footer_text else ""
-    if len(appendix_block) + len(source_block) + len(footer_block) >= limit:
+    name_block = f"{sep}{name}" if name else ""
+
+    # Yer yetmezse düşme sırası: link listesi → kaynak adı → Mesajı Gör satırı.
+    if len(appendix_block) + len(source_block) + len(name_block) >= limit:
         appendix_block, appendix_text = "", ""
-    if len(source_block) + len(footer_block) >= limit:
+    if len(source_block) + len(name_block) >= limit:
+        name_block, name = "", None
+    if len(source_block) >= limit:
         source_block, source_line = "", ""
 
-    reserved = len(appendix_block) + len(source_block) + len(footer_block)
+    reserved = len(appendix_block) + len(source_block) + len(name_block)
     room = max(1, limit - reserved)
     if len(body) > room:
         body = body[: max(0, room - 1)].rstrip() + "…"
 
     text = body + appendix_block + source_block
-    footer_offset = -1
-    if footer_text:
-        text += sep
-        footer_offset = utf16_length(text)
-        text += footer_text
+    name_offset = -1
+    if name_block and name:
+        name_offset = utf16_length(text + sep)
+        text += name_block
 
     return {
         "text": text,
@@ -984,10 +996,9 @@ def compose_message(
         "appendix": appendix_text,
         "source_line": source_line,
         "source_url": message_link if source_line else None,
-        "footer_text": footer_text,
-        "footer_offset": footer_offset,
-        "footer_length": utf16_length(footer_name) if footer_text else 0,
-        "footer_url": footer_url if footer_text and footer_url else None,
+        "source_name": name,
+        "source_name_offset": name_offset,
+        "source_name_length": utf16_length(name) if (name_block and name) else 0,
     }
 
 
@@ -1066,16 +1077,17 @@ def bot_api_entities(obj: Any, body: str) -> list[dict[str, Any]]:
     return result
 
 
-def footer_entity(composed: dict[str, Any], message_link: str | None) -> list[dict[str, Any]]:
-    """Altbilgideki kaynak adını tıklanabilir yap: ad t.me mesaj linkini gizler."""
-    if not composed.get("footer_url") or composed.get("footer_offset", -1) < 0 or not message_link:
+def source_name_entity(composed: dict[str, Any]) -> list[dict[str, Any]]:
+    """En alttaki kaynak grup adını KALIN yap.
+
+    Kullanıcı isteği: "Fırsatı Gönderen" gibi bir etiket yazılmasın, ad bir
+    linke bağlanmasın; yalnızca hangi gruptan geldiği kalın olarak görünsün.
+    """
+    offset = composed.get("source_name_offset", -1)
+    length = composed.get("source_name_length", 0)
+    if offset is None or length is None or offset < 0 or length <= 0:
         return []
-    return [{
-        "type": "text_link",
-        "offset": composed["footer_offset"],
-        "length": composed["footer_length"],
-        "url": message_link,
-    }]
+    return [{"type": "bold", "offset": int(offset), "length": int(length)}]
 
 
 def media_upload_name(obj: Any) -> str:
@@ -1181,7 +1193,10 @@ HELP_TEXT = (
     "/close [dahili|harici|ikisi] – filtre kapat (sormazsan menü sorar; kaydeder)\n"
     "/ayar, /ekle, /çıkar – listeleri düzenle (virgülle birden çok kayıt)\n"
     "/kaydet, /iptal – taslağı kaydet / iptal et\n"
-    "/help (/yardim) – bu mesaj"
+    "/help (/yardim) – bu mesaj\n"
+    "\n"
+    "🧹 Komut temizliği: yeni komutta önceki komut ve yanıt silinir; bu sohbette\n"
+    "   ekranda yalnızca son mesaj kalır (indirim bildirimleri silinmez)."
 )
 
 
@@ -1225,6 +1240,10 @@ def build_status_text(config: dict) -> str:
         f"• Tek mesaj modu: {'açık' if SINGLE_MESSAGE else 'kapalı'}"
         + (f" · bildirim sonrası silinen hesap kopyası: {STATS.get('cleaned', 0)}"
            if SINGLE_MESSAGE and STATS.get("cleaned") else "")
+        + "\n"
+        f"• Komut temizliği: {'açık' if CLEAN_COMMANDS else 'kapalı'}"
+        + (f" · silinen eski komut mesajı: {STATS.get('cleaned_commands', 0)}"
+           if CLEAN_COMMANDS and STATS.get("cleaned_commands") else "")
     )
 
 
@@ -1272,6 +1291,9 @@ def build_main_menu_text() -> str:
         "  🔎 Dahili kelimeler",
         "  🚫 Harici kelimeler",
         "  📣 Grup isimleri (kanal/grup kullanıcı adı veya ID)",
+        "",
+        "🧹  Komut temizliği: yeni komutta bir önceki komut ve yanıt silinir;",
+        "     bu sohbette ekranda yalnızca son mesaj kalır. Bildirimler silinmez.",
         "",
         "Diğer tüm teknik ayarlar yalnızca config.json/kod üzerinden değiştirilir.",
     ])
@@ -2041,7 +2063,7 @@ def apply_runtime_config(config: dict) -> list[str]:
     global DELIVERY_CHAIN, MAX_MEDIA_MB
     global LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
     global MESSAGE_LINK_LINE, SOURCE_FOOTER, NOTIFY_MEDIA, NOTIFY_BOT_TOKEN
-    global SINGLE_MESSAGE
+    global SINGLE_MESSAGE, CLEAN_COMMANDS
 
     notes: list[str] = []
     FILTER_INCLUDE = [normalize(x) for x in config.get("include_keywords") or []]
@@ -2064,6 +2086,7 @@ def apply_runtime_config(config: dict) -> list[str]:
     SOURCE_FOOTER = config_flag(config.get("source_footer"), True)
     NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
     SINGLE_MESSAGE = config_flag(config.get("single_message"), True)
+    CLEAN_COMMANDS = config_flag(config.get("clean_commands"), True)
     token = str(config.get("notify_bot_token") or os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
     NOTIFY_BOT_TOKEN = "" if token.lower() in {"null", "none", "yok"} else token
 
@@ -2197,6 +2220,20 @@ async def reply_chunked(event: Any, text: str, limit: int = 3500) -> None:
         return
     for chunk in chunks:
         await event.reply(chunk)
+
+
+def note_command_messages(chat_id: int, message_ids: Sequence[int]) -> list[int]:
+    """Son komut alışverişinin mesaj ID'lerini kaydet; silinecek eskileri döndür.
+
+    Yalnızca komut diyaloğuna ait mesajlar (kullanıcının komutu + botun yanıtı)
+    buraya yazılır. İndirim bildirimleri bu kayda hiç girmediği için temizlikten
+    etkilenmez; böylece yanlışlıkla fırsat mesajı silinmez.
+    """
+    chat = int(chat_id or 0)
+    current = [int(item) for item in message_ids if item]
+    previous = COMMAND_MESSAGES.get(chat, [])
+    COMMAND_MESSAGES[chat] = current
+    return [item for item in previous if item not in current]
 
 
 def chunk_text(text: str, limit: int = 3500) -> list[str]:
@@ -2537,9 +2574,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
     if MESSAGE_LINK_LINE:
         log.info("Her iletinin sonuna '🔗 %s: <t.me mesaj linki>' satırı eklenecek.", MESSAGE_LINK_LABEL)
     if NOTIFY_BOT_TOKEN:
-        log.info("Bildirim biçimi: mesajın kopyası + %s (t.me linki gizli)%s",
-                 FOOTER_LABEL.strip() + " <kaynak>" if SOURCE_FOOTER else "altbilgi yok",
-                 " + medya" if NOTIFY_MEDIA else "")
+        log.info("Bildirim biçimi: mesajın kopyası + '🔗 %s: <t.me linki>'%s%s",
+                 MESSAGE_LINK_LABEL, " + medya" if NOTIFY_MEDIA else "",
+                 " + en altta kalın kaynak adı" if SOURCE_FOOTER else "")
+    if CLEAN_COMMANDS:
+        log.info("Komut temizliği açık: yeni komutta önceki komut/yanıt silinir, "
+                 "bildirimlere dokunulmaz.")
 
     # --- Kaynakları, kontrol sohbetini ve hedefi çöz.
     notes, fatal = await resolve_chat_groups(
@@ -2574,6 +2614,46 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if event.chat_id == SELF_ID:
             return True
         return event.sender_id in ADMIN_IDS
+
+    async def delete_command_messages(chat_id: int, message_ids: Sequence[int]) -> None:
+        """Komut sohbetindeki eski komut/yanıt mesajlarını sil.
+
+        Yalnızca ``COMMAND_MESSAGES`` kaydından gelen ID'ler silinir; indirim
+        bildirimleri bu kayda girmediği için silinmeleri mümkün değildir.
+        Silme başarısız olsa bile (ör. yetki yok) komut akışı devam eder.
+        """
+        ids = [int(item) for item in message_ids if item]
+        if not ids:
+            return
+        try:
+            await client.delete_messages(int(chat_id or 0), ids, revoke=True)
+        except Exception as exc:  # noqa: BLE001 - silinemezse komut yine çalışsın
+            log.warning("Eski komut mesajları silinemedi (chat=%s, adet=%d): %s: %s",
+                        chat_id, len(ids), type(exc).__name__, exc)
+            return
+        STATS["cleaned_commands"] += len(ids)
+        log.debug("Komut sohbeti temizlendi: chat=%s, %d mesaj.", chat_id, len(ids))
+
+    async def control_reply(event: events.NewMessage.Event, text: str, *,
+                            limit: int = 3500,
+                            stale: Sequence[int] = ()) -> list[int]:
+        """Komut yanıtını gönder ve önceki komut alışverişini sil.
+
+        ``stale``: bu alışveriş sırasında oluşup sonradan silinmesi gereken ek
+        mesajlar (ör. /analiz ilerleme mesajı). Bildirimler hiçbir zaman
+        silinmez; temizlik yalnızca komut diyaloğuyla sınırlıdır.
+        """
+        sent_ids: list[int] = []
+        for chunk in chunk_text(text, limit):
+            sent_ids += sent_message_ids(await event.reply(chunk))
+        if not CLEAN_COMMANDS:
+            return sent_ids
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+        current = [int(getattr(event, "id", 0) or 0), *sent_ids]
+        outdated = note_command_messages(chat_id, current)
+        outdated += [int(item) for item in stale if item]
+        await delete_command_messages(chat_id, outdated)
+        return sent_ids
 
     async def delete_account_copy(sent_ids: Sequence[int], source_name: str) -> None:
         """Bildirim botu gönderdikten sonra hedefteki hesap kopyasını sil.
@@ -2616,10 +2696,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
         async with settings_lock:
             pending = peek_pending(key)
             if pending is None:
-                await event.reply("ℹ️ Kaydedilecek bekleyen bir değişiklik yok. Önce /ekle veya /çıkar.")
+                await control_reply(event, "ℹ️ Kaydedilecek bekleyen bir değişiklik yok. Önce /ekle veya /çıkar.")
                 return
             if pending.get("stage") != "confirm":
-                await event.reply("ℹ️ İşlem henüz tamamlanmadı. Önce istenen liste/değer seçimini yap veya /iptal.")
+                await control_reply(event, "ℹ️ İşlem henüz tamamlanmadı. Önce istenen liste/değer seçimini yap veya /iptal.")
                 return
 
             field = str(pending.get("field") or "")
@@ -2627,13 +2707,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
             draft = pending.get("draft_config") or {}
             if field not in TELEGRAM_LIST_FIELDS or field not in draft:
                 drop_pending(key)
-                await event.reply("❌ Taslak geçersiz olduğu için iptal edildi. Yeniden /ekle veya /çıkar ile başla.")
+                await control_reply(event, "❌ Taslak geçersiz olduğu için iptal edildi. Yeniden /ekle veya /çıkar ile başla.")
                 return
 
             before = store.snapshot()
             if before.get(field) != base.get(field):
                 drop_pending(key)
-                await event.reply(
+                await control_reply(event,
                     f"⚠️ {TELEGRAM_LIST_META[field]['title']} taslağı hazırlanırken başka bir değişiklik yapılmış.\n"
                     "Güncel listeyi korudum; lütfen /ekle veya /çıkar ile yeniden başla."
                 )
@@ -2650,7 +2730,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 if groups:
                     await resolve_chat_groups(client, store.config, groups, strict=False)
                 drop_pending(key)
-                await event.reply(
+                await control_reply(event,
                     f"❌ Değişiklik uygulanamadı: {fatal}\n"
                     "Önceki ayarlar korundu; taslağı iptal ettim. Grup/kanal bilgisini kontrol edip yeniden dene."
                 )
@@ -2663,7 +2743,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 if groups:
                     await resolve_chat_groups(client, store.config, groups, strict=False)
                 set_pending(key, **pending)
-                await reply_chunked(event, "\n".join([
+                await control_reply(event, "\n".join([
                     "❌ Değişiklik dosyaya yazılamadı; çalışan ayarlar geri yüklendi.",
                     save_note,
                     "Taslak korundu. Dosya erişimini düzelttikten sonra /kaydet ile tekrar deneyebilir veya /iptal edebilirsin.",
@@ -2672,7 +2752,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
             drop_pending(key)
             log.info("Telegram liste ayarı kaydedildi: %s (%s)", field, pending.get("action"))
-            await reply_chunked(event, "\n".join([
+            await control_reply(event, "\n".join([
                 "✅ Değişiklik kaydedildi ve çalışan ayarlara uygulandı.",
                 f"📂 {TELEGRAM_LIST_META[field]['title']}",
                 f"📊 Güncel kayıt sayısı: {len(telegram_list_items(store.config, field))}",
@@ -2691,7 +2771,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             ok, candidate, note = stage_filter_toggle(before, action, target)
             if not ok:
                 drop_pending(pending_key(event))
-                await reply_chunked(event, note)
+                await control_reply(event, note)
                 return
 
             store.config = candidate
@@ -2703,20 +2783,20 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if not ok_save:
                 store.restore(before)
                 apply_runtime_config(store.config)
-                await reply_chunked(event, "❌ Filtre değişikliği kaydedilemedi; önceki durum geri yüklendi.\n" + save_note)
+                await control_reply(event, "❌ Filtre değişikliği kaydedilemedi; önceki durum geri yüklendi.\n" + save_note)
                 return
 
             drop_pending(pending_key(event))
             log.info("Filtre %s: %s (hedef=%s)", "açıldı" if action == "open" else "kapatıldı",
                      what, target)
-            await reply_chunked(event, note + "\n" + save_note)
+            await control_reply(event, note + "\n" + save_note)
 
     async def handle_filter_command(event: events.NewMessage.Event, action: str, rest: str) -> None:
         """`/open` ve `/close`: argümanla hemen uygula, argüman yoksa sor."""
         key = pending_key(event)
         pending = peek_pending(key)
         if pending and pending.get("stage") == "confirm":
-            await event.reply(
+            await control_reply(event,
                 "📝 Önce bekleyen liste taslağını sonuçlandır.\n"
                 "✅ /kaydet ile kaydet veya ↩️ /iptal ile vazgeç."
             )
@@ -2725,14 +2805,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
         raw = rest.strip()
         if not raw:
             set_pending(key, **new_filter_edit(action))
-            await reply_chunked(event, build_filter_toggle_prompt(action, store.config))
+            await control_reply(event, build_filter_toggle_prompt(action, store.config))
             return
 
         target = resolve_filter_target(raw)
         if target is None:
             # Soru açık kalsın: kullanıcı 1/2/3 yazabilir ya da /iptal edebilir.
             set_pending(key, **new_filter_edit(action))
-            await reply_chunked(event, "\n".join([
+            await control_reply(event, "\n".join([
                 f"❌ '{raw}' anlaşılmadı.",
                 "1 (dahili), 2 (harici) veya 3 (ikisi) yazabilirsin.",
                 "",
@@ -2752,21 +2832,26 @@ async def main(argv: Sequence[str] | None = None) -> int:
         try:
             per_source, keep_everything = parse_analysis_args(rest)
         except ValueError as exc:
-            await event.reply(f"❌ '{exc}' anlaşılmadı.\n\n{ANALYSIS_USAGE}")
+            await control_reply(event, f"❌ '{exc}' anlaşılmadı.\n\n{ANALYSIS_USAGE}")
             return
 
         targets = [item for item in SOURCES if item.get("joined")]
         if not targets:
-            await event.reply("ℹ️ Taranacak kaynak yok. Önce /kaynak ile listeyi kontrol et.")
+            await control_reply(event, "ℹ️ Taranacak kaynak yok. Önce /kaynak ile listeyi kontrol et.")
             return
 
         started = time.time()
         status = None
+        status_id = 0
         try:
+            # İlerleme mesajı bilinçli olarak temizlik kaydına girmez: rapor
+            # gelince "stale" listesiyle silinir, böylece ekranda yalnızca
+            # istatistik raporu kalır.
             status = await event.reply(
                 f"🔎 Geçmiş taranıyor: {len(targets)} kaynak × son {per_source} mesaj...\n"
                 "Uzun sürebilir; bitince iki istatistiği göndereceğim."
             )
+            status_id = next(iter(sent_message_ids(status)), 0)
         except Exception:  # noqa: BLE001 - yanıt gitmese de tarama sürsün
             log.debug("Analiz başlangıç yanıtı gönderilemedi.")
 
@@ -2802,7 +2887,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             elapsed=time.time() - started,
             failures=failures,
         )
-        await reply_chunked(event, report)
+        await control_reply(event, report, stale=[status_id])
 
     async def handle_settings_command(event: events.NewMessage.Event,
                                       command: str, rest: str) -> None:
@@ -2811,18 +2896,18 @@ async def main(argv: Sequence[str] | None = None) -> int:
         pending = peek_pending(key)
 
         if command in CMD_SETTINGS_MENU:
-            await reply_chunked(event, build_main_menu_text())
+            await control_reply(event, build_main_menu_text())
             return
 
         if command in CMD_SETTINGS_ADD or command in CMD_SETTINGS_REMOVE:
             if pending and pending.get("stage") == "confirm":
-                await event.reply(
+                await control_reply(event,
                     "📝 Önce bekleyen taslağı sonuçlandır.\n"
                     "✅ /kaydet ile kaydet veya ↩️ /iptal ile vazgeç."
                 )
                 return
             if rest.strip():
-                await event.reply(
+                await control_reply(event,
                     "Komutu tek başına gönder: /ekle veya /çıkar.\n"
                     "Ardından listelerden birini seçip değeri ayrı mesaj olarak yaz."
                 )
@@ -2830,22 +2915,22 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
             action = "add" if command in CMD_SETTINGS_ADD else "remove"
             set_pending(key, **new_telegram_edit(action, store.config))
-            await reply_chunked(event, build_list_category_prompt(action, store.config))
+            await control_reply(event, build_list_category_prompt(action, store.config))
             return
 
         if command in CMD_SETTINGS_SAVE:
             if pending is None:
-                await event.reply("ℹ️ Kaydedilecek bekleyen bir değişiklik yok. Başlamak için /ekle veya /çıkar.")
+                await control_reply(event, "ℹ️ Kaydedilecek bekleyen bir değişiklik yok. Başlamak için /ekle veya /çıkar.")
             else:
                 await save_pending_change(event, key)
             return
 
         if command in CMD_SETTINGS_REVERT:
             if pending is None:
-                await event.reply("ℹ️ İptal edilecek bekleyen bir işlem yok.")
+                await control_reply(event, "ℹ️ İptal edilecek bekleyen bir işlem yok.")
             else:
                 drop_pending(key)
-                await event.reply("↩️ İşlem iptal edildi. Taslak silindi; ayarlar ve GitHub değişmedi.")
+                await control_reply(event, "↩️ İşlem iptal edildi. Taslak silindi; ayarlar ve GitHub değişmedi.")
             return
 
         return
@@ -2864,7 +2949,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             target = resolve_filter_target(text)
             if target is None:
                 set_pending(key, **item)
-                await reply_chunked(event, "\n".join([
+                await control_reply(event, "\n".join([
                     "❌ Seçimi anlayamadım. 1, 2, 3 yazabilir ya da filtre adını yazabilirsin.",
                     "",
                     build_filter_toggle_prompt(action, store.config),
@@ -2877,7 +2962,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             field = resolve_telegram_list(text)
             if field is None:
                 set_pending(key, **item)
-                await reply_chunked(event, "❌ Seçimi anlayamadım. 1, 2, 3 yazabilir ya da listedeki adı seçebilirsin.\n\n"
+                await control_reply(event, "❌ Seçimi anlayamadım. 1, 2, 3 yazabilir ya da listedeki adı seçebilirsin.\n\n"
                                     + build_list_category_prompt(str(item.get("action")), store.config))
                 return True
 
@@ -2885,13 +2970,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
             items = telegram_list_items(config, field)
             if item.get("action") == "remove" and not items:
                 drop_pending(key)
-                await event.reply(f"ℹ️ {TELEGRAM_LIST_META[field]['title']} listesi boş; çıkarılacak kayıt yok.")
+                await control_reply(event, f"ℹ️ {TELEGRAM_LIST_META[field]['title']} listesi boş; çıkarılacak kayıt yok.")
                 return True
 
             item["stage"] = "value"
             item["field"] = field
             set_pending(key, **item)
-            await reply_chunked(event, build_list_value_prompt(str(item.get("action")), field, config))
+            await control_reply(event, build_list_value_prompt(str(item.get("action")), field, config))
             return True
 
         if item.get("stage") == "value":
@@ -2902,7 +2987,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if not ok:
                 set_pending(key, **item)
                 prompt = build_list_value_prompt(action, field, draft) if field in TELEGRAM_LIST_FIELDS else ""
-                await reply_chunked(event, "\n".join(part for part in [message, prompt] if part))
+                await control_reply(event, "\n".join(part for part in [message, prompt] if part))
                 return True
 
             if action == "add" and field == "source_chats":
@@ -2911,7 +2996,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         await resolve_chat(client, value)
                     except Exception as exc:  # noqa: BLE001 - geçersiz kaynak taslağa alınmasın
                         set_pending(key, **item)
-                        await reply_chunked(event, "\n".join([
+                        await control_reply(event, "\n".join([
                             f"❌ {value} çözülemedi ({type(exc).__name__}).",
                             "Hiçbir kayıt taslağa alınmadı; @kullanıcıadı veya -100... ID gönder.",
                             "Hesabın o kanala/grupa erişebildiğini kontrol et.",
@@ -2925,7 +3010,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             item["field"] = field
             item["value"] = values
             set_pending(key, **item)
-            await reply_chunked(event, build_list_change_confirmation(action, field, values, candidate, message))
+            await control_reply(event, build_list_change_confirmation(action, field, values, candidate, message))
             return True
 
         if item.get("stage") == "confirm":
@@ -2935,10 +3020,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 return True
             if choice == "cancel":
                 drop_pending(key)
-                await event.reply("↩️ İşlem iptal edildi. Taslak silindi; ayarlar ve GitHub değişmedi.")
+                await control_reply(event, "↩️ İşlem iptal edildi. Taslak silindi; ayarlar ve GitHub değişmedi.")
                 return True
             set_pending(key, **item)
-            await event.reply("📝 Taslak hazır. ✅ /kaydet (veya kaydet) ile kaydet; ↩️ /iptal (veya iptal) ile vazgeç.")
+            await control_reply(event, "📝 Taslak hazır. ✅ /kaydet (veya kaydet) ile kaydet; ↩️ /iptal (veya iptal) ile vazgeç.")
             return True
 
         drop_pending(key)
@@ -3060,9 +3145,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
         """Bildirim botuyla fırsatın kopyasını at; gönderildiyse ``True`` döner.
 
         Tasarım: mesajın kendisi (biçimi ve gizli linkleriyle) → altına
-        "🔗 <gizli linkler>" (varsa) → en alta "Fırsatı Gönderen: <kaynak>".
-        Kaynak adı, orijinal mesajın t.me bağlantısını gizli hyperlink olarak
-        taşır; ürün linki kaçırılsa bile tek dokunuşla mesaja ulaşılır.
+        "🔗 <gizli linkler>" (varsa) → "🔗 Mesajı Gör: <t.me linki>" → en alta
+        kaynak grup adı. Ad, "Fırsatı Gönderen" gibi bir etiket olmadan ve
+        hiçbir linke bağlanmadan yalnızca kalın yazılır.
 
         Dönen değer, tek mesaj modunda hesap kopyasının silinip
         silinmeyeceğini belirler (bkz. delete_account_copy).
@@ -3084,10 +3169,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         if descriptor is not None:
             composed = compose_message(
-                event, limit=CAPTION_LIMIT - 24, link_kinds=BOT_LINK_KINDS, message_link=message_link,
-                footer_label=FOOTER_LABEL, footer_name=footer_name, footer_url=message_link,
+                event, limit=CAPTION_LIMIT - 24, link_kinds=BOT_LINK_KINDS,
+                message_link=message_link, source_name=footer_name,
             )
-            entities = bot_api_entities(event, composed["body"]) + footer_entity(composed, message_link)
+            entities = bot_api_entities(event, composed["body"]) + source_name_entity(composed)
             try:
                 data = await client.download_media(event.message, bytes)
             except Exception as exc:  # noqa: BLE001 - medya inmezse bildirim yine gitsin
@@ -3106,10 +3191,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 log.warning("Bildirim medyası gönderilemedi (%s) → metne düşülüyor.", detail)
 
         composed = compose_message(
-            event, limit=MESSAGE_LIMIT - 200, link_kinds=BOT_LINK_KINDS, message_link=message_link,
-            footer_label=FOOTER_LABEL, footer_name=footer_name, footer_url=message_link,
+            event, limit=MESSAGE_LIMIT - 200, link_kinds=BOT_LINK_KINDS,
+            message_link=message_link, source_name=footer_name,
         )
-        entities = bot_api_entities(event, composed["body"]) + footer_entity(composed, message_link)
+        entities = bot_api_entities(event, composed["body"]) + source_name_entity(composed)
         text = composed["text"] or f"🔔 Yeni fırsat – {source_name}"
         ok, detail = await send_bot_ping(
             NOTIFY_BOT_TOKEN, DESTINATION_ID, text,
@@ -3192,7 +3277,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         # Sabit komutlar önce: /source gibi adlar alan takma adıyla çakışabilir.
         if command in {"/status", "/durum"}:
-            await event.reply(build_status_text(store.config))
+            await control_reply(event, build_status_text(store.config))
         elif command in {"/test", "/deneme"}:
             text = (
                 f"🧪 Deneme mesajı – {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -3203,12 +3288,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 await client.send_message(DESTINATION, text)
                 reply = f"✅ Deneme mesajı gönderildi: {DESTINATION_LABEL}"
             except Exception as exc:  # noqa: BLE001
-                await event.reply(f"❌ Deneme mesajı gönderilemedi: {type(exc).__name__}: {exc}")
+                await control_reply(event, f"❌ Deneme mesajı gönderilemedi: {type(exc).__name__}: {exc}")
                 return
             if NOTIFY_BOT_TOKEN and DESTINATION_ID is not None:
                 ok, detail = await send_bot_ping(
                     NOTIFY_BOT_TOKEN, DESTINATION_ID,
-                    "🔔 Bildirim denemesi\n\nFırsatı Gönderen: (bildirimlerde buraya kaynak adı gelir)",
+                    "🔔 Bildirim denemesi\n\n(Bildirimlerde mesajın kopyası + '🔗 Mesajı Gör' linki gelir.)",
                 )
                 reply += "\n" + ("🔔 Bot bildirimi de gönderildi (telefonuna düşmeli)." if ok
                                  else f"⚠️ Bot bildirimi gönderilemedi: {detail}")
@@ -3217,16 +3302,16 @@ async def main(argv: Sequence[str] | None = None) -> int:
             else:
                 reply += ("\n⚠️ notify_bot_token yok: mesajı kendi hesabın gönderdiği için "
                           "bildirim almazsın. @BotFather'dan bot oluşturup gruba ekle.")
-            await event.reply(reply)
+            await control_reply(event, reply)
         elif command in {"/source", "/sources", "/kaynak", "/kaynaklar"}:
-            await event.reply(build_source_text())
+            await control_reply(event, build_source_text())
         elif command == "/id":
             try:
                 chat = await event.get_chat()
                 chat_kind = type(chat).__name__
             except Exception:  # noqa: BLE001 - sohbet cache'te olmayabilir
                 chat_kind = "bilinmiyor"
-            await event.reply(
+            await control_reply(event,
                 f"🆔 Bu sohbetin ID'si: {event.chat_id}\n"
                 f"• Tür: {chat_kind}\n"
                 f"• Senin kullanıcı ID'n: {event.sender_id}\n"
@@ -3236,9 +3321,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
             )
         elif command in {"/restart", "/yenile", "/yeniden"}:
             ok, message = await dispatch_next_run(gh_pat)
-            await event.reply(("🔄 " if ok else "⚠️ ") + message)
+            await control_reply(event, ("🔄 " if ok else "⚠️ ") + message)
         elif command in {"/help", "/yardim", "/yardım"}:
-            await event.reply(HELP_TEXT)
+            await control_reply(event, HELP_TEXT)
         elif command in CMD_ANALYZE:
             await analyze_history(event, rest)
         elif command in CMD_FILTER_OPEN:
@@ -3248,7 +3333,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         elif command in SETTINGS_COMMANDS:
             await handle_settings_command(event, command, rest)
         else:
-            await event.reply(f"Bilinmeyen komut: {raw}\n\n{HELP_TEXT}")
+            await control_reply(event, f"Bilinmeyen komut: {raw}\n\n{HELP_TEXT}")
 
     @client.on(events.NewMessage())
     async def on_new_message(event: events.NewMessage.Event) -> None:

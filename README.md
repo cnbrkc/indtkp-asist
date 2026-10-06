@@ -93,6 +93,7 @@ Deponun kökündeki [`config.json`](config.json) dosyasını GitHub'dan düzenle
   "message_link": true,
   "source_footer": true,
   "notify_media": true,
+  "clean_commands": true,
   "control_chat": -5092968106,
   "admin_user_id": 1143378073,
   "auto_restart": true,
@@ -166,8 +167,9 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `max_media_mb` | sayı | `media` yolunda indirilecek en büyük medya (varsayılan 25, `0` = sınırsız). |
 | `link_appendix` | `smart` / `all` / `off` | Gizli linklerin eklenme biçimi ([8. bölüm](#8-gizli-bağlantılar)). |
 | `message_link` | `true` / `false` | Her iletinin sonuna `🔗 Mesajı Gör: <t.me linki>` ekler (nihai güvence; kapatman önerilmez). |
-| `source_footer` | `true` / `false` | Bildirime `Fırsatı Gönderen: <kaynak>` satırı ekler; kaynak adı orijinal mesajın linkini gizler. |
+| `source_footer` | `true` / `false` | Bildirimin **en altına kaynak grup adını kalın** yazar. "Fırsatı Gönderen" gibi bir etiket yazılmaz, ad bir linke bağlanmaz; yalnızca hangi gruptan geldiği görünür. Varsayılan `true`. |
 | `notify_media` | `true` / `false` | Bildirim botu fotoğraf/videoyu da göndersin. |
+| `clean_commands` | `true` / `false` | **Komut temizliği.** `control_chat`'te yeni bir komut yazıldığında bir önceki komut ve bot yanıtı silinir; ekranda yalnızca son mesaj kalır. İndirim bildirimleri bu temizliğin **dışındadır, asla silinmez.** Varsayılan `true`. |
 | `single_message` | `true` / `false` | **Tek mesaj modu.** Bildirim botu mesajı gruba attıysa, hesabın attığı kopya gruptan silinir; böylece her fırsat tek mesaj olarak kalır. Bildirim gidemezse kopya **silinmez**. Varsayılan `true`. |
 | `control_chat` | sayı / `"me"` | Komutların dinleneceği sohbet. `me` = Kayıtlı Mesajlar. |
 | `admin_user_id` | sayı / liste | `control_chat` bir grupsa **zorunlu**: komutları yalnızca bu ID'ler çalıştırabilir. |
@@ -222,6 +224,22 @@ Kaynak mesajlarını hedef gruba iletir.
 `/open` ve `/close` anında uygulanır ve kaydedilir; liste düzenlemeleri ise `/kaydet`
 seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir. Türkçe `I`/`İ` yazımları
 (`/ANALİZ`, `/Iptal` gibi) otomatik olarak eşleşir.
+
+### Komut temizliği (ekranda yalnızca son mesaj)
+
+`clean_commands` açıkken (varsayılan) komut sohbeti kendini temizler:
+
+- Yeni bir komut yazdığında **bir önceki komutun** ve **botun ona verdiği yanıtın**
+  tamamı silinir; ekranda yalnızca son komut ve yanıtı kalır.
+- Çok adımlı akışlarda (`/ekle` → liste seç → değer → `/kaydet`) her adım bir öncekini
+  siler; `/analiz` ilerleme mesajı rapor gelince kaybolur.
+- Silme yalnızca komut diyaloğuna ait mesajları kapsar. **İndirim/ilan bildirimleri bu
+  kayda hiç girmez, bu yüzden asla silinmez** — tek mesaj modunun sildiği hesap kopyası
+  da bu kuralın dışındadır (o, bildirim başarılı olduğunda silinir).
+- Silme için hesabın o mesajları silebilmesi gerekir (kendi mesajların her zaman
+  silinebilir; başka bir admin kullanıcıdan gelen komutlar için grupta yönetici olman
+  gerekir). Silinemezse bot uyarı loglar, komut çalışmaya devam eder.
+- Kapatmak için `config.json` → `"clean_commands": false` (veya `CLEAN_COMMANDS=false`).
 
 ### Tüm komutlar (açıklamalı)
 
@@ -393,8 +411,21 @@ bildirim üretmez. Bu yüzden fırsat gruba düşse bile telefonuna uyarı gelme
 ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığı mesaj üretir.
 
 **Bildirim biçimi:** fırsat mesajının tamamı (biçimi, emojileri ve gizli linkleriyle) +
-`🔗 Mesajı Gör: <orijinal mesaj linki>` + `Fırsatı Gönderen: <kaynak>` satırı.
-Mesaj kırpılmaz, küçük harfe çevrilmez.
+`🔗 Mesajı Gör: <orijinal mesaj linki>` satırı + **en altta kalın kaynak grup adı**:
+
+```text
+Sıcak ÇAY 5 TL
+Kaçırılmayacak fırsat!
+
+🔗 Mesajı Gör: https://t.me/firsatz/31543
+
+FırsatZ          ← kalın, etiketsiz, linksiz
+```
+
+- Kaynak adı "Fırsatı Gönderen" gibi bir **etiketle yazılmaz** ve **hiçbir linke
+  bağlanmaz**; yalnızca hangi gruptan geldiği kalın olarak görünür
+  (`source_footer: false` ile tamamen kapatılabilir).
+- Mesaj kırpılmaz, küçük harfe çevrilmez.
 
 **Adımlar (2 dakika)**
 
@@ -546,6 +577,17 @@ seçim → değer (virgülle birden çok) → `/kaydet` ya da `/iptal`; filtrele
 Diğer teknik ayarlar `config.json` üzerinden yönetilir. Ayrıntılar [4. bölümde](#4-telegram-komutları)
 ve [5. bölümde](#5-ayarları-telegramdan-düzenleme).
 
+Bu sürümdeki iki davranış değişikliği:
+
+1. **"Fırsatı Gönderen" etiketi kaldırıldı; kaynak adı artık sade ve kalın.**
+   Bildirimin en altında yalnızca hangi gruptan geldiği yazılır — "Fırsatı Gönderen"
+   gibi bir açıklama ve hiçbir link yok, sadece grup adı kalın olarak durur
+   (`source_footer`, varsayılan `true`).
+2. **Komut temizliği eklendi** (`clean_commands`, varsayılan `true`). Komut sohbetinde
+   yeni bir komut yazıldığında bir önceki komut ve yanıtı silinir; ekranda yalnızca son
+   mesaj kalır. İndirim bildirimleri bu temizliğin dışındadır, asla silinmez.
+   Ayrıntı: [4. bölüm → Komut temizliği](#komut-temizliği-ekranda-yalnızca-son-mesaj).
+
 ### 1. PR'ı `main`'e merge et
 
 Actions workflow'ları **varsayılan daldan** (`main`) çalışır; güncel PR `main`'e merge
@@ -603,5 +645,6 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 - [ ] `/çıkar` → listeyi gösteriyor mu? `1, 3` gibi çoklu çıkarma çalışıyor mu?
 - [ ] `/analiz` → iki istatistik geliyor mu? Kelimeleri harici listeye ekleyebiliyor musun?
 - [ ] Tek mesaj modu: gruba tek mesaj düşüyor mu (bot bildirimi), kopya siliniyor mu?
+- [ ] Komut temizliği: `/durum` yaz → eski komut/yanıt silindi mi? Bildirimler duruyor mu?
 - [ ] `/iptal` taslağı değiştirmeden siliyor mu?
 - [ ] `GH_PAT`: süresi dolmadıysa dokunma; dolmuşsa *Actions: Read and write* ile yenile
