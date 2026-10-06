@@ -15,6 +15,7 @@ import tempfile
 import asyncio
 import unittest
 import urllib.error
+from collections import Counter
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -245,21 +246,32 @@ class StatusTextTest(unittest.TestCase):
         self.assertIn("çözülemedi", sources)
 
     def test_help_text_lists_every_active_command_group(self):
-        for command in ("/status", "/test", "/source", "/id", "/restart", "/ayar",
-                        "/hepsinial", "/filtrelial", "/ekle", "/çıkar", "/kaydet",
-                        "/iptal", "/help"):
+        for command in ("/status", "/test", "/source", "/id", "/restart", "/analiz",
+                        "/open", "/close", "/ayar", "/ekle", "/çıkar",
+                        "/kaydet", "/iptal", "/help"):
             with self.subTest(command=command):
                 self.assertIn(command, bot.HELP_TEXT)
 
-    def test_status_shows_forward_all_mode(self):
+    def test_status_shows_both_filter_toggles(self):
         bot.SOURCES.clear()
         bot.SOURCE_FAILURES.clear()
         bot.SOURCE_IDS.clear()
         bot.CONTROL_NAMES.clear()
         bot.CONTROL_IDS.clear()
-        status = bot.build_status_text({"match_mode": "forward_all", "include_keywords": ["çay"]})
-        self.assertIn("Dahili kelimeler yok sayılıyor", status)
-        self.assertNotIn("Anahtar kelimeler", status)
+        closed = bot.build_status_text({"match_mode": "forward_all", "include_keywords": ["çay"]})
+        self.assertIn("Dahili filtre: KAPALI", closed)
+        self.assertIn("kelimeler yok sayılıyor", closed)
+        opened = bot.build_status_text({"include_keywords": ["çay"], "exclude_keywords": ["çekiliş"]})
+        self.assertIn("Dahili filtre: AÇIK", opened)
+        self.assertIn("çay (any)", opened)
+        self.assertIn("Harici filtre: AÇIK", opened)
+        self.assertIn("çekiliş", opened)
+        self.assertIn("/open ve /close", opened)
+
+    def test_status_marks_disabled_exclude_filter(self):
+        status = bot.build_status_text({"exclude_keywords": ["çekiliş"], "exclude_enabled": False})
+        self.assertIn("Harici filtre: KAPALI", status)
+        self.assertIn("engelleme yapılmıyor", status)
 
 
 class MatchModeTest(unittest.TestCase):
@@ -294,10 +306,49 @@ class MatchModeTest(unittest.TestCase):
         self.assertFalse(bot.matches("çay kahve", ["çay", "şeker"], [], "all"))
         self.assertTrue(bot.matches("çay şeker", ["çay", "şeker"], [], "all"))
 
+    def test_include_filter_can_be_disabled_independently(self):
+        """İki filtre bağımsız: dahili kapalıyken harici engelleme sürer."""
+        include, exclude = ["çay"], ["çekiliş"]
+        self.assertFalse(bot.matches("iPhone çekiliş", include, exclude, "any",
+                                     include_enabled=False, exclude_enabled=True))
+        self.assertTrue(bot.matches("iPhone kampanya", include, exclude, "any",
+                                    include_enabled=False, exclude_enabled=True))
+
+    def test_exclude_filter_can_be_disabled_independently(self):
+        include, exclude = ["çay"], ["çekiliş"]
+        self.assertTrue(bot.matches("çay çekilişi", include, exclude, "any",
+                                    include_enabled=True, exclude_enabled=False))
+        self.assertFalse(bot.matches("iPhone kampanya", include, exclude, "any",
+                                     include_enabled=True, exclude_enabled=False))
+
+    def test_both_filters_disabled_lets_everything_through(self):
+        self.assertTrue(bot.matches("iPhone çekilişi", ["çay"], ["çekiliş"], "any",
+                                    include_enabled=False, exclude_enabled=False))
+        self.assertTrue(bot.matches("", [], [], "any",
+                                    include_enabled=False, exclude_enabled=False))
+
     def test_check_environment_accepts_forward_all(self):
         config = dict(CheckEnvironmentTest.base_config, match_mode="forward_all")
         with mock.patch.dict(os.environ, CheckEnvironmentTest.good_env, clear=False):
             self.assertEqual(bot.check_environment(config), [])
+
+    def test_filter_state_defaults_to_both_enabled(self):
+        self.assertEqual(bot.filter_state_of({}), {"include": True, "exclude": True})
+        self.assertEqual(bot.filter_state_of({"match_mode": "all"}),
+                         {"include": True, "exclude": True})
+
+    def test_filter_state_reads_flags_and_legacy_forward_all(self):
+        self.assertEqual(bot.filter_state_of({"include_enabled": False}),
+                         {"include": False, "exclude": True})
+        self.assertEqual(bot.filter_state_of({"exclude_enabled": False}),
+                         {"include": True, "exclude": False})
+        self.assertEqual(bot.filter_state_of({"include_enabled": "hayır"}),
+                         {"include": False, "exclude": True})
+        self.assertEqual(bot.filter_state_of({"match_mode": "forward_all"}),
+                         {"include": False, "exclude": True},
+                         "eski 'tümünü al' modu dahili filtreyi kapatmalı")
+        self.assertEqual(bot.filter_state_of({"match_mode": "forward_all", "exclude_enabled": False}),
+                         {"include": False, "exclude": False})
 
     def test_check_environment_rejects_unknown_mode(self):
         config = dict(CheckEnvironmentTest.base_config, match_mode="uzay")
@@ -311,12 +362,22 @@ class TelegramCommandTest(unittest.TestCase):
     """Yalnızca belgelenen Telegram komutları tanınır."""
 
     def test_filter_toggle_commands_are_active(self):
-        self.assertIn("/hepsinial", bot.CMD_FILTER_ALL)
-        self.assertIn("/filtrelial", bot.CMD_FILTER_KEYWORDS)
+        self.assertIn("/open", bot.CMD_FILTER_OPEN)
+        self.assertIn("/close", bot.CMD_FILTER_CLOSE)
+        self.assertEqual(bot.FILTER_COMMANDS, bot.CMD_FILTER_OPEN | bot.CMD_FILTER_CLOSE)
         self.assertIn("/ekle", bot.SETTINGS_COMMANDS)
         self.assertIn("/çıkar", bot.SETTINGS_COMMANDS)
         self.assertIn("/kaydet", bot.SETTINGS_COMMANDS)
         self.assertIn("/iptal", bot.SETTINGS_COMMANDS)
+
+    def test_removed_filter_commands_are_gone(self):
+        """Eski /hepsinial ve /filtrelial komutları tamamen kaldırıldı."""
+        for command in ("/hepsinial", "/filtrelial"):
+            with self.subTest(command=command):
+                self.assertNotIn(command, bot.FILTER_COMMANDS)
+                self.assertNotIn(command, bot.SETTINGS_COMMANDS)
+                self.assertNotIn(command, bot.HELP_TEXT)
+                self.assertNotIn(command, bot.build_main_menu_text())
 
     def test_removed_general_settings_commands_are_not_active(self):
         for command in ("/mod", "/token", "/kelime_ekle", "/filtre", "/ayar_set"):
@@ -327,7 +388,7 @@ class TelegramCommandTest(unittest.TestCase):
         menu = bot.build_main_menu_text()
         help_text = bot.HELP_TEXT
         for text in (menu, help_text):
-            for command in ("/hepsinial", "/filtrelial", "/ekle", "/çıkar", "/kaydet", "/iptal"):
+            for command in ("/open", "/close", "/ekle", "/çıkar", "/kaydet", "/iptal"):
                 with self.subTest(command=command, text=text[:12]):
                     self.assertIn(command, text)
         for command in ("/mod", "/token", "/kelime_ekle", "/ayar_set"):
@@ -372,7 +433,8 @@ class TelegramListWorkflowTest(unittest.TestCase):
         add_prompt = bot.build_list_value_prompt("add", "include_keywords", self.config)
         self.assertIn("01. çay", add_prompt)
         self.assertIn("02. kahve", add_prompt)
-        self.assertIn("Eklenecek kelimeyi gönder", add_prompt)
+        self.assertIn("Eklenecek kelimeleri gönder", add_prompt)
+        self.assertIn("virgül", add_prompt, "çoklu kayıt desteği yazmalı")
         remove_prompt = bot.build_list_value_prompt("remove", "source_chats", self.config)
         self.assertIn("01. @firsat", remove_prompt)
         self.assertIn("02. -1001234567890", remove_prompt)
@@ -383,16 +445,57 @@ class TelegramListWorkflowTest(unittest.TestCase):
             self.config, "include_keywords", "add", "KAHVE ŞEKER",
         )
         self.assertTrue(ok, note)
-        self.assertEqual(value, "kahve şeker")
+        self.assertEqual(value, ["kahve şeker"])
         self.assertEqual(candidate["include_keywords"], ["çay", "kahve", "kahve şeker"])
         self.assertEqual(self.config["include_keywords"], ["çay", "kahve"])
+
+    def test_multiple_keywords_are_added_in_one_message(self):
+        """Asıl istek: a, b, c, d... şeklinde çoklu ekleme."""
+        ok, candidate, added, note = bot.stage_telegram_list_change(
+            self.config, "include_keywords", "add", "Şeker, süt; bisküvi\nkahve dünyası",
+        )
+        self.assertTrue(ok, note)
+        self.assertEqual(added, ["şeker", "süt", "bisküvi", "kahve dünyası"])
+        self.assertEqual(
+            candidate["include_keywords"],
+            ["çay", "kahve", "şeker", "süt", "bisküvi", "kahve dünyası"],
+        )
+        self.assertEqual(self.config["include_keywords"], ["çay", "kahve"], "asıl config değişmemeli")
+
+    def test_duplicate_items_in_a_batch_are_skipped_but_others_are_added(self):
+        ok, candidate, added, note = bot.stage_telegram_list_change(
+            self.config, "include_keywords", "add", "kahve, şeker, KAHVE",
+        )
+        self.assertTrue(ok, note)
+        self.assertEqual(added, ["şeker"])
+        self.assertEqual(candidate["include_keywords"], ["çay", "kahve", "şeker"])
+        self.assertIn("⚠️", note, "atlanan kayıtlar onaya yansımalı")
+        self.assertIn("zaten listede", note)
+
+    def test_batch_with_only_duplicates_reports_and_changes_nothing(self):
+        ok, candidate, added, note = bot.stage_telegram_list_change(
+            self.config, "exclude_keywords", "add", "çekiliş",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(added, [])
+        self.assertEqual(candidate, self.config)
+        self.assertIn("zaten bu listede", note)
+
+    def test_batch_size_is_capped(self):
+        raw = ", ".join(f"kelime{i}" for i in range(bot.LIST_BATCH_MAX + 1))
+        ok, candidate, _, note = bot.stage_telegram_list_change(
+            self.config, "exclude_keywords", "add", raw,
+        )
+        self.assertFalse(ok)
+        self.assertIn(str(bot.LIST_BATCH_MAX), note)
+        self.assertEqual(candidate, self.config)
 
     def test_add_chat_id_becomes_an_integer_and_names_are_case_insensitive(self):
         ok, candidate, value, note = bot.stage_telegram_list_change(
             self.config, "source_chats", "add", "-1009876543210",
         )
         self.assertTrue(ok, note)
-        self.assertEqual(value, -1009876543210)
+        self.assertEqual(value, [-1009876543210])
         self.assertIsInstance(candidate["source_chats"][-1], int)
         ok, _, _, note = bot.stage_telegram_list_change(
             self.config, "source_chats", "add", "@FIRSAT",
@@ -400,29 +503,66 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("zaten", note)
 
-    def test_add_rejects_multiple_or_overlong_values(self):
-        for raw in ("çay, kahve", "x" * (bot.LIST_ITEM_MAX_LENGTH + 1)):
-            with self.subTest(raw=raw[:20]):
-                ok, candidate, _, _ = bot.stage_telegram_list_change(
-                    self.config, "include_keywords", "add", raw,
-                )
-                self.assertFalse(ok)
-                self.assertEqual(candidate, self.config)
+    def test_multiple_sources_can_be_added_at_once(self):
+        ok, candidate, added, note = bot.stage_telegram_list_change(
+            self.config, "source_chats", "add", "@yenibir, -100555000111",
+        )
+        self.assertTrue(ok, note)
+        self.assertEqual(added, ["@yenibir", -100555000111])
+        self.assertEqual(candidate["source_chats"][-2:], ["@yenibir", -100555000111])
+
+    def test_overlong_values_are_rejected_without_dropping_the_rest(self):
+        overlong = "x" * (bot.LIST_ITEM_MAX_LENGTH + 1)
+        ok, candidate, added, note = bot.stage_telegram_list_change(
+            self.config, "include_keywords", "add", f"şeker, {overlong}, süt",
+        )
+        self.assertTrue(ok, note)
+        self.assertEqual(added, ["şeker", "süt"])
+        self.assertIn("⚠️", note)
+        self.assertIn("alınamadı", note)
 
     def test_remove_by_row_number_or_exact_value_removes_one_entry(self):
         ok, candidate, value, note = bot.stage_telegram_list_change(
             self.config, "include_keywords", "remove", "2",
         )
         self.assertTrue(ok, note)
-        self.assertEqual(value, "kahve")
+        self.assertEqual(value, ["kahve"])
         self.assertEqual(candidate["include_keywords"], ["çay"])
 
         ok, candidate, value, note = bot.stage_telegram_list_change(
             self.config, "exclude_keywords", "remove", "ÇEKİLİŞ",
         )
         self.assertTrue(ok, note)
-        self.assertEqual(value, "çekiliş")
+        self.assertEqual(value, ["çekiliş"])
         self.assertEqual(candidate["exclude_keywords"], [])
+
+    def test_multiple_items_can_be_removed_with_numbers_and_values_mixed(self):
+        config = dict(self.config, include_keywords=["çay", "kahve", "şeker", "süt"])
+        ok, candidate, removed, note = bot.stage_telegram_list_change(
+            config, "include_keywords", "remove", "2, süt; 1",
+        )
+        self.assertTrue(ok, note)
+        self.assertEqual(removed, ["kahve", "süt", "çay"])
+        self.assertEqual(candidate["include_keywords"], ["şeker"])
+        self.assertEqual(config["include_keywords"], ["çay", "kahve", "şeker", "süt"])
+
+    def test_remove_reports_missing_values_but_removes_the_found_ones(self):
+        ok, candidate, removed, note = bot.stage_telegram_list_change(
+            self.config, "exclude_keywords", "remove", "çekiliş, olmayankelime",
+        )
+        self.assertTrue(ok, note)
+        self.assertEqual(removed, ["çekiliş"])
+        self.assertEqual(candidate["exclude_keywords"], [])
+        self.assertIn("bulunamadı", note)
+
+    def test_remove_with_nothing_matching_changes_nothing(self):
+        ok, candidate, removed, note = bot.stage_telegram_list_change(
+            self.config, "include_keywords", "remove", "olmayan1, olmayan2",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(removed, [])
+        self.assertEqual(candidate, self.config)
+        self.assertIn("bulunamadı", note)
 
     def test_last_source_cannot_be_removed(self):
         only_source = dict(self.config, source_chats=["@firsat"])
@@ -432,6 +572,14 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("En az bir", note)
         self.assertEqual(candidate["source_chats"], ["@firsat"])
+
+    def test_removing_all_sources_at_once_is_blocked(self):
+        ok, candidate, _, note = bot.stage_telegram_list_change(
+            self.config, "source_chats", "remove", "1, 2",
+        )
+        self.assertFalse(ok)
+        self.assertIn("En az bir", note)
+        self.assertEqual(candidate["source_chats"], ["@firsat", "-1001234567890"])
 
     def test_non_whitelisted_fields_cannot_be_staged(self):
         ok, candidate, _, note = bot.stage_telegram_list_change(
@@ -450,6 +598,26 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertIn("/iptal", text)
         self.assertIn("sadece “kaydet” / “iptal”", text)
 
+    def test_confirmation_numbers_every_value_and_keeps_warnings(self):
+        config = dict(self.config, include_keywords=["çay", "kahve", "şeker", "süt"])
+        text = bot.build_list_change_confirmation(
+            "add", "include_keywords", ["şeker", "süt"], config,
+            "Dahili kelimeler listesine eklenecek 2 kayıt: şeker, süt"
+            "\n⚠️ 1 kayıt zaten listede, atlandı: kahve",
+        )
+        self.assertIn("Eklenecek 2 kayıt:", text)
+        self.assertIn("   01. şeker", text)
+        self.assertIn("   02. süt", text)
+        self.assertIn("⚠️ 1 kayıt zaten listede", text)
+        self.assertIn("kayıt sayısı: 4", text)
+
+    def test_confirmation_preview_is_capped_for_long_batches(self):
+        values = [f"kelime{i}" for i in range(bot.LIST_PREVIEW_MAX + 5)]
+        config = dict(self.config, exclude_keywords=values)
+        text = bot.build_list_change_confirmation("remove", "exclude_keywords", values, config)
+        self.assertIn(f"Çıkarılacak {len(values)} kayıt:", text)
+        self.assertIn("kayıt daha", text)
+
     def test_confirmation_choice_accepts_command_labels_and_plain_text(self):
         for value in ("kaydet", "✅ Kaydet", "kaydet ve github'a gönder", "ONAYLA"):
             with self.subTest(value=value):
@@ -464,6 +632,193 @@ class TelegramListWorkflowTest(unittest.TestCase):
         pending["draft_config"]["include_keywords"].append("taslak")
         self.assertNotIn("taslak", self.config["include_keywords"])
         self.assertEqual(pending["stage"], "category")
+
+
+class FilterToggleTest(unittest.TestCase):
+    """`/open` ve `/close`: dahili/harici filtreyi bağımsız açıp kapatma."""
+
+    def setUp(self):
+        self.config = {
+            "include_keywords": ["çay", "kahve"],
+            "exclude_keywords": ["çekiliş"],
+            "source_chats": ["@firsat"],
+            "match_mode": "any",
+        }
+
+    def test_numbers_and_names_resolve_to_targets(self):
+        for text, expected in (("1", "include"), ("2", "exclude"), ("3", "both"),
+                               ("dahili", "include"), ("DAHİLİ KELİMELER", "include"),
+                               ("harici", "exclude"), ("hariç kelimeler", "exclude"),
+                               ("ikisi", "both"), ("her ikisi", "both")):
+            with self.subTest(text=text):
+                self.assertEqual(bot.resolve_filter_target(text), expected)
+        for text in ("", "   ", "hedef", "kahve"):
+            with self.subTest(text=text):
+                self.assertIsNone(bot.resolve_filter_target(text))
+
+    def test_prompt_shows_current_state_and_both_choices(self):
+        prompt = bot.build_filter_toggle_prompt("open", self.config)
+        self.assertIn("FİLTRE AÇ", prompt)
+        self.assertIn("Hangi filtreyi açalım?", prompt)
+        self.assertIn("1. 🔎  Dahili kelimeler  ·  şu an açık  ·  2 kayıt", prompt)
+        self.assertIn("2. 🚫  Harici kelimeler  ·  şu an açık  ·  1 kayıt", prompt)
+        self.assertIn("3. 🔁  İkisi birlikte", prompt)
+        self.assertIn("/open dahili", prompt)
+        close_prompt = bot.build_filter_toggle_prompt("close", self.config)
+        self.assertIn("FİLTRE KAPAT", close_prompt)
+        self.assertIn("Hangi filtreyi kapatalım?", close_prompt)
+
+    def test_closing_include_keeps_exclude_running(self):
+        ok, candidate, note = bot.stage_filter_toggle(self.config, "close", "include")
+        self.assertTrue(ok, note)
+        self.assertEqual(candidate["include_enabled"], False)
+        self.assertNotIn("exclude_enabled", candidate, "harici filtreye dokunulmamalı")
+        self.assertEqual(self.config.get("include_enabled"), None, "asıl config değişmemeli")
+        self.assertIn("KAPATILDI", note)
+        self.assertIn("🔎 Dahili kelimeler: KAPALI", note)
+        self.assertIn("🚫 Harici kelimeler: AÇIK", note)
+
+    def test_closing_exclude_keeps_include_running(self):
+        ok, candidate, note = bot.stage_filter_toggle(self.config, "close", "exclude")
+        self.assertTrue(ok, note)
+        self.assertEqual(candidate["exclude_enabled"], False)
+        self.assertNotIn("include_enabled", candidate)
+        self.assertIn("🚫 Harici kelimeler: KAPALI", note)
+        self.assertIn("Harici filtre kapalı: engelleme yapılmaz", note)
+
+    def test_both_can_be_closed_and_reopened(self):
+        ok, candidate, note = bot.stage_filter_toggle(self.config, "close", "both")
+        self.assertTrue(ok, note)
+        self.assertEqual(candidate["include_enabled"], False)
+        self.assertEqual(candidate["exclude_enabled"], False)
+        self.assertIn("HER mesaj iletilir", note)
+
+        ok, reopened, note = bot.stage_filter_toggle(candidate, "open", "both")
+        self.assertTrue(ok, note)
+        self.assertEqual(reopened["include_enabled"], True)
+        self.assertEqual(reopened["exclude_enabled"], True)
+
+    def test_no_change_is_reported_without_touching_config(self):
+        for action, target in (("open", "include"), ("open", "exclude"), ("open", "both")):
+            with self.subTest(action=action, target=target):
+                ok, candidate, note = bot.stage_filter_toggle(self.config, action, target)
+                self.assertFalse(ok)
+                self.assertIn("değişiklik yok", note)
+                self.assertEqual(candidate, self.config)
+
+    def test_opening_include_clears_legacy_forward_all_mode(self):
+        legacy = dict(self.config, match_mode="forward_all")
+        ok, candidate, note = bot.stage_filter_toggle(legacy, "open", "include")
+        self.assertTrue(ok, note)
+        self.assertEqual(candidate["include_enabled"], True)
+        self.assertEqual(candidate["match_mode"], "any",
+                         "eski 'tümünü al' modu bırakılmalı, yoksa kelimeler yine yok sayılırdı")
+        self.assertEqual(bot.filter_state_of(candidate)["include"], True)
+
+    def test_unknown_target_is_rejected(self):
+        ok, candidate, note = bot.stage_filter_toggle(self.config, "open", "hedef")
+        self.assertFalse(ok)
+        self.assertIn("1 (dahili), 2 (harici) veya 3", note)
+        self.assertEqual(candidate, self.config)
+
+
+class WordAnalysisTest(unittest.TestCase):
+    """`/analiz`: yalnızca başlık (ilk satır) üzerinden kelime istatistikleri."""
+
+    def test_title_is_the_first_non_empty_line(self):
+        self.assertEqual(bot.message_title("iPhone 15 indirim\n2.299 TL"), "iPhone 15 indirim")
+        self.assertEqual(bot.message_title("\n\n  Bebek bezi  \nlink"), "Bebek bezi")
+        self.assertEqual(bot.message_title("   "), "")
+        self.assertEqual(bot.message_title(None), "")
+
+    def test_tokens_are_turkish_aware_and_numbers_dropped_by_default(self):
+        self.assertEqual(bot.title_tokens("İNDİRİM %50 2.299 TL"), ["indirim", "tl"])
+        self.assertEqual(bot.title_tokens("İNDİRİM %50 2.299 TL", keep_everything=True),
+                         ["indirim", "50", "2", "299", "tl"])
+
+    def test_stop_words_and_single_letters_are_filtered(self):
+        tokens = bot.title_tokens("Bebek bezi ve ıslak mendil için x")
+        self.assertEqual(bot.content_tokens(tokens), ["bebek", "bezi", "ıslak", "mendil"])
+        self.assertEqual(bot.content_tokens(tokens, keep_everything=True), tokens)
+
+    def test_analysis_counts_words_and_first_words(self):
+        titles = [
+            "Bebek bezi indirim",
+            "Bebek bezi 2 al 1 öde",
+            "Oyuncak araba fırsatı",
+        ]
+        result = bot.analyze_titles(titles)
+        self.assertEqual(result["counts"]["titles"], 3)
+        self.assertEqual(result["counts"]["unique"], 3)
+        self.assertEqual(result["words"]["bebek"], 2)
+        self.assertEqual(result["words"]["bezi"], 2)
+        self.assertEqual(result["first_words"]["bebek"], 2)
+        self.assertEqual(result["first_words"]["oyuncak"], 1)
+        self.assertNotIn("indirim", result["words"], "ilan kalıbı varsayılan olarak elenir")
+        self.assertNotIn("fırsatı", result["words"])
+
+    def test_duplicate_titles_are_merged(self):
+        result = bot.analyze_titles(["Bebek bezi", "BEBEK BEZİ", "Oyuncak"])
+        self.assertEqual(result["counts"]["titles"], 3)
+        self.assertEqual(result["counts"]["unique"], 2)
+        self.assertEqual(result["counts"]["duplicates"], 1)
+        self.assertEqual(result["words"]["bebek"], 1)
+
+    def test_keep_everything_counts_stop_words_and_numbers(self):
+        title = "Bebek bezi 2 al 1 öde"
+        filtered = bot.analyze_titles([title])
+        self.assertNotIn("2", filtered["words"])
+        self.assertEqual(filtered["counts"]["filtered"], 2)
+        everything = bot.analyze_titles([title], keep_everything=True)
+        self.assertIn("2", everything["words"])
+        self.assertEqual(everything["counts"]["filtered"], 0)
+
+    def test_parse_analysis_args(self):
+        self.assertEqual(bot.parse_analysis_args(""), (bot.ANALYSIS_DEFAULT_LIMIT, False))
+        self.assertEqual(bot.parse_analysis_args("1000"), (1000, False))
+        self.assertEqual(bot.parse_analysis_args("tümü"), (bot.ANALYSIS_DEFAULT_LIMIT, True))
+        self.assertEqual(bot.parse_analysis_args(" 500 hepsi "), (500, True))
+        self.assertEqual(bot.parse_analysis_args("5"), (bot.ANALYSIS_MIN_LIMIT, False))
+        self.assertEqual(bot.parse_analysis_args("99999"), (bot.ANALYSIS_MAX_LIMIT, False))
+        with self.assertRaises(ValueError):
+            bot.parse_analysis_args("dün")
+
+    def test_ranking_marks_words_already_in_the_lists(self):
+        counter = Counter({"bebek": 5, "oyuncak": 3, "kitap": 1})
+        config = {"exclude_keywords": ["bebek bezi"], "include_keywords": ["oyuncak"]}
+        lines = bot.format_ranking(counter, config, top=3)
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(lines[0].startswith("01."))
+        self.assertIn("🚫", lines[0])
+        self.assertIn("🔎", lines[1])
+        self.assertNotIn("🚫", lines[2])
+
+    def test_report_has_both_statistics(self):
+        analysis = bot.analyze_titles(["Bebek bezi indirim", "Bebek battaniye"])
+        report = bot.build_analysis_report(
+            analysis, config={"exclude_keywords": ["bebek"], "include_keywords": []},
+            sources=16, per_source=300, elapsed=12.0,
+        )
+        self.assertIn("BAŞLIK KELİME ANALİZİ", report)
+        self.assertIn("1️⃣ EN ÇOK GEÇEN 25 KELİME", report)
+        self.assertIn("2️⃣ EN ÇOK GEÇEN 25 İLK KELİME", report)
+        self.assertIn("bebek", report)
+        self.assertIn("🚫", report)
+        self.assertIn("/analiz tümü", report)
+        self.assertIn("16 grup", report)
+        self.assertIn("12sn", report)
+
+    def test_report_notes_unreadable_sources_and_empty_result(self):
+        report = bot.build_analysis_report(
+            bot.analyze_titles([]), config={}, sources=2, per_source=50,
+            failures=["Kanal (FloodWaitError)"],
+        )
+        self.assertIn("Okunamayan kaynak", report)
+        self.assertIn("(kelime bulunamadı)", report)
+
+    def test_usage_text_documents_options(self):
+        for text in ("/analiz", "/analiz tümü", "Harici kelimeler"):
+            self.assertIn(text, bot.ANALYSIS_USAGE)
 
 
 class ConfigStoreTest(unittest.TestCase):

@@ -27,6 +27,8 @@
     "hediye"
   ],
   "match_mode": "any",
+  "include_enabled": true,
+  "exclude_enabled": true,
   "copy_mode": "copy",
   "delivery_modes": [
     "forward",
@@ -40,6 +42,7 @@
   "message_link": true,
   "source_footer": true,
   "notify_media": true,
+  "single_message": true,
   "control_chat": -5569562901,
   "admin_user_id": 1143378073,
   "auto_restart": true,

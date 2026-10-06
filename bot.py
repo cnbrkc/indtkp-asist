@@ -31,6 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -52,6 +53,7 @@ STATS = {
     "failed": 0,      # iletimi başarısız mesaj
     "commands": 0,    # çalıştırılan komut
     "modes": {},      # hangi iletim yolu kaç kez işe yaradı
+    "cleaned": 0,     # bildirim gittikten sonra silinen hesap kopyası
     "last_match": None,
     "last_match_source": None,
 }
@@ -72,12 +74,17 @@ SELF_ID: int | None = None
 # Aktif filtre/komut durumları (apply_runtime_config yazar).
 FILTER_INCLUDE: list[str] = []
 FILTER_EXCLUDE: list[str] = []
-FILTER_MODE = "any"
+FILTER_MODE = "any"           # any | all (dahili kelimeler nasıl eşleşsin)
+FILTER_INCLUDE_ENABLED = True  # 🔎 dahili kelime filtresi açık mı?
+FILTER_EXCLUDE_ENABLED = True  # 🚫 harici kelime engeli açık mı?
 ADMIN_IDS: set[int] = set()
 SOURCE_FOOTER = True  # bildirime "Fırsatı Gönderen: <kaynak>" satırı ekle
 NOTIFY_MEDIA = True   # bildirim botu medyayı da göndersin
 MESSAGE_LINK_LINE = True      # iletinin sonuna "🔗 Mesajı Gör: <t.me linki>" ekle
 LINK_APPENDIX_MODE = "smart"  # smart | all | off (bkz. link_appendix_mode)
+# Tek mesaj modu: bildirim botu mesajı gruba attıysa, hesabın attığı kopya silinir.
+# Böylece her fırsat grupta tek mesaj olarak kalır (botun bildirimi = uyarı düşen mesaj).
+SINGLE_MESSAGE = True
 
 # Telegram sınırları (Bot API ve kullanıcı hesabı için ortak olanlar).
 MESSAGE_LIMIT = 4096          # normal mesaj metni
@@ -139,7 +146,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict:
         config["auto_restart"] = os.environ["AUTO_RESTART"].strip().lower() in {
             "1", "true", "yes", "evet", "on",
         }
-    for key in ("append_links", "source_footer", "notify_media", "message_link"):
+    for key in ("append_links", "source_footer", "notify_media", "message_link", "single_message"):
         env_value = os.getenv(key.upper())
         if env_value is not None and env_value.strip():
             config[key] = env_value
@@ -320,15 +327,27 @@ def matches(
     include: Sequence[str],
     exclude: Sequence[str],
     mode: str = "any",
+    *,
+    include_enabled: bool = True,
+    exclude_enabled: bool = True,
 ) -> bool:
     """Mesaj metnini anahtar kelimelere göre değerlendir.
 
-    ``forward_all`` modunda ``include`` tamamen yok sayılır; ``exclude`` her
-    zaman önce uygulanır (istenmeyen içerik hiçbir modda geçmez).
+    İki filtre birbirinden bağımsızdır (/open ve /close ile yönetilir):
+      * ``exclude_enabled`` açıkken ``exclude`` kelimelerinden biri geçen mesaj
+        engellenir (varsayılan davranış).
+      * ``include_enabled`` kapalıysa ``include`` listesi tamamen yok sayılır;
+        yalnızca harici filtre uygulanır.
+      * İkisi de kapalıysa kaynaklardaki her mesaj iletilir.
+
+    Eski ``match_mode: forward_all`` ayarı da dahili filtreyi kapatır (geriye
+    dönük uyumluluk).
     """
     normalized = normalize(text)
-    if exclude and any(word in normalized for word in exclude):
+    if exclude_enabled and exclude and any(word in normalized for word in exclude):
         return False
+    if not include_enabled:
+        return True
     resolved = canonical_match_mode(mode) or "any"
     if resolved == "forward_all":
         return True
@@ -336,6 +355,21 @@ def matches(
         return True
     found = [word in normalized for word in include]
     return all(found) if resolved == "all" else any(found)
+
+
+def filter_state_of(config: dict) -> dict[str, bool]:
+    """İki filtrenin açık/kapalı durumunu config'ten oku.
+
+    ``include_enabled`` / ``exclude_enabled`` asıl anahtarlardır; eski
+    ``match_mode: forward_all`` ayarı dahili filtreyi kapalı sayar.
+    """
+    include_enabled = config_flag(config.get("include_enabled"), True)
+    if match_mode_of(config) == "forward_all":
+        include_enabled = False
+    return {
+        "include": include_enabled,
+        "exclude": config_flag(config.get("exclude_enabled"), True),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +472,10 @@ def print_report(config: dict, problems: list[str]) -> None:
     }[filter_mode]
     print(f"Anahtar kelimeler  : {config.get('include_keywords') or '(hepsi)'} ({filter_label})", flush=True)
     print(f"Hariç kelimeler    : {config.get('exclude_keywords') or '(yok)'}", flush=True)
+    filter_state = filter_state_of(config)
+    print(f"Filtre durumu      : dahili {'AÇIK' if filter_state['include'] else 'KAPALI'} | "
+          f"harici {'AÇIK' if filter_state['exclude'] else 'KAPALI'} "
+          f"(/open ve /close ile değiştirilir)", flush=True)
     print(f"İletim sırası      : {' → '.join(build_delivery_chain(config))}", flush=True)
     print(f"Medya sınırı       : {config.get('max_media_mb', 25)} MB", flush=True)
     mode = link_appendix_mode(config)
@@ -445,7 +483,8 @@ def print_report(config: dict, problems: list[str]) -> None:
     print(f"Bağlantı ekleri     : {mode_label} "
           f"| mesaj linki: {'açık' if config_flag(config.get('message_link')) else 'kapalı'} "
           f"| kaynak altbilgisi: {'açık' if config_flag(config.get('source_footer')) else 'kapalı'} "
-          f"| bildirim medyası: {'açık' if config_flag(config.get('notify_media')) else 'kapalı'}", flush=True)
+          f"| bildirim medyası: {'açık' if config_flag(config.get('notify_media')) else 'kapalı'} "
+          f"| tek mesaj: {'açık' if config_flag(config.get('single_message')) else 'kapalı'}", flush=True)
     print(f"Otomatik yenileme  : {config.get('auto_restart', True)} "
           f"({os.getenv('RESTART_AFTER_MINUTES', '330')} dk sonra)", flush=True)
     if problems:
@@ -745,6 +784,20 @@ def message_entities(obj: Any) -> list[Any]:
     message = _as_message(obj)
     entities = getattr(message, "entities", None)
     return list(entities) if entities else []
+
+
+def sent_message_ids(result: Any) -> list[int]:
+    """``send_message``/``forward_messages`` çıktısından mesaj ID'lerini topla.
+
+    Tek mesaj da liste de dönebilir; ID yoksa boş liste verir (silme atlanır).
+    """
+    items = result if isinstance(result, (list, tuple, set)) else [result]
+    ids: list[int] = []
+    for item in items:
+        message_id = getattr(item, "id", None)
+        if isinstance(message_id, int) and not isinstance(message_id, bool):
+            ids.append(message_id)
+    return ids
 
 
 def button_link(button: Any) -> tuple[str, str] | None:
@@ -1123,9 +1176,10 @@ HELP_TEXT = (
     "/source (/kaynaklar) – izlenen kaynaklar\n"
     "/id – sohbet ve kullanıcı ID'leri\n"
     "/restart (/yenile) – yeni çalışma başlat\n"
-    "/hepsinial – tüm mesajları ilet (harici kelimeler hariç; kaydeder)\n"
-    "/filtrelial – dahili kelime filtresini aç (kaydeder)\n"
-    "/ayar, /ekle, /çıkar – listeleri düzenle\n"
+    "/analiz [adet] [tümü] – geçmiş başlıkları tara, kelime istatistiği ver\n"
+    "/open [dahili|harici|ikisi] – filtre aç (sormazsan menü sorar; kaydeder)\n"
+    "/close [dahili|harici|ikisi] – filtre kapat (sormazsan menü sorar; kaydeder)\n"
+    "/ayar, /ekle, /çıkar – listeleri düzenle (virgülle birden çok kayıt)\n"
     "/kaydet, /iptal – taslağı kaydet / iptal et\n"
     "/help (/yardim) – bu mesaj"
 )
@@ -1136,13 +1190,21 @@ def build_status_text(config: dict) -> str:
     last_line = "henüz eşleşme yok"
     if last:
         last_line = f"{humanize(time.time() - last)} önce ({STATS['last_match_source']})"
-    keywords = config.get("include_keywords") or "(hepsi)"
+    keywords = telegram_list_items(config, "include_keywords")
+    exclude_words = telegram_list_items(config, "exclude_keywords")
     mode = match_mode_of(config)
-    if mode == "forward_all":
-        filter_line = "🔓 Dahili kelimeler yok sayılıyor (harici kelimeler yine engeller)"
+    state = filter_state_of(config)
+    keyword_text = ", ".join(str(item) for item in keywords) or "(kelime yok)"
+    exclude_text = ", ".join(str(item) for item in exclude_words) or "(kelime yok)"
+    if state["include"]:
+        filter_line = f"• 🔎 Dahili filtre: AÇIK · {keyword_text} ({mode})"
     else:
-        filter_line = (f"• Anahtar kelimeler: "
-                       f"{', '.join(keywords) if isinstance(keywords, list) else keywords} ({mode})")
+        filter_line = "• 🔎 Dahili filtre: KAPALI · kelimeler yok sayılıyor"
+    if state["exclude"]:
+        filter_line += f"\n• 🚫 Harici filtre: AÇIK · {exclude_text}"
+    else:
+        filter_line += "\n• 🚫 Harici filtre: KAPALI · engelleme yapılmıyor"
+    filter_line += "\n• Değiştirmek için /open ve /close"
     return (
         "✅ Takipçi aktif\n"
         f"• Çalışma süresi: {humanize(time.time() - STARTED_AT)}\n"
@@ -1159,6 +1221,10 @@ def build_status_text(config: dict) -> str:
         f"• İletim sırası: {' → '.join(DELIVERY_CHAIN) or 'yok'}"
         + (f" | kullanılan: {', '.join(f'{k}×{v}' for k, v in STATS['modes'].items())}"
            if STATS["modes"] else "")
+        + "\n"
+        f"• Tek mesaj modu: {'açık' if SINGLE_MESSAGE else 'kapalı'}"
+        + (f" · bildirim sonrası silinen hesap kopyası: {STATS.get('cleaned', 0)}"
+           if SINGLE_MESSAGE and STATS.get("cleaned") else "")
     )
 
 
@@ -1175,8 +1241,8 @@ def build_source_text() -> str:
 # Telegram liste düzenleme akışı
 # ---------------------------------------------------------------------------
 #
-# Telegram'da yalnızca üç liste taslak akışıyla düzenlenir; filtre modu da
-# iki açık komutla değiştirilir. Diğer ayarlar yalnızca config/kod üzerinden.
+# Telegram'da yalnızca üç liste taslak akışıyla düzenlenir; iki filtre ise
+# /open ve /close ile bağımsız açılıp kapatılır. Diğer ayarlar config/kod üzerinden.
 
 def build_main_menu_text() -> str:
     """/ayar çıktısı: Telegram'dan düzenlenebilen üç listeyi açıklar."""
@@ -1185,17 +1251,22 @@ def build_main_menu_text() -> str:
         "━━━━━━━━━━━━━━━━━━━━",
         "Liste olarak Telegram'dan yalnızca şu üç alan düzenlenebilir:",
         "",
-        "➕  /ekle   · Listeye kayıt ekle",
-        "➖  /çıkar  · Listeden kayıt çıkar",
+        "➕  /ekle   · Listeye kayıt ekle (virgülle birden çok)",
+        "➖  /çıkar  · Listeden kayıt çıkar (virgülle birden çok)",
         "",
-        "Akış: işlem seç → listeyi seç → değeri gönder.",
+        "Akış: işlem seç → listeyi seç → değerleri gönder.",
         "Son adımda değişikliği kaydetmen veya iptal etmen istenir.",
+        "",
+        "🔎  /analiz · Geçmiş mesajların başlığını tara:",
+        "     en çok geçen 25 kelime + en çok geçen 25 ilk kelime.",
         "",
         "✅  /kaydet  · Taslağı config.json'a yazıp GitHub'a gönder",
         "↩️  /iptal   · Bekleyen taslağı iptal et",
         "",
-        "🔓 /hepsinial  · Tümünü al (harici kelimeler hariç; anında kaydeder)",
-        "🔎 /filtrelial · Dahili kelime filtresi (anında kaydeder)",
+        "🔓 /open   · Filtre aç  (sorar: dahili mi, harici mi, ikisi mi?)",
+        "🔒 /close  · Filtre kapat (sorar: hangisi kapansın?)",
+        "   İkisi bağımsızdır: dahili ve harici filtre ayrı ayrı açılıp kapanır.",
+        "   Örnek: /open dahili · /close harici · /open ikisi",
         "",
         "Düzenlenebilir listeler:",
         "  🔎 Dahili kelimeler",
@@ -1231,6 +1302,8 @@ TELEGRAM_LIST_ALIASES = {
     "source_chats": {"grup", "gruplar", "grup_isimleri", "kanal", "kanallar", "kaynak", "kaynaklar", "source_chats"},
 }
 LIST_ITEM_MAX_LENGTH = 100
+LIST_BATCH_MAX = 50       # tek mesajda işlenebilecek en fazla kayıt
+LIST_PREVIEW_MAX = 12     # onay/taslak mesajında listelenen en fazla kayıt
 
 
 def telegram_list_items(config: dict, field: str) -> list[Any]:
@@ -1297,54 +1370,103 @@ def build_list_value_prompt(action: str, field: str, config: dict) -> str:
     lines.append("")
     if action == "add":
         if field == "source_chats":
-            lines += ["Eklenecek kanal/grup kullanıcı adını veya ID'sini gönder:",
-                      "Örnek: @kanaladi  ya da  -1001234567890"]
+            lines += ["Eklenecek kanal/grup kullanıcı adlarını veya ID'lerini gönder.",
+                      "Örnek: @kanaladi, -1001234567890"]
         else:
-            lines.append("Eklenecek kelimeyi gönder.")
-        lines.append("Her mesajda tek kayıt eklenir.")
+            lines.append("Eklenecek kelimeleri gönder.")
+        lines += ["Birden çok kaydı virgül, noktalı virgül veya satır ile ayırabilirsin.",
+                  "Örnek: kahve, şeker, süt"]
     else:
-        lines += ["Çıkarmak istediğin kaydın numarasını veya listedeki tam değerini gönder.",
-                  "Yalnızca seçtiğin tek kayıt çıkarılır."]
+        lines += ["Çıkarmak istediğin kaydın numarasını veya listedeki tam değerini gönder;",
+                  "birden çok kayıt için virgülle ayır. Örnek: 1, 3, çekiliş"]
     lines += ["", "Bu adımda ayar henüz kaydedilmez.", "İptal etmek için /iptal."]
     return "\n".join(lines)
 
 
+def format_value_preview(values: Sequence[Any], limit: int = LIST_PREVIEW_MAX) -> str:
+    """Kayıtları tek satırda özetle; uzunsa '… ve N kayıt daha' ekle."""
+    texts = [str(value) for value in values]
+    if len(texts) > limit:
+        return ", ".join(texts[:limit]) + f" … ve {len(texts) - limit} kayıt daha"
+    return ", ".join(texts)
+
+
 def stage_telegram_list_change(
     config: dict, field: str, action: str, raw_value: Any,
-) -> tuple[bool, dict, Any, str]:
-    """İzinli bir liste değişikliğini config'e dokunmadan taslak olarak hazırla."""
+) -> tuple[bool, dict, list[Any], str]:
+    """İzinli bir liste değişikliğini config'e dokunmadan taslak olarak hazırla.
+
+    Tek mesajda virgül, noktalı virgül veya satır ile ayrılmış **birden çok**
+    kayıt gönderilebilir. Dönen üçüncü değer işlenen kayıtların listesidir
+    (eklenen ya da çıkarılan); hiçbiri işlenemezse ``ok=False`` döner.
+    """
     if field not in TELEGRAM_LIST_FIELDS:
-        return False, copy.deepcopy(config), None, "Bu liste Telegram'dan düzenlenemez."
+        return False, copy.deepcopy(config), [], "Bu liste Telegram'dan düzenlenemez."
     if action not in {"add", "remove"}:
-        return False, copy.deepcopy(config), None, "Geçersiz liste işlemi."
+        return False, copy.deepcopy(config), [], "Geçersiz liste işlemi."
 
     current = telegram_list_items(config, field)
-    text = str(raw_value or "").strip()
-    values = split_values(text)
-    if len(values) != 1:
-        return False, copy.deepcopy(config), None, "Her mesajda tek kayıt gönder; virgülle birden fazla değer yazma."
-    text = values[0]
-    if not text:
-        return False, copy.deepcopy(config), None, "Boş kayıt eklenemez veya çıkarılamaz."
-    if len(text) > LIST_ITEM_MAX_LENGTH:
-        return False, copy.deepcopy(config), None, f"Kayıt en fazla {LIST_ITEM_MAX_LENGTH} karakter olabilir."
+    values = split_values(raw_value)
+    if not values:
+        return False, copy.deepcopy(config), [], "Boş kayıt eklenemez veya çıkarılamaz."
+    if len(values) > LIST_BATCH_MAX:
+        return False, copy.deepcopy(config), [], (
+            f"Tek mesajda en fazla {LIST_BATCH_MAX} kayıt gönderebilirsin."
+        )
 
+    title = TELEGRAM_LIST_META[field]["title"]
     if action == "add":
-        if field == "source_chats":
-            try:
-                value = parse_chat_value(text)
-            except ValueError as exc:
-                return False, copy.deepcopy(config), None, f"Geçersiz kayıt: {exc}."
+        added: list[Any] = []
+        duplicates: list[str] = []
+        invalid: list[str] = []
+        keys = [telegram_list_item_key(field, item) for item in current]
+        for text in values:
+            if len(text) > LIST_ITEM_MAX_LENGTH:
+                invalid.append(f"{text[:24]}… (en fazla {LIST_ITEM_MAX_LENGTH} karakter)")
+                continue
+            if field == "source_chats":
+                try:
+                    value: Any = parse_chat_value(text)
+                except ValueError as exc:
+                    invalid.append(f"{text} ({exc})")
+                    continue
+            else:
+                value = normalize(text)
+            key = telegram_list_item_key(field, value)
+            if key in keys:
+                duplicates.append(str(value))
+                continue
+            keys.append(key)
+            added.append(value)
+
+        if not added:
+            lines = ["ℹ️ Eklenecek yeni kayıt yok."]
+            if duplicates:
+                lines.append(f"zaten bu listede: {format_value_preview(duplicates)}")
+            if invalid:
+                lines.append(f"Geçersiz kayıt: {format_value_preview(invalid)}")
+            return False, copy.deepcopy(config), [], "\n".join(lines)
+
+        if len(added) == 1:
+            message = f"{title} listesine eklenecek: {added[0]}"
         else:
-            value = normalize(text)
-        key = telegram_list_item_key(field, value)
-        if any(telegram_list_item_key(field, item) == key for item in current):
-            return False, copy.deepcopy(config), value, f"ℹ️ {value} zaten bu listede."
-        changed_item = value
-        updated = [*current, value]
-        message = f"{TELEGRAM_LIST_META[field]['title']} listesine eklenecek: {value}"
-    else:
-        # Numara, ekranda gösterilen satır numarasıdır. Tam metin de kabul edilir.
+            message = f"{title} listesine eklenecek {len(added)} kayıt: {format_value_preview(added)}"
+        if duplicates:
+            message += f"\n⚠️ {len(duplicates)} kayıt zaten listede, atlandı: {format_value_preview(duplicates)}"
+        if invalid:
+            message += f"\n⚠️ {len(invalid)} kayıt alınamadı, atlandı: {format_value_preview(invalid)}"
+
+        candidate = copy.deepcopy(config)
+        candidate[field] = [*current, *added]
+        return True, candidate, added, message
+
+    # --- çıkarma: numara ya da listedeki tam değer; ikisi karışık olabilir.
+    # Numaralar kullanıcının gördüğü listenin sırasıdır; kayıtlar çıkarıldıkça
+    # sıra kaymasın diye numara baştan çözülür, kayıt sonra yerinden bulunur.
+    remaining = list(current)
+    removed: list[Any] = []
+    missing: list[str] = []
+    for text in values:
         index: int | None = None
         if text.isdigit():
             selected = int(text)
@@ -1355,16 +1477,35 @@ def stage_telegram_list_change(
             index = next((i for i, item in enumerate(current)
                           if telegram_list_item_key(field, item) == wanted), None)
         if index is None:
-            return False, copy.deepcopy(config), None, f"ℹ️ {text} mevcut listede bulunamadı. Listedeki numarayı kullanabilirsin."
-        if field == "source_chats" and len(current) <= 1:
-            return False, copy.deepcopy(config), None, "En az bir takip edilen grup/kanal kalmalı; son kaydı çıkaramazsın."
-        changed_item = current[index]
-        updated = [item for i, item in enumerate(current) if i != index]
-        message = f"{TELEGRAM_LIST_META[field]['title']} listesinden çıkarılacak: {changed_item}"
+            missing.append(text)
+            continue
+        target_key = telegram_list_item_key(field, current[index])
+        position = next((i for i, item in enumerate(remaining)
+                         if telegram_list_item_key(field, item) == target_key), None)
+        if position is None:
+            missing.append(text)
+            continue
+        removed.append(remaining.pop(position))
+
+    if not removed:
+        detail = f"Bu kayıtlar listede bulunamadı: {format_value_preview(missing)}" if missing \
+            else "Çıkarılacak kayıt bulunamadı."
+        return False, copy.deepcopy(config), [], f"ℹ️ {detail}"
+    if field == "source_chats" and not remaining:
+        return False, copy.deepcopy(config), [], (
+            "En az bir takip edilen grup/kanal kalmalı; son kaydı da çıkaramazsın."
+        )
+
+    if len(removed) == 1:
+        message = f"{title} listesinden çıkarılacak: {removed[0]}"
+    else:
+        message = f"{title} listesinden çıkarılacak {len(removed)} kayıt: {format_value_preview(removed)}"
+    if missing:
+        message += f"\n⚠️ {len(missing)} kayıt listede bulunamadı, atlandı: {format_value_preview(missing)}"
 
     candidate = copy.deepcopy(config)
-    candidate[field] = updated
-    return True, candidate, changed_item, message
+    candidate[field] = remaining
+    return True, candidate, removed, message
 
 
 def resolve_confirmation_choice(text: Any) -> str | None:
@@ -1385,16 +1526,192 @@ def resolve_confirmation_choice(text: Any) -> str | None:
     return None
 
 
-def build_list_change_confirmation(action: str, field: str, value: Any, config: dict) -> str:
-    """Değişiklik taslağı için Telegram'da okunaklı onay mesajı kur."""
+# ---------------------------------------------------------------------------
+# Filtre aç/kapat (/open, /close)
+# ---------------------------------------------------------------------------
+#
+# Dahili (🔎 include_keywords) ve harici (🚫 exclude_keywords) filtreler
+# birbirinden BAĞIMSIZ açılıp kapatılır; böylece hangi filtrenin çalıştığı tam
+# olarak kontrol edilebilir. Durum config.json'daki ``include_enabled`` ve
+# ``exclude_enabled`` alanlarında tutulur (varsayılan: ikisi de açık).
+
+FILTER_TARGET_META: dict[str, dict[str, str]] = {
+    "include": {
+        "icon": "🔎",
+        "title": "Dahili kelimeler",
+        "field": "include_enabled",
+        "keywords": "include_keywords",
+        "description": "Mesajda aranan kelimeler (kapalıysa kelimeler yok sayılır)",
+    },
+    "exclude": {
+        "icon": "🚫",
+        "title": "Harici kelimeler",
+        "field": "exclude_enabled",
+        "keywords": "exclude_keywords",
+        "description": "Geçen mesajı engelleyen kelimeler (kapalıysa engelleme yapılmaz)",
+    },
+}
+FILTER_TARGET_ORDER = ("include", "exclude")
+FILTER_TARGET_NUMBER: dict[str, str] = {"1": "include", "2": "exclude", "3": "both"}
+FILTER_TARGET_ALIASES: dict[str, set[str]] = {
+    "include": {
+        "dahili", "dahil", "dahili_kelimeler", "dahil_kelimeler", "include",
+        "include_keywords", "icerik", "içerik", "kelime", "kelimeler", "aranan",
+        "yesil", "yeşil",
+    },
+    "exclude": {
+        "harici", "hariç", "haric", "harici_kelimeler", "hariç_kelimeler", "haric_kelimeler",
+        "exclude", "exclude_keywords", "engel", "engeller", "engelleme", "yasak",
+        "yasakli", "yasaklı", "kara",
+    },
+    "both": {
+        "ikisi", "ikisi_birlikte", "her_ikisi", "herikisi", "hepsi", "tumu", "tümü",
+        "both", "all",
+    },
+}
+
+
+def resolve_filter_target(text: Any) -> str | None:
+    """``/open`` / ``/close`` yanıtını hedefe çevir: include | exclude | both.
+
+    Kabul edilenler: ``1``/``2``/``3``, ``dahili``, ``harici``, ``ikisi``,
+    ``hariç kelimeler`` gibi yazımlar (boşluk/tire/büyük-küçük farkı yok sayılır).
+    """
+    raw = normalize(str(text or "")).strip().lstrip("/").strip(".,;:!?")
+    if not raw:
+        return None
+    if raw in FILTER_TARGET_NUMBER:
+        return FILTER_TARGET_NUMBER[raw]
+    key = re.sub(r"[\s\-]+", "_", raw)
+    flat = key.replace("_", "")
+    for target, aliases in FILTER_TARGET_ALIASES.items():
+        if key == target or key in aliases:
+            return target
+        if flat in {alias.replace("_", "") for alias in aliases}:
+            return target
+    return None
+
+
+def filter_state_lines(config: dict) -> list[str]:
+    """İki filtrenin güncel durumunu okunaklı satırlar hâlinde ver."""
+    state = filter_state_of(config)
+    lines: list[str] = []
+    for target in FILTER_TARGET_ORDER:
+        meta = FILTER_TARGET_META[target]
+        count = len(telegram_list_items(config, meta["keywords"]))
+        label = "AÇIK" if state[target] else "KAPALI"
+        lines.append(f"• {meta['icon']} {meta['title']}: {label} · {count} kayıt")
+    return lines
+
+
+def build_filter_toggle_prompt(action: str, config: dict) -> str:
+    """`/open` veya `/close` argümansız yazıldığında hangi filtreyi sorar."""
+    state = filter_state_of(config)
+    is_open = action == "open"
+    lines = [
+        "🔓  FİLTRE AÇ" if is_open else "🔒  FİLTRE KAPAT",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "Hangi filtreyi açalım?" if is_open else "Hangi filtreyi kapatalım?",
+        "",
+    ]
+    for index, target in enumerate(FILTER_TARGET_ORDER, start=1):
+        meta = FILTER_TARGET_META[target]
+        count = len(telegram_list_items(config, meta["keywords"]))
+        label = "açık" if state[target] else "kapalı"
+        lines.append(f"{index}. {meta['icon']}  {meta['title']}  ·  şu an {label}  ·  {count} kayıt")
+        lines.append(f"   {meta['description']}")
+    lines += [
+        f"3. 🔁  İkisi birlikte  ·  şu an "
+        f"{'açık' if state['include'] and state['exclude'] else 'kapalı'}",
+        "",
+        "1, 2, 3 yaz ya da filtre adını yaz (dahili / harici / ikisi).",
+        "Doğrudan da yazabilirsin: /open dahili · /close harici · /open ikisi",
+        "Vazgeçmek için /iptal.",
+    ]
+    return "\n".join(lines)
+
+
+def stage_filter_toggle(config: dict, action: str, target: str) -> tuple[bool, dict, str]:
+    """Filtre anahtarını açar/kapatır; config'e dokunmadan taslak döndürür."""
+    if action not in {"open", "close"}:
+        return False, copy.deepcopy(config), "Geçersiz filtre işlemi."
+    if target not in {"include", "exclude", "both"}:
+        return False, copy.deepcopy(config), (
+            "Filtre seçilemedi. 1 (dahili), 2 (harici) veya 3 (ikisi) yaz."
+        )
+    enabled = action == "open"
+    targets = FILTER_TARGET_ORDER if target == "both" else (target,)
+    what = "Filtreler" if target == "both" else FILTER_TARGET_META[target]["title"] + " filtresi"
+    state = filter_state_of(config)
+    if all(state[item] is enabled for item in targets):
+        return False, copy.deepcopy(config), (
+            f"ℹ️ {what} zaten {'açık' if enabled else 'kapalı'}; değişiklik yok."
+        )
+
+    candidate = copy.deepcopy(config)
+    for item in targets:
+        candidate[FILTER_TARGET_META[item]["field"]] = enabled
+    # Dahili filtre açılırken eski "tümünü al" modu bırakılır; yoksa include
+    # kelimeleri yine yok sayılırdı.
+    if enabled and "include" in targets and match_mode_of(candidate) == "forward_all":
+        candidate["match_mode"] = "any"
+    return True, candidate, build_filter_result_text(action, target, candidate)
+
+
+def build_filter_result_text(action: str, target: str, config: dict) -> str:
+    """Filtre değişikliğinden sonra gösterilen özet."""
+    state = filter_state_of(config)
+    if target == "both":
+        what = "Dahili ve harici filtreler"
+    else:
+        what = FILTER_TARGET_META[target]["title"] + " filtresi"
+    icon = "🔓" if action == "open" else "🔒"
+    verb = "AÇILDI" if action == "open" else "KAPATILDI"
+    lines = [f"{icon} {what} {verb}.", "", *filter_state_lines(config)]
+    if not state["include"] and not state["exclude"]:
+        lines += ["", "⚠️ İki filtre de kapalı: kaynaklardaki HER mesaj iletilir."]
+    elif not state["include"]:
+        lines += ["", "🔓 Dahili filtre kapalı: anahtar kelime aranmaz; yalnızca harici kelimeler engeller."]
+    elif not state["exclude"]:
+        lines += ["", "ℹ️ Harici filtre kapalı: engelleme yapılmaz; yalnızca dahili kelimeler aranır."]
+    else:
+        lines += ["", "🔎 Dahili: en az bir kelime eşleşmeli · 🚫 Harici: eşleşen mesaj engellenir."]
+    return "\n".join(lines)
+
+
+def new_filter_edit(action: str) -> dict[str, Any]:
+    """`/open` ve `/close` için bekleyen seçim oturumu (config değişmez)."""
+    return {"stage": "filter", "action": action}
+
+
+def build_list_change_confirmation(action: str, field: str, value: Any, config: dict,
+                                   message: str = "") -> str:
+    """Değişiklik taslağı için Telegram'da okunaklı onay mesajı kur.
+
+    ``message`` içindeki ``⚠️`` ile başlayan satırlar (atlanan kayıtlar) onaya
+    aynen taşınır; böylece kullanıcı neyin işlenmediğini kaydetmeden önce görür.
+    """
     meta = TELEGRAM_LIST_META[field]
     verb = "Eklenecek" if action == "add" else "Çıkarılacak"
+    icon = "➕" if action == "add" else "➖"
+    values = list(value) if isinstance(value, (list, tuple, set)) else [value]
     count = len(telegram_list_items(config, field))
+    if len(values) == 1:
+        heading = f"{icon} {verb}: {values[0]}"
+    else:
+        lines = [f"{icon} {verb} {len(values)} kayıt:"]
+        lines += [f"   {index:02d}. {item}"
+                  for index, item in enumerate(values[:LIST_PREVIEW_MAX], start=1)]
+        if len(values) > LIST_PREVIEW_MAX:
+            lines.append(f"   … ve {len(values) - LIST_PREVIEW_MAX} kayıt daha")
+        heading = "\n".join(lines)
+    warnings = [line for line in str(message or "").splitlines() if line.startswith("⚠️")]
     return "\n".join([
         "📝  DEĞİŞİKLİK TASLAĞI",
         "━━━━━━━━━━━━━━━━━━━━",
         f"📂 {meta['title']}",
-        f"{('➕' if action == 'add' else '➖')} {verb}: {value}",
+        heading,
+        *warnings,
         f"📊 Kaydedilince listedeki kayıt sayısı: {count}",
         "",
         "Bu değişiklik henüz aktif değil ve config.json'a yazılmadı.",
@@ -1420,8 +1737,10 @@ CMD_SETTINGS_ADD = _expand_commands({"/ekle"})
 CMD_SETTINGS_REMOVE = _expand_commands({"/çıkar", "/cikar"})
 CMD_SETTINGS_SAVE = _expand_commands({"/kaydet"})
 CMD_SETTINGS_REVERT = _expand_commands({"/iptal"})
-CMD_FILTER_ALL = _expand_commands({"/hepsinial"})
-CMD_FILTER_KEYWORDS = _expand_commands({"/filtrelial"})
+CMD_FILTER_OPEN = _expand_commands({"/open"})
+CMD_FILTER_CLOSE = _expand_commands({"/close"})
+CMD_ANALYZE = _expand_commands({"/analiz", "/kelimeanalizi"})
+FILTER_COMMANDS = frozenset().union(CMD_FILTER_OPEN, CMD_FILTER_CLOSE)
 SETTINGS_COMMANDS = frozenset().union(
     CMD_SETTINGS_MENU, CMD_SETTINGS_ADD, CMD_SETTINGS_REMOVE,
     CMD_SETTINGS_SAVE, CMD_SETTINGS_REVERT,
@@ -1718,14 +2037,19 @@ async def save_config(store: ConfigStore, note: str = "") -> tuple[bool, str]:
 def apply_runtime_config(config: dict) -> list[str]:
     """Global çalışma ayarlarını config'ten yenile (Telegram bağlantısı gerekmez)."""
     global FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE, ADMIN_IDS
+    global FILTER_INCLUDE_ENABLED, FILTER_EXCLUDE_ENABLED
     global DELIVERY_CHAIN, MAX_MEDIA_MB
     global LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
     global MESSAGE_LINK_LINE, SOURCE_FOOTER, NOTIFY_MEDIA, NOTIFY_BOT_TOKEN
+    global SINGLE_MESSAGE
 
     notes: list[str] = []
     FILTER_INCLUDE = [normalize(x) for x in config.get("include_keywords") or []]
     FILTER_EXCLUDE = [normalize(x) for x in config.get("exclude_keywords") or []]
     FILTER_MODE = match_mode_of(config)
+    filter_state = filter_state_of(config)
+    FILTER_INCLUDE_ENABLED = filter_state["include"]
+    FILTER_EXCLUDE_ENABLED = filter_state["exclude"]
     ADMIN_IDS = parse_admin_ids(config.get("admin_user_id"))
     DELIVERY_CHAIN = build_delivery_chain(config)
     try:
@@ -1739,12 +2063,16 @@ def apply_runtime_config(config: dict) -> list[str]:
     MESSAGE_LINK_LINE = config_flag(config.get("message_link"), True)
     SOURCE_FOOTER = config_flag(config.get("source_footer"), True)
     NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
+    SINGLE_MESSAGE = config_flag(config.get("single_message"), True)
     token = str(config.get("notify_bot_token") or os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
     NOTIFY_BOT_TOKEN = "" if token.lower() in {"null", "none", "yok"} else token
 
-    if FILTER_MODE == "forward_all":
-        notes.append("🔓 Dahili kelimeler yok sayılıyor; kaynak mesajları iletiliyor"
-                     + (" (harici kelimeler yine engeller)." if FILTER_EXCLUDE else "."))
+    if not FILTER_INCLUDE_ENABLED:
+        notes.append("🔓 Dahili kelime filtresi kapalı; anahtar kelimeler yok sayılıyor"
+                     + (" (harici kelimeler yine engeller)." if FILTER_EXCLUDE_ENABLED
+                        else " ve harici engelleme de kapalı: her mesaj iletilir."))
+    if not FILTER_EXCLUDE_ENABLED:
+        notes.append("🚫 Harici kelime filtresi kapalı; engelleme yapılmıyor.")
     return notes
 
 
@@ -1895,6 +2223,216 @@ def chunk_text(text: str, limit: int = 3500) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Mesaj geçmişi kelime analizi (/analiz)
+# ---------------------------------------------------------------------------
+#
+# Amaç: kaynaklarda geçmişe dönük mesajları okuyup **başlıkta** (mesajın ilk
+# anlamlı satırı; marka/ürün adının yazdığı yer) en çok geçen kelimeleri
+# göstermek. Böylece hiç almak istemediğin ürün türlerini bulup harici
+# kelimeler listesine ekleyebilirsin. Yalnızca başlık taranır; açıklama, fiyat
+# ve link satırları istatistiğe girmez.
+
+ANALYSIS_DEFAULT_LIMIT = 300     # kaynak başına taranan mesaj sayısı
+ANALYSIS_MIN_LIMIT = 20
+ANALYSIS_MAX_LIMIT = 2000
+ANALYSIS_TOP = 25                # her listede gösterilen kelime sayısı
+# `/analiz tümü` yazıldığında kabul edilen kelimeler.
+ANALYSIS_ALL_TOKENS = frozenset({
+    "tumu", "tümü", "hepsi", "hepsini", "all", "hersey", "herşey", "filtresiz",
+    "sinirsiz", "sınırsız",
+})
+# Harf dizileri ve saf sayı dizileri (fiyat/adet sayıları ayrı yakalanır).
+ANALYSIS_TOKEN_RE = re.compile(r"[0-9]+|[^\W\d_]+", re.UNICODE)
+
+# İçerik taşımayan bağlaç/edat/zamirler: istatistikte anlamlı kelimeler kalsın.
+STOP_WORDS = frozenset("""
+acaba ama ancak artık asla ayrıca bana bazı belki ben beni benim beri bile bir
+biraz birçok biri birkaç biz bize bizim bu buna bunda bundan bunu bunun burada
+çok çünkü da daha değil diğer diye eğer en fakat falan filan gibi göre hangi
+hatta hem hep hepsi her herhangi hiç için ile ise işte kadar kez ki kim kimi mı
+mi mu mü nasıl ne neden nerede nereye niçin niye o olan olarak oldu olduğu olup
+olsun öyle sadece sanki sen siz sonra şey şeyi şimdi şu şuna şunu tüm tümü üzere
+var ve veya ya yani yine zaten
+""".split())
+# İlan/indirim kalıpları: neredeyse her mesajda geçtiği için varsayılan
+# istatistikte gizlenir. Hepsini görmek için `/analiz tümü`.
+DEAL_FILLER_WORDS = frozenset("""
+adet adetli bedava bugün dahil fırsat fırsatı fırsatlar firsat güncel günün
+hemen indirim indirimli kampanya kampanyası kargo kaçırma kaçmaz kupon link
+links mevcut saat sepet sepette sipariş sınırlı stok stoğu stoklar tıkla tl try
+ücretsiz
+""".split())
+ANALYSIS_STOP_WORDS = STOP_WORDS | DEAL_FILLER_WORDS
+
+ANALYSIS_USAGE = "\n".join([
+    "🔎  BAŞLIK KELİME ANALİZİ",
+    "━━━━━━━━━━━━━━━━━━━━",
+    "Kaynaklardaki geçmiş mesajların yalnızca başlığını (ilk anlamlı satırını)",
+    "tarar; en çok geçen 25 kelimeyi ve en çok geçen 25 ilk kelimeyi verir.",
+    "",
+    "Kullanım:",
+    f"  /analiz            → kaynak başına son {ANALYSIS_DEFAULT_LIMIT} mesaj",
+    f"  /analiz 1000       → kaynak başına son 1000 mesaj ({ANALYSIS_MIN_LIMIT}–{ANALYSIS_MAX_LIMIT})",
+    "  /analiz tümü       → işlevsiz kelimeler ve saf sayılar da sayılsın",
+    "  /analiz 500 tümü   → ikisi birlikte",
+    "",
+    "Sonuçlara bakıp istemediğin kelimeleri harici listeye ekle:",
+    "/çıkar → 2 (Harici kelimeler) → örnek: bebek, oyuncak, kitap",
+])
+
+
+def message_title(text: str | None) -> str:
+    """Mesajın başlığı: ilk boş olmayan satır (marka/ürün adının yazdığı yer)."""
+    for line in (text or "").splitlines():
+        title = line.strip()
+        if title:
+            return title
+    return ""
+
+
+def title_tokens(title: str, *, keep_everything: bool = False) -> list[str]:
+    """Başlığı Türkçe duyarlı küçük harfe indirip kelimelere ayır.
+
+    ``keep_everything=False`` iken saf sayılar (fiyat, adet, model kodu) atılır.
+    """
+    tokens: list[str] = []
+    for raw in ANALYSIS_TOKEN_RE.findall(normalize(title)):
+        if not keep_everything and raw.isdigit():
+            continue
+        tokens.append(raw)
+    return tokens
+
+
+def content_tokens(tokens: Sequence[str], *, keep_everything: bool = False) -> list[str]:
+    """İşlevsiz kelimeleri, saf sayıları ve tek harfli gürültüyü ele.
+
+    ``keep_everything=True`` iken hiçbiri elenmez (``/analiz tümü``).
+    """
+    if keep_everything:
+        return list(tokens)
+    return [token for token in tokens
+            if len(token) > 1 and not token.isdigit() and token not in ANALYSIS_STOP_WORDS]
+
+
+def analyze_titles(titles: Iterable[str], *, keep_everything: bool = False) -> dict[str, Any]:
+    """Başlıkları tara; kelime ve ilk kelime frekanslarını çıkar.
+
+    Aynı başlık birden çok kanaldan gelmişse bir kez sayılır (tekrar
+    birleştirme); böylece tek bir kampanya tüm istatistiği bozmaz.
+    """
+    words: Counter[str] = Counter()
+    first_words: Counter[str] = Counter()
+    seen: set[str] = set()
+    counts = {"titles": 0, "unique": 0, "duplicates": 0, "filtered": 0}
+    for title in titles:
+        text = (title or "").strip()
+        if not text:
+            continue
+        counts["titles"] += 1
+        key = normalize(text)
+        if key in seen:
+            counts["duplicates"] += 1
+            continue
+        seen.add(key)
+        counts["unique"] += 1
+        # Sayılar ve işlevsiz kelimeler "elenen" sayılır: kapsam notu bunu gösterir.
+        tokens = title_tokens(text, keep_everything=True)
+        kept = content_tokens(tokens, keep_everything=keep_everything)
+        counts["filtered"] += len(tokens) - len(kept)
+        words.update(kept)
+        if kept:
+            first_words[kept[0]] += 1
+    return {"counts": counts, "words": words, "first_words": first_words}
+
+
+def list_contains_token(items: Iterable[Any], token: str) -> bool:
+    """Kelime, verilen listedeki bir kaydın (ya da kaydın bir parçasının) içinde mi?"""
+    for item in items:
+        if token in normalize(str(item)).split():
+            return True
+    return False
+
+
+def format_ranking(counter: Any, config: dict, top: int = ANALYSIS_TOP) -> list[str]:
+    """Frekans tablosunu numaralı satırlara çevir; listede olanları işaretle."""
+    exclude = telegram_list_items(config, "exclude_keywords")
+    include = telegram_list_items(config, "include_keywords")
+    ranked = sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:top]
+    lines: list[str] = []
+    for index, (word, count) in enumerate(ranked, start=1):
+        mark = ""
+        if list_contains_token(exclude, word):
+            mark = " 🚫"
+        elif list_contains_token(include, word):
+            mark = " 🔎"
+        lines.append(f"{index:02d}. {count:>4}×  {word}{mark}")
+    return lines or ["(kelime bulunamadı)"]
+
+
+def build_analysis_report(
+    analysis: dict[str, Any],
+    *,
+    config: dict,
+    sources: int,
+    per_source: int,
+    keep_everything: bool = False,
+    elapsed: float = 0.0,
+    failures: Sequence[str] = (),
+) -> str:
+    """Analiz sonucunu Telegram'da okunaklı iki istatistiğe çevir."""
+    counts = analysis["counts"]
+    lines = [
+        "📊  BAŞLIK KELİME ANALİZİ",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"• Kaynak: {sources} grup · kaynak başına son {per_source} mesaj",
+        f"• Taranan başlık: {counts['titles']} · tekil: {counts['unique']}"
+        + (f" (tekrar birleştirildi: {counts['duplicates']})" if counts["duplicates"] else ""),
+        f"• Süre: {humanize(elapsed)}",
+    ]
+    if keep_everything:
+        lines.append("• Kapsam: TÜM kelimeler ve sayılar (filtre kapalı)")
+    else:
+        filtered = f" ({counts['filtered']} kelime)" if counts["filtered"] else ""
+        lines.append(f"• Kapsam: işlevsiz kelimeler ve saf sayılar elendi{filtered}"
+                     " · hepsi için: /analiz tümü")
+    if failures:
+        lines.append(f"• ⚠️ Okunamayan kaynak: {', '.join(failures)}")
+
+    lines += ["", f"1️⃣ EN ÇOK GEÇEN {ANALYSIS_TOP} KELİME (başlıktaki tüm kelimeler)"]
+    lines += format_ranking(analysis["words"], config)
+    lines += ["", f"2️⃣ EN ÇOK GEÇEN {ANALYSIS_TOP} İLK KELİME (başlığın ilk kelimesi)"]
+    lines += format_ranking(analysis["first_words"], config)
+    lines += [
+        "",
+        "🚫 = harici listende · 🔎 = dahili listende",
+        "İstemediğin kelimeleri harici listeye ekle: /çıkar → 2 (Harici kelimeler)",
+        "Örnek: bebek, oyuncak, kitap — birden çok kelimeyi virgülle ayırabilirsin.",
+    ]
+    return "\n".join(lines)
+
+
+def parse_analysis_args(raw: str) -> tuple[int, bool]:
+    """``/analiz [adet] [tümü]`` argümanlarını çöz: (mesaj sayısı, filtre kapalı mı).
+
+    Tanınmayan bir kelime varsa ``ValueError`` yükseltir.
+    """
+    limit = ANALYSIS_DEFAULT_LIMIT
+    keep_everything = False
+    for token in str(raw or "").split():
+        key = normalize(token.strip(",;"))
+        if not key:
+            continue
+        if key in ANALYSIS_ALL_TOKENS:
+            keep_everything = True
+            continue
+        if key.isdigit():
+            limit = max(ANALYSIS_MIN_LIMIT, min(ANALYSIS_MAX_LIMIT, int(key)))
+            continue
+        raise ValueError(token)
+    return limit, keep_everything
+
+
+# ---------------------------------------------------------------------------
 # Ana akış
 # ---------------------------------------------------------------------------
 
@@ -2037,6 +2575,26 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return True
         return event.sender_id in ADMIN_IDS
 
+    async def delete_account_copy(sent_ids: Sequence[int], source_name: str) -> None:
+        """Bildirim botu gönderdikten sonra hedefteki hesap kopyasını sil.
+
+        Böylece grupta her fırsat tek mesaj olarak kalır: botun bildirimi
+        (telefonuna uyarı düşen mesaj). Bildirim gidemezse kopya SİLİNMEZ;
+        mesajsız kalmaktansa iki kopya iyidir. Silme başarısız olursa yalnızca
+        uyarı loglanır, ileti yine başarılı sayılır.
+        """
+        if not sent_ids or DESTINATION_ID is None:
+            return
+        try:
+            await client.delete_messages(DESTINATION, list(sent_ids), revoke=True)
+        except Exception as exc:  # noqa: BLE001 - silinemezse mesaj kalsın
+            log.warning("Hesap kopyası silinemedi (kaynak=%s): %s: %s",
+                        source_name, type(exc).__name__, exc)
+            return
+        STATS["cleaned"] += 1
+        log.info("Hesap kopyası silindi (%d mesaj); grupta bot bildirimi kaldı (kaynak=%s).",
+                 len(sent_ids), source_name)
+
     async def apply_setting_change(before: dict,
                                    groups: set[str] | None = None) -> tuple[list[str], str | None]:
         """Ayar değişikliğini çalışan bot'a uygula.
@@ -2122,41 +2680,129 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 save_note,
             ]))
 
-    async def change_filter_mode(event: events.NewMessage.Event, mode: str, rest: str) -> None:
-        """Filtreyi iki kısa komutla değiştir, config'e kaydet ve runtime'a uygula."""
-        if rest:
-            await event.reply("Bu komut ek argüman almaz; yalnızca /hepsinial veya /filtrelial yaz.")
-            return
+    async def apply_filter_toggle(event: events.NewMessage.Event, action: str, target: str) -> None:
+        """Filtreyi aç/kapat, config'e yaz ve GitHub'a gönder (anında uygulanır).
 
+        Dahili ve harici filtre ayrı ayrı yönetilir; ikisi de kapatılabilir.
+        Dosyaya yazma başarısız olursa önceki durum geri yüklenir.
+        """
         async with settings_lock:
             before = store.snapshot()
-            current = match_mode_of(before)
-            if current == mode:
-                already = "Tüm mesaj modu zaten açık." if mode == "forward_all" else "Kelime filtresi zaten açık."
-                await event.reply(f"ℹ️ {already}")
+            ok, candidate, note = stage_filter_toggle(before, action, target)
+            if not ok:
+                drop_pending(pending_key(event))
+                await reply_chunked(event, note)
                 return
 
-            candidate = copy.deepcopy(before)
-            candidate["match_mode"] = mode
             store.config = candidate
             apply_runtime_config(store.config)
-            ok, save_note = await save_config(
-                store,
-                "tüm mesaj modu açıldı" if mode == "forward_all" else "kelime filtresi açıldı",
+            what = "Filtreler" if target == "both" else FILTER_TARGET_META[target]["title"] + " filtresi"
+            ok_save, save_note = await save_config(
+                store, f"{what} {'açıldı' if action == 'open' else 'kapatıldı'}",
             )
-            if not ok:
+            if not ok_save:
                 store.restore(before)
                 apply_runtime_config(store.config)
-                await reply_chunked(event, "❌ Mod değişikliği kaydedilemedi; önceki filtre geri yüklendi.\n" + save_note)
+                await reply_chunked(event, "❌ Filtre değişikliği kaydedilemedi; önceki durum geri yüklendi.\n" + save_note)
                 return
 
-            if mode == "forward_all":
-                summary = "🔓 Tüm mesaj modu açık. Dahili kelimeler yok sayılır; harici kelimeler yine engeller."
-            elif store.config.get("include_keywords"):
-                summary = "🔎 Kelime filtresi açık. Dahili kelimelerden en az biri eşleşmeli; harici kelimeler yine engeller."
-            else:
-                summary = "🔎 Kelime filtresi açık, ancak dahili liste boş olduğu için tüm mesajlar geçer."
-            await reply_chunked(event, summary + "\n" + save_note)
+            drop_pending(pending_key(event))
+            log.info("Filtre %s: %s (hedef=%s)", "açıldı" if action == "open" else "kapatıldı",
+                     what, target)
+            await reply_chunked(event, note + "\n" + save_note)
+
+    async def handle_filter_command(event: events.NewMessage.Event, action: str, rest: str) -> None:
+        """`/open` ve `/close`: argümanla hemen uygula, argüman yoksa sor."""
+        key = pending_key(event)
+        pending = peek_pending(key)
+        if pending and pending.get("stage") == "confirm":
+            await event.reply(
+                "📝 Önce bekleyen liste taslağını sonuçlandır.\n"
+                "✅ /kaydet ile kaydet veya ↩️ /iptal ile vazgeç."
+            )
+            return
+
+        raw = rest.strip()
+        if not raw:
+            set_pending(key, **new_filter_edit(action))
+            await reply_chunked(event, build_filter_toggle_prompt(action, store.config))
+            return
+
+        target = resolve_filter_target(raw)
+        if target is None:
+            # Soru açık kalsın: kullanıcı 1/2/3 yazabilir ya da /iptal edebilir.
+            set_pending(key, **new_filter_edit(action))
+            await reply_chunked(event, "\n".join([
+                f"❌ '{raw}' anlaşılmadı.",
+                "1 (dahili), 2 (harici) veya 3 (ikisi) yazabilirsin.",
+                "",
+                build_filter_toggle_prompt(action, store.config),
+            ]))
+            return
+
+        await apply_filter_toggle(event, action, target)
+
+    async def analyze_history(event: events.NewMessage.Event, rest: str) -> None:
+        """Kaynak geçmişinin başlıklarını tara; kelime istatistiklerini gönder.
+
+        Yalnızca mesajın ilk anlamlı satırı (başlık) okunur; her kaynaktan en
+        fazla ``per_source`` mesaj alınır. Tek bir kaynak okunamazsa tarama
+        durmaz, raporda "okunamayan kaynak" olarak listelenir.
+        """
+        try:
+            per_source, keep_everything = parse_analysis_args(rest)
+        except ValueError as exc:
+            await event.reply(f"❌ '{exc}' anlaşılmadı.\n\n{ANALYSIS_USAGE}")
+            return
+
+        targets = [item for item in SOURCES if item.get("joined")]
+        if not targets:
+            await event.reply("ℹ️ Taranacak kaynak yok. Önce /kaynak ile listeyi kontrol et.")
+            return
+
+        started = time.time()
+        status = None
+        try:
+            status = await event.reply(
+                f"🔎 Geçmiş taranıyor: {len(targets)} kaynak × son {per_source} mesaj...\n"
+                "Uzun sürebilir; bitince iki istatistiği göndereceğim."
+            )
+        except Exception:  # noqa: BLE001 - yanıt gitmese de tarama sürsün
+            log.debug("Analiz başlangıç yanıtı gönderilemedi.")
+
+        titles: list[str] = []
+        failures: list[str] = []
+        for index, item in enumerate(targets, start=1):
+            try:
+                async for message in client.iter_messages(item["id"], limit=per_source):
+                    title = message_title(message_text(message))
+                    if title:
+                        titles.append(title)
+            except Exception as exc:  # noqa: BLE001 - tek kaynak taramayı durdurmasın
+                failures.append(f"{item['name']} ({type(exc).__name__})")
+                log.warning("Geçmiş okunamadı (%s): %s: %s", item["name"], type(exc).__name__, exc)
+            if status is not None:
+                try:
+                    await status.edit(
+                        f"🔎 Geçmiş taranıyor... {index}/{len(targets)} kaynak · {len(titles)} başlık"
+                    )
+                except Exception:  # noqa: BLE001 - düzenleme başarısızsa tarama sürsün
+                    pass
+
+        analysis = analyze_titles(titles, keep_everything=keep_everything)
+        log.info("Kelime analizi: %d başlık, %d tekil, %d kaynak, %s.",
+                 analysis["counts"]["titles"], analysis["counts"]["unique"], len(targets),
+                 "tüm kelimeler" if keep_everything else "filtreli")
+        report = build_analysis_report(
+            analysis,
+            config=store.config,
+            sources=len(targets),
+            per_source=per_source,
+            keep_everything=keep_everything,
+            elapsed=time.time() - started,
+            failures=failures,
+        )
+        await reply_chunked(event, report)
 
     async def handle_settings_command(event: events.NewMessage.Event,
                                       command: str, rest: str) -> None:
@@ -2213,6 +2859,20 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return False
 
         text = raw.strip()
+        if item.get("stage") == "filter":
+            action = str(item.get("action") or "open")
+            target = resolve_filter_target(text)
+            if target is None:
+                set_pending(key, **item)
+                await reply_chunked(event, "\n".join([
+                    "❌ Seçimi anlayamadım. 1, 2, 3 yazabilir ya da filtre adını yazabilirsin.",
+                    "",
+                    build_filter_toggle_prompt(action, store.config),
+                ]))
+                return True
+            await apply_filter_toggle(event, action, target)
+            return True
+
         if item.get("stage") == "category":
             field = resolve_telegram_list(text)
             if field is None:
@@ -2238,7 +2898,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             action = str(item.get("action") or "")
             field = str(item.get("field") or "")
             draft = item.get("draft_config") or store.config
-            ok, candidate, value, message = stage_telegram_list_change(draft, field, action, text)
+            ok, candidate, values, message = stage_telegram_list_change(draft, field, action, text)
             if not ok:
                 set_pending(key, **item)
                 prompt = build_list_value_prompt(action, field, draft) if field in TELEGRAM_LIST_FIELDS else ""
@@ -2246,24 +2906,26 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 return True
 
             if action == "add" and field == "source_chats":
-                try:
-                    await resolve_chat(client, value)
-                except Exception as exc:  # noqa: BLE001 - geçersiz kaynak taslağa alınmasın
-                    set_pending(key, **item)
-                    await reply_chunked(event, "\n".join([
-                        f"❌ Bu kanal/grup çözülemedi ({type(exc).__name__}).",
-                        "@kullanıcıadı veya -100... ID gönder; hesabın sohbete erişebildiğini kontrol et.",
-                        "",
-                        build_list_value_prompt(action, field, draft),
-                    ]))
-                    return True
+                for value in values:
+                    try:
+                        await resolve_chat(client, value)
+                    except Exception as exc:  # noqa: BLE001 - geçersiz kaynak taslağa alınmasın
+                        set_pending(key, **item)
+                        await reply_chunked(event, "\n".join([
+                            f"❌ {value} çözülemedi ({type(exc).__name__}).",
+                            "Hiçbir kayıt taslağa alınmadı; @kullanıcıadı veya -100... ID gönder.",
+                            "Hesabın o kanala/grupa erişebildiğini kontrol et.",
+                            "",
+                            build_list_value_prompt(action, field, draft),
+                        ]))
+                        return True
 
             item["stage"] = "confirm"
             item["draft_config"] = candidate
             item["field"] = field
-            item["value"] = value
+            item["value"] = values
             set_pending(key, **item)
-            await reply_chunked(event, build_list_change_confirmation(action, field, value, candidate))
+            await reply_chunked(event, build_list_change_confirmation(action, field, values, candidate, message))
             return True
 
         if item.get("stage") == "confirm":
@@ -2293,10 +2955,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
     def offer_link(event: events.NewMessage.Event) -> str | None:
         return build_message_link(event, source_of(event)) if MESSAGE_LINK_LINE else None
 
-    async def send_forward(event: events.NewMessage.Event) -> None:
-        await client.forward_messages(DESTINATION, event.message, from_peer=event.chat_id)
+    async def send_forward(event: events.NewMessage.Event) -> Any:
+        return await client.forward_messages(DESTINATION, event.message, from_peer=event.chat_id)
 
-    async def send_copy(event: events.NewMessage.Event) -> None:
+    async def send_copy(event: events.NewMessage.Event) -> Any:
         """Mesajı biçimiyle birlikte yeniden gönder.
 
         Gizli hyperlink'ler entity olarak korunur. Kaynaktaki ``reply_markup``
@@ -2311,24 +2973,23 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if media and not is_webpage:
             composed = compose_message(event, limit=CAPTION_LIMIT - 24,
                                        link_kinds=LINK_KINDS, message_link=link)
-            await client.send_file(
+            return await client.send_file(
                 DESTINATION,
                 media,
                 caption=composed["text"],
                 formatting_entities=entities_for_text(event, composed["body"]),
                 force_document=False,
             )
-            return
         composed = compose_message(event, limit=MESSAGE_LIMIT - 100,
                                    link_kinds=LINK_KINDS, message_link=link)
-        await client.send_message(
+        return await client.send_message(
             DESTINATION,
             composed["text"],
             formatting_entities=entities_for_text(event, composed["body"]),
             link_preview=True,
         )
 
-    async def send_media(event: events.NewMessage.Event) -> None:
+    async def send_media(event: events.NewMessage.Event) -> Any:
         """Medyayı indirip hedefe SIFIRDAN yükle (forward kısıtını atlar).
 
         Önemli: indirilen veriyi düz ``bytes`` olarak ``send_file``a vermek
@@ -2347,7 +3008,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("medya indirilemedi")
         composed = compose_message(event, limit=CAPTION_LIMIT - 24,
                                    link_kinds=LINK_KINDS, message_link=offer_link(event))
-        await client.send_file(
+        return await client.send_file(
             DESTINATION,
             media_buffer(data, media_upload_name(message)),
             caption=composed["text"] or None,
@@ -2356,7 +3017,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             force_document=False,
         )
 
-    async def send_text_only(event: events.NewMessage.Event) -> None:
+    async def send_text_only(event: events.NewMessage.Event) -> Any:
         # Gövdeye ek olarak gizli linkler (varsa) ve "Mesajı Gör" satırı eklenir;
         # ürün linki bir şekilde kaçsa bile tek dokunuşla fırsata ulaşılır.
         composed = compose_message(event, limit=MESSAGE_LIMIT - 400,
@@ -2365,14 +3026,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("mesajda metin yok")
         has_media = bool(getattr(event.message, "media", None))
         note = "\n\n⚠️ Kaynak medyayı korumalı işaretlediği için medya iletilemedi." if has_media else ""
-        await client.send_message(
+        return await client.send_message(
             DESTINATION,
             composed["text"] + note,
             formatting_entities=entities_for_text(event, composed["body"]),
             link_preview=True,
         )
 
-    async def send_link_card(event: events.NewMessage.Event) -> None:
+    async def send_link_card(event: events.NewMessage.Event) -> Any:
         """Son çare: kaynak adı + t.me bağlantısı. Ekranda görülebilir tek şey budur."""
         link = build_message_link(event, source_of(event))
         if not link:
@@ -2385,7 +3046,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if composed["appendix"]:
                 body += f"\n{composed['appendix']}"
             body += "\n(medya korumalı olduğu için iletilemedi, bağlantıdan açabilirsin)"
-        await client.send_message(DESTINATION, body[:MESSAGE_LIMIT], link_preview=True)
+        return await client.send_message(DESTINATION, body[:MESSAGE_LIMIT], link_preview=True)
 
     SENDERS = {
         "forward": send_forward,
@@ -2395,16 +3056,19 @@ async def main(argv: Sequence[str] | None = None) -> int:
         "link": send_link_card,
     }
 
-    async def notify_offer(event: events.NewMessage.Event, source_name: str) -> None:
-        """Bildirim botuyla fırsatın kopyasını at.
+    async def notify_offer(event: events.NewMessage.Event, source_name: str) -> bool:
+        """Bildirim botuyla fırsatın kopyasını at; gönderildiyse ``True`` döner.
 
         Tasarım: mesajın kendisi (biçimi ve gizli linkleriyle) → altına
         "🔗 <gizli linkler>" (varsa) → en alta "Fırsatı Gönderen: <kaynak>".
         Kaynak adı, orijinal mesajın t.me bağlantısını gizli hyperlink olarak
         taşır; ürün linki kaçırılsa bile tek dokunuşla mesaja ulaşılır.
+
+        Dönen değer, tek mesaj modunda hesap kopyasının silinip
+        silinmeyeceğini belirler (bkz. delete_account_copy).
         """
         if not NOTIFY_BOT_TOKEN or DESTINATION_ID is None:
-            return
+            return False
         message_link = offer_link(event)
         keyboard = build_inline_keyboard(event)
         footer_name = source_name if SOURCE_FOOTER else None
@@ -2438,7 +3102,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if ok:
                     log.info("Bildirim gönderildi (medya: %s, kaynak: %s).", descriptor["kind"], source_name)
-                    return
+                    return True
                 log.warning("Bildirim medyası gönderilemedi (%s) → metne düşülüyor.", detail)
 
         composed = compose_message(
@@ -2453,15 +3117,16 @@ async def main(argv: Sequence[str] | None = None) -> int:
         )
         if ok:
             log.info("Bildirim gönderildi (metin, kaynak: %s).", source_name)
-        else:
-            log.warning("Bildirim gönderilemedi: %s", detail)
+            return True
+        log.warning("Bildirim gönderilemedi: %s", detail)
+        return False
 
     async def deliver(event: events.NewMessage.Event, source_name: str) -> tuple[bool, str]:
         """Sırayla iletim yollarını dene; ilk başarılı olanı kullan."""
         last_error = "denenmedi"
         for mode in DELIVERY_CHAIN:
             try:
-                await SENDERS[mode](event)
+                result = await SENDERS[mode](event)
             except errors.FloodWaitError as exc:
                 STATS["failed"] += 1
                 log.warning("FloodWait (%s sn) – %s bekleniyor, mesaj atlandı.", exc.seconds, mode)
@@ -2475,7 +3140,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
             STATS["modes"][mode] = STATS["modes"].get(mode, 0) + 1
             if mode not in ("forward", "copy"):
                 log.info("Mesaj '%s' yedeğiyle iletildi (kaynak: %s).", mode, source_name)
-            await notify_offer(event, source_name)
+            # Tek mesaj modu: bildirim botu gönderdiyse hesabın attığı kopyayı sil.
+            if await notify_offer(event, source_name) and SINGLE_MESSAGE:
+                await delete_account_copy(sent_message_ids(result), source_name)
             return True, mode
 
         STATS["failed"] += 1
@@ -2572,10 +3239,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await event.reply(("🔄 " if ok else "⚠️ ") + message)
         elif command in {"/help", "/yardim", "/yardım"}:
             await event.reply(HELP_TEXT)
-        elif command in CMD_FILTER_ALL:
-            await change_filter_mode(event, "forward_all", rest)
-        elif command in CMD_FILTER_KEYWORDS:
-            await change_filter_mode(event, "any", rest)
+        elif command in CMD_ANALYZE:
+            await analyze_history(event, rest)
+        elif command in CMD_FILTER_OPEN:
+            await handle_filter_command(event, "open", rest)
+        elif command in CMD_FILTER_CLOSE:
+            await handle_filter_command(event, "close", rest)
         elif command in SETTINGS_COMMANDS:
             await handle_settings_command(event, command, rest)
         else:
@@ -2589,7 +3258,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return  # hedefe kendi gönderdiğimiz mesajı tekrar iletmeyelim
         STATS["seen"] += 1
         text = event.raw_text or ""
-        if not matches(text, FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE):
+        if not matches(text, FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE,
+                       include_enabled=FILTER_INCLUDE_ENABLED,
+                       exclude_enabled=FILTER_EXCLUDE_ENABLED):
             log.debug("Eşleşmedi (chat=%s id=%s): %.80s", event.chat_id, event.id, text)
             return
 

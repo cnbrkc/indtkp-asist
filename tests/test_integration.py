@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -71,6 +72,17 @@ class FakeFile:
         self.size = size
 
 
+class FakeSent:
+    """Telethon'un gönderilen mesaj nesnesi yerine geçer: yalnızca ID taşır."""
+
+    def __init__(self, message_id, text=""):
+        self.id = message_id
+        self.message = text
+
+    def __str__(self):
+        return str(self.message)
+
+
 class FakeMessage:
     """Gerçek Telethon Message'ın yerine geçer; str OLMAMASI önemli,
     aksi halde send_message(copy) senaryosu yanlışlıkla başarılı sayılır."""
@@ -118,7 +130,10 @@ class FakeClient:
         self.sent_kwargs = []
         self.file_kwargs = []
         self.unresolved = []
+        self.deleted = []         # (entity, [id...], revoke) silme çağrıları
+        self.history = []         # (chat_id, metin) — iter_messages için sahte geçmiş
         self.fail_modes = set()   # test senaryosu için kapatılacak yollar
+        self._next_id = 100
 
     @property
     def delivered(self) -> list:
@@ -155,16 +170,42 @@ class FakeClient:
                               participants_count=1, date=0, version=0)
         raise ValueError(f"Cannot find any entity corresponding to {value!r}")
 
+    def _new_id(self) -> int:
+        self._next_id += 1
+        return self._next_id
+
     async def send_message(self, entity, message, **kwargs):
         if "copy" in self.fail_modes and not isinstance(message, str):
             raise self._protected_error("copy")
         self.sent.append((entity, message))
         self.sent_kwargs.append(kwargs)
+        return FakeSent(self._new_id(), message if isinstance(message, str) else "")
 
     async def forward_messages(self, entity, message, from_peer=None):
         if "forward" in self.fail_modes:
             raise self._protected_error("forward")
         self.forwarded.append((entity, message, from_peer))
+        return [FakeSent(self._new_id(), str(message))]
+
+    async def delete_messages(self, entity, message_ids, revoke=True):
+        if "delete" in self.fail_modes:
+            raise ValueError("mesaj silinemedi")
+        self.deleted.append((entity, list(message_ids), revoke))
+        return []
+
+    def iter_messages(self, entity, limit=None, **kwargs):
+        """Telethon gibi async generator döndürür (await edilmez)."""
+        async def _iterate():
+            sent = 0
+            for chat_id, text in self.history:
+                if chat_id != entity:
+                    continue
+                if limit is not None and sent >= limit:
+                    break
+                sent += 1
+                yield SimpleNamespace(id=sent, message=text, media=None, entities=[])
+
+        return _iterate()
 
     async def download_media(self, message, file=None):
         if "download" in self.fail_modes:
@@ -182,6 +223,7 @@ class FakeClient:
         self.files.append((entity, payload, caption))
         self.file_names.append(getattr(file, "name", None))
         self.file_kwargs.append(kwargs)
+        return FakeSent(self._new_id(), caption or "")
 
     def _protected_error(self, what):
         """Korumalı kanalda Telegram'in verdiği gerçek hata."""
@@ -210,7 +252,7 @@ def reset_state():
     bot.DESTINATION_ID = None
     bot.PENDING.clear()
     bot.STATS.update({"seen": 0, "matched": 0, "forwarded": 0, "failed": 0,
-                      "commands": 0, "modes": {}, "last_match": None,
+                      "commands": 0, "modes": {}, "cleaned": 0, "last_match": None,
                       "last_match_source": None})
 
 
@@ -425,7 +467,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
     def test_settings_menu_is_small_and_lists_only_three_editable_groups(self):
         reply = self._reply("/ayar")
         for label in ("Dahili kelimeler", "Harici kelimeler", "Grup isimleri",
-                      "/ekle", "/çıkar", "/kaydet", "/iptal", "/hepsinial", "/filtrelial"):
+                      "/ekle", "/çıkar", "/kaydet", "/iptal", "/open", "/close"):
             self.assertIn(label, reply)
         self.assertNotIn("/mod", reply)
 
@@ -460,6 +502,44 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.FILTER_INCLUDE, ["çay", "kahve"])
         self.assertEqual(len(self.command_log), 1)
         self.assertFalse(bot.PENDING)
+
+    def test_multiple_keywords_can_be_added_and_removed_in_one_message(self):
+        """Asıl istek: a, b, c, d... şeklinde çoklu ekleme/çıkarma."""
+        self._reply("/ekle")
+        self._say("1")
+        draft = self._say("kahve, şeker, süt")
+        self.assertIn("Eklenecek 3 kayıt:", draft)
+        for word in ("kahve", "şeker", "süt"):
+            self.assertIn(word, draft)
+        self._reply("/kaydet")
+        self.assertEqual(self._config()["include_keywords"], ["çay", "kahve", "şeker", "süt"])
+        self.assertEqual(bot.FILTER_INCLUDE, ["çay", "kahve", "şeker", "süt"])
+
+        self._reply("/çıkar")
+        self._say("1")
+        removed = self._say("2, 4")
+        self.assertIn("Çıkarılacak 2 kayıt:", removed)
+        self._reply("/kaydet")
+        self.assertEqual(self._config()["include_keywords"], ["çay", "şeker"])
+        self.assertEqual(bot.FILTER_INCLUDE, ["çay", "şeker"])
+
+    def test_partially_duplicate_batch_warns_and_adds_the_rest(self):
+        self._reply("/ekle")
+        self._say("1")
+        draft = self._say("çay, yeni kelime")
+        self.assertIn("⚠️", draft)
+        self.assertIn("zaten listede", draft)
+        self._reply("/kaydet")
+        self.assertEqual(self._config()["include_keywords"], ["çay", "yeni kelime"])
+
+    def test_multiple_sources_are_resolved_before_saving(self):
+        self._reply("/ekle")
+        self._say("3")
+        draft = self._say("@yenikanal, @ikincikanal")
+        self.assertIn("Eklenecek 2 kayıt:", draft)
+        reply = self._reply("/kaydet")
+        self.assertIn("Değişiklik kaydedildi", reply)
+        self.assertIn("@ikincikanal", self._config()["source_chats"])
 
     def test_file_write_failure_rolls_back_runtime_but_keeps_the_draft(self):
         original = self._config()
@@ -568,24 +648,31 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "value")
         self.assertEqual(self._config()["include_keywords"], ["çay"])
 
-    def test_hepsinial_bypasses_include_keeps_excludes_and_saves(self):
-        reply = self._reply("/hepsinial")
-        self.assertIn("Tüm mesaj modu açık", reply)
-        self.assertEqual(self._config()["match_mode"], "forward_all")
-        self.assertEqual(bot.FILTER_MODE, "forward_all")
-        self.assertEqual(len(self.command_log), 1)
+    def test_close_include_asks_then_lets_everything_through(self):
+        """Dahili filtre kapatılınca kelimeler yok sayılır; harici engel sürer."""
+        prompt = self._reply("/close")
+        self.assertIn("Hangi filtreyi kapatalım?", prompt)
+        self.assertIn("1. 🔎  Dahili kelimeler", prompt)
+        reply = self._say("1")
+        self.assertIn("Dahili kelimeler filtresi KAPATILDI", reply)
+        self.assertIn("Harici kelimeler: AÇIK", reply)
+        self.assertEqual(self._config()["include_enabled"], False)
+        self.assertNotIn("exclude_enabled", self._config())
+        self.assertFalse(bot.FILTER_INCLUDE_ENABLED)
+        self.assertTrue(bot.FILTER_EXCLUDE_ENABLED)
+        self.assertEqual(len(self.command_log), 1, "anında kaydedilmeli")
 
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 301, "iPhone kampanyası")))
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 302, "iPhone çekiliş")))
-        self.assertEqual(bot.STATS["matched"], 1)
+        self.assertEqual(bot.STATS["matched"], 1, "harici kelime yine engellemeli")
         self.assertEqual(len(self.client.delivered), 1)
 
-    def test_filtrelial_restores_keyword_filter_and_saves(self):
-        self._reply("/hepsinial")
-        reply = self._reply("/filtrelial")
-        self.assertIn("Kelime filtresi açık", reply)
-        self.assertEqual(self._config()["match_mode"], "any")
-        self.assertEqual(bot.FILTER_MODE, "any")
+    def test_open_include_restores_keyword_filter(self):
+        self._reply("/close dahili")
+        reply = self._reply("/open dahili")
+        self.assertIn("Dahili kelimeler filtresi AÇILDI", reply)
+        self.assertEqual(self._config()["include_enabled"], True)
+        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
         self.assertEqual(len(self.command_log), 2)
 
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 303, "iPhone kampanyası")))
@@ -593,12 +680,94 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.STATS["matched"], 1)
         self.assertEqual(len(self.client.delivered), 1)
 
-    def test_filter_mode_write_failure_restores_previous_mode(self):
+    def test_close_exclude_stops_blocking_while_include_keeps_filtering(self):
+        """Asıl istek: iki filtre ayrı ayrı kontrol edilebilsin."""
+        reply = self._reply("/close harici")
+        self.assertIn("Harici kelimeler filtresi KAPATILDI", reply)
+        self.assertIn("engelleme yapılmaz", reply)
+        self.assertFalse(bot.FILTER_EXCLUDE_ENABLED)
+        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+        self.assertEqual(self._config()["exclude_enabled"], False)
+
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 305, "Sıcak çay çekiliş")))
+        self.assertEqual(bot.STATS["matched"], 1,
+                         "harici engel kapalıyken dahili kelime geçen mesaj iletilmeli")
+        self.assertEqual(len(self.client.delivered), 1)
+
+    def test_open_and_close_both_targets_at_once(self):
+        reply = self._reply("/close ikisi")
+        self.assertIn("Dahili ve harici filtreler KAPATILDI", reply)
+        self.assertIn("HER mesaj iletilir", reply)
+        self.assertFalse(bot.FILTER_INCLUDE_ENABLED)
+        self.assertFalse(bot.FILTER_EXCLUDE_ENABLED)
+
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 306, "iPhone çekiliş")))
+        self.assertEqual(bot.STATS["matched"], 1, "iki filtre kapalıyken her mesaj geçmeli")
+
+        reply = self._reply("/open ikisi")
+        self.assertIn("AÇILDI", reply)
+        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+        self.assertTrue(bot.FILTER_EXCLUDE_ENABLED)
+
+    def test_open_with_unknown_argument_shows_the_menu(self):
+        original = self._config()
+        reply = self._reply("/open hedef")
+        self.assertIn("anlaşılmadı", reply)
+        self.assertIn("Hangi filtreyi açalım?", reply)
+        self.assertEqual(self._config(), original)
+        self.assertEqual(self.command_log, [])
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "filter",
+                         "soru açık kalmalı: 1/2/3 ya da /iptal")
+        self._reply("/iptal")
+        self.assertFalse(bot.PENDING)
+
+    def test_invalid_answer_keeps_the_filter_question_open(self):
+        self._reply("/open")
+        reply = self._say("kahve")
+        self.assertIn("Seçimi anlayamadım", reply)
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "filter")
+        self.assertEqual(self.command_log, [])
+
+    def test_filter_change_can_be_cancelled(self):
+        original = self._config()
+        self._reply("/open")
+        reply = self._reply("/iptal")
+        self.assertIn("Taslak silindi", reply)
+        self.assertEqual(self._config(), original)
+        self.assertFalse(bot.PENDING)
+        self.assertEqual(self.command_log, [])
+
+    def test_no_change_reports_without_writing(self):
+        original = self._config()
+        reply = self._reply("/open dahili")
+        self.assertIn("zaten açık", reply)
+        self.assertEqual(self._config(), original)
+        self.assertEqual(self.command_log, [])
+
+    def test_filter_write_failure_restores_previous_state(self):
         with mock.patch.object(bot, "atomic_write_json", side_effect=OSError("disk dolu")):
-            reply = self._reply("/hepsinial")
-        self.assertIn("önceki filtre geri yüklendi", reply)
-        self.assertEqual(self._config()["match_mode"], "any")
-        self.assertEqual(bot.FILTER_MODE, "any")
+            reply = self._reply("/close dahili")
+        self.assertIn("önceki durum geri yüklendi", reply)
+        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+        self.assertNotIn("include_enabled", self._config())
+        self.assertEqual(self.command_log, [])
+
+    def test_open_is_blocked_while_a_list_draft_is_pending(self):
+        self._reply("/ekle")
+        self._say("1")
+        self._say("kahve")
+        reply = self._reply("/close dahili")
+        self.assertIn("Önce bekleyen liste taslağını sonuçlandır", reply)
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "confirm")
+        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+
+    def test_removed_filter_commands_are_unknown_now(self):
+        original = self._config()
+        for command in ("/hepsinial", "/filtrelial"):
+            with self.subTest(command=command):
+                reply = self._reply(command)
+                self.assertIn("Bilinmeyen komut", reply)
+                self.assertEqual(self._config(), original)
         self.assertEqual(self.command_log, [])
 
     def test_removed_general_settings_commands_do_not_change_config(self):
@@ -1259,6 +1428,211 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         message = self._texts(self.client)
         self.assertIn("https://t.me/firsatz/1", message)
         self.assertLessEqual(len(message), bot.MESSAGE_LIMIT)
+
+
+class SingleMessageTest(unittest.TestCase):
+    """Tek mesaj modu: bildirim botu gönderdiyse hesap kopyası gruptan silinir."""
+
+    def setUp(self):
+        reset_state()
+        self.calls: list[dict] = []
+        self.media_calls: list[dict] = []
+        self._patchers = []
+
+        async def fake_ping(token, chat_id, text, **kwargs):
+            self.calls.append({"token": token, "chat_id": chat_id, "text": text, **kwargs})
+            return True, "bildirim gönderildi"
+
+        async def fake_media(token, chat_id, **kwargs):
+            self.media_calls.append({"token": token, "chat_id": chat_id, **kwargs})
+            return True, "bildirim medyası gönderildi"
+
+        for target, replacement in (("send_bot_ping", fake_ping), ("send_bot_media", fake_media)):
+            patcher = mock.patch.object(bot, target, replacement)
+            patcher.start()
+            self._patchers.append(patcher)
+
+    def tearDown(self):
+        for patcher in self._patchers:
+            patcher.stop()
+        reset_state()
+
+    def _run(self, **overrides) -> FakeClient:
+        config = {
+            "source_chats": ["@firsatz"],
+            "destination": GROUP_ID,
+            "include_keywords": ["çay"],
+            "exclude_keywords": [],
+            "match_mode": "any",
+            "copy_mode": "copy",
+            "control_chat": GROUP_ID,
+            "admin_user_id": ADMIN_ID,
+            "auto_restart": False,
+            "notify_on_start": False,
+            "notify_bot_token": "123:ABC",
+            "notify_media": False,
+        }
+        config.update(overrides)
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(config, handle)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        created = []
+
+        def factory(*args, **kwargs):
+            client = FakeClient(*args, **kwargs)
+            created.append(client)
+            return client
+
+        with mock.patch.dict(os.environ, BASE_ENV, clear=False), \
+             mock.patch.object(bot, "TelegramClient", factory), \
+             mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
+            asyncio.run(bot.main(["--config", handle.name]))
+        return created[0]
+
+    def _send(self, client: FakeClient, text: str = "Sıcak ÇAY 5 TL") -> None:
+        asyncio.run(client.handlers[1][1](
+            FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text, message_id=7)))
+
+    def test_account_copy_is_deleted_after_successful_notification(self):
+        client = self._run()
+        self._send(client)
+        self.assertEqual(len(self.calls), 1, "bildirim gitmeli")
+        self.assertEqual(len(client.deleted), 1, "hesap kopyası silinmeli")
+        entity, ids, revoke = client.deleted[0]
+        self.assertEqual(entity, GROUP_ID)
+        self.assertEqual(len(ids), 1)
+        self.assertTrue(revoke)
+        self.assertEqual(bot.STATS["cleaned"], 1)
+
+    def test_deleted_message_is_the_account_copy_not_the_notification(self):
+        """Silinen ID, hesabın attığı mesajın ID'si olmalı (bildirimin değil)."""
+        client = self._run()
+        self._send(client)
+        self.assertEqual(len(client.files), 1, "medya kopyası gruba gitmeli")
+        caption = client.files[0][2]
+        self.assertIn("Sıcak ÇAY 5 TL", caption)
+        self.assertIn("https://t.me/firsatz/7", caption)
+        self.assertEqual(client.deleted[0][1], [101], "hesap kopyasının ID'si")
+        self.assertEqual(len(self.calls) + len(self.media_calls), 1,
+                         "bildirim ayrıca gitmiş olmalı")
+
+    def test_copy_is_kept_when_notification_fails(self):
+        client = self._run(notify_bot_token=None)
+        self._send(client)
+        self.assertEqual(client.deleted, [], "bildirim yoksa mesaj silinmemeli")
+        self.assertEqual(bot.STATS["cleaned"], 0)
+        self.assertEqual(len(client.delivered), 1, "hesap kopyası grupta kalmalı")
+
+    def test_flag_can_disable_single_message_mode(self):
+        client = self._run(single_message=False)
+        self._send(client)
+        self.assertEqual(len(self.calls), 1, "bildirim yine gitmeli")
+        self.assertEqual(client.deleted, [], "bayrak kapalıyken silinmemeli")
+
+    def test_deletion_failure_does_not_break_delivery(self):
+        client = self._run()
+        client.fail_modes.add("delete")
+        self._send(client)
+        self.assertEqual(bot.STATS["matched"], 1)
+        self.assertEqual(bot.STATS["forwarded"], 1)
+        self.assertEqual(bot.STATS["cleaned"], 0)
+        self.assertEqual(client.deleted, [])
+
+    def test_forward_mode_copy_is_deleted_too(self):
+        client = self._run(copy_mode="forward", delivery_modes=["forward"])
+        self._send(client)
+        self.assertEqual(len(client.forwarded), 1)
+        self.assertEqual(len(client.deleted), 1)
+
+
+class AnalyzeCommandTest(unittest.TestCase):
+    """`/analiz`: geçmiş başlıklarından kelime ve ilk kelime istatistikleri."""
+
+    def setUp(self):
+        reset_state()
+        config = {
+            "source_chats": ["@firsatz"],
+            "destination": GROUP_ID,
+            "include_keywords": ["çay"],
+            "exclude_keywords": ["bebek"],
+            "match_mode": "any",
+            "copy_mode": "copy",
+            "control_chat": GROUP_ID,
+            "admin_user_id": ADMIN_ID,
+            "auto_restart": False,
+            "notify_on_start": False,
+        }
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(config, handle)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        created = []
+
+        def factory(*args, **kwargs):
+            client = FakeClient(*args, **kwargs)
+            created.append(client)
+            return client
+
+        with mock.patch.dict(os.environ, BASE_ENV, clear=False), \
+             mock.patch.object(bot, "TelegramClient", factory), \
+             mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
+            asyncio.run(bot.main(["--config", handle.name]))
+        self.client = created[0]
+        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.client.history = [
+            (self.source_id, "Bebek bezi indirim\n2 al 1 öde"),
+            (self.source_id, "Bebek bezi fırsatı"),
+            (self.source_id, "Oyuncak araba kampanya"),
+            (self.source_id, "Bebek bezi indirim"),
+        ]
+
+    def tearDown(self):
+        reset_state()
+
+    def _command(self, text: str) -> str:
+        event = FakeEvent(GROUP_ID, ADMIN_ID, text)
+        asyncio.run(self.client.handlers[0][1](event))
+        return "\n".join(event.replies)
+
+    def test_two_statistics_are_reported(self):
+        reply = self._command("/analiz")
+        self.assertIn("BAŞLIK KELİME ANALİZİ", reply)
+        self.assertIn("1️⃣ EN ÇOK GEÇEN 25 KELİME", reply)
+        self.assertIn("2️⃣ EN ÇOK GEÇEN 25 İLK KELİME", reply)
+        self.assertIn("Taranan başlık: 4", reply)
+        self.assertIn("tekrar birleştirildi: 1", reply)
+        self.assertIn("bebek", reply)
+        self.assertIn("oyuncak", reply)
+        self.assertIn("🚫", reply, "harici listedeki kelime işaretlenmeli")
+
+    def test_limit_argument_is_honoured(self):
+        reply = self._command("/analiz 20")
+        self.assertIn("kaynak başına son 20 mesaj", reply)
+        self.assertIn("Taranan başlık: 4", reply)
+
+    def test_tiny_limit_is_clamped_to_the_minimum(self):
+        reply = self._command("/analiz 2")
+        self.assertIn(f"son {bot.ANALYSIS_MIN_LIMIT} mesaj", reply)
+
+    def test_all_tokens_argument_disables_filtering(self):
+        reply = self._command("/analiz tümü")
+        self.assertIn("filtre kapalı", reply)
+        self.assertIn("indirim", reply)
+
+    def test_default_mode_hides_filler_words(self):
+        reply = self._command("/analiz")
+        self.assertNotIn("indirim", reply.split("1️⃣")[1], "ilan kalıbı istatistiğe girmemeli")
+
+    def test_unknown_argument_shows_usage(self):
+        reply = self._command("/analiz dün")
+        self.assertIn("anlaşılmadı", reply)
+        self.assertIn("Kullanım", reply)
+        self.assertIn("/analiz tümü", reply)
+
+    def test_help_and_menu_mention_analysis(self):
+        self.assertIn("/analiz", bot.HELP_TEXT)
+        self.assertIn("/analiz", bot.build_main_menu_text())
 
 
 if __name__ == "__main__":

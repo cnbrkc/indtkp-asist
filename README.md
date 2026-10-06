@@ -157,8 +157,10 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `source_chats` | liste | Dinlenen kanal/grup listesi: `@kullaniciadi` veya `-100...` ID. **Hesabın üye olmadığı kanaldan mesaj gelmez.** |
 | `destination` | sayı / `"me"` | Filtrelenen mesajların gideceği sohbet. `me` = Kayıtlı Mesajlar (**bildirim gelmez**); grup ID'si yazarsan oraya düşer. |
 | `include_keywords` | liste | Aranacak kelimeler. Büyük/küçük harf farkı yoktur; `İ`/`I` doğru indirgenir. |
-| `exclude_keywords` | liste | Bunlardan biri geçerse mesaj atlanır. **Her modda önce bu kural çalışır.** |
-| `match_mode` | `any` / `all` / `forward_all` | `any`: kelimelerden biri yeterli. `all`: hepsi aynı mesajda olmalı. `forward_all`: dahili kelimeler yok sayılır; harici kelimeler yine engeller. `/hepsinial` ve `/filtrelial` arasında geçiş yapar. |
+| `exclude_keywords` | liste | Bunlardan biri geçerse mesaj atlanır (harici filtre **açıkken**). |
+| `include_enabled` | `true` / `false` | 🔎 **Dahili kelime filtresi açık mı?** `false` ise `include_keywords` yok sayılır. `/open` ve `/close` ile değiştirilir. Varsayılan `true`. |
+| `exclude_enabled` | `true` / `false` | 🚫 **Harici kelime filtresi açık mı?** `false` ise hiçbir mesaj harici kelimelerle engellenmez. `/open` ve `/close` ile değiştirilir. Varsayılan `true`. |
+| `match_mode` | `any` / `all` | Dahili kelimeler nasıl eşleşsin: `any` = biri yeterli, `all` = hepsi aynı mesajda. (Eski `forward_all` değeri hâlâ okunur: dahili filtre kapalı demektir; `/open dahili` yazınca `any`'ye döner.) |
 | `copy_mode` | `forward` / `copy` | Eski alan. `delivery_modes` yoksa ilk denenecek yolu belirler. |
 | `delivery_modes` | liste | Korumalı kanallarda sırayla denenecek iletim yolları: `forward → copy → media → text → link` ([7. bölüm](#7-iletim-zinciri-korumalı-kanallar)). |
 | `max_media_mb` | sayı | `media` yolunda indirilecek en büyük medya (varsayılan 25, `0` = sınırsız). |
@@ -166,6 +168,7 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `message_link` | `true` / `false` | Her iletinin sonuna `🔗 Mesajı Gör: <t.me linki>` ekler (nihai güvence; kapatman önerilmez). |
 | `source_footer` | `true` / `false` | Bildirime `Fırsatı Gönderen: <kaynak>` satırı ekler; kaynak adı orijinal mesajın linkini gizler. |
 | `notify_media` | `true` / `false` | Bildirim botu fotoğraf/videoyu da göndersin. |
+| `single_message` | `true` / `false` | **Tek mesaj modu.** Bildirim botu mesajı gruba attıysa, hesabın attığı kopya gruptan silinir; böylece her fırsat tek mesaj olarak kalır. Bildirim gidemezse kopya **silinmez**. Varsayılan `true`. |
 | `control_chat` | sayı / `"me"` | Komutların dinleneceği sohbet. `me` = Kayıtlı Mesajlar. |
 | `admin_user_id` | sayı / liste | `control_chat` bir grupsa **zorunlu**: komutları yalnızca bu ID'ler çalıştırabilir. |
 | `auto_restart` | `true` / `false` | `GH_PAT` varsa yenileme zincirini açar (bir sonraki açılışta geçerli). |
@@ -189,10 +192,11 @@ yazarsa bot nedenini, o kişinin kullanıcı ID'sini ve nasıl yetki alacağın�
 
 ```text
 Kaynak mesajlarını hedef gruba iletir.
-/hepsinial — Dahili kelimelerden bağımsız tüm mesajlar (harici kelimeler yine engeller).
-/filtrelial — Dahili kelime filtresini açar.
+/open — Filtre aç (sorar: dahili, harici veya ikisi).
+/close — Filtre kapat (sorar: dahili, harici veya ikisi).
 /ayar, /ekle, /çıkar — kelime ve kaynak listelerini yönetir.
 /kaydet, /iptal — taslağı kaydet / iptal et.
+/analiz — Geçmiş başlıklarını tarar; en çok geçen kelimeleri istatistik olarak verir.
 /status, /source, /test, /id, /restart, /help — durum ve araçlar.
 ```
 
@@ -205,24 +209,52 @@ Kaynak mesajlarını hedef gruba iletir.
 | `/source` (`/sources`, `/kaynak`, `/kaynaklar`) | İzlenen ve çözülemeyen kaynakları listeler |
 | `/id` | Sohbet ve kullanıcı ID'lerini gösterir |
 | `/restart` (`/yenile`, `/yeniden`) | Yeni Actions çalışması başlatır |
+| `/analiz` (`/kelimeanalizi`) | Geçmiş mesajların **başlığını** tarar; en çok geçen 25 kelimeyi ve en çok geçen 25 ilk kelimeyi verir |
 | `/ayar` (`/ayarlar`) | Düzenlenebilir listeleri ve ayar komutlarını gösterir |
-| `/hepsinial` | Dahili kelimeleri yok sayar; harici kelimeler yine engellenir. Config/GitHub'a kaydeder. |
-| `/filtrelial` | Dahili kelime filtresini açar (en az bir kelime eşleşir); config/GitHub'a kaydeder. |
-| `/ekle` | Dahili/harici kelime veya kaynak listesine bir kayıt ekler |
-| `/çıkar` (`/cikar`) | Seçilen listeden bir kaydı çıkarır |
+| `/open` | Filtre **açar**. Argümansız yazarsan "dahili mi, harici mi, ikisi mi?" diye sorar. Anında kaydeder. |
+| `/close` | Filtre **kapatır**. Argümansız yazarsan "hangisini kapatalım?" diye sorar. Anında kaydeder. |
+| `/ekle` | Dahili/harici kelime veya kaynak listesine kayıt ekler; tek mesajda virgülle **birden çok** kayıt gönderilebilir |
+| `/çıkar` (`/cikar`) | Seçilen listeden kayıt çıkarır; numaraları veya değerleri virgülle ayırıp **birden çok** kaydı birlikte çıkarabilirsin |
 | `/kaydet` (veya onayda `kaydet`) | Taslak değişikliği config'e yazar ve GitHub'a gönderir |
 | `/iptal` (veya onayda `iptal`) | Bekleyen taslağı siler |
 | `/help` (`/yardim`, `/yardım`) | Bu komut özetini gösterir |
 
-`/hepsinial` ve `/filtrelial` anında uygulanır ve kaydedilir; liste düzenlemeleri ise
-`/kaydet` seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir.
+`/open` ve `/close` anında uygulanır ve kaydedilir; liste düzenlemeleri ise `/kaydet`
+seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir. Türkçe `I`/`İ` yazımları
+(`/ANALİZ`, `/Iptal` gibi) otomatik olarak eşleşir.
+
+### Tüm komutlar (açıklamalı)
+
+| Komut | Açıklama |
+|---|---|
+| `/status`, `/durum` | Çalışma süresi, kaynak sayısı, sayaçlar, son eşleşme, hedef ve iki filtrenin açık/kapalı durumu |
+| `/test`, `/deneme` | Hedefe deneme iletisi gönderir; bildirim botu da denenir |
+| `/source`, `/sources`, `/kaynak`, `/kaynaklar` | İzlenen kaynakları ve çözülemeyenleri listeler |
+| `/id` | Bu sohbetin ve senin kullanıcı ID'ni gösterir (config için hazır satırlar) |
+| `/restart`, `/yenile`, `/yeniden` | Yeni GitHub Actions çalışması başlatır (`GH_PAT` gerekir) |
+| `/analiz`, `/kelimeanalizi` | Geçmiş mesajların başlığını tarar; en çok geçen 25 kelime + 25 ilk kelime |
+| `/open` | Filtre açar; argümansız sorar (dahili / harici / ikisi), argümanla anında uygular |
+| `/close` | Filtre kapatır; argümansız sorar (dahili / harici / ikisi), argümanla anında uygular |
+| `/ayar`, `/ayarlar` | Düzenlenebilir listeleri ve komutları gösterir |
+| `/ekle` | Seçilen listeye kayıt ekler (virgülle birden çok kayıt) |
+| `/çıkar`, `/cikar` | Seçilen listeden kayıt çıkarır (numara veya değer; virgülle birden çok) |
+| `/kaydet` | Bekleyen taslağı `config.json`'a yazar ve GitHub'a gönderir |
+| `/iptal` | Bekleyen taslağı/seçimi siler; hiçbir ayar değişmez |
+| `/help`, `/yardim`, `/yardım` | Komut özetini gösterir |
+
+**Tamamı virgülle ayrılmış hâli** (BotFather açıklamasına, sabitlenmiş mesaja ya da
+grubun komut menüsüne doğrudan yapıştırabilirsin):
+
+```text
+/status, /durum, /test, /deneme, /source, /sources, /kaynak, /kaynaklar, /id, /restart, /yenile, /yeniden, /analiz, /kelimeanalizi, /open, /close, /ayar, /ayarlar, /ekle, /çıkar, /cikar, /kaydet, /iptal, /help, /yardim, /yardım
+```
 
 ---
 
 ## 5. Ayarları Telegram'dan düzenleme
 
-Telegram akışını bilerek sade tuttuk: sohbetten yalnızca şu üç liste düzenlenebilir.
-Filtre modu ise sadece `/hepsinial` ve `/filtrelial` komutlarıyla açılıp kapatılır; diğer teknik ayarlar config/kod üzerinden yönetilir.
+Telegram akışını bilerek sade tuttuk: sohbetten şu üç liste düzenlenebilir, iki filtre de
+`/open` ve `/close` ile bağımsız açılıp kapatılır; diğer teknik ayarlar config/kod üzerinden yönetilir.
 
 | Menüde görünen ad | `config.json` alanı | Ne işe yarar |
 |---|---|---|
@@ -230,10 +262,31 @@ Filtre modu ise sadece `/hepsinial` ve `/filtrelial` komutlarıyla açılıp kap
 | 🚫 Harici kelimeler | `exclude_keywords` | Bunlardan biri geçerse mesajı engeller |
 | 📣 Grup isimleri | `source_chats` | Takip edilecek kanal/grup kullanıcı adı veya ID'si |
 
-- **`/hepsinial`**: `include_keywords` listesini yok sayar ve mesajları iletir; `exclude_keywords`
-  eşleşenleri yine engeller. Bu mod config'e kaydedilir.
-- **`/filtrelial`**: normal `any` filtresine döner; dahili kelimelerden biri geçerse iletir.
-  Dahili liste boşsa mevcut eşleştirme kuralı gereği tüm mesajlar geçer.
+#### Filtreler: `/open` ve `/close`
+
+İki filtre **birbirinden bağımsızdır**; hangisinin çalışacağına tam olarak sen karar verirsin:
+
+| Filtre | Config alanı | Açıkken | Kapalıyken |
+|---|---|---|---|
+| 🔎 Dahili kelimeler | `include_enabled` | Mesajda kelimelerden en az biri geçmeli (`any`) / hepsi geçmeli (`all`) | Anahtar kelimeler yok sayılır |
+| 🚫 Harici kelimeler | `exclude_enabled` | Bu kelimelerden biri geçen mesaj engellenir | Hiç engelleme yapılmaz |
+
+```text
+/open              → "Hangi filtreyi açalım?" diye sorar
+/open dahili       → yalnızca dahili kelime filtresini açar
+/open harici       → yalnızca harici engeli açar
+/open ikisi        → ikisini birlikte açar
+/close dahili      → dahili filtreyi kapatır (harici engel çalışmaya devam eder)
+/close harici      → engellemeyi kapatır (dahili kelimeler aranmaya devam eder)
+/close ikisi       → ikisini de kapatır: kaynaklardaki HER mesaj iletilir
+```
+
+Menüden seçim yaparken `1` (dahili), `2` (harici), `3` (ikisi) yazabilirsin; filtre
+adını yazmak da yeterli. Her iki komut değişikliği **anında** uygular, `config.json`'a
+yazar ve GitHub'a gönderir; yanıtta iki filtrenin güncel durumu görünür. Yanlış bir şey
+yazarsan menü açık kalır, `/iptal` ile vazgeçebilirsin. Bekleyen bir liste taslağı
+(`/ekle` → `/kaydet` bekleyen) varken filtre komutları çalışmaz, önce taslağı
+sonuçlandırman istenir.
 
 Diğer ayarlar (`destination`, iletim yolları, bildirimler, token'lar vb.) Telegram'dan
 değiştirilemez; bunları `config.json`/kod üzerinden düzenle.
@@ -243,8 +296,13 @@ değiştirilemez; bunları `config.json`/kod üzerinden düzenle.
 1. Kontrol sohbetinde **`/ekle`** yaz.
 2. Gelen menüden `1`, `2` veya `3` gönder (istersen kategori adını da yazabilirsin).
 3. Bot seçtiğin listenin mevcut kayıtlarını gösterir.
-4. Eklenecek tek kelimeyi ya da grup bilgisini yeni mesaj olarak gönder.
+4. Eklenecek kelimeleri **tek mesajda** gönder. Birden çok kaydı virgül (`,`),
+   noktalı virgül (`;`) veya yeni satırla ayır:
+   `kahve, şeker, süt` ya da `@kanal1, @kanal2, -1001234567890`
 5. Son onayda **`/kaydet`** ile GitHub'a gönder veya **`/iptal`** ile taslağı sil.
+
+Tek mesajda en fazla 50 kayıt işlenir. Listede zaten olan veya geçersiz kayıtlar
+atlanır; onay ekranında `⚠️` satırıyla kaç kaydın neden atlandığı yazar.
 
 ```text
 ➕  LİSTEYE EKLE
@@ -265,11 +323,12 @@ yeni kaynağı doğrulamaya çalışır; çözülemeyen kaynak taslağa alınmaz
 
 1. **`/çıkar`** (Türkçe karakter olmadan **`/cikar`** da olur) yaz.
 2. Kategoriyi seç; bot güncel listeyi numaralı olarak gösterir.
-3. Silmek istediğin satırın numarasını veya listedeki tam değeri gönder.
+3. Çıkarmak istediğin kayıtların numaralarını veya listedeki tam değerlerini gönder;
+   birden çok kayıt için virgülle ayır: `1, 3, çekiliş`
 4. Onay mesajında **`/kaydet`** ya da **`/iptal`** seç.
 
-Her işlemde tek kayıt çıkar. Takip edilen kaynak listesinden son grup/kanal silinemez;
-botun çalışması için en az bir kaynak kalmalıdır.
+Takip edilen kaynak listesinden son grup/kanal silinemez; botun çalışması için en az
+bir kaynak kalmalıdır (bu yüzden hepsini birden çıkaran istek reddedilir).
 
 ### Taslak ve kayıt davranışı
 
@@ -295,6 +354,34 @@ Bu değişiklik henüz aktif değil ve config.json'a yazılmadı.
   tamamlanmamış taslak bellekte tutulduğu için silinir.
 - Menü sırasında yanlış bir seçim yaparsan doğru seçimi tekrar gönder. Taslak onay
   aşamasındayken önce `/kaydet` veya `/iptal` ile sonuçlandır.
+
+### Başlık kelime analizi (`/analiz`)
+
+Hangi ürün türlerini hiç görmek istemediğini bulmak için geçmiş mesajların
+**başlığı** (mesajın ilk anlamlı satırı; marka/ürün adının yazdığı yer) taranır ve
+iki istatistik verilir:
+
+1. **En çok geçen 25 kelime** (başlıkta geçen tüm kelimeler),
+2. **En çok geçen 25 ilk kelime** (her başlığın ilk kelimesi).
+
+```text
+/analiz            → kaynak başına son 300 mesaj
+/analiz 1000       → kaynak başına son 1000 mesaj (20–2000 arası)
+/analiz tümü       → işlevsiz kelimeler ve saf sayılar da sayılsın
+/analiz 500 tümü   → ikisi birlikte
+```
+
+- Yalnızca başlık okunur; açıklama, fiyat ve link satırları sayılmaz.
+- Aynı başlık birden çok kanaldan gelmişse bir kez sayılır (tekrar birleştirme);
+  böylece tek bir kampanya istatistiği bozmaz. Raporda kaç tekrarın
+  birleştirildiği yazar.
+- Varsayılan listede "ve/ile/için" gibi işlevsiz kelimeler ve saf sayılar elenir;
+  hepsini görmek için `/analiz tümü` kullan.
+- Harici listende olan kelimeler `🚫`, dahili listende olanlar `🔎` ile işaretlenir.
+- Çıkan listeden istemediğin kelimeleri doğrudan harici listeye ekle:
+  `/çıkar` → `2` (Harici kelimeler) → `bebek, oyuncak, kitap`.
+- Tarama uzun sürebilir; her kaynak bitince mesaj güncellenir. Okunamayan kaynak
+  olursa tarama durmaz, raporda "Okunamayan kaynak" satırı çıkar.
 
 
 ---
@@ -335,6 +422,11 @@ Mesaj kırpılmaz, küçük harfe çevrilmez.
 | `HTTP 429` | Çok sık mesaj | Bot eşleşme başına 1 mesaj atar; kaynak sayısını azalt |
 
 Token'ı `null` bırakırsan takipçi aynı şekilde çalışır, sadece bildirim gelmez.
+
+**Tek mesaj modu (`single_message`):** Bildirim botu mesajı gruba attıktan sonra
+hesabın attığı kopya gruptan silinir; grupta yalnızca botun mesajı (telefonuna
+uyarı düşen mesaj) kalır. Bildirim gönderilemezse kopya **silinmez** — mesajsız
+kalmaktansa iki kopya iyidir. Kapatmak için `config.json` → `"single_message": false`.
 
 ---
 
@@ -449,7 +541,8 @@ Dosyalar: `bot.py` (tüm mantık), `config.json` (ayarlar), `generate_session.py
 ## 13. Bu güncellemeden sonra yapılacaklar
 
 Bu sürüm üç liste düzenlemesini ve iki filtre komutunu sunar: `/ekle` veya `/çıkar` →
-seçim → değer → `/kaydet` ya da `/iptal`; filtre modu için `/hepsinial` ve `/filtrelial`.
+seçim → değer (virgülle birden çok) → `/kaydet` ya da `/iptal`; filtreler için `/open` ve
+`/close`; geçmiş istatistiği için `/analiz`.
 Diğer teknik ayarlar `config.json` üzerinden yönetilir. Ayrıntılar [4. bölümde](#4-telegram-komutları)
 ve [5. bölümde](#5-ayarları-telegramdan-düzenleme).
 
@@ -478,13 +571,19 @@ Kontrol sohbetinde yeni akışı doğrula:
 
 ```text
 /ayar       → üç liste ve filtre kısayolları gösterilmeli
-/hepsinial  → include kelimeleri yok sayıp modu kaydetmeli
-/filtrelial → dahili kelime filtresini geri açıp kaydetmeli
+/close      → menü sormalı: 1 dahili · 2 harici · 3 ikisi
+1           → dahili filtre kapanmalı, harici engel sürmeli
+/open dahili→ dahili filtre geri açılmalı (anında kaydeder)
+/close ikisi→ iki filtre de kapanmalı; her mesaj iletilmeli
+/open ikisi → ikisi birden açılmalı
 /ekle       → üç liste seçimi, ardından mevcut liste
-kahve       → taslakta görünmeli; henüz kaydedilmemeli
+kahve, şeker, süt → taslakta üçü görünmeli; henüz kaydedilmemeli
 /kaydet     → config.json yazılmalı ve GitHub sonucu görünmeli
 /çıkar      → liste seçimi ve mevcut kayıtlar gösterilmeli
+1, 3        → iki kayıt birden çıkarılmalı
 /iptal      → bekleyen taslak silinmeli; ayar değişmemeli
+/analiz     → iki istatistik (25 kelime + 25 ilk kelime) gelmeli
+            → beğenmediğin kelimeyi /çıkar → 2 ile harici listeye ekle
 ```
 
 Yanıtta **`✅ repo'ya işlendi`** yazıyorsa kalıcılık çalışıyor demektir: repo'da
@@ -499,6 +598,10 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 - [ ] Güncel PR'ı `main`'e merge et
 - [ ] Actions'tan workflow'u bir kez elle başlat
 - [ ] `/ayar` → sade menü geliyor mu?
-- [ ] `/ekle` → kategori seç → değer gönder → `/kaydet` ile GitHub'a yaz
-- [ ] `/çıkar` → listeyi gösteriyor mu? `/iptal` taslağı değiştirmeden siliyor mu?
+- [ ] `/open` ve `/close` → menü soruyor mu? Dahili/harici filtre ayrı ayrı kapanıyor mu?
+- [ ] `/ekle` → kategori seç → `a, b, c` gönder → `/kaydet` ile GitHub'a yaz
+- [ ] `/çıkar` → listeyi gösteriyor mu? `1, 3` gibi çoklu çıkarma çalışıyor mu?
+- [ ] `/analiz` → iki istatistik geliyor mu? Kelimeleri harici listeye ekleyebiliyor musun?
+- [ ] Tek mesaj modu: gruba tek mesaj düşüyor mu (bot bildirimi), kopya siliniyor mu?
+- [ ] `/iptal` taslağı değiştirmeden siliyor mu?
 - [ ] `GH_PAT`: süresi dolmadıysa dokunma; dolmuşsa *Actions: Read and write* ile yenile
