@@ -1035,10 +1035,10 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
 
 
 class NotificationTest(unittest.TestCase):
-    """Bildirim: fırsatın kopyası + gizli linkler + "🔗 Mesajı Gör" satırı.
+    """Bildirim: fırsatın kopyası + gizli linkler + "🔗 Mesajı Gör" + kalın kaynak adı.
 
-    Kullanıcı isteğiyle "Fırsatı Gönderen" altbilgisi tamamen kaldırıldı;
-    kaynak adı zaten Mesajı Gör linkinin içinde (t.me/<kanal>/...) görünüyor.
+    Kullanıcı isteği: "Fırsatı Gönderen" gibi bir etiket yazılmaz ve ad hiçbir
+    linke bağlanmaz; en altta yalnızca hangi gruptan geldiği KALIN olarak yazılır.
     """
 
     def setUp(self):
@@ -1113,7 +1113,7 @@ class NotificationTest(unittest.TestCase):
     # --- yeni biçim ---------------------------------------------------------
 
     def test_notification_is_the_message_itself_plus_message_link(self):
-        """Kırpılmış/küçültülmüş özet değil, mesajın kendisi + Mesajı Gör satırı."""
+        """Kırpılmış/küçültülmüş özet değil, mesajın kendisi + Mesajı Gör + kaynak adı."""
         client = self._run({"notify_bot_token": "123:ABC"})
         text = "Sıcak ÇAY 5 TL\nKaçırılmayacak fırsat!"
         self._send(client, text)
@@ -1122,21 +1122,38 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(call["token"], "123:ABC")
         self.assertEqual(call["chat_id"], GROUP_ID)
         self.assertIn(text, call["caption"], "mesajın tamamı gitmeli")
-        self.assertTrue(call["caption"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/1"),
-                        call["caption"])
-        self.assertNotIn("Fırsatı Gönderen", call["caption"], "altbilgi artık yazılmaz")
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", call["caption"])
+        self.assertTrue(call["caption"].endswith("firsatz"), call["caption"])
+        self.assertNotIn("Fırsatı Gönderen", call["caption"], "etiket yazılmaz")
         self.assertEqual(call["kind"], "photo")
         self.assertEqual(call["filename"], "firsat_1.jpg")
 
-    def test_no_footer_entity_is_added_anymore(self):
-        """'Fırsatı Gönderen' altbilgisi ve gizli link entity'si tamamen kaldırıldı."""
+    def test_source_name_is_bold_and_has_no_link(self):
+        """En alttaki kaynak adı: etiketsiz, linksiz, yalnızca KALIN."""
         client = self._run({"notify_bot_token": "123:ABC"})
         self._send(client, "ÇAY fırsatı")
-        entities = self.media_calls[0]["entities"]
-        self.assertEqual(self._links(entities), [], entities)
         caption = self.media_calls[0]["caption"]
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", caption)
+        entities = self.media_calls[0]["entities"]
+        self.assertTrue(caption.endswith("\n\nfirsatz"), repr(caption))
         self.assertNotIn("Fırsatı Gönderen", caption)
+
+        # Kaynak adı bir text_link DEĞİL; yalnızca kalın bir entity var.
+        self.assertEqual(self._links(entities), [], entities)
+        bold = [item for item in entities if item["type"] == "bold"]
+        self.assertEqual(len(bold), 1, entities)
+        self.assertEqual(bold[0]["length"], len("firsatz"))
+        self.assertEqual(
+            bot.utf16_slice(caption, bold[0]["offset"], bold[0]["length"]), "firsatz",
+            "kalın alan tam olarak kaynak adını kapsamalı",
+        )
+
+    def test_source_footer_flag_removes_the_bold_name(self):
+        client = self._run({"notify_bot_token": "123:ABC", "source_footer": False})
+        self._send(client, "ÇAY fırsatı")
+        caption = self.media_calls[0]["caption"]
+        self.assertFalse(caption.rstrip().endswith("firsatz"), caption)
+        self.assertEqual([item for item in self.media_calls[0]["entities"] if item["type"] == "bold"],
+                         [])
 
     def test_hidden_entity_link_stays_tappable_and_message_link_is_added(self):
         """'Fırsata Git' yazısının altına gizlenmiş link kaybolmamalı."""
@@ -1190,7 +1207,9 @@ class NotificationTest(unittest.TestCase):
         self._send(client, "ÇAY 5 TL", media=False)
         self.assertEqual(self.media_calls, [])
         self.assertEqual(len(self.calls), 1)
-        self.assertTrue(self.calls[0]["text"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/1"))
+        text = self.calls[0]["text"]
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", text)
+        self.assertTrue(text.endswith("firsatz"), repr(text))
 
     def test_media_failure_falls_back_to_text_notification(self):
         self.media_ok = False
@@ -1198,12 +1217,14 @@ class NotificationTest(unittest.TestCase):
         self._send(client, "ÇAY 5 TL")
         self.assertEqual(len(self.calls), 1, "medya gönderilemezse metin bildirimi gitmeli")
         self.assertIn("ÇAY 5 TL", self.calls[0]["text"])
-        self.assertTrue(self.calls[0]["text"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/1"))
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", self.calls[0]["text"])
+        self.assertTrue(self.calls[0]["text"].endswith("firsatz"))
         self.assertNotIn("Fırsatı Gönderen", self.calls[0]["text"])
 
-    def test_flags_can_disable_appendix_and_message_link(self):
+    def test_flags_can_disable_appendix_message_link_and_source_name(self):
         client = self._run({"notify_bot_token": "123:ABC", "notify_media": False,
-                            "link_appendix": "off", "message_link": False})
+                            "link_appendix": "off", "message_link": False,
+                            "source_footer": False})
         entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/yok")
         self._send(client, "çay", entities=[entity])
         text = self.calls[0]["text"]

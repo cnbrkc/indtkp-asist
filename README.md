@@ -91,6 +91,7 @@ Deponun kökündeki [`config.json`](config.json) dosyasını GitHub'dan düzenle
   "max_media_mb": 25,
   "link_appendix": "smart",
   "message_link": true,
+  "source_footer": true,
   "notify_media": true,
   "clean_commands": true,
   "control_chat": -5092968106,
@@ -166,6 +167,7 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `max_media_mb` | sayı | `media` yolunda indirilecek en büyük medya (varsayılan 25, `0` = sınırsız). |
 | `link_appendix` | `smart` / `all` / `off` | Gizli linklerin eklenme biçimi ([8. bölüm](#8-gizli-bağlantılar)). |
 | `message_link` | `true` / `false` | Her iletinin sonuna `🔗 Mesajı Gör: <t.me linki>` ekler (nihai güvence; kapatman önerilmez). |
+| `source_footer` | `true` / `false` | Bildirimin **en altına kaynak grup adını kalın** yazar. "Fırsatı Gönderen" gibi bir etiket yazılmaz, ad bir linke bağlanmaz; yalnızca hangi gruptan geldiği görünür. Varsayılan `true`. |
 | `notify_media` | `true` / `false` | Bildirim botu fotoğraf/videoyu da göndersin. |
 | `clean_commands` | `true` / `false` | **Komut temizliği.** `control_chat`'te yeni bir komut yazıldığında bir önceki komut ve bot yanıtı silinir; ekranda yalnızca son mesaj kalır. İndirim bildirimleri bu temizliğin **dışındadır, asla silinmez.** Varsayılan `true`. |
 | `single_message` | `true` / `false` | **Tek mesaj modu.** Bildirim botu mesajı gruba attıysa, hesabın attığı kopya gruptan silinir; böylece her fırsat tek mesaj olarak kalır. Bildirim gidemezse kopya **silinmez**. Varsayılan `true`. |
@@ -409,9 +411,21 @@ bildirim üretmez. Bu yüzden fırsat gruba düşse bile telefonuna uyarı gelme
 ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığı mesaj üretir.
 
 **Bildirim biçimi:** fırsat mesajının tamamı (biçimi, emojileri ve gizli linkleriyle) +
-en altta `🔗 Mesajı Gör: <orijinal mesaj linki>` satırı. Kaynak kanalın adı zaten bu
-linkin içinde (`t.me/<kanal>/...`) görünür; ayrıca "Fırsatı Gönderen" satırı **yazılmaz**.
-Mesaj kırpılmaz, küçük harfe çevrilmez.
+`🔗 Mesajı Gör: <orijinal mesaj linki>` satırı + **en altta kalın kaynak grup adı**:
+
+```text
+Sıcak ÇAY 5 TL
+Kaçırılmayacak fırsat!
+
+🔗 Mesajı Gör: https://t.me/firsatz/31543
+
+FırsatZ          ← kalın, etiketsiz, linksiz
+```
+
+- Kaynak adı "Fırsatı Gönderen" gibi bir **etiketle yazılmaz** ve **hiçbir linke
+  bağlanmaz**; yalnızca hangi gruptan geldiği kalın olarak görünür
+  (`source_footer: false` ile tamamen kapatılabilir).
+- Mesaj kırpılmaz, küçük harfe çevrilmez.
 
 **Adımlar (2 dakika)**
 
@@ -565,9 +579,10 @@ ve [5. bölümde](#5-ayarları-telegramdan-düzenleme).
 
 Bu sürümdeki iki davranış değişikliği:
 
-1. **"Fırsatı Gönderen" altbilgisi kaldırıldı.** Bildirime ve iletilen mesaja artık
-   kaynak altbilgisi yazılmaz; kaynak adı zaten `🔗 Mesajı Gör: https://t.me/<kanal>/...`
-   satırının içinde görünür. `source_footer` anahtarı config'ten de silindi.
+1. **"Fırsatı Gönderen" etiketi kaldırıldı; kaynak adı artık sade ve kalın.**
+   Bildirimin en altında yalnızca hangi gruptan geldiği yazılır — "Fırsatı Gönderen"
+   gibi bir açıklama ve hiçbir link yok, sadece grup adı kalın olarak durur
+   (`source_footer`, varsayılan `true`).
 2. **Komut temizliği eklendi** (`clean_commands`, varsayılan `true`). Komut sohbetinde
    yeni bir komut yazıldığında bir önceki komut ve yanıtı silinir; ekranda yalnızca son
    mesaj kalır. İndirim bildirimleri bu temizliğin dışındadır, asla silinmez.

@@ -79,6 +79,7 @@ FILTER_MODE = "any"           # any | all (dahili kelimeler nasıl eşleşsin)
 FILTER_INCLUDE_ENABLED = True  # 🔎 dahili kelime filtresi açık mı?
 FILTER_EXCLUDE_ENABLED = True  # 🚫 harici kelime engeli açık mı?
 ADMIN_IDS: set[int] = set()
+SOURCE_FOOTER = True  # bildirimin en altına kaynak grup adını KALIN yaz (etiket/link yok)
 NOTIFY_MEDIA = True   # bildirim botu medyayı da göndersin
 MESSAGE_LINK_LINE = True      # iletinin sonuna "🔗 Mesajı Gör: <t.me linki>" ekle
 LINK_APPENDIX_MODE = "smart"  # smart | all | off (bkz. link_appendix_mode)
@@ -151,7 +152,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict:
         config["auto_restart"] = os.environ["AUTO_RESTART"].strip().lower() in {
             "1", "true", "yes", "evet", "on",
         }
-    for key in ("append_links", "clean_commands", "notify_media", "message_link", "single_message"):
+    for key in ("append_links", "clean_commands", "source_footer", "notify_media", "message_link", "single_message"):
         env_value = os.getenv(key.upper())
         if env_value is not None and env_value.strip():
             config[key] = env_value
@@ -489,6 +490,7 @@ def print_report(config: dict, problems: list[str]) -> None:
           f"| mesaj linki: {'açık' if config_flag(config.get('message_link')) else 'kapalı'} "
           f"| bildirim medyası: {'açık' if config_flag(config.get('notify_media')) else 'kapalı'} "
           f"| tek mesaj: {'açık' if config_flag(config.get('single_message')) else 'kapalı'} "
+          f"| kaynak adı (kalın): {'açık' if config_flag(config.get('source_footer')) else 'kapalı'} "
           f"| komut temizliği: {'açık' if config_flag(config.get('clean_commands')) else 'kapalı'}", flush=True)
     print(f"Otomatik yenileme  : {config.get('auto_restart', True)} "
           f"({os.getenv('RESTART_AFTER_MINUTES', '330')} dk sonra)", flush=True)
@@ -942,39 +944,51 @@ def compose_message(
     link_kinds: Sequence[str] | None = ("button", "webpage"),
     message_link: str | None = None,
     message_link_label: str = MESSAGE_LINK_LABEL,
+    source_name: str | None = None,
 ) -> dict[str, Any]:
-    """İletilecek metni kur: gövde + bağlantı ekleri + mesaj linki.
+    """İletilecek metni kur: gövde + bağlantı ekleri + mesaj linki + kaynak adı.
 
-    Sıra: ``gövde`` → ``🔗 <link>`` satırları → ``🔗 Mesajı Gör: <t.me>``.
-    Ek satırlar kısa ama kritiktir; bu yüzden önce onlara yer ayrılır, gövde
-    gerekiyorsa kırpılır (fotoğraf açıklaması 1024 karakterle sınırlıdır).
-    Sığmazsa önce link listesi, sonra mesaj linki düşer; nihai güvence olan
-    ``Mesajı Gör`` satırı en sona bırakılır.
+    Sıra: ``gövde`` → ``🔗 <link>`` satırları → ``🔗 Mesajı Gör: <t.me>`` →
+    en altta **kaynak grup adı**. Kaynak adı etiketsizdir ("Fırsatı Gönderen"
+    gibi bir açıklama yazılmaz), bir linke bağlanmaz; yalnızca kalın yazılır
+    (entity'si ``source_name_entity`` ile kurulur). Ek satırlar kısa ama
+    kritiktir; bu yüzden önce onlara yer ayrılır, gövde gerekiyorsa kırpılır
+    (fotoğraf açıklaması 1024 karakterle sınırlıdır). Sığmazsa sırasıyla link
+    listesi, kaynak adı ve mesaj linki düşer; nihai güvence olan ``Mesajı Gör``
+    satırı en sona bırakılır.
 
-    Not: "Fırsatı Gönderen" altbilgisi kaldırıldı; kaynak adı zaten
-    ``Mesajı Gör`` linkinin içinde (t.me/<kanal>/...) görünür.
-
-    Dönen sözlükte ``body`` (kırpılmış olabilecek gövde) ve ``source_url``
-    bulunur; entity'ler bunlara göre kurulur.
+    Dönen sözlükte ``body`` (kırpılmış olabilecek gövde), ``source_url`` ve
+    kaynak adının UTF-16 ``source_name_offset`` / ``source_name_length``
+    değerleri bulunur; entity'ler bunlara göre kurulur.
     """
     body = message_text(obj)
     appendix_text = build_link_appendix(obj, kinds=link_kinds) if link_kinds else ""
     source_line = f"🔗 {message_link_label}: {message_link}" if message_link else ""
+    name = (source_name or "").strip() or None
 
     sep = "\n\n"
     appendix_block = f"{sep}{appendix_text}" if appendix_text else ""
     source_block = f"{sep}{source_line}" if source_line else ""
-    if len(appendix_block) + len(source_block) >= limit:
+    name_block = f"{sep}{name}" if name else ""
+
+    # Yer yetmezse düşme sırası: link listesi → kaynak adı → Mesajı Gör satırı.
+    if len(appendix_block) + len(source_block) + len(name_block) >= limit:
         appendix_block, appendix_text = "", ""
+    if len(source_block) + len(name_block) >= limit:
+        name_block, name = "", None
     if len(source_block) >= limit:
         source_block, source_line = "", ""
 
-    reserved = len(appendix_block) + len(source_block)
+    reserved = len(appendix_block) + len(source_block) + len(name_block)
     room = max(1, limit - reserved)
     if len(body) > room:
         body = body[: max(0, room - 1)].rstrip() + "…"
 
     text = body + appendix_block + source_block
+    name_offset = -1
+    if name_block and name:
+        name_offset = utf16_length(text + sep)
+        text += name_block
 
     return {
         "text": text,
@@ -982,6 +996,9 @@ def compose_message(
         "appendix": appendix_text,
         "source_line": source_line,
         "source_url": message_link if source_line else None,
+        "source_name": name,
+        "source_name_offset": name_offset,
+        "source_name_length": utf16_length(name) if (name_block and name) else 0,
     }
 
 
@@ -1058,6 +1075,19 @@ def bot_api_entities(obj: Any, body: str) -> list[dict[str, Any]]:
         if data:
             result.append(data)
     return result
+
+
+def source_name_entity(composed: dict[str, Any]) -> list[dict[str, Any]]:
+    """En alttaki kaynak grup adını KALIN yap.
+
+    Kullanıcı isteği: "Fırsatı Gönderen" gibi bir etiket yazılmasın, ad bir
+    linke bağlanmasın; yalnızca hangi gruptan geldiği kalın olarak görünsün.
+    """
+    offset = composed.get("source_name_offset", -1)
+    length = composed.get("source_name_length", 0)
+    if offset is None or length is None or offset < 0 or length <= 0:
+        return []
+    return [{"type": "bold", "offset": int(offset), "length": int(length)}]
 
 
 def media_upload_name(obj: Any) -> str:
@@ -2032,7 +2062,7 @@ def apply_runtime_config(config: dict) -> list[str]:
     global FILTER_INCLUDE_ENABLED, FILTER_EXCLUDE_ENABLED
     global DELIVERY_CHAIN, MAX_MEDIA_MB
     global LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
-    global MESSAGE_LINK_LINE, NOTIFY_MEDIA, NOTIFY_BOT_TOKEN
+    global MESSAGE_LINK_LINE, SOURCE_FOOTER, NOTIFY_MEDIA, NOTIFY_BOT_TOKEN
     global SINGLE_MESSAGE, CLEAN_COMMANDS
 
     notes: list[str] = []
@@ -2053,6 +2083,7 @@ def apply_runtime_config(config: dict) -> list[str]:
     LINK_KINDS = link_kinds_for(LINK_APPENDIX_MODE, bot=False)
     BOT_LINK_KINDS = link_kinds_for(LINK_APPENDIX_MODE, bot=True)
     MESSAGE_LINK_LINE = config_flag(config.get("message_link"), True)
+    SOURCE_FOOTER = config_flag(config.get("source_footer"), True)
     NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
     SINGLE_MESSAGE = config_flag(config.get("single_message"), True)
     CLEAN_COMMANDS = config_flag(config.get("clean_commands"), True)
@@ -2491,7 +2522,7 @@ def run_check(config_path: str | None) -> int:
 
 
 async def main(argv: Sequence[str] | None = None) -> int:
-    global SELF_ID, NOTIFY_MEDIA
+    global SELF_ID, SOURCE_FOOTER, NOTIFY_MEDIA
     global MESSAGE_LINK_LINE, LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
 
     args = build_parser().parse_args(argv)
@@ -2543,8 +2574,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
     if MESSAGE_LINK_LINE:
         log.info("Her iletinin sonuna '🔗 %s: <t.me mesaj linki>' satırı eklenecek.", MESSAGE_LINK_LABEL)
     if NOTIFY_BOT_TOKEN:
-        log.info("Bildirim biçimi: mesajın kopyası + '🔗 %s: <t.me linki>'%s",
-                 MESSAGE_LINK_LABEL, " + medya" if NOTIFY_MEDIA else "")
+        log.info("Bildirim biçimi: mesajın kopyası + '🔗 %s: <t.me linki>'%s%s",
+                 MESSAGE_LINK_LABEL, " + medya" if NOTIFY_MEDIA else "",
+                 " + en altta kalın kaynak adı" if SOURCE_FOOTER else "")
     if CLEAN_COMMANDS:
         log.info("Komut temizliği açık: yeni komutta önceki komut/yanıt silinir, "
                  "bildirimlere dokunulmaz.")
@@ -3113,8 +3145,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
         """Bildirim botuyla fırsatın kopyasını at; gönderildiyse ``True`` döner.
 
         Tasarım: mesajın kendisi (biçimi ve gizli linkleriyle) → altına
-        "🔗 <gizli linkler>" (varsa) → en alta "🔗 Mesajı Gör: <t.me linki>".
-        Kaynak adı bu linkin içinde görünür; ayrıca altbilgi yazılmaz.
+        "🔗 <gizli linkler>" (varsa) → "🔗 Mesajı Gör: <t.me linki>" → en alta
+        kaynak grup adı. Ad, "Fırsatı Gönderen" gibi bir etiket olmadan ve
+        hiçbir linke bağlanmadan yalnızca kalın yazılır.
 
         Dönen değer, tek mesaj modunda hesap kopyasının silinip
         silinmeyeceğini belirler (bkz. delete_account_copy).
@@ -3123,6 +3156,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return False
         message_link = offer_link(event)
         keyboard = build_inline_keyboard(event)
+        footer_name = source_name if SOURCE_FOOTER else None
 
         descriptor = bot_media_descriptor(event) if NOTIFY_MEDIA else None
         if descriptor is not None:
@@ -3135,9 +3169,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         if descriptor is not None:
             composed = compose_message(
-                event, limit=CAPTION_LIMIT - 24, link_kinds=BOT_LINK_KINDS, message_link=message_link,
+                event, limit=CAPTION_LIMIT - 24, link_kinds=BOT_LINK_KINDS,
+                message_link=message_link, source_name=footer_name,
             )
-            entities = bot_api_entities(event, composed["body"])
+            entities = bot_api_entities(event, composed["body"]) + source_name_entity(composed)
             try:
                 data = await client.download_media(event.message, bytes)
             except Exception as exc:  # noqa: BLE001 - medya inmezse bildirim yine gitsin
@@ -3156,9 +3191,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 log.warning("Bildirim medyası gönderilemedi (%s) → metne düşülüyor.", detail)
 
         composed = compose_message(
-            event, limit=MESSAGE_LIMIT - 200, link_kinds=BOT_LINK_KINDS, message_link=message_link,
+            event, limit=MESSAGE_LIMIT - 200, link_kinds=BOT_LINK_KINDS,
+            message_link=message_link, source_name=footer_name,
         )
-        entities = bot_api_entities(event, composed["body"])
+        entities = bot_api_entities(event, composed["body"]) + source_name_entity(composed)
         text = composed["text"] or f"🔔 Yeni fırsat – {source_name}"
         ok, detail = await send_bot_ping(
             NOTIFY_BOT_TOKEN, DESTINATION_ID, text,

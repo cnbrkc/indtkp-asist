@@ -1318,10 +1318,11 @@ class ComposeMessageTest(unittest.TestCase):
         self.assertTrue(composed["text"].startswith(text))
         self.assertIn("🔗 https://amzn.to/5", composed["text"])
         self.assertTrue(composed["text"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/9"))
-        # "Fırsatı Gönderen" altbilgisi tamamen kaldırıldı (kullanıcı isteği).
+        # "Fırsatı Gönderen" etiketi yazılmaz (kullanıcı isteği).
         self.assertNotIn("Fırsatı Gönderen", composed["text"])
         self.assertFalse(hasattr(bot, "footer_entity"))
-        self.assertNotIn("footer_offset", composed)
+        self.assertIsNone(composed["source_name"])
+        self.assertEqual(bot.source_name_entity(composed), [])
 
     def test_message_link_line_sits_after_appendix(self):
         """Kullanıcı isteği: en alta '🔗 Mesajı Gör: <t.me mesaj linki>' satırı."""
@@ -1336,6 +1337,48 @@ class ComposeMessageTest(unittest.TestCase):
                         composed["text"].index("Mesajı Gör"))
         self.assertTrue(composed["text"].endswith("🔗 Mesajı Gör: https://t.me/FirsatZ/31543"))
         self.assertEqual(composed["source_url"], "https://t.me/FirsatZ/31543")
+
+    def test_source_name_is_bold_at_the_bottom_without_label_or_link(self):
+        """Kullanıcı isteği: en altta yalnızca grup adı, kalın; etiket ve link yok."""
+        composed = bot.compose_message(
+            make_message("ÇAY 5 TL"),
+            message_link="https://t.me/firsatz/9",
+            source_name="FırsatZ",
+        )
+        self.assertTrue(composed["text"].endswith("\n\nFırsatZ"), repr(composed["text"]))
+        self.assertNotIn("Fırsatı Gönderen", composed["text"])
+        self.assertNotIn("🔗 FırsatZ", composed["text"])
+        self.assertEqual(composed["source_name"], "FırsatZ")
+        self.assertEqual(bot.source_name_entity(composed), [{
+            "type": "bold",
+            "offset": composed["source_name_offset"],
+            "length": bot.utf16_length("FırsatZ"),
+        }])
+        self.assertEqual(
+            bot.utf16_slice(composed["text"], composed["source_name_offset"],
+                            composed["source_name_length"]),
+            "FırsatZ",
+        )
+
+    def test_source_name_entity_is_empty_without_a_name(self):
+        composed = bot.compose_message(make_message("ÇAY 5 TL"))
+        self.assertEqual(bot.source_name_entity(composed), [])
+        self.assertEqual(bot.source_name_entity({"source_name_offset": -1, "source_name_length": 0}), [])
+
+    def test_source_name_survives_truncation_and_stays_bold(self):
+        composed = bot.compose_message(
+            make_message("a" * 5000), limit=120, link_kinds=("entity",),
+            message_link="https://t.me/firsatz/1", source_name="FırsatZ",
+        )
+        self.assertLessEqual(len(composed["text"]), 120)
+        self.assertTrue(composed["text"].endswith("FırsatZ"))
+        self.assertEqual(bot.source_name_entity(composed)[0]["type"], "bold")
+        self.assertIn("Mesajı Gör", composed["text"], "Mesajı Gör satırı en son düşer")
+
+    def test_empty_source_name_is_ignored(self):
+        composed = bot.compose_message(make_message("çay"), source_name="   ")
+        self.assertIsNone(composed["source_name"])
+        self.assertEqual(bot.source_name_entity(composed), [])
 
     def test_entity_links_are_not_rewritten_by_default(self):
         """Varsayılan: gizli link tıklanabilir kalır, 'Fırsata Git: url' satırı eklenmez."""
