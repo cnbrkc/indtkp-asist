@@ -27,7 +27,7 @@
     "çekiliş",
     "hediye"
   ],
-  "match_mode": "forward_all",
+  "match_mode": "any",
   "copy_mode": "copy",
   "delivery_modes": [
     "forward",
