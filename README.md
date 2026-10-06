@@ -2,8 +2,8 @@
 
 Kişisel Telegram hesabının üye olduğu kanalları dinler, filtreden geçen mesajları
 istediğin sohbete iletir. Polling yapmaz: bağlantıyı açık tutar, mesaj gelir gelmez işler.
-Ayarları elle düzenlemek zorunda kalmamak için her şeyi Telegram'dan da
-değiştirebilirsin ([5. bölüm](#5-ayarları-telegramdan-değiştirme)).
+Dahili/harici kelime ve takip edilen grup listelerini Telegram'dan yönetebilirsin
+([5. bölüm](#5-ayarları-telegramdan-düzenleme)); diğer teknik ayarlar `config.json` üzerinden yapılır.
 
 ---
 
@@ -13,7 +13,7 @@ değiştirebilirsin ([5. bölüm](#5-ayarları-telegramdan-değiştirme)).
 2. [Nasıl çalışır ve sınırları](#2-nasıl-çalışır-ve-sınırları)
 3. [Ayarlar: `config.json`](#3-ayarlar-configjson)
 4. [Telegram komutları](#4-telegram-komutları)
-5. [Ayarları Telegram'dan değiştirme](#5-ayarları-telegramdan-değiştirme)
+5. [Ayarları Telegram'dan düzenleme](#5-ayarları-telegramdan-düzenleme)
 6. [Bildirim kurulumu](#6-bildirim-kurulumu-telefona-uyarı-gelsin)
 7. [İletim zinciri: korumalı kanallar](#7-iletim-zinciri-korumalı-kanallar)
 8. [Gizli bağlantılar](#8-gizli-bağlantılar)
@@ -158,7 +158,7 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `destination` | sayı / `"me"` | Filtrelenen mesajların gideceği sohbet. `me` = Kayıtlı Mesajlar (**bildirim gelmez**); grup ID'si yazarsan oraya düşer. |
 | `include_keywords` | liste | Aranacak kelimeler. Büyük/küçük harf farkı yoktur; `İ`/`I` doğru indirgenir. |
 | `exclude_keywords` | liste | Bunlardan biri geçerse mesaj atlanır. **Her modda önce bu kural çalışır.** |
-| `match_mode` | `any` / `all` / `forward_all` | `any`: kelimelerden biri yeterli. `all`: hepsi aynı mesajda olmalı. `forward_all`: **filtre kapalı, tüm mesajlar iletilir**. |
+| `match_mode` | `any` / `all` / `forward_all` | `any`: kelimelerden biri yeterli. `all`: hepsi aynı mesajda olmalı. `forward_all`: dahili kelimeler yok sayılır; harici kelimeler yine engeller. `/hepsinial` ve `/filtrelial` arasında geçiş yapar. |
 | `copy_mode` | `forward` / `copy` | Eski alan. `delivery_modes` yoksa ilk denenecek yolu belirler. |
 | `delivery_modes` | liste | Korumalı kanallarda sırayla denenecek iletim yolları: `forward → copy → media → text → link` ([7. bölüm](#7-iletim-zinciri-korumalı-kanallar)). |
 | `max_media_mb` | sayı | `media` yolunda indirilecek en büyük medya (varsayılan 25, `0` = sınırsız). |
@@ -185,141 +185,117 @@ Komutlar yalnızca `control_chat` sohbetinden **ve** `admin_user_id` listesindek
 kullanıcılardan kabul edilir. Kayıtlı Mesajlar her zaman açıktır. Yetkisiz biri komut
 yazarsa bot nedenini, o kişinin kullanıcı ID'sini ve nasıl yetki alacağını yazar.
 
-| Komut | Türkçe | Ne yapar |
-|---|---|---|
-| `/status` | `/durum` | Çalışma süresi, kaynak sayısı, görülen/eşleşen/iletilen sayaçları, son eşleşme, hedef |
-| `/test` | `/deneme` | Hedefe deneme mesajı gönderir; iletim yolunu ve bildirimi doğrular |
-| `/source` | `/kaynak` | İzlenen kanalları ve çözülemeyenleri listeler |
-| `/id` | — | Bu sohbetin ve senin kullanıcı ID'ni verir; config'e kopyalayabilirsin |
-| `/restart` | `/yenile` | `GH_PAT` varsa yeni Actions çalışmasını hemen başlatır |
-| `/ayar` | — | Ayar menüsü: gruplar (`/filtre`, `/iletim`…) ve işlemler (`/ekle`, `/sil`, `/set`) — [5. bölüm](#5-ayarları-telegramdan-değiştirme) |
-| `/help` | `/yardim` | Komut listesi |
+### Telegram açıklamasına kopyalanacak kısa metin
+
+```text
+Kaynak mesajlarını hedef gruba iletir.
+/hepsinial — Dahili kelimelerden bağımsız tüm mesajlar (harici kelimeler yine engeller).
+/filtrelial — Dahili kelime filtresini açar.
+/ayar, /ekle, /çıkar — kelime ve kaynak listelerini yönetir.
+/kaydet, /iptal — taslağı kaydet / iptal et.
+/status, /source, /test, /id, /restart, /help — durum ve araçlar.
+```
+
+### Aktif komutların tamamı
+
+| Komut (kabul edilen diğer yazımlar) | Ne yapar |
+|---|---|
+| `/status` (`/durum`) | Çalışma süresi, kaynak sayısı, sayaçlar, son eşleşme ve hedef |
+| `/test` (`/deneme`) | Hedefe deneme iletisi gönderir |
+| `/source` (`/sources`, `/kaynak`, `/kaynaklar`) | İzlenen ve çözülemeyen kaynakları listeler |
+| `/id` | Sohbet ve kullanıcı ID'lerini gösterir |
+| `/restart` (`/yenile`, `/yeniden`) | Yeni Actions çalışması başlatır |
+| `/ayar` (`/ayarlar`) | Düzenlenebilir listeleri ve ayar komutlarını gösterir |
+| `/hepsinial` | Dahili kelimeleri yok sayar; harici kelimeler yine engellenir. Config/GitHub'a kaydeder. |
+| `/filtrelial` | Dahili kelime filtresini açar (en az bir kelime eşleşir); config/GitHub'a kaydeder. |
+| `/ekle` | Dahili/harici kelime veya kaynak listesine bir kayıt ekler |
+| `/çıkar` (`/cikar`) | Seçilen listeden bir kaydı çıkarır |
+| `/kaydet` (veya onayda `kaydet`) | Taslak değişikliği config'e yazar ve GitHub'a gönderir |
+| `/iptal` (veya onayda `iptal`) | Bekleyen taslağı siler |
+| `/help` (`/yardim`, `/yardım`) | Bu komut özetini gösterir |
+
+`/hepsinial` ve `/filtrelial` anında uygulanır ve kaydedilir; liste düzenlemeleri ise
+`/kaydet` seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir.
 
 ---
 
-## 5. Ayarları Telegram'dan değiştirme
+## 5. Ayarları Telegram'dan düzenleme
 
-`config.json`'ı elle düzenleyip commit etmene gerek yok. Üç yol var; hangisi
-kolayına geliyorsa onu kullan. **Her değişiklik anında aktif olur ve kalıcı olarak
-kaydedilir.**
+Telegram akışını bilerek sade tuttuk: sohbetten yalnızca şu üç liste düzenlenebilir.
+Filtre modu ise sadece `/hepsinial` ve `/filtrelial` komutlarıyla açılıp kapatılır; diğer teknik ayarlar config/kod üzerinden yönetilir.
 
-### A) Grup komutları — "hangi ayar nerede?" diye bakmak için
+| Menüde görünen ad | `config.json` alanı | Ne işe yarar |
+|---|---|---|
+| 🔎 Dahili kelimeler | `include_keywords` | Mesajda aranacak kelimeler |
+| 🚫 Harici kelimeler | `exclude_keywords` | Bunlardan biri geçerse mesajı engeller |
+| 📣 Grup isimleri | `source_chats` | Takip edilecek kanal/grup kullanıcı adı veya ID'si |
 
-| Komut | İçindeki ayarlar |
-|---|---|
-| `/filtre` | aranan/hariç kelimeler, eşleşme modu |
-| `/kanallar` | dinlenen kanal ve gruplar |
-| `/hedef` | fırsatların gittiği sohbet |
-| `/bildirim` | bildirim botu, medya, kaynak altbilgisi |
-| `/iletim` | iletim yolları, medya boyutu |
-| `/linkler` | gizli linkler, mesaj linki |
-| `/yetki` | komut sohbeti, yetkili ID'ler |
-| `/sistem` | otomatik yenileme |
+- **`/hepsinial`**: `include_keywords` listesini yok sayar ve mesajları iletir; `exclude_keywords`
+  eşleşenleri yine engeller. Bu mod config'e kaydedilir.
+- **`/filtrelial`**: normal `any` filtresine döner; dahili kelimelerden biri geçerse iletir.
+  Dahili liste boşsa mevcut eşleştirme kuralı gereği tüm mesajlar geçer.
 
-Bunlar "yardım sayfası" gibi çalışır: yazınca o gruptaki ayarların **güncel değerleri**
-ve her biri için hazır komut gelir. Telegram `/komut` yazılarını tıklanabilir yapar;
-komuta dokun, değeri yaz, gönder.
+Diğer ayarlar (`destination`, iletim yolları, bildirimler, token'lar vb.) Telegram'dan
+değiştirilemez; bunları `config.json`/kod üzerinden düzenle.
 
-```text
-🔎 Filtre — aranan/hariç kelimeler ve eşleşme modu
+### Ekleme
 
-1. match_mode — any (biri yeterli) | all (hepsi zorunlu) | forward_all (tüm mesajlar)
-   değer: any
-   ✏️ /mod <değer>   👁 /mod_goster
-
-2. include_keywords — Aranan kelimeler
-   değer: 3 kayıt: çay, kahve, şeker
-   ➕ /kelime_ekle <değer>   ➖ /kelime_sil <değer>   👁 /kelime_goster
-...
-```
-
-### B) Her ayarın kendi komutu — en hızlı yol
-
-Kalıp basit: **kısa ad + isteğe bağlı eylem eki.**
-
-| Komut | Ne yapar |
-|---|---|
-| `/kelime_ekle çay` | aranan kelimelere "çay" ekler |
-| `/kelime_sil 2` | 2 numaralı kelimeyi siler |
-| `/mod 3` | eşleşme modunu 3 numaralı seçenek yapar (= `forward_all`) |
-| `/hedef -1001234567890` | hedef sohbeti değiştirir |
-| `/token 7123...` | bildirim botu token'ını yazar |
-| `/admin_ekle 424242` | başka birine komut yetkisi verir |
-| `/medya 40` | medya boyutu sınırını 40 MB yapar |
-| `/mesajlinki kapalı` | açık/kapalı ayarını kapatır |
-
-Eylem ekleri: `_ekle` (listeye ekle), `_sil` (listeden çıkar), `_goster` (göster).
-Eksiz yazarsan "değiştir" anlamına gelir: `/mod any`, `/hedef me`.
-
-**Değeri yazmazsan bot sana sorar.** `/mod` yazıp gönderdiğinde seçenekleri
-numaralandırır; cevap olarak sadece `3` yazman yeterli.
-
-Kısa adların tam listesi: `mod`, `kelime`, `haric`, `kanal`, `hedef`, `kontrol`,
-`admin`, `yol`, `kopya`, `medya`, `linkeki`, `mesajlinki`, `altbilgi`,
-`bildirimmedya`, `acilisbildirimi`, `yenileme`, `token`. Uzun adları da
-(`include_keywords` gibi) ve kendi uyduracağın adları da kabul eder
-(`/dahil_liste_ekle` gibi).
-
-### C) Menüden seçmeli — hiçbir adı ezberlemeden
-
-Alan adı aklında değilse işlem komutunu yaz, bot sana seçenekleri sunsun:
-
-| Komut | Ne yapar |
-|---|---|
-| `/ekle` | "Hangi listeye ekleyelim?" → menü → alan seç → değer yaz |
-| `/sil` | "Hangi listeden çıkaralım?" → aynı şekilde |
-| `/set` | "Hangi ayarı değiştirelim?" → aynı şekilde |
-| `/goster` | Bir ayarı gösterir |
-| `/ayar_goster` | Tüm ayarları özetler |
-| `/kaydet` | `config.json`'ı tekrar yazar ve depoya göndermeyi dener |
-| `/iptal` | Bekleyen soruyu iptal eder; yoksa son değişikliği geri alır |
-
-Menüde hem numara hem kısa ad geçerli: `2` ya da `haric` aynı sonucu verir.
+1. Kontrol sohbetinde **`/ekle`** yaz.
+2. Gelen menüden `1`, `2` veya `3` gönder (istersen kategori adını da yazabilirsin).
+3. Bot seçtiğin listenin mevcut kayıtlarını gösterir.
+4. Eklenecek tek kelimeyi ya da grup bilgisini yeni mesaj olarak gönder.
+5. Son onayda **`/kaydet`** ile GitHub'a gönder veya **`/iptal`** ile taslağı sil.
 
 ```text
-👤 /ekle
-   ➕ Hangi listeye ekleyelim?
-      1. include_keywords …  /kelime_ekle
-      2. exclude_keywords …  /haric_ekle
-      …
-👤 kelime          (veya "1")
-   ✍️ include_keywords — Şimdi değeri yaz (virgülle çoklu: çay, kahve)
-👤 kahve, şeker
-   ➕ include_keywords: kahve, şeker eklendi (toplam 3)
+➕  LİSTEYE EKLE
+━━━━━━━━━━━━━━━━━━━━
+1. 🔎  Dahili kelimeler  ·  3 kayıt
+2. 🚫  Harici kelimeler  ·  2 kayıt
+3. 📣  Grup isimleri     ·  16 kayıt
+
+Seçmek için 1, 2 veya 3 yaz.
+Vazgeçmek için /iptal.
 ```
 
-Enum ve liste alanlarında **numara her yerde çalışır**: `/mod 3`, `/mod` → `3`,
-`/kelime_sil 2` aynı işi yapar.
+Grup/kanal eklerken `@kullaniciadi` veya `-1001234567890` biçiminde ID kullan. Bot
+yeni kaynağı doğrulamaya çalışır; çözülemeyen kaynak taslağa alınmaz. Bot hesabı kaynakta
+üye değilse kaydetme yanıtındaki uyarıyı kontrol et.
 
-> Bekleyen soru 10 dakika sonra düşer; yeni bir komut yazdığında da iptal olur.
-> Yarım kalan akış telefonunda değil botun belleğinde tutulur, yani bot yeniden
-> başlarsa kaybolur (zararı yok, sadece soruyu tekrar sorarsın).
+### Çıkarma
 
-### Değiştirilebilen alanlar
+1. **`/çıkar`** (Türkçe karakter olmadan **`/cikar`** da olur) yaz.
+2. Kategoriyi seç; bot güncel listeyi numaralı olarak gösterir.
+3. Silmek istediğin satırın numarasını veya listedeki tam değeri gönder.
+4. Onay mesajında **`/kaydet`** ya da **`/iptal`** seç.
 
-`source_chats`, `destination`, `control_chat`, `admin_user_id`, `include_keywords`,
-`exclude_keywords`, `match_mode`, `delivery_modes`, `copy_mode`, `max_media_mb`,
-`link_appendix`, `message_link`, `source_footer`, `notify_media`, `notify_on_start`,
-`auto_restart`, `notify_bot_token`.
+Her işlemde tek kayıt çıkar. Takip edilen kaynak listesinden son grup/kanal silinemez;
+botun çalışması için en az bir kaynak kalmalıdır.
 
-Bilinmeyen bir alan yazarsan bot kabul etmez ve seçenekleri gösterir.
+### Taslak ve kayıt davranışı
 
-### Kalıcılık nasıl çalışır?
+Değer mesajını göndermek tek başına ayarı değiştirmez. Bot önce bir taslak ve iki net
+seçenek gösterir:
 
-1. Değişiklik doğrulanır ve **çalışan bot'a uygulanır** (anında aktif).
-2. `config.json` **atomik** yazılır: geçici dosya → `fsync` → `os.replace`. Yarım kalmış bir
-   config dosyası bot'u açılışta çökertmez.
-3. Dosya git ile commit edilip `origin`e gönderilir. Böylece Actions job'u yeniden başlasa
-   bile değişiklik kaybolmaz.
+```text
+📝  DEĞİŞİKLİK TASLAĞI
+━━━━━━━━━━━━━━━━━━━━
+📂 Dahili kelimeler
+➕ Eklenecek: kahve
 
-Yanıtta sonucu görürsün: `✅ config.json yazıldı ve repo'ya işlendi (origin/main)`.
-Depoya yazılamazsa `⚠️ ... yalnızca bu oturumda geçerli` uyarısı alırsın
-([13. bölüm](#13-bu-güncellemeden-sonra-yapılacaklar) ve [10. bölüm](#10-sorun-giderme)).
+Bu değişiklik henüz aktif değil ve config.json'a yazılmadı.
 
-Sohbet gerektiren alanlar (`destination`, `control_chat`, `source_chats`) değişince
-Telegram'da yeniden çözülür. Yeni değer çözülemezse değişiklik **geri alınır** — yanlış bir
-ID yüzünden bot komutlarını duyamaz hâle gelmezsin. Tek bir kaynak kanal çözülemezse sadece
-uyarı verilir, diğerleri çalışmaya devam eder.
+✅ Kaydet ve GitHub'a gönder  →  /kaydet
+↩️ İptal et ve taslağı sil     →  /iptal
+```
+
+- **`/kaydet`** (veya sadece `kaydet`): değişikliği çalışan ayara uygular, `config.json`'ı
+  atomik biçimde yazar ve GitHub deposuna commit/push etmeyi dener. Yanıtta GitHub sonucu görünür.
+- **`/iptal`** (veya sadece `iptal`): bekleyen adımı/taslağı siler; config dosyası ve çalışan ayar değişmez.
+- Bekleyen işlem 10 dakika kullanılmazsa zaman aşımına uğrar. Bot yeniden başlarsa
+  tamamlanmamış taslak bellekte tutulduğu için silinir.
+- Menü sırasında yanlış bir seçim yaparsan doğru seçimi tekrar gönder. Taslak onay
+  aşamasındayken önce `/kaydet` veya `/iptal` ile sonuçlandır.
+
 
 ---
 
@@ -457,7 +433,7 @@ doğru ID'yi al.
 ## 12. Geliştirici notları
 
 ```bash
-python -m unittest discover -s tests -v   # 241 test
+python -m unittest discover -s tests -v   # birim ve uçtan uca testler
 python bot.py --check                     # secret + config doğrulaması
 ```
 
@@ -472,15 +448,15 @@ Dosyalar: `bot.py` (tüm mantık), `config.json` (ayarlar), `generate_session.py
 
 ## 13. Bu güncellemeden sonra yapılacaklar
 
-Bu sürüm Telegram'dan ayar yönetimini (grup menüleri `/filtre`…, her ayarın kendi
-komutu `/kelime_ekle`… ve seçmeli akış `/ekle` → menü → değer) ve `match_mode:
-forward_all` modunu getiriyor. Ayrıntılar [5. bölümde](#5-ayarları-telegramdan-değiştirme).
-Aktif olması için üç şey yapman yeterli:
+Bu sürüm üç liste düzenlemesini ve iki filtre komutunu sunar: `/ekle` veya `/çıkar` →
+seçim → değer → `/kaydet` ya da `/iptal`; filtre modu için `/hepsinial` ve `/filtrelial`.
+Diğer teknik ayarlar `config.json` üzerinden yönetilir. Ayrıntılar [4. bölümde](#4-telegram-komutları)
+ve [5. bölümde](#5-ayarları-telegramdan-düzenleme).
 
 ### 1. PR'ı `main`'e merge et
 
-Actions workflow'ları **varsayılan daldan** (`main`) çalışır; PR açıkken yeni kod devreye
-girmez. PR #4'ü merge ettikten sonra:
+Actions workflow'ları **varsayılan daldan** (`main`) çalışır; güncel PR `main`'e merge
+edilmeden yeni kod devreye girmez. Merge sonrasında:
 
 **Actions → Telegram indirim takipçisi → Run workflow → `main`** ile yeni kodu bir kez elle
 başlat. (Bunu yapmazsan mevcut job eski kodla 6 saate kadar devam eder.)
@@ -498,16 +474,17 @@ başlat. (Bunu yapmazsan mevcut job eski kodla 6 saate kadar devam eder.)
 
 ### 3. Doğrula
 
-Kontrol sohbetine şunları yaz:
+Kontrol sohbetinde yeni akışı doğrula:
 
 ```text
-/ayar        → menü gelmeli (ayar grupları + işlem komutları)
-/filtre      → filtre ayarlarının güncel değerleri ve kısa komutları
-/ekle        → "Hangi listeye ekleyelim?" menüsü gelmeli
-/mod         → seçenekleri numaralandırmalı: 1 any · 2 all · 3 forward_all
-3            → "✅ match_mode: any → forward_all" + "repo'ya işlendi (origin/main)"
-/mod_goster  → forward_all olduğunu teyit et
-/iptal       → istersen son değişikliği geri alır
+/ayar       → üç liste ve filtre kısayolları gösterilmeli
+/hepsinial  → include kelimeleri yok sayıp modu kaydetmeli
+/filtrelial → dahili kelime filtresini geri açıp kaydetmeli
+/ekle       → üç liste seçimi, ardından mevcut liste
+kahve       → taslakta görünmeli; henüz kaydedilmemeli
+/kaydet     → config.json yazılmalı ve GitHub sonucu görünmeli
+/çıkar      → liste seçimi ve mevcut kayıtlar gösterilmeli
+/iptal      → bekleyen taslak silinmeli; ayar değişmemeli
 ```
 
 Yanıtta **`✅ repo'ya işlendi`** yazıyorsa kalıcılık çalışıyor demektir: repo'da
@@ -519,8 +496,9 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 
 ### Hızlı özet
 
-- [ ] PR #4'ü `main`'e merge et
+- [ ] Güncel PR'ı `main`'e merge et
 - [ ] Actions'tan workflow'u bir kez elle başlat
-- [ ] `/ayar` → menü geliyor mu? `/ekle` → alan menüsü çıkıyor mu?
-- [ ] `/mod` → `3` → "repo'ya işlendi" diyor mu?
+- [ ] `/ayar` → sade menü geliyor mu?
+- [ ] `/ekle` → kategori seç → değer gönder → `/kaydet` ile GitHub'a yaz
+- [ ] `/çıkar` → listeyi gösteriyor mu? `/iptal` taslağı değiştirmeden siliyor mu?
 - [ ] `GH_PAT`: süresi dolmadıysa dokunma; dolmuşsa *Actions: Read and write* ile yenile

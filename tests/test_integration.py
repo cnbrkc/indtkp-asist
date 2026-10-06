@@ -318,7 +318,7 @@ class IntegrationTest(MainHarness, unittest.TestCase):
         reply = event.replies[0]
         self.assertIn("yetkin yok", reply)
         self.assertIn("424242", reply, "kullanıcı kendi ID'sini görebilmeli")
-        self.assertIn("/admin_ekle 424242", reply, "nasıl yetki verileceği anlatılmalı")
+        self.assertIn("admin_user_id", reply, "yetki config üzerinden verilmeli")
 
     def test_command_from_unrelated_chat_is_ignored(self):
         event = self._call(self.client.handlers[0][1], FakeEvent(-1009999999999, ADMIN_ID, "/status"))
@@ -384,8 +384,8 @@ class IntegrationTest(MainHarness, unittest.TestCase):
         self.assertEqual(client.sent, [])
 
 
-class SettingsCommandTest(MainHarness, unittest.TestCase):
-    """/ayar* komutları: canlı uygulama + kalıcı yazma + yetki."""
+class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
+    """Telegram'dan yalnızca üç liste: seçim → taslak → kaydet/iptal."""
 
     def setUp(self):
         reset_state()
@@ -395,11 +395,9 @@ class SettingsCommandTest(MainHarness, unittest.TestCase):
             self.command_log.append((str(path), message))
             return "no-repo", "test ortamı"
 
-        # main() bittikten sonra da komutlar çalıştığı için patch tüm test boyunca açık kalır.
         patcher = mock.patch.object(bot, "commit_and_push", fake_commit)
         patcher.start()
         self.addCleanup(patcher.stop)
-
         self.config_path = self._write_config()
         self.client = self._run_main(self.config_path)
         self.source_id = next(iter(bot.SOURCE_IDS))
@@ -407,8 +405,6 @@ class SettingsCommandTest(MainHarness, unittest.TestCase):
     def tearDown(self):
         os.unlink(self.config_path)
         reset_state()
-
-    # --- yardımcılar ----------------------------------------------------
 
     def _command(self, text, sender=ADMIN_ID):
         event = FakeEvent(GROUP_ID, sender, text)
@@ -418,373 +414,257 @@ class SettingsCommandTest(MainHarness, unittest.TestCase):
     def _reply(self, text, sender=ADMIN_ID):
         return "\n".join(self._command(text, sender).replies)
 
-    def _send(self, text, message_id=500):
-        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, message_id, text)))
-
     def _say(self, text, sender=ADMIN_ID):
-        """Komut olmayan düz mesaj (çok adımlı akışın cevabı)."""
+        """Komut olmayan düz mesaj (menü veya değer yanıtı)."""
         return self._reply(text, sender=sender)
 
     def _config(self):
         with open(self.config_path, encoding="utf-8") as handle:
             return json.load(handle)
 
-    # --- menü / gösterim ------------------------------------------------
-
-    def test_menu_lists_every_group_and_action(self):
+    def test_settings_menu_is_small_and_lists_only_three_editable_groups(self):
         reply = self._reply("/ayar")
-        for command in ("/filtre", "/kanallar", "/hedef", "/bildirim", "/iletim",
-                        "/linkler", "/yetki", "/sistem"):
-            self.assertIn(command, reply, "ana menü grupları listelenmeli")
-        for command in ("/ekle", "/sil", "/set", "/goster", "/kaydet", "/iptal"):
-            self.assertIn(command, reply, "işlem komutları listelenmeli")
+        for label in ("Dahili kelimeler", "Harici kelimeler", "Grup isimleri",
+                      "/ekle", "/çıkar", "/kaydet", "/iptal", "/hepsinial", "/filtrelial"):
+            self.assertIn(label, reply)
+        self.assertNotIn("/mod", reply)
 
-    def test_show_renders_active_settings(self):
-        reply = self._reply("/ayar_goster")
-        self.assertIn("match_mode", reply)
-        self.assertIn("include_keywords", reply)
+    def test_add_flow_shows_categories_then_current_list_and_draft(self):
+        original = self._config()
+        menu = self._reply("/ekle")
+        self.assertIn("1. 🔎  Dahili kelimeler", menu)
+        self.assertIn("2. 🚫  Harici kelimeler", menu)
+        self.assertIn("3. 📣  Grup isimleri", menu)
 
-    def test_show_single_field_lists_indexed_items(self):
-        reply = self._reply("/ayar_goster include_keywords")
-        self.assertIn("1. çay", reply)
-        self.assertIn("/ayar_sil include_keywords", reply)
+        list_prompt = self._say("1")
+        self.assertIn("Mevcut liste · 1 kayıt", list_prompt)
+        self.assertIn("01. çay", list_prompt)
+        draft = self._say("kahve")
+        self.assertIn("DEĞİŞİKLİK TASLAĞI", draft)
+        self.assertIn("/kaydet", draft)
+        self.assertIn("/iptal", draft)
+        self.assertIn("henüz aktif değil", draft)
+        self.assertEqual(self._config(), original, "kaydetmeden config dosyası değişmemeli")
+        self.assertEqual(bot.FILTER_INCLUDE, ["çay"], "kaydetmeden canlı filtre değişmemeli")
+        self.assertEqual(self.command_log, [], "GitHub'a henüz gönderilmemeli")
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "confirm")
 
-    def test_show_unknown_field_is_rejected(self):
-        reply = self._reply("/ayar_goster boyle_bir_alan")
-        self.assertIn("Bilinmeyen alan", reply)
-
-    # --- tüm mesajları ilet ---------------------------------------------
-
-    def test_forward_all_sends_every_message_without_restart(self):
-        """Anahtar kelime içermeyen mesaj da anında (restart beklemeden) geçer."""
-        self._send("iPhone 17 süper fiyat", message_id=501)
-        self.assertEqual(bot.STATS["matched"], 0)
-
-        self.assertIn("forward_all", self._reply("/ayar_set match_mode forward_all"))
-        self.assertEqual(bot.FILTER_MODE, "forward_all")
-
-        before = len(self.client.delivered)
-        self._send("iPhone 17 süper fiyat", message_id=502)
-        self.assertEqual(len(self.client.delivered) - before, 1, "filtre kapalıyken her mesaj gitmeli")
-        self.assertEqual(bot.STATS["matched"], 1)
-
-    def test_forward_all_still_blocks_excluded_words(self):
-        self._reply("/ayar_set match_mode forward_all")
-        before = len(self.client.delivered)
-        self._send("Bedava çay çekilişi", message_id=503)
-        self.assertEqual(len(self.client.delivered) - before, 0, "exclude her modda engeller")
-
-    def test_switching_back_to_any_restores_the_filter(self):
-        self._reply("/ayar_set match_mode forward_all")
-        self._reply("/ayar_set match_mode any")
-        before = len(self.client.delivered)
-        self._send("iPhone 17 süper fiyat", message_id=504)
-        self.assertEqual(len(self.client.delivered) - before, 0)
-        self._send("Sıcak çay 5 TL", message_id=505)
-        self.assertEqual(len(self.client.delivered) - before, 1)
-
-    def test_turkish_alias_opens_forward_all(self):
-        self._reply("/ayar_set match_mode tüm mesajlar")
-        self.assertEqual(bot.FILTER_MODE, "forward_all")
-
-    # --- doğrulama -------------------------------------------------------
-
-    def test_invalid_value_is_rejected_and_nothing_changes(self):
-        reply = self._reply("/ayar_set match_mode uzay")
-        self.assertIn("geçersiz", reply)
-        self.assertEqual(self._config()["match_mode"], "any")
-        self.assertEqual(bot.FILTER_MODE, "any")
-
-    def test_unknown_field_is_rejected(self):
-        reply = self._reply("/ayar_set gizli_ayar 1")
-        self.assertIn("Bilinmeyen alan", reply)
-
-    def test_missing_value_asks_for_it_instead_of_failing(self):
-        """Alan verilip değer verilmezse bot kullanım hatası değil soru sorar."""
-        reply = self._reply("/ayar_set match_mode")
-        self.assertIn("match_mode", reply)
-        self.assertIn("forward_all", reply, "seçenekler gösterilmeli")
-        self.assertEqual(self._config()["match_mode"], "any", "bir şey değişmemeli")
-
-    # --- listeler ---------------------------------------------------------
-
-    def test_add_keyword_applies_live_and_case_insensitively(self):
-        self._reply("/ayar_ekle include_keywords KAHVE")
-        before = len(self.client.delivered)
-        self._send("Filtre kahve makinesi", message_id=506)
-        self.assertEqual(len(self.client.delivered) - before, 1)
-        self.assertIn("kahve", self._config()["include_keywords"])
-
-    def test_remove_keyword_by_value(self):
-        """Liste boşalmadan silinir: kalan kelimeler filtreyi sürdürür."""
-        self._reply("/ayar_ekle include_keywords kahve")
-        self._reply("/ayar_sil include_keywords çay")
-        self.assertEqual(self._config()["include_keywords"], ["kahve"])
-        before = len(self.client.delivered)
-        self._send("Sıcak çay 5 TL", message_id=507)
-        self.assertEqual(len(self.client.delivered) - before, 0)
-        self._send("Filtre kahve makinesi", message_id=508)
-        self.assertEqual(len(self.client.delivered) - before, 1)
-
-    def test_empty_keyword_list_means_everything_matches(self):
-        """Belgelenen davranış: include boşsa her mesaj geçer."""
-        self._reply("/ayar_sil include_keywords hepsi")
-        self.assertEqual(self._config()["include_keywords"], [])
-        before = len(self.client.delivered)
-        self._send("Alakasız bir mesaj", message_id=509)
-        self.assertEqual(len(self.client.delivered) - before, 1)
-
-    def test_remove_keyword_by_index(self):
-        self._reply("/ayar_ekle include_keywords kahve")
-        self._reply("/ayar_sil include_keywords 1")
-        self.assertEqual(self._config()["include_keywords"], ["kahve"])
-
-    def test_add_requires_a_list_field(self):
-        self.assertIn("liste değil", self._reply("/ayar_ekle match_mode hepsi"))
-
-    def test_adding_source_chat_resolves_it_live(self):
-        reply = self._reply("/ayar_ekle source_chats @yenikanal")
-        self.assertIn("yenikanal", reply)
-        self.assertIn("@yenikanal", self._config()["source_chats"])
-        self.assertEqual(len(bot.SOURCES), 2, "yeni kaynak Telegram'da çözülmeli")
-        self.assertTrue(any(item["requested"] == "@yenikanal" for item in bot.SOURCES))
-
-    def test_unresolvable_source_only_warns(self):
-        """Tek kanal çözülemezse değişiklik geri alınmaz, sadece uyarı verilir."""
-        reply = self._reply("/ayar_ekle source_chats @olmayan2")
-        self.assertIn("çözülemedi", reply)
-        self.assertIn("@olmayan2", self._config()["source_chats"])
-
-    # --- kalıcılık --------------------------------------------------------
-
-    def test_change_is_written_to_config_file(self):
-        self._reply("/ayar_set match_mode forward_all")
-        self.assertEqual(self._config()["match_mode"], "forward_all")
-        self.assertTrue(self.command_log, "depoya işleme denenmeli")
-
-    def test_undo_reverts_the_last_change_everywhere(self):
-        self._reply("/ayar_set match_mode forward_all")
-        reply = self._reply("/ayar_iptal")
-        self.assertIn("Geri alındı", reply)
-        self.assertEqual(bot.FILTER_MODE, "any")
-        self.assertEqual(self._config()["match_mode"], "any")
-
-    def test_undo_without_a_change_is_informative(self):
-        self.assertIn("Geri alınacak bir değişiklik yok", self._reply("/ayar_iptal"))
-
-    def test_save_command_rewrites_the_file(self):
-        reply = self._reply("/ayar_kaydet")
-        self.assertTrue(reply)
-        self.assertEqual(self._config()["match_mode"], "any")
-
-    # --- riskli değişiklikler ---------------------------------------------
-
-    def test_unresolvable_destination_is_reverted(self):
-        """Hedef çözülemezse eski ayar korunur; config bozulmaz."""
-        reply = self._reply("/ayar_set destination 999999")
-        self.assertIn("geri yüklendi", reply)
-        self.assertEqual(self._config()["destination"], GROUP_ID)
-        self.assertEqual(bot.DESTINATION_ID, GROUP_ID)
-
-    def test_unresolvable_control_chat_is_reverted(self):
-        reply = self._reply("/ayar_set control_chat 888888")
-        self.assertIn("geri yüklendi", reply)
-        self.assertEqual(self._config()["control_chat"], GROUP_ID)
-        self.assertIn(GROUP_ID, bot.CONTROL_IDS, "komutlar hâlâ dinlenmeli")
-
-    def test_control_chat_change_takes_effect_live(self):
-        """Kontrol sohbeti değişince komutlar anında yeni sohbette dinlenir."""
-        self._reply("/ayar_set control_chat me")
-        self.assertEqual(self._config()["control_chat"], "me")
-        self.assertNotIn(GROUP_ID, bot.CONTROL_IDS, "grup artık kontrol sohbeti değil")
-
-        moved_away = FakeEvent(GROUP_ID, ADMIN_ID, "/status")
-        asyncio.run(self.client.handlers[0][1](moved_away))
-        self.assertEqual(moved_away.replies, [], "eski sohbetten gelen komut işlenmemeli")
-
-        saved_messages = FakeEvent(ADMIN_ID, ADMIN_ID, "/status")
-        asyncio.run(self.client.handlers[0][1](saved_messages))
-        self.assertIn("Takipçi aktif", "\n".join(saved_messages.replies))
-
-    # --- yetki --------------------------------------------------------------
-
-    def test_stranger_cannot_change_settings(self):
-        reply = self._reply("/ayar_set match_mode forward_all", sender=424242)
-        self.assertIn("yetkin yok", reply)
-        self.assertEqual(self._config()["match_mode"], "any")
-        self.assertEqual(bot.FILTER_MODE, "any")
-
-    def test_admin_can_be_added_from_telegram(self):
-        self._reply("/admin_ekle 424242")
-        self.assertIn(424242, bot.ADMIN_IDS)
-        reply = self._reply("/ayar_goster", sender=424242)
-        self.assertNotIn("yetkin yok", reply)
-
-
-class BranchingSettingsTest(MainHarness, unittest.TestCase):
-    """Dallı ayar akışı: menü → alan seç → değer yaz (alan adı ezberlemek yok)."""
-
-    def setUp(self):
-        reset_state()
-        self.command_log = []
-
-        def fake_commit(path, message):
-            self.command_log.append((str(path), message))
-            return "no-repo", "test ortamı"
-
-        patcher = mock.patch.object(bot, "commit_and_push", fake_commit)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-        self.config_path = self._write_config()
-        self.client = self._run_main(self.config_path)
-
-    def tearDown(self):
-        os.unlink(self.config_path)
-        reset_state()
-
-    def _reply(self, text, sender=ADMIN_ID):
-        event = FakeEvent(GROUP_ID, sender, text)
-        asyncio.run(self.client.handlers[0][1](event))
-        return "\n".join(event.replies)
-
-    def _say(self, text, sender=ADMIN_ID):
-        """Komut olmayan düz mesaj (çok adımlı akışın cevabı)."""
-        return self._reply(text, sender=sender)
-
-    def _config(self):
-        with open(self.config_path, encoding="utf-8") as handle:
-            return json.load(handle)
-
-    # --- grup menüleri -----------------------------------------------------
-
-    def test_group_menu_shows_current_values_and_short_commands(self):
-        reply = self._reply("/filtre")
-        self.assertIn("match_mode", reply)
-        self.assertIn("include_keywords", reply)
-        self.assertIn("/kelime_ekle", reply, "listenin kısa komutu görünmeli")
-        self.assertIn("/mod", reply, "tek değerli alanın komutu görünmeli")
-
-    def test_every_group_command_opens_its_menu(self):
-        for command, field in (("/filtre", "match_mode"), ("/kanallar", "source_chats"),
-                               ("/hedef", "destination"), ("/bildirim", "notify_bot_token"),
-                               ("/iletim", "delivery_modes"), ("/linkler", "link_appendix"),
-                               ("/yetki", "control_chat"), ("/sistem", "auto_restart")):
-            with self.subTest(command=command):
-                self.assertIn(field, self._reply(command))
-
-    # --- alan menüsü + çok adımlı akış -------------------------------------
-
-    def test_bare_action_command_opens_a_field_menu(self):
-        reply = self._reply("/ekle")
-        self.assertIn("Hangi listeye", reply)
-        self.assertIn("include_keywords", reply)
-        self.assertTrue(bot.PENDING, "cevap bekleniyor olmalı")
-
-    def test_full_branched_flow_adds_a_keyword(self):
-        """/ekle → menüden alan seç → değer yaz: hiç alan adı yazılmadı."""
-        self._reply("/ekle")
-        reply = self._say("kelime")
-        self.assertIn("include_keywords", reply, "değer sorusu sorulmalı")
-        self._say("kahve")
-        self.assertIn("kahve", self._config()["include_keywords"])
-        self.assertEqual(bot.FILTER_INCLUDE, ["çay", "kahve"])
-
-    def test_field_can_be_selected_by_number_too(self):
-        """/ekle → 1 yazmak da alan seçer (numara menüdeki sıraya göre)."""
+    def test_save_applies_runtime_config_writes_file_and_attempts_github(self):
         self._reply("/ekle")
         self._say("1")
         self._say("kahve")
-        self.assertIn("kahve", self._config()["include_keywords"])
+        reply = self._reply("/kaydet")
+        self.assertIn("Değişiklik kaydedildi", reply)
+        self.assertIn("config.json yazıldı", reply)
+        self.assertEqual(self._config()["include_keywords"], ["çay", "kahve"])
+        self.assertEqual(bot.FILTER_INCLUDE, ["çay", "kahve"])
+        self.assertEqual(len(self.command_log), 1)
+        self.assertFalse(bot.PENDING)
 
-    def test_enum_field_can_be_selected_by_number(self):
-        """/mod → 3 = forward_all; seçenekler numaralandığı için ezber gerekmez."""
-        self._reply("/mod")
-        self._say("3")
-        self.assertEqual(bot.FILTER_MODE, "forward_all")
-        self.assertEqual(self._config()["match_mode"], "forward_all")
+    def test_file_write_failure_rolls_back_runtime_but_keeps_the_draft(self):
+        original = self._config()
+        self._reply("/ekle")
+        self._say("1")
+        self._say("kahve")
+        with mock.patch.object(bot, "atomic_write_json", side_effect=OSError("disk dolu")):
+            reply = self._reply("/kaydet")
+        self.assertIn("çalışan ayarlar geri yüklendi", reply)
+        self.assertEqual(self._config(), original)
+        self.assertEqual(bot.FILTER_INCLUDE, ["çay"])
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "confirm")
+        self.assertEqual(self.command_log, [])
 
-    def test_number_also_works_when_typed_in_the_same_message(self):
-        self._reply("/mod 3")
-        self.assertEqual(bot.FILTER_MODE, "forward_all")
+    def test_cancel_discards_draft_without_file_runtime_or_github_changes(self):
+        original = self._config()
+        self._reply("/ekle")
+        self._say("1")
+        self._say("kahve")
+        reply = self._reply("/iptal")
+        self.assertIn("Taslak silindi", reply)
+        self.assertEqual(self._config(), original)
+        self.assertEqual(bot.FILTER_INCLUDE, ["çay"])
+        self.assertEqual(self.command_log, [])
+        self.assertFalse(bot.PENDING)
 
-    def test_removal_shows_the_numbered_list(self):
-        self._reply("/ayar_ekle include_keywords kahve")
-        reply = self._reply("/kelime_sil")
-        self.assertIn("1. çay", reply)
+    def test_plain_save_choice_also_commits_the_draft(self):
+        self._reply("/ekle")
+        self._say("1")
+        self._say("kahve")
+        reply = self._say("✅ Kaydet")
+        self.assertIn("Değişiklik kaydedildi", reply)
+        self.assertEqual(self._config()["include_keywords"], ["çay", "kahve"])
+        self.assertEqual(len(self.command_log), 1)
+
+    def test_plain_cancel_choice_also_discards_the_draft(self):
+        original = self._config()
+        self._reply("/ekle")
+        self._say("1")
+        self._say("kahve")
+        reply = self._say("↩️ İptal et")
+        self.assertIn("Taslak silindi", reply)
+        self.assertEqual(self._config(), original)
+        self.assertEqual(self.command_log, [])
+
+    def test_remove_flow_shows_items_and_only_changes_them_on_save(self):
+        original = self._config()
+        menu = self._reply("/çıkar")
+        self.assertIn("LİSTEDEN ÇIKAR", menu)
+        list_prompt = self._say("1")
+        self.assertIn("01. çay", list_prompt)
+        draft = self._say("1")
+        self.assertIn("Çıkarılacak: çay", draft)
+        self.assertEqual(self._config(), original, "çıkarma da önce taslak olmalı")
+        self._reply("/kaydet")
+        self.assertEqual(self._config()["include_keywords"], [])
+        self.assertEqual(bot.FILTER_INCLUDE, [])
+
+    def test_remove_accepts_exact_value_and_cikar_alias(self):
+        self._reply("/cikar")
         self._say("2")
+        draft = self._say("ÇEKİLİŞ")
+        self.assertIn("Çıkarılacak: çekiliş", draft)
+        self._reply("/kaydet")
+        self.assertEqual(self._config()["exclude_keywords"], [])
+
+    def test_category_can_be_selected_by_name(self):
+        self._reply("/ekle")
+        reply = self._say("grup isimleri")
+        self.assertIn("Grup isimleri", reply)
+        self.assertIn("@firsatz", reply)
+        self.assertIn("@olmayan", reply)
+
+    def test_adding_a_source_is_validated_then_resolved_on_save(self):
+        self._reply("/ekle")
+        self._say("3")
+        draft = self._say("@yenikanal")
+        self.assertIn("DEĞİŞİKLİK TASLAĞI", draft)
+        self.assertEqual(self._config()["source_chats"], ["@firsatz", "@olmayan"])
+        reply = self._reply("/kaydet")
+        self.assertIn("Değişiklik kaydedildi", reply)
+        self.assertIn("@yenikanal", self._config()["source_chats"])
+        self.assertTrue(any(item["requested"] == "@yenikanal" for item in bot.SOURCES))
+
+    def test_unresolvable_source_is_not_staged(self):
+        self._reply("/ekle")
+        self._say("3")
+        reply = self._say("not_a_source")
+        self.assertIn("çözülemedi", reply)
+        self.assertEqual(self._config()["source_chats"], ["@firsatz", "@olmayan"])
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "value")
+        self.assertEqual(self.command_log, [])
+
+    def test_invalid_category_keeps_the_menu_open(self):
+        self._reply("/ekle")
+        reply = self._say("9")
+        self.assertIn("Seçimi anlayamadım", reply)
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "category")
+        self.assertIn("include_keywords", self._config())
+
+    def test_duplicate_value_keeps_value_prompt_open(self):
+        self._reply("/ekle")
+        self._say("1")
+        reply = self._say("çay")
+        self.assertIn("zaten bu listede", reply)
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "value")
         self.assertEqual(self._config()["include_keywords"], ["çay"])
 
-    def test_invalid_menu_choice_keeps_the_menu_open(self):
+    def test_hepsinial_bypasses_include_keeps_excludes_and_saves(self):
+        reply = self._reply("/hepsinial")
+        self.assertIn("Tüm mesaj modu açık", reply)
+        self.assertEqual(self._config()["match_mode"], "forward_all")
+        self.assertEqual(bot.FILTER_MODE, "forward_all")
+        self.assertEqual(len(self.command_log), 1)
+
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 301, "iPhone kampanyası")))
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 302, "iPhone çekiliş")))
+        self.assertEqual(bot.STATS["matched"], 1)
+        self.assertEqual(len(self.client.delivered), 1)
+
+    def test_filtrelial_restores_keyword_filter_and_saves(self):
+        self._reply("/hepsinial")
+        reply = self._reply("/filtrelial")
+        self.assertIn("Kelime filtresi açık", reply)
+        self.assertEqual(self._config()["match_mode"], "any")
+        self.assertEqual(bot.FILTER_MODE, "any")
+        self.assertEqual(len(self.command_log), 2)
+
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 303, "iPhone kampanyası")))
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 304, "Sıcak çay")))
+        self.assertEqual(bot.STATS["matched"], 1)
+        self.assertEqual(len(self.client.delivered), 1)
+
+    def test_filter_mode_write_failure_restores_previous_mode(self):
+        with mock.patch.object(bot, "atomic_write_json", side_effect=OSError("disk dolu")):
+            reply = self._reply("/hepsinial")
+        self.assertIn("önceki filtre geri yüklendi", reply)
+        self.assertEqual(self._config()["match_mode"], "any")
+        self.assertEqual(bot.FILTER_MODE, "any")
+        self.assertEqual(self.command_log, [])
+
+    def test_removed_general_settings_commands_do_not_change_config(self):
+        original = self._config()
+        for command in ("/mod forward_all", "/token fake-token", "/kelime_ekle kahve",
+                        "/filtre", "/ayar_set destination me"):
+            with self.subTest(command=command):
+                reply = self._reply(command)
+                self.assertIn("Bilinmeyen komut", reply)
+                self.assertEqual(self._config(), original)
+                self.assertEqual(bot.FILTER_MODE, "any")
+        self.assertEqual(self.command_log, [])
+
+    def test_save_without_a_confirmed_draft_does_not_rewrite_config(self):
+        original = self._config()
+        reply = self._reply("/kaydet")
+        self.assertIn("Kaydedilecek bekleyen", reply)
+        self.assertEqual(self._config(), original)
+        self.assertEqual(self.command_log, [])
+
+    def test_save_during_incomplete_flow_keeps_waiting(self):
         self._reply("/ekle")
-        reply = self._say("olmayan_alan")
-        self.assertIn("Geçerli bir seçim değil", reply)
-        self.assertTrue(bot.PENDING, "menü açık kalmalı")
-        self._say("kelime")
+        reply = self._reply("/kaydet")
+        self.assertIn("henüz tamamlanmadı", reply)
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "category")
+        self.assertEqual(self.command_log, [])
+
+    def test_a_new_edit_cannot_overwrite_an_unconfirmed_draft(self):
+        self._reply("/ekle")
+        self._say("1")
         self._say("kahve")
-        self.assertIn("kahve", self._config()["include_keywords"])
+        reply = self._reply("/çıkar")
+        self.assertIn("Önce bekleyen taslağı sonuçlandır", reply)
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "confirm")
+        self.assertEqual(self._config()["include_keywords"], ["çay"])
 
-    # --- her ayarın kendi komutu -------------------------------------------
-
-    def test_per_field_command_works_without_field_name(self):
-        """/kelime_ekle çay – kullanıcının istediği 'her ayara ayrı komut' biçimi."""
-        self._reply("/kelime_ekle şeker")
-        self.assertIn("şeker", self._config()["include_keywords"])
-
-    def test_per_field_command_asks_when_the_value_is_missing(self):
-        reply = self._reply("/kelime_ekle")
-        self.assertIn("include_keywords", reply)
-        self._say("şeker")
-        self.assertIn("şeker", self._config()["include_keywords"])
-
-    def test_user_style_command_name_is_accepted(self):
-        """/dahil_liste_ekle gibi kendi uydurduğu ad da çalışır."""
-        self._reply("/dahil_liste_ekle çay")
-        self._reply("/haric_liste_ekle bedava")
-        self.assertIn("bedava", self._config()["exclude_keywords"])
-
-    def test_short_field_command_shows_the_value(self):
-        reply = self._reply("/kelime_goster")
-        self.assertIn("include_keywords", reply)
-        self.assertIn("çay", reply)
-
-    # --- iptal ve güvenlik --------------------------------------------------
-
-    def test_cancel_drops_the_pending_flow(self):
-        self._reply("/ekle")
-        reply = self._reply("/iptal")
-        self.assertIn("iptal edildi", reply)
-        self.assertFalse(bot.PENDING)
-        self.assertNotIn("kahve", self._config()["include_keywords"])
-
-    def test_plain_message_without_pending_flow_is_ignored(self):
-        """Bekleyen işlem yoksa sohbette yazılan düz mesajlara cevap verilmez."""
-        self.assertEqual(self._reply("merhaba"), "")
-
-    def test_stranger_message_is_never_answered(self):
-        self.assertEqual(self._reply("merhaba", sender=424242), "")
-
-    def test_new_command_drops_the_pending_flow(self):
+    def test_status_does_not_silently_drop_pending_flow(self):
         self._reply("/ekle")
         self._reply("/status")
-        self.assertFalse(bot.PENDING, "yeni komut bekleyen işlemi düşürmeli")
+        self.assertTrue(bot.PENDING)
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "category")
+
+    def test_cancel_without_pending_work_is_informative(self):
+        self.assertIn("İptal edilecek", self._reply("/iptal"))
+        self.assertFalse(bot.PENDING)
 
     def test_pending_flow_expires(self):
-        """"""  # süre dolduğunda eski bir soruya verilen cevap işlenmez
         self._reply("/ekle")
         key = next(iter(bot.PENDING))
         bot.PENDING[key]["at"] -= bot.PENDING_TTL_SECONDS + 1
-        self.assertEqual(self._say("kelime"), "")
+        self.assertEqual(self._say("1"), "")
         self.assertFalse(bot.PENDING)
 
-    def test_pending_flow_is_per_user(self):
-        """"""  # başkasının yarım kalmış işlemi senin mesajını yutmaz
-        self._reply("/ekle", sender=ADMIN_ID)
-        self.assertEqual(self._say("kelime", sender=424242), "yetkisiz" if False else "")
-        self.assertTrue(bot.PENDING, "admin'in bekleyen işlemi durmalı")
-        self._say("kelime", sender=ADMIN_ID)
-        self._say("kahve", sender=ADMIN_ID)
-        self.assertIn("kahve", self._config()["include_keywords"])
+    def test_pending_flow_is_per_user_and_strangers_cannot_start_one(self):
+        reply = self._reply("/ekle", sender=424242)
+        self.assertIn("yetkin yok", reply)
+        self.assertFalse(bot.PENDING)
+        self._reply("/ekle")
+        self._say("1", sender=424242)
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "category")
+
+    def test_legacy_cancel_alias_is_not_active(self):
+        original = self._config()
+        reply = self._reply("/ayar_iptal")
+        self.assertIn("Bilinmeyen komut", reply)
+        self.assertEqual(self._config(), original)
 
 
 class CheckModeTest(unittest.TestCase):
