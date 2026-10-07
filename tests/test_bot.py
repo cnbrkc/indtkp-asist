@@ -863,6 +863,12 @@ class AtomicWriteTest(unittest.TestCase):
         bot.atomic_write_json(self.path, {"yeni": True})
         self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"yeni": True})
 
+    def test_legacy_token_is_never_persisted(self):
+        bot.atomic_write_json(self.path, {"notify_bot_token": "legacy-test-value", "setting": True})
+        written = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertNotIn("notify_bot_token", written)
+        self.assertEqual(written["setting"], True)
+
     def test_failure_leaves_original_file_intact(self):
         self.path.write_text('{"eski": true}', encoding="utf-8")
         with mock.patch.object(bot.json, "dumps", side_effect=ValueError("boom")):
@@ -1060,7 +1066,7 @@ class RealConfigTest(unittest.TestCase):
         self.assertIsInstance(config["control_chat"], int)
         self.assertIsInstance(config["destination"], int)
         self.assertEqual(bot.parse_admin_ids(config["admin_user_id"]), {1143378073})
-        self.assertIn("notify_bot_token", config)
+        self.assertNotIn("notify_bot_token", config)
         with mock.patch.dict(os.environ, CheckEnvironmentTest.good_env, clear=False):
             self.assertEqual(bot.check_environment(config), [])
 
@@ -1070,7 +1076,7 @@ if __name__ == "__main__":
 
 
 class BotPingTest(unittest.TestCase):
-    """notify_bot_token ile gönderilen bildirim ping'i."""
+    """NOTIFY_BOT_TOKEN secret'ıyla gönderilen bildirim ping'i."""
 
     def test_no_token_returns_false_without_calling_api(self):
         with mock.patch("bot.urllib.request.urlopen") as urlopen:
@@ -1101,9 +1107,9 @@ class BotPingTest(unittest.TestCase):
 
 
 class EnvOverrideTest(unittest.TestCase):
-    def _config_file(self):
+    def _config_file(self, config=None):
         handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
-        json.dump({"source_chats": ["@firsatz"], "control_chat": "me"}, handle)
+        json.dump(config if config is not None else {"source_chats": ["@firsatz"], "control_chat": "me"}, handle)
         handle.close()
         self.addCleanup(os.unlink, handle.name)
         return handle.name
@@ -1122,17 +1128,31 @@ class EnvOverrideTest(unittest.TestCase):
             config = bot.load_config(self._config_file())
         self.assertNotIn("delivery_modes", config)
 
+    def test_legacy_config_token_is_discarded(self):
+        path = self._config_file({
+            "source_chats": ["@firsatz"],
+            "control_chat": "me",
+            "notify_bot_token": "legacy-test-value",
+        })
+        with mock.patch.dict(os.environ, {"DELIVERY_MODES": "", "MAX_MEDIA_MB": ""}, clear=False):
+            config = bot.load_config(path)
+        self.assertNotIn("notify_bot_token", config)
+
     def test_match_mode_environment_override_is_loaded(self):
         with mock.patch.dict(os.environ, {"MATCH_MODE": "forward_all"}, clear=False):
             config = bot.load_config(self._config_file())
         self.assertEqual(config["match_mode"], "forward_all")
 
-    def test_notify_bot_secret_overrides_config_value(self):
+    def test_notify_bot_secret_is_the_only_token_source(self):
         old_token = bot.NOTIFY_BOT_TOKEN
         self.addCleanup(setattr, bot, "NOTIFY_BOT_TOKEN", old_token)
-        with mock.patch.dict(os.environ, {"NOTIFY_BOT_TOKEN": "rotated-test-token"}, clear=False):
-            bot.apply_runtime_config({"notify_bot_token": "old-config-token"})
-        self.assertEqual(bot.NOTIFY_BOT_TOKEN, "rotated-test-token")
+        with mock.patch.dict(os.environ, {"NOTIFY_BOT_TOKEN": "test-secret-token"}, clear=False):
+            bot.apply_runtime_config({"notify_bot_token": "ignored-legacy-value"})
+        self.assertEqual(bot.NOTIFY_BOT_TOKEN, "test-secret-token")
+
+        with mock.patch.dict(os.environ, {"NOTIFY_BOT_TOKEN": ""}, clear=False):
+            bot.apply_runtime_config({"notify_bot_token": "ignored-legacy-value"})
+        self.assertEqual(bot.NOTIFY_BOT_TOKEN, "")
 
 
 # ---------------------------------------------------------------------------

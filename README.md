@@ -97,8 +97,7 @@ Deponun kökündeki [`config.json`](config.json) dosyasını GitHub'dan düzenle
   "control_chat": -5092968106,
   "admin_user_id": 1143378073,
   "auto_restart": true,
-  "notify_on_start": true,
-  "notify_bot_token": null
+  "notify_on_start": true
 }
 ```
 
@@ -175,7 +174,10 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `admin_user_id` | sayı / liste | `control_chat` bir grupsa **zorunlu**: komutları yalnızca bu ID'ler çalıştırabilir. |
 | `auto_restart` | `true` / `false` | `GH_PAT` varsa yenileme zincirini açar (bir sonraki açılışta geçerli). |
 | `notify_on_start` | `true` / `false` | Her açılışta hedefe kısa bir "başladım" mesajı gönderir. |
-| `notify_bot_token` | metin / `null` | Bildirim botu token'ı. `null` ise takipçi çalışır ama **bildirim gelmez** ([6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin)). |
+
+Bildirim botu token'ı config'e yazılmaz; tek kaynağı `NOTIFY_BOT_TOKEN` ortam değişkeni /
+GitHub Actions secret'ıdır ([6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin)).
+`notify_bot_token` eski config anahtarı yok sayılır.
 
 **Ortam değişkeni ile geçersiz kılma:** Aynı adların büyük harflisi (`SOURCE_CHATS`,
 `DESTINATION`, `MATCH_MODE`, `LINK_APPENDIX`…) config.json'ın üzerine yazar. Detaylar
@@ -441,11 +443,11 @@ FırsatZ          ← kalın, etiketsiz, linksiz
 3. GitHub deposunda **Settings → Secrets and variables → Actions → New repository
    secret** bölümünden `NOTIFY_BOT_TOKEN` adlı secret oluştur ve token'ı değer olarak
    gir. Yerel çalıştırmada `NOTIFY_BOT_TOKEN` ortam değişkenini kullan. Token'ı
-   `config.json`a yazma veya commit etme; ortam secret'ı varsa eski config değerinin
-   üzerine önceliklidir.
+   `config.json`a yazma veya commit etme; kod yalnızca secret/ortam değerini kullanır.
 4. Daha önce bir token `config.json` veya Git geçmişine eklendiyse BotFather'da
-   `/revoke` ile iptal et, yenisini üret ve secret'a koy. (İptal edilene kadar eski değer
-   çalışmayı sürdürebilir.) Workflow'u yeniden başlat, gruba `/test` yaz.
+   `/revoke` ile iptal edip yenisini secret'a koy. Bu değişiklik güncel config'ten eski
+   alanı kaldırır; Git geçmişindeki eski blob ayrıca kalabilir. Workflow'u yeniden
+   başlatıp gruba `/test` yaz.
    `🔔 Bot bildirimi de gönderildi
    (telefonuna düşmeli).` yazıyorsa tamamdır.
 
@@ -458,7 +460,8 @@ FırsatZ          ← kalın, etiketsiz, linksiz
 | `HTTP 401: Unauthorized` | Token bozuk/yanlış | BotFather'dan `/revoke` ile yenisini al |
 | `HTTP 429` | Çok sık mesaj | Bot eşleşme başına 1 mesaj atar; kaynak sayısını azalt |
 
-Token'ı `null` bırakırsan takipçi aynı şekilde çalışır, sadece bildirim gelmez.
+`NOTIFY_BOT_TOKEN` secret'ı tanımlı değilse takipçi çalışmaya devam eder; yalnızca bildirim
+ve arama düğmeleri gönderilmez.
 
 **Tek mesaj modu (`single_message`):** Bildirim botu mesajı gruba attıktan sonra
 hesabın attığı kopya gruptan silinir; grupta yalnızca botun mesajı (telefonuna
@@ -613,8 +616,8 @@ Bu repodaki güncel davranış değişiklikleri:
 3. **İşbirliği/reklam etiketleri ve WhatsApp linkleri temizlenir; eksik arama hizmetleri
    inline düğme olarak eklenir.** Hashtag'ler ve tam kelimeler hassas sınırlarla eşleşir;
    arama düğmeleri ileti gövdesini uzatmaz. Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin) ve [8. bölüm](#8-gizli-bağlantılar).
-4. **Bildirim botu token'ı için `NOTIFY_BOT_TOKEN` secret'ı desteklenir ve öncelik alır.**
-   Token'ı GitHub'da geçmişte kullanmışsan iptal edip yenisini secret'a kaydet.
+4. **Bildirim botu token'ı yalnızca `NOTIFY_BOT_TOKEN` secret'ından okunur.**
+   Eski config alanı ve güncel `config.json` değeri kaldırıldı; geçmişteki token'ı iptal et.
 
 ### 1. PR'ı `main`'e merge et
 

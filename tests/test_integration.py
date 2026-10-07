@@ -251,6 +251,7 @@ BASE_ENV = {
     "API_HASH": "a" * 32,
     "SESSION_STRING": "1BVtsOKAB...",
     "GH_PAT": "",
+    "NOTIFY_BOT_TOKEN": "",
     "RESTART_AFTER_MINUTES": "330",
 }
 
@@ -1060,6 +1061,8 @@ class NotificationTest(unittest.TestCase):
         self._patchers.append(patcher)
 
     def _run(self, config_extra):
+        config_extra = dict(config_extra)
+        notify_token = config_extra.pop("notify_bot_token", "")
         config = {
             "source_chats": ["@firsatz"],
             "destination": GROUP_ID,
@@ -1097,7 +1100,8 @@ class NotificationTest(unittest.TestCase):
 
         self._patch("send_bot_ping", fake_ping)
         self._patch("send_bot_media", fake_media)
-        with mock.patch.dict(os.environ, BASE_ENV, clear=False), \
+        test_env = {**BASE_ENV, "NOTIFY_BOT_TOKEN": str(notify_token or "")}
+        with mock.patch.dict(os.environ, test_env, clear=False), \
              mock.patch.object(bot, "TelegramClient", factory), \
              mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
             asyncio.run(bot.main(["--config", handle.name]))
@@ -1388,7 +1392,7 @@ class DeliveryChainTest(unittest.TestCase):
         reset_state()
         path = self._write_config(delivery_modes=None, copy_mode="copy")
         self.addCleanup(os.unlink, path)
-        client = self._run_main(path)
+        self._run_main(path)
         self.assertEqual(bot.DELIVERY_CHAIN[0], "copy", "eski copy_mode alanı ilk sıraya konmalı")
 
     def test_unknown_mode_is_rejected_by_check(self):
@@ -1690,6 +1694,7 @@ class SingleMessageTest(unittest.TestCase):
         reset_state()
 
     def _run(self, **overrides) -> FakeClient:
+        notify_token = overrides.pop("notify_bot_token", "123:ABC")
         config = {
             "source_chats": ["@firsatz"],
             "destination": GROUP_ID,
@@ -1701,7 +1706,6 @@ class SingleMessageTest(unittest.TestCase):
             "admin_user_id": ADMIN_ID,
             "auto_restart": False,
             "notify_on_start": False,
-            "notify_bot_token": "123:ABC",
             "notify_media": False,
         }
         config.update(overrides)
@@ -1716,7 +1720,8 @@ class SingleMessageTest(unittest.TestCase):
             created.append(client)
             return client
 
-        with mock.patch.dict(os.environ, BASE_ENV, clear=False), \
+        test_env = {**BASE_ENV, "NOTIFY_BOT_TOKEN": str(notify_token or "")}
+        with mock.patch.dict(os.environ, test_env, clear=False), \
              mock.patch.object(bot, "TelegramClient", factory), \
              mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
             asyncio.run(bot.main(["--config", handle.name]))

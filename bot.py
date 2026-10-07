@@ -24,7 +24,6 @@ import mimetypes
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import time
 import urllib.error
@@ -32,9 +31,10 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import Counter
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from telethon import TelegramClient, errors, events, utils
 from telethon.sessions import StringSession
@@ -144,6 +144,10 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict:
     file_path = config_path(path)
     with file_path.open(encoding="utf-8") as handle:
         config = json.load(handle)
+    if isinstance(config, dict):
+        # Legacy installs may still have a committed token; never carry it into
+        # ConfigStore or write it back during unrelated settings updates.
+        config.pop("notify_bot_token", None)
     for key in ("source_chats", "include_keywords", "exclude_keywords"):
         env_name = key.upper()
         if os.getenv(env_name):
@@ -646,7 +650,7 @@ async def send_bot_ping(
     (gizli bağlantılar dâhil) ve buton linklerini korur.
     """
     if not token:
-        return False, "notify_bot_token tanımlı değil."
+        return False, "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil."
     payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:MESSAGE_LIMIT]}
     if entities:
         payload["entities"] = json.dumps(entities)
@@ -674,7 +678,7 @@ async def send_bot_media(
 ) -> tuple[bool, str]:
     """Bildirim botuyla fotoğraf/video/dosya gönder (medya da bildirim üretsin)."""
     if not token:
-        return False, "notify_bot_token tanımlı değil."
+        return False, "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil."
     method = {"photo": "sendPhoto", "video": "sendVideo"}.get(kind, "sendDocument")
     field = {"photo": "photo", "video": "video"}.get(kind, "document")
     fields: dict[str, Any] = {"chat_id": chat_id}
@@ -2239,7 +2243,9 @@ def atomic_write_json(path: Path, data: dict) -> None:
     hedef dosyaya yazmıyoruz.
     """
     path = Path(path)
-    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    persisted_data = dict(data)
+    persisted_data.pop("notify_bot_token", None)
+    payload = json.dumps(persisted_data, ensure_ascii=False, indent=2) + "\n"
     directory = str(path.parent) if str(path.parent) else "."
     handle = tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=directory,
@@ -2471,9 +2477,9 @@ def apply_runtime_config(config: dict) -> list[str]:
     NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
     SINGLE_MESSAGE = config_flag(config.get("single_message"), True)
     CLEAN_COMMANDS = config_flag(config.get("clean_commands"), True)
-    # Secret ortam değişkeni config.json'daki eski değerden üstün olsun; böylece
-    # token'ı depoya koymadan Actions secret'ıyla güvenle yönetmek mümkün.
-    token = str(os.getenv("NOTIFY_BOT_TOKEN") or config.get("notify_bot_token") or "").strip()
+    # Bildirim token'ının tek kaynağı environment/Actions secret'ı olsun;
+    # config.json içindeki eski notify_bot_token alanı artık kullanılmaz.
+    token = str(os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
     NOTIFY_BOT_TOKEN = "" if token.lower() in {"null", "none", "yok"} else token
 
     if not FILTER_INCLUDE_ENABLED:
