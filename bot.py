@@ -106,6 +106,8 @@ PRICE_SEARCH_BUTTONS = (
     ("google_shopping", "Google Alışveriş"),
     ("market_fiyati", "Market Fiyatı"),
 )
+# Market Fiyatı ana sayfası; sorgu olduğunda "/ara?q=..." ile ürün aramasına gider.
+MARKET_FIYATI_HOME = "https://marketfiyati.org.tr"
 MAX_INLINE_KEYBOARD_BUTTONS = 100
 BOT_API_MEDIA_LIMIT_MB = {"photo": 10, "video": 50, "document": 50}
 
@@ -766,6 +768,10 @@ URL_RE = re.compile(
 )
 _URL_TAIL_TRIM = ".,;:!?…\"'”’)]}>»"
 DISCLOSURE_TOKEN_RE = re.compile(r"(?<![\w#])#?(?:işbirliği|reklam)(?!\w)", re.IGNORECASE)
+# Bir "satır sonu bloğu": ardışık satır sonları ve aralarındaki yatay boşluklar.
+# Temizlikten arta kalan fazladan boş satırları bulmak için kullanılır.
+_BLANK_RUN_RE = re.compile(r"[ \t\r]*(?:\n[ \t\r]*)+")
+_EDGE_BLANK_RE = re.compile(r"\A[ \t\r\n]+|[ \t\r\n]+\Z")
 
 
 def utf16_length(text: str) -> int:
@@ -919,6 +925,28 @@ def _with_adjacent_space(text: str, start: int, end: int) -> tuple[int, int]:
     return left, right
 
 
+def _blank_line_spans(text: str, *, keep: int = 2) -> list[tuple[int, int]]:
+    """Fazla boş satırları ``keep`` satır sonuna indirecek silme aralıkları.
+
+    WhatsApp linki/``#reklam`` etiketi silinince geriye çoklu boş satır kalır;
+    bu aralıklar onları tek boş satıra indirir (``keep=2`` → bölümler arasında
+    bir boş satır). Ayrıca satır sonu bloklarının içindeki yatay boşluklar ile
+    baştaki/sondaki boş satırlar atılır. **Yalnızca** boşluk/tab/``\\r``/satır
+    sonu karakterleri silinir; metin içeriğine dokunulmaz, veri kaybolmaz.
+    """
+    drop: list[int] = []
+    for match in _BLANK_RUN_RE.finditer(text):
+        newlines = [i for i in range(match.start(), match.end()) if text[i] == "\n"]
+        kept = set(newlines[:keep])
+        drop.extend(i for i in range(match.start(), match.end()) if i not in kept)
+    # Kenardaki boş blok satır sonu içeriyorsa (yani boş satırsa) tümüyle atılır;
+    # ilk satırın girintisi gibi satır içi boşluklar korunur.
+    for edge in _EDGE_BLANK_RE.finditer(text):
+        if "\n" in edge.group(0):
+            drop.extend(range(edge.start(), edge.end()))
+    return _merge_spans([(index, index + 1) for index in sorted(set(drop))])
+
+
 def _remove_spans(text: str, spans: Sequence[tuple[int, int]]) -> str:
     for start, end in reversed(spans):
         text = text[:start] + text[end:]
@@ -996,7 +1024,9 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
     Yalnızca bağımsız ``#işbirliği``/``işbirliği``/``#reklam``/``reklam``
     ifadeleri ile doğrudan WhatsApp URL'leri, gizli WhatsApp entity'leri ve
     WhatsApp hedefli inline butonlar kaldırılır. Diğer metin, entity, medya ve
-    linkler korunur.
+    linkler korunur. Silme işleminin artığında oluşan çoklu boş satırlar tek
+    boş satıra indirilir (``_blank_line_spans``); bu adım yalnızca boşluk
+    karakterlerini alır, metin içeriğini değiştirmez.
     """
     message = _as_message(obj)
     text = message_text(obj)
@@ -1018,6 +1048,17 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
     removed_spans = _merge_spans(removed)
     cleaned_text = _remove_spans(text, removed_spans)
     remapped_entities = _remap_entities(text, cleaned_text, entities, removed_spans) if removed_spans else list(entities)
+    # Silinen WhatsApp linki/#reklam etiketi geriye çoklu boş satır bırakır.
+    # Bölümler arasında tek boş satır kalacak şekilde sıkıştır; ikinci geçiş
+    # ``cleaned_text`` koordinatlarında yapılır, bu yüzden entity'ler bir kez
+    # daha kaydırılır (``removed_spans`` özgün metne göre kalır).
+    blank_spans = _blank_line_spans(cleaned_text)
+    if blank_spans:
+        compact_text = _remove_spans(cleaned_text, blank_spans)
+        remapped_entities = _remap_entities(
+            cleaned_text, compact_text, remapped_entities, blank_spans,
+        )
+        cleaned_text = compact_text
     # Gizli WhatsApp linkinde görünen etiket sıradan metin olarak kalsın; yalnızca
     # link entity'sini kaldırmak, istenmeyen metin kaybını önler.
     cleaned_entities = [
@@ -1260,6 +1301,15 @@ def _price_search_service(url: str, label: str = "") -> str | None:
 
 
 def _price_search_url(service: str, query: str) -> str:
+    """Hizmetin ürün arama bağlantısını kur.
+
+    Market Fiyatı'nda ürün sayfası ``/detay/<kod>/<slug>`` biçimindedir ve
+    ``<kod>`` (örn. ``00UT``) yalnızca sitenin kendi arama sonucundan geldiği
+    için dışarıdan üretilemez. Bu yüzden sorgu ``/ara?q=`` adresine taşınır:
+    düğme artık ana sayfaya değil, doğrudan o ürünün sonuç sayfasına gider
+    (``/ara?q=Çamaşır Deterjanı`` → "… Aramanızın Sonuçları"). Sorgu yoksa
+    ana sayfa korunur.
+    """
     if service == "akakce":
         return "https://www.akakce.com/arama/?" + urllib.parse.urlencode({"q": query})
     if service == "google_shopping":
@@ -1267,7 +1317,13 @@ def _price_search_url(service: str, query: str) -> str:
             ("udm", "28"), ("q", query), ("hl", "tr"), ("gl", "tr"),
         ))
         return "https://www.google.com/search?" + params
-    return "https://marketfiyati.org.tr"
+    query = " ".join((query or "").split())
+    if not query:
+        return MARKET_FIYATI_HOME
+    # Boşluklar %20 olarak kodlanır: sitede doğrulanan biçim budur.
+    return MARKET_FIYATI_HOME + "/ara?" + urllib.parse.urlencode(
+        {"q": query}, quote_via=urllib.parse.quote,
+    )
 
 
 def build_inline_keyboard(obj: Any) -> dict | None:
