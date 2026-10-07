@@ -35,6 +35,7 @@ jobs:
           API_HASH: ${{ secrets.API_HASH }}
           SESSION_STRING: ${{ secrets.SESSION_STRING }}
           GH_PAT: ${{ secrets.GH_PAT }}
+          NOTIFY_BOT_TOKEN: ${{ secrets.NOTIFY_BOT_TOKEN }}
           RESTART_AFTER_MINUTES: 330
         run: python -u bot.py --check
       - name: Mesajları dinle
@@ -43,6 +44,7 @@ jobs:
           API_HASH: ${{ secrets.API_HASH }}
           SESSION_STRING: ${{ secrets.SESSION_STRING }}
           GH_PAT: ${{ secrets.GH_PAT }}
+          NOTIFY_BOT_TOKEN: ${{ secrets.NOTIFY_BOT_TOKEN }}
           # Telegram'dan değiştirilen ayarların config.json'a yazıldıktan sonra
           # depoya işlenmesi için (yoksa değişiklik yalnızca o oturumda kalır).
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

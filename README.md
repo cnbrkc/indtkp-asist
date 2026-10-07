@@ -97,8 +97,7 @@ Deponun kökündeki [`config.json`](config.json) dosyasını GitHub'dan düzenle
   "control_chat": -5092968106,
   "admin_user_id": 1143378073,
   "auto_restart": true,
-  "notify_on_start": true,
-  "notify_bot_token": null
+  "notify_on_start": true
 }
 ```
 
@@ -175,7 +174,10 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `admin_user_id` | sayı / liste | `control_chat` bir grupsa **zorunlu**: komutları yalnızca bu ID'ler çalıştırabilir. |
 | `auto_restart` | `true` / `false` | `GH_PAT` varsa yenileme zincirini açar (bir sonraki açılışta geçerli). |
 | `notify_on_start` | `true` / `false` | Her açılışta hedefe kısa bir "başladım" mesajı gönderir. |
-| `notify_bot_token` | metin / `null` | Bildirim botu token'ı. `null` ise takipçi çalışır ama **bildirim gelmez** ([6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin)). |
+
+Bildirim botu token'ı config'e yazılmaz; tek kaynağı `NOTIFY_BOT_TOKEN` ortam değişkeni /
+GitHub Actions secret'ıdır ([6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin)).
+`notify_bot_token` eski config anahtarı yok sayılır.
 
 **Ortam değişkeni ile geçersiz kılma:** Aynı adların büyük harflisi (`SOURCE_CHATS`,
 `DESTINATION`, `MATCH_MODE`, `LINK_APPENDIX`…) config.json'ın üzerine yazar. Detaylar
@@ -410,8 +412,10 @@ Takipçi **kendi Telegram hesabınla** gönderir; Telegram kendi gönderdiğin m
 bildirim üretmez. Bu yüzden fırsat gruba düşse bile telefonuna uyarı gelmez. Çözüm: gruba
 ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığı mesaj üretir.
 
-**Bildirim biçimi:** fırsat mesajının tamamı (biçimi, emojileri ve gizli linkleriyle) +
-`🔗 Mesajı Gör: <orijinal mesaj linki>` satırı + **en altta kalın kaynak grup adı**:
+**Bildirim biçimi:** mesajın içeriği (biçimi, emojileri ve gizli linkleriyle; yalnızca
+belirtilen reklam/işbirliği etiketleri ve WhatsApp bağlantıları temizlenir) +
+`🔗 Mesajı Gör: <orijinal mesaj linki>` satırı + **en altta kalın kaynak grup adı**.
+Ürün arama bağlantıları mesaj metnine yazılmadan inline düğme olarak gösterilir:
 
 ```text
 Sıcak ÇAY 5 TL
@@ -425,7 +429,10 @@ FırsatZ          ← kalın, etiketsiz, linksiz
 - Kaynak adı "Fırsatı Gönderen" gibi bir **etiketle yazılmaz** ve **hiçbir linke
   bağlanmaz**; yalnızca hangi gruptan geldiği kalın olarak görünür
   (`source_footer: false` ile tamamen kapatılabilir).
-- Mesaj kırpılmaz, küçük harfe çevrilmez.
+- Arama düğmeleri gövdeye karakter eklemez; ek özellik uğruna mevcut metin kısaltılmaz.
+- Metinden yalnızca bağımsız `#işbirliği`, `işbirliği`, `#reklam`, `reklam` ifadeleri
+  ile doğrudan WhatsApp URL'leri çıkarılır. WhatsApp'a gizlenmiş hyperlink'in görünen
+  etiketi düz metin olarak korunur; başka kelime ve domain'ler silinmez.
 
 **Adımlar (2 dakika)**
 
@@ -433,14 +440,15 @@ FırsatZ          ← kalın, etiketsiz, linksiz
    BotFather sana `7123456789:AAHx...` biçiminde bir token verir (kimseyle paylaşma).
 2. Fırsatların düştüğü grubu aç → **Üyeler → Üye ekle** → botun kullanıcı adını yaz ve ekle.
    Yönetici yapmana gerek yok.
-3. `config.json`a token'ı yaz ve commit et:
-
-   ```json
-   "notify_bot_token": "7123456789:AAHx..."
-   ```
-
-   (Alternatif: `NOTIFY_BOT_TOKEN` adında bir GitHub secret/variable.)
-4. Workflow'u yeniden başlat, gruba `/test` yaz. `🔔 Bot bildirimi de gönderildi
+3. GitHub deposunda **Settings → Secrets and variables → Actions → New repository
+   secret** bölümünden `NOTIFY_BOT_TOKEN` adlı secret oluştur ve token'ı değer olarak
+   gir. Yerel çalıştırmada `NOTIFY_BOT_TOKEN` ortam değişkenini kullan. Token'ı
+   `config.json`a yazma veya commit etme; kod yalnızca secret/ortam değerini kullanır.
+4. Daha önce bir token `config.json` veya Git geçmişine eklendiyse BotFather'da
+   `/revoke` ile iptal edip yenisini secret'a koy. Bu değişiklik güncel config'ten eski
+   alanı kaldırır; Git geçmişindeki eski blob ayrıca kalabilir. Workflow'u yeniden
+   başlatıp gruba `/test` yaz.
+   `🔔 Bot bildirimi de gönderildi
    (telefonuna düşmeli).` yazıyorsa tamamdır.
 
 **Sorun giderme**
@@ -452,7 +460,8 @@ FırsatZ          ← kalın, etiketsiz, linksiz
 | `HTTP 401: Unauthorized` | Token bozuk/yanlış | BotFather'dan `/revoke` ile yenisini al |
 | `HTTP 429` | Çok sık mesaj | Bot eşleşme başına 1 mesaj atar; kaynak sayısını azalt |
 
-Token'ı `null` bırakırsan takipçi aynı şekilde çalışır, sadece bildirim gelmez.
+`NOTIFY_BOT_TOKEN` secret'ı tanımlı değilse takipçi çalışmaya devam eder; yalnızca bildirim
+ve arama düğmeleri gönderilmez.
 
 **Tek mesaj modu (`single_message`):** Bildirim botu mesajı gruba attıktan sonra
 hesabın attığı kopya gruptan silinir; grupta yalnızca botun mesajı (telefonuna
@@ -489,8 +498,21 @@ denenmez; sırayla deneyip ilk başarılı olanı kullanır:
 | Gizleme yolu | Örnek | Bot ne yapar |
 |---|---|---|
 | Metin altına gizlenmiş hyperlink | "**Fırsata Git**" yazısı görünür, link altındadır | Link mesajın içinde tıklanabilir kalır |
-| Inline buton | Yazıda link yok, butondadır | Bildirimde buton aynen kurulur; hesap kopyasında `🔗 ...` olarak yazılır |
+| Inline buton | Yazıda link yok, butondadır | Bot bildirimi URL düğmelerini korur; hesap kopyasında `🔗 ...` olarak yazılır |
 | Link önizlemesi | Metinde link yok, önizleme kartı var | Önizleme hedefi link listesine girer |
+
+Bildirim botu, kaynakta aynı hizmete ait bağlantı yoksa **Akakçe'de ara** ve
+**Google Alışveriş** düğmelerini mesaj metninden oluşturduğu arama sorgusuyla ekler;
+ürün türünü sınıflandırmaz. **Market Fiyatı** düğmesi standarttır ve yalnızca kaynakta
+zaten Market Fiyatı bağlantısı varsa tekrarlanmaz. Mevcut hizmet URL'si/gizli linki/URL
+butonu varsa o hizmet için yeni düğme eklenmez. Düğmeler inline klavyededir; gövde
+metnini uzatmaz ve 4096/1024 karakter sınırına yeni karakter eklemez. Bu düğmeler
+bildirim botu gerektirir; Telegram kullanıcı hesabı inline klavye gönderemez.
+
+Temizleme gereken iletide `forward` atlanır (özgün mesaj değişmeden iletileceği için);
+kopyalama/yedek zinciri temizlenmiş metin ve entity offset'leriyle çalışır. Böylece
+reklam/işbirliği etiketleri, doğrudan WhatsApp URL'leri ve WhatsApp URL butonları
+forward ile geri eklenmez.
 
 Ek olarak her iletinin sonuna `🔗 Mesajı Gör: <t.me linki>` eklenir.
 `link_appendix: "smart"` (varsayılan) gizli hyperlink'leri tekrar yazmaz, yalnızca başka
@@ -544,10 +566,14 @@ doğru ID'yi al.
 
 ## 11. Güvenlik
 
-- `SESSION_STRING`, API hash'i ve telefon kodunu kimseye gösterme.
-- Bunlar geçmişte GitHub'a push edildiyse [my.telegram.org](https://my.telegram.org)
-  üzerinden API uygulamasını yenile.
-- Session geçersiz olursa yeni session üretip `SESSION_STRING` secret'ını güncelle.
+- `SESSION_STRING`, API hash'i, bot token'ı ve telefon kodunu kimseye gösterme; `config.json`a
+  secret yazma veya credential içeren değişikliği commit etme. Bildirim botu token'ı için
+  `NOTIFY_BOT_TOKEN` GitHub secret'ını kullan.
+- Bot token'ı daha önce GitHub'a push edildiyse BotFather'da `/revoke` ile iptal edip yenisini
+  oluştur; Git geçmişinden silmek tek başına token'ı geçersiz kılmaz.
+- `SESSION_STRING`/API hash geçmişte GitHub'a push edildiyse [my.telegram.org](https://my.telegram.org)
+  üzerinden API uygulamasını yenile. Session geçersiz olursa yeni session üretip
+  `SESSION_STRING` secret'ını güncelle.
 - Kaynak kanalların kurallarına uy; yüksek hacimli otomatik iletim Telegram rate-limit'ine
   takılabilir.
 
@@ -577,7 +603,7 @@ seçim → değer (virgülle birden çok) → `/kaydet` ya da `/iptal`; filtrele
 Diğer teknik ayarlar `config.json` üzerinden yönetilir. Ayrıntılar [4. bölümde](#4-telegram-komutları)
 ve [5. bölümde](#5-ayarları-telegramdan-düzenleme).
 
-Bu sürümdeki iki davranış değişikliği:
+Bu repodaki güncel davranış değişiklikleri:
 
 1. **"Fırsatı Gönderen" etiketi kaldırıldı; kaynak adı artık sade ve kalın.**
    Bildirimin en altında yalnızca hangi gruptan geldiği yazılır — "Fırsatı Gönderen"
@@ -587,6 +613,11 @@ Bu sürümdeki iki davranış değişikliği:
    yeni bir komut yazıldığında bir önceki komut ve yanıtı silinir; ekranda yalnızca son
    mesaj kalır. İndirim bildirimleri bu temizliğin dışındadır, asla silinmez.
    Ayrıntı: [4. bölüm → Komut temizliği](#komut-temizliği-ekranda-yalnızca-son-mesaj).
+3. **İşbirliği/reklam etiketleri ve WhatsApp linkleri temizlenir; eksik arama hizmetleri
+   inline düğme olarak eklenir.** Hashtag'ler ve tam kelimeler hassas sınırlarla eşleşir;
+   arama düğmeleri ileti gövdesini uzatmaz. Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin) ve [8. bölüm](#8-gizli-bağlantılar).
+4. **Bildirim botu token'ı yalnızca `NOTIFY_BOT_TOKEN` secret'ından okunur.**
+   Eski config alanı ve güncel `config.json` değeri kaldırıldı; geçmişteki token'ı iptal et.
 
 ### 1. PR'ı `main`'e merge et
 

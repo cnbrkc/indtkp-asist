@@ -251,6 +251,7 @@ BASE_ENV = {
     "API_HASH": "a" * 32,
     "SESSION_STRING": "1BVtsOKAB...",
     "GH_PAT": "",
+    "NOTIFY_BOT_TOKEN": "",
     "RESTART_AFTER_MINUTES": "330",
 }
 
@@ -1060,6 +1061,8 @@ class NotificationTest(unittest.TestCase):
         self._patchers.append(patcher)
 
     def _run(self, config_extra):
+        config_extra = dict(config_extra)
+        notify_token = config_extra.pop("notify_bot_token", "")
         config = {
             "source_chats": ["@firsatz"],
             "destination": GROUP_ID,
@@ -1097,7 +1100,8 @@ class NotificationTest(unittest.TestCase):
 
         self._patch("send_bot_ping", fake_ping)
         self._patch("send_bot_media", fake_media)
-        with mock.patch.dict(os.environ, BASE_ENV, clear=False), \
+        test_env = {**BASE_ENV, "NOTIFY_BOT_TOKEN": str(notify_token or "")}
+        with mock.patch.dict(os.environ, test_env, clear=False), \
              mock.patch.object(bot, "TelegramClient", factory), \
              mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
             asyncio.run(bot.main(["--config", handle.name]))
@@ -1191,9 +1195,11 @@ class NotificationTest(unittest.TestCase):
         self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", call["text"])
         self.assertNotIn("https://amzn.to/btn", call["text"],
                          "bildirimde buton gerçek buton olarak gider, metne yazılmaz")
-        self.assertEqual(call["keyboard"], {"inline_keyboard": [[
-            {"text": "Fırsata Git", "url": "https://amzn.to/btn"},
-        ]]})
+        keyboard = call["keyboard"]["inline_keyboard"]
+        self.assertEqual(keyboard[0], [{"text": "Fırsata Git", "url": "https://amzn.to/btn"}])
+        self.assertEqual([button["text"] for button in keyboard[1]], [
+            "Akakçe'de ara", "Google Alışveriş", "Market Fiyatı",
+        ])
 
     def test_legacy_button_schema_is_supported(self):
         """Eski Telethon sürümlerindeki ``KeyboardButtonUrl(url=...)`` şeması."""
@@ -1251,7 +1257,7 @@ class NotificationTest(unittest.TestCase):
         client = self._run({"notify_bot_token": None})
         event = FakeEvent(GROUP_ID, ADMIN_ID, "/test")
         asyncio.run(client.handlers[0][1](event))
-        self.assertIn("notify_bot_token yok", event.replies[0])
+        self.assertIn("NOTIFY_BOT_TOKEN yok", event.replies[0])
 
     def test_test_command_confirms_ping(self):
         client = self._run({"notify_bot_token": "123:ABC"})
@@ -1386,7 +1392,7 @@ class DeliveryChainTest(unittest.TestCase):
         reset_state()
         path = self._write_config(delivery_modes=None, copy_mode="copy")
         self.addCleanup(os.unlink, path)
-        client = self._run_main(path)
+        self._run_main(path)
         self.assertEqual(bot.DELIVERY_CHAIN[0], "copy", "eski copy_mode alanı ilk sıraya konmalı")
 
     def test_unknown_mode_is_rejected_by_check(self):
@@ -1597,6 +1603,50 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         self.assertIn("https://t.me/firsatz/1", delivered, "kaynak mesaj linki de olmalı")
         self.assertEqual(bot.STATS["modes"].get("text"), 1)
 
+    def test_sensitive_terms_and_whatsapp_links_force_clean_copy_not_forward(self):
+        """Temizlik gerekiyorsa özgün ileti forward edilmemeli; emoji entity'leri kaymamalı."""
+        text = (
+            "🔥 ÇAY #işbirliği reklamcı WhatsApp'tan bilgi "
+            "https://wa.me/905551234567 gizli WhatsApp bağlantısı burada 9 TL."
+        )
+        label = "gizli WhatsApp bağlantısı"
+        label_start = text.index(label)
+        price_start = text.index("9 TL")
+        entities = [
+            types.MessageEntityTextUrl(
+                offset=bot.utf16_length(text[:label_start]),
+                length=bot.utf16_length(label),
+                url="https://chat.whatsapp.com/invite",
+            ),
+            types.MessageEntityBold(
+                offset=bot.utf16_length(text[:price_start]), length=bot.utf16_length("9 TL"),
+            ),
+        ]
+        self._send(text, media=False, entities=entities)
+        delivered = self._texts(self.client)
+        self.assertEqual(self.client.forwarded, [], "temizleme gereken ileti forward edilmemeli")
+        self.assertIn("🔥 ÇAY reklamcı WhatsApp'tan bilgi", delivered)
+        self.assertIn("gizli WhatsApp bağlantısı burada 9 TL.", delivered)
+        self.assertNotIn("#işbirliği", delivered)
+        self.assertNotIn("wa.me", delivered)
+        self.assertNotIn("chat.whatsapp.com", delivered)
+        formatting = self.client.sent_kwargs[0].get("formatting_entities") or []
+        bold = next(entity for entity in formatting if type(entity).__name__ == "MessageEntityBold")
+        self.assertEqual(bot.utf16_slice(delivered, bold.offset, bold.length), "9 TL")
+
+    def test_whatsapp_button_is_removed_but_other_button_link_survives(self):
+        self._send(
+            "ÇAY fırsatı", media=False,
+            reply_markup=FakeMarkup([FakeRow([
+                FakeButton("WhatsApp", url="https://wa.me/905551234567"),
+                FakeButton("Fırsata Git", url="https://amzn.to/firsat"),
+            ])]),
+        )
+        delivered = self._texts(self.client)
+        self.assertEqual(self.client.forwarded, [], "WhatsApp düğmesi için forward atlanmalı")
+        self.assertNotIn("wa.me", delivered)
+        self.assertIn("https://amzn.to/firsat", delivered)
+
     def test_caption_limit_is_respected(self):
         """Uzun açıklamada bile mesaj linki korunur, Telegram sınırı aşılmaz."""
         self.client.fail_modes.update({"forward", "copy"})
@@ -1644,6 +1694,7 @@ class SingleMessageTest(unittest.TestCase):
         reset_state()
 
     def _run(self, **overrides) -> FakeClient:
+        notify_token = overrides.pop("notify_bot_token", "123:ABC")
         config = {
             "source_chats": ["@firsatz"],
             "destination": GROUP_ID,
@@ -1655,7 +1706,6 @@ class SingleMessageTest(unittest.TestCase):
             "admin_user_id": ADMIN_ID,
             "auto_restart": False,
             "notify_on_start": False,
-            "notify_bot_token": "123:ABC",
             "notify_media": False,
         }
         config.update(overrides)
@@ -1670,15 +1720,16 @@ class SingleMessageTest(unittest.TestCase):
             created.append(client)
             return client
 
-        with mock.patch.dict(os.environ, BASE_ENV, clear=False), \
+        test_env = {**BASE_ENV, "NOTIFY_BOT_TOKEN": str(notify_token or "")}
+        with mock.patch.dict(os.environ, test_env, clear=False), \
              mock.patch.object(bot, "TelegramClient", factory), \
              mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
             asyncio.run(bot.main(["--config", handle.name]))
         return created[0]
 
-    def _send(self, client: FakeClient, text: str = "Sıcak ÇAY 5 TL") -> None:
+    def _send(self, client: FakeClient, text: str = "Sıcak ÇAY 5 TL", **kwargs) -> None:
         asyncio.run(client.handlers[1][1](
-            FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text, message_id=7)))
+            FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text, message_id=7, **kwargs)))
 
     def test_account_copy_is_deleted_after_successful_notification(self):
         client = self._run()
@@ -1690,6 +1741,33 @@ class SingleMessageTest(unittest.TestCase):
         self.assertEqual(len(ids), 1)
         self.assertTrue(revoke)
         self.assertEqual(bot.STATS["cleaned"], 1)
+
+    def test_notification_has_search_buttons_without_extending_message_body(self):
+        client = self._run()
+        self._send(client)
+        self.assertEqual(len(self.calls), 1)
+        keyboard = self.calls[0]["keyboard"]["inline_keyboard"]
+        labels = [button["text"] for row in keyboard for button in row]
+        self.assertEqual(labels, ["Akakçe'de ara", "Google Alışveriş", "Market Fiyatı"])
+        for label in labels:
+            self.assertNotIn(label, self.calls[0]["text"], "arama düğmesi gövde metnine eklenmemeli")
+
+    def test_notification_does_not_duplicate_existing_search_services(self):
+        client = self._run()
+        text = "Sıcak ÇAY 5 TL https://www.akakce.com/arama/?q=cay"
+        buttons = FakeMarkup([FakeRow([
+            FakeButton("Google Alışveriş", url="https://www.google.com/search?udm=28&q=cay"),
+            FakeButton("Market Fiyatı", url="https://marketfiyati.org.tr"),
+        ])])
+        self._send(client, text, reply_markup=buttons)
+        keyboard = self.calls[0]["keyboard"]["inline_keyboard"]
+        services = [
+            bot._price_search_service(button["url"], button["text"])
+            for row in keyboard for button in row
+        ]
+        self.assertEqual(services.count("akakce"), 0, "gövde URL'si için yeni Akakçe düğmesi eklenmemeli")
+        self.assertEqual(services.count("google_shopping"), 1)
+        self.assertEqual(services.count("market_fiyati"), 1)
 
     def test_deleted_message_is_the_account_copy_not_the_notification(self):
         """Silinen ID, hesabın attığı mesajın ID'si olmalı (bildirimin değil)."""

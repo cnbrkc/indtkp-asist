@@ -24,7 +24,6 @@ import mimetypes
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import time
 import urllib.error
@@ -32,8 +31,10 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import Counter
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from types import SimpleNamespace
+from typing import Any
 
 from telethon import TelegramClient, errors, events, utils
 from telethon.sessions import StringSession
@@ -98,6 +99,14 @@ MESSAGE_LIMIT = 4096          # normal mesaj metni
 CAPTION_LIMIT = 1024          # medya açıklaması
 LINK_APPENDIX_LIMIT = 4       # ileti sonuna en fazla kaç gizli bağlantı yazılsın
 MESSAGE_LINK_LABEL = "Mesajı Gör"
+# Arama bağlantıları mesaj metnine yazılmaz; yalnızca Bot API inline klavyesine
+# eklenir. Böylece arama düğmeleri Telegram'ın 4096/1024 karakter sınırını tüketmez.
+PRICE_SEARCH_BUTTONS = (
+    ("akakce", "Akakçe'de ara"),
+    ("google_shopping", "Google Alışveriş"),
+    ("market_fiyati", "Market Fiyatı"),
+)
+MAX_INLINE_KEYBOARD_BUTTONS = 100
 BOT_API_MEDIA_LIMIT_MB = {"photo": 10, "video": 50, "document": 50}
 
 # Hangi link türleri metne yazılsın?
@@ -135,6 +144,10 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict:
     file_path = config_path(path)
     with file_path.open(encoding="utf-8") as handle:
         config = json.load(handle)
+    if isinstance(config, dict):
+        # Legacy installs may still have a committed token; never carry it into
+        # ConfigStore or write it back during unrelated settings updates.
+        config.pop("notify_bot_token", None)
     for key in ("source_chats", "include_keywords", "exclude_keywords"):
         env_name = key.upper()
         if os.getenv(env_name):
@@ -637,7 +650,7 @@ async def send_bot_ping(
     (gizli bağlantılar dâhil) ve buton linklerini korur.
     """
     if not token:
-        return False, "notify_bot_token tanımlı değil."
+        return False, "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil."
     payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:MESSAGE_LIMIT]}
     if entities:
         payload["entities"] = json.dumps(entities)
@@ -665,7 +678,7 @@ async def send_bot_media(
 ) -> tuple[bool, str]:
     """Bildirim botuyla fotoğraf/video/dosya gönder (medya da bildirim üretsin)."""
     if not token:
-        return False, "notify_bot_token tanımlı değil."
+        return False, "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil."
     method = {"photo": "sendPhoto", "video": "sendVideo"}.get(kind, "sendDocument")
     field = {"photo": "photo", "video": "video"}.get(kind, "document")
     fields: dict[str, Any] = {"chat_id": chat_id}
@@ -741,8 +754,18 @@ def build_message_link(event: Any, source: dict | None = None) -> str | None:
 # yazıyordu. Aşağıdaki yardımcılar bağlantıyı nerede olursa olsun bulur,
 # iletiyle birlikte gönderir ve bildirimde tıklanabilir tutar.
 
-URL_RE = re.compile(r"(?:https?://|t\.me/|telegram\.me/|www\.)[^\s<>\"')\]}]+", re.IGNORECASE)
+URL_RE = re.compile(
+    r"(?:"
+    r"(?:https?://|whatsapp://|t\.me/|telegram\.me/|www\.|wa\.me/|wa\.link/)"
+    r"[^\s<>\"')\]}]+"
+    r"|(?<![\w.-])(?:[\w-]+\.)*(?:wa\.me|wa\.link|whatsapp\.(?:com|net)|akakce\.com|"
+    r"marketfiyati\.org\.tr|google\.com(?:\.tr)?)(?:[/?#][^\s<>\"')\]}]*)?"
+    r"(?=$|[\s<>\"')\]},;:!?…])"
+    r")",
+    re.IGNORECASE,
+)
 _URL_TAIL_TRIM = ".,;:!?…\"'”’)]}>»"
+DISCLOSURE_TOKEN_RE = re.compile(r"(?<![\w#])#?(?:işbirliği|reklam)(?!\w)", re.IGNORECASE)
 
 
 def utf16_length(text: str) -> int:
@@ -764,7 +787,12 @@ def clean_url(url: Any) -> str:
     while text and text[-1] in _URL_TAIL_TRIM:
         text = text[:-1]
     lowered = text.lower()
-    if lowered.startswith(("t.me/", "telegram.me/", "www.")):
+    scheme_less_service = re.match(
+        r"(?:[\w-]+\.)*(?:wa\.me|wa\.link|whatsapp\.(?:com|net)|akakce\.com|"
+        r"marketfiyati\.org\.tr|google\.com(?:\.tr)?)(?:$|[/?#])",
+        lowered,
+    )
+    if lowered.startswith(("t.me/", "telegram.me/", "www.")) or scheme_less_service:
         text = "https://" + text
     return text
 
@@ -832,6 +860,265 @@ def button_link(button: Any) -> tuple[str, str] | None:
     return cleaned, label
 
 
+def is_whatsapp_url(url: Any) -> bool:
+    """WhatsApp bağlantı alan adlarını tanı; benzer adlı yabancı alanları eşleştirme."""
+    text = clean_url(url)
+    lowered = text.lower()
+    if lowered.startswith("whatsapp://"):
+        return True
+    if "://" not in lowered:
+        text = "https://" + text
+    try:
+        host = (urllib.parse.urlsplit(text).hostname or "").rstrip(".").lower()
+    except ValueError:
+        return False
+    return (
+        host == "wa.me" or host.endswith(".wa.me")
+        or host == "wa.link" or host.endswith(".wa.link")
+        or host == "whatsapp.com" or host.endswith(".whatsapp.com")
+        or host == "whatsapp.net" or host.endswith(".whatsapp.net")
+    )
+
+
+def _utf16_to_index(text: str, offset: int) -> int:
+    """Telegram UTF-16 offset'ini Python karakter indeksine çevir."""
+    target = max(0, int(offset or 0))
+    units = 0
+    for index, char in enumerate(text):
+        width = 2 if ord(char) > 0xFFFF else 1
+        if units + width > target:
+            # Telegram entity'leri normalde bir Unicode karakterinin ortasına
+            # düşmez; bozuk girdide karakteri korumak için sağa yuvarla.
+            return index + 1
+        units += width
+        if units == target:
+            return index + 1
+    return len(text)
+
+
+def _merge_spans(spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Örtüşen/bitişik silme aralıklarını tek aralığa indir."""
+    ordered = sorted((start, end) for start, end in spans if end > start)
+    merged: list[list[int]] = []
+    for start, end in ordered:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
+
+
+def _with_adjacent_space(text: str, start: int, end: int) -> tuple[int, int]:
+    """Yalnızca silinen parçanın yanındaki boşluk/tabı al; başka metne dokunma."""
+    left, right = start, end
+    while left > 0 and text[left - 1] in " \t":
+        left -= 1
+    if left == start:
+        while right < len(text) and text[right] in " \t":
+            right += 1
+    return left, right
+
+
+def _remove_spans(text: str, spans: Sequence[tuple[int, int]]) -> str:
+    for start, end in reversed(spans):
+        text = text[:start] + text[end:]
+    return text
+
+
+def _index_after_removals(index: int, removed_spans: Sequence[tuple[int, int]]) -> int:
+    removed = sum(
+        max(0, min(index, end) - start)
+        for start, end in removed_spans if index > start
+    )
+    return max(0, index - removed)
+
+
+def _disclosure_spans(
+    text: str,
+    *,
+    protected: Sequence[tuple[int, int]] = (),
+) -> list[tuple[int, int]]:
+    """Yalnızca bağımsız ``işbirliği``/``reklam`` kelimelerini ve hashtag'lerini bul."""
+    spans: list[tuple[int, int]] = []
+    for match in DISCLOSURE_TOKEN_RE.finditer(text or ""):
+        if any(match.start() < end and start < match.end() for start, end in protected):
+            continue
+        spans.append(_with_adjacent_space(text, match.start(), match.end()))
+    return _merge_spans(spans)
+
+
+def clean_disclosure_tokens(text: str) -> str:
+    """Disclosure etiketlerini kaldır; URL'lerin içindeki parçaları değiştirme."""
+    text = text or ""
+    url_spans: list[tuple[int, int]] = []
+    for match in URL_RE.finditer(text):
+        raw_url = match.group(0).rstrip(_URL_TAIL_TRIM)
+        if raw_url:
+            url_spans.append((match.start(), match.start() + len(raw_url)))
+    return _remove_spans(text, _disclosure_spans(text, protected=url_spans))
+
+
+def _remap_entities(
+    text: str,
+    new_text: str,
+    entities: Sequence[Any],
+    removed_spans: Sequence[tuple[int, int]],
+) -> list[Any]:
+    """Metin temizlenince UTF-16 entity aralıklarını doğru yere kaydır."""
+    result: list[Any] = []
+
+    for entity in entities:
+        old_offset = int(getattr(entity, "offset", 0) or 0)
+        old_length = int(getattr(entity, "length", 0) or 0)
+        if old_offset < 0 or old_length <= 0:
+            continue
+        old_start = _utf16_to_index(text, old_offset)
+        old_end = _utf16_to_index(text, old_offset + old_length)
+        start = _index_after_removals(old_start, removed_spans)
+        end = max(start, _index_after_removals(old_end, removed_spans))
+        if end <= start:
+            continue
+        try:
+            cloned = copy.copy(entity)
+            cloned.offset = utf16_length(new_text[:start])
+            cloned.length = utf16_length(new_text[start:end])
+        except Exception:  # noqa: BLE001 - entity bilinmiyorsa içeriği koruyup atla
+            log.debug("Mesaj entity'si temizlenen metne taşınamadı: %s", type(entity).__name__)
+            continue
+        if cloned.length > 0:
+            result.append(cloned)
+    return result
+
+
+def sanitize_message(obj: Any) -> SimpleNamespace:
+    """İletilecek kopyayı temizle; kaynak Telethon mesajına hiçbir zaman dokunma.
+
+    Yalnızca bağımsız ``#işbirliği``/``işbirliği``/``#reklam``/``reklam``
+    ifadeleri ile doğrudan WhatsApp URL'leri, gizli WhatsApp entity'leri ve
+    WhatsApp hedefli inline butonlar kaldırılır. Diğer metin, entity, medya ve
+    linkler korunur.
+    """
+    message = _as_message(obj)
+    text = message_text(obj)
+    entities = message_entities(message)
+    removed: list[tuple[int, int]] = []
+    visible_urls: list[tuple[int, int]] = []
+
+    for match in URL_RE.finditer(text):
+        raw_url = match.group(0).rstrip(_URL_TAIL_TRIM)
+        if not raw_url:
+            continue
+        span = (match.start(), match.start() + len(raw_url))
+        visible_urls.append(span)
+        if is_whatsapp_url(raw_url):
+            removed.append(_with_adjacent_space(text, *span))
+
+    disclosure_spans = _disclosure_spans(text, protected=visible_urls)
+    removed.extend(disclosure_spans)
+    removed_spans = _merge_spans(removed)
+    cleaned_text = _remove_spans(text, removed_spans)
+    remapped_entities = _remap_entities(text, cleaned_text, entities, removed_spans) if removed_spans else list(entities)
+    # Gizli WhatsApp linkinde görünen etiket sıradan metin olarak kalsın; yalnızca
+    # link entity'sini kaldırmak, istenmeyen metin kaybını önler.
+    cleaned_entities = [
+        entity for entity in remapped_entities
+        if not is_whatsapp_url(getattr(entity, "url", None))
+    ]
+
+    preserved_links = list(getattr(message, "preserved_links", None) or [])
+    for entity in entities:
+        url = getattr(entity, "url", None)
+        if not url or is_whatsapp_url(url):
+            continue
+        old_start = _utf16_to_index(text, int(getattr(entity, "offset", 0) or 0))
+        old_end = _utf16_to_index(
+            text,
+            int(getattr(entity, "offset", 0) or 0) + int(getattr(entity, "length", 0) or 0),
+        )
+        new_start = _index_after_removals(old_start, removed_spans)
+        new_end = _index_after_removals(old_end, removed_spans)
+        if old_end > old_start and new_end <= new_start:
+            preserved_links.append({
+                "url": clean_url(url),
+                # Etiketi (#reklam/#işbirliği) temizleme kuralını tekrar
+                # eklememek için yalnızca hedef URL'yi taşı.
+                "label": "",
+                "kind": "webpage",
+            })
+    # Yeniden sanitize edilince ya da aynı URL birden fazla entity'de bulununca
+    # taşınan bağlantıları çoğaltma.
+    unique_preserved: list[dict[str, str]] = []
+    seen_preserved: set[str] = set()
+    for item in preserved_links:
+        if not isinstance(item, dict):
+            continue
+        url = clean_url(item.get("url"))
+        key = url.rstrip("/").lower()
+        if not url or key in seen_preserved:
+            continue
+        seen_preserved.add(key)
+        unique_preserved.append({
+            "url": url,
+            "label": str(item.get("label") or "").strip(),
+            "kind": str(item.get("kind") or "webpage"),
+        })
+    preserved_links = unique_preserved
+
+    markup = getattr(message, "reply_markup", None)
+    cleaned_rows: list[SimpleNamespace] = []
+    markup_changed = False
+    for row in getattr(markup, "rows", None) or []:
+        cleaned_buttons: list[Any] = []
+        for button in getattr(row, "buttons", None) or []:
+            info = button_link(button)
+            if info and is_whatsapp_url(info[0]):
+                markup_changed = True
+                continue
+            if not info:
+                # Callback/non-URL buttons are not rewritten; copying them is
+                # outside the Bot API URL-button path.
+                cleaned_buttons.append(button)
+                continue
+            label = str(getattr(button, "text", "") or "")
+            new_label = clean_disclosure_tokens(label)
+            if new_label != label:
+                markup_changed = True
+                clone = copy.copy(button)
+                clone.text = new_label.strip() or "Bağlantı"
+                cleaned_buttons.append(clone)
+            else:
+                cleaned_buttons.append(button)
+        if cleaned_buttons:
+            cleaned_rows.append(SimpleNamespace(buttons=cleaned_buttons))
+        elif getattr(row, "buttons", None):
+            markup_changed = True
+    cleaned_markup = SimpleNamespace(rows=cleaned_rows) if markup is not None else None
+
+    media = getattr(message, "media", None)
+    webpage = getattr(media, "webpage", None)
+    if webpage is not None and is_whatsapp_url(getattr(webpage, "url", None)):
+        media = None
+
+    changed = (
+        cleaned_text != text
+        or len(cleaned_entities) != len(entities)
+        or markup_changed
+        or media is not getattr(message, "media", None)
+    )
+    return SimpleNamespace(
+        id=getattr(message, "id", None),
+        message=cleaned_text,
+        raw_text=cleaned_text,
+        entities=cleaned_entities,
+        reply_markup=cleaned_markup,
+        media=media,
+        preserved_links=preserved_links,
+        file=getattr(message, "file", None),
+        video=getattr(message, "video", None),
+        changed=changed,
+    )
+
+
 def extract_links(obj: Any) -> list[dict[str, str]]:
     """Mesajdaki tüm bağlantıları bul: gizli hyperlink, buton, önizleme, düz URL.
 
@@ -873,6 +1160,10 @@ def extract_links(obj: Any) -> list[dict[str, str]]:
 
     for url in URL_RE.findall(text):
         add(url, None, "text")
+
+    for item in getattr(message, "preserved_links", None) or []:
+        if isinstance(item, dict):
+            add(item.get("url"), item.get("label"), str(item.get("kind") or "webpage"))
 
     return found
 
@@ -919,11 +1210,72 @@ def build_link_appendix(obj: Any, kinds: Sequence[str] | None = ("button", "webp
     return "\n".join(lines)
 
 
+def _search_query(obj: Any, limit: int = 200) -> str:
+    """İlk kullanılabilir metin satırından URL/etiketleri çıkartıp arama sorgusu kur."""
+    text = message_text(obj)
+    text = URL_RE.sub(" ", text)
+    for raw_line in text.splitlines():
+        line = " ".join(clean_disclosure_tokens(raw_line).split()).strip(" \t-–—|:;,.!🔥⚡️⭐️✅❗️")
+        if any(char.isalnum() for char in line):
+            return line[:limit].strip()
+    return ""
+
+
+def _price_search_service(url: str, label: str = "") -> str | None:
+    """Bir URL'nin Akakçe, Google Shopping veya Market Fiyatı olduğunu belirle."""
+    try:
+        parsed = urllib.parse.urlsplit(clean_url(url))
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower().rstrip(".")
+    path = parsed.path.lower()
+    query = urllib.parse.parse_qs(parsed.query)
+    label_lower = (label or "").casefold()
+    if (
+        host == "akakce.com" or host.endswith(".akakce.com")
+        or "akakçe" in label_lower or "akakce" in label_lower
+    ):
+        return "akakce"
+    if (
+        host == "marketfiyati.org.tr" or host.endswith(".marketfiyati.org.tr")
+        or "market fiyat" in label_lower or "marketfiyati" in label_lower
+    ):
+        return "market_fiyati"
+    if (
+        host == "google.com" or host.endswith(".google.com")
+        or host == "google.com.tr" or host.endswith(".google.com.tr")
+    ):
+        shopping_url = (
+            path.startswith("/shopping")
+            or "shop" in query.get("tbm", [])
+            or "28" in query.get("udm", [])
+            or "shopping" in label_lower
+            or "alışveriş" in label_lower
+        )
+        if shopping_url:
+            return "google_shopping"
+    if "google shopping" in label_lower or "google alışveriş" in label_lower:
+        return "google_shopping"
+    return None
+
+
+def _price_search_url(service: str, query: str) -> str:
+    if service == "akakce":
+        return "https://www.akakce.com/arama/?" + urllib.parse.urlencode({"q": query})
+    if service == "google_shopping":
+        params = urllib.parse.urlencode((
+            ("udm", "28"), ("q", query), ("hl", "tr"), ("gl", "tr"),
+        ))
+        return "https://www.google.com/search?" + params
+    return "https://marketfiyati.org.tr"
+
+
 def build_inline_keyboard(obj: Any) -> dict | None:
-    """Buton linklerini Bot API inline klavyesi olarak yeniden kur."""
-    message = _as_message(obj)
+    """Kaynak butonlarını koru ve eksik arama hizmetlerini klavyeye ekle."""
+    message = sanitize_message(obj)
     markup = getattr(message, "reply_markup", None)
     rows: list[list[dict[str, str]]] = []
+    existing_button_count = 0
     for row in getattr(markup, "rows", None) or []:
         buttons: list[dict[str, str]] = []
         for button in getattr(row, "buttons", None) or []:
@@ -934,6 +1286,27 @@ def build_inline_keyboard(obj: Any) -> dict | None:
             buttons.append({"text": (label or url)[:64], "url": url})
         if buttons:
             rows.append(buttons)
+            existing_button_count += len(buttons)
+
+    present_services = {
+        service
+        for link in extract_links(message)
+        if (service := _price_search_service(link["url"], link.get("label") or ""))
+    }
+    query = _search_query(message)
+    additions: list[dict[str, str]] = []
+    for service, label in PRICE_SEARCH_BUTTONS:
+        # Market Fiyatı düğmesi standarttır. Akakçe/Google aramaları için,
+        # sınıflandırma yapmadan, mevcut ilk metin satırını kullanır.
+        if service != "market_fiyati" and not query:
+            continue
+        if service in present_services:
+            continue
+        additions.append({"text": label, "url": _price_search_url(service, query)})
+
+    available_slots = max(0, MAX_INLINE_KEYBOARD_BUTTONS - existing_button_count)
+    if additions and available_slots:
+        rows.append(additions[:available_slots])
     return {"inline_keyboard": rows} if rows else None
 
 
@@ -961,8 +1334,21 @@ def compose_message(
     kaynak adının UTF-16 ``source_name_offset`` / ``source_name_length``
     değerleri bulunur; entity'ler bunlara göre kurulur.
     """
-    body = message_text(obj)
-    appendix_text = build_link_appendix(obj, kinds=link_kinds) if link_kinds else ""
+    cleaned_obj = sanitize_message(obj)
+    body = message_text(cleaned_obj)
+    appendix_text = build_link_appendix(cleaned_obj, kinds=link_kinds) if link_kinds else ""
+    # Disclosure sözcüğü altında saklı, WhatsApp dışı hedefi metinden silme:
+    # etiket kaldırılmış olsa bile hedef URL link_appendix=off iken de korunmalı.
+    carried = getattr(cleaned_obj, "preserved_links", None) or []
+    if carried:
+        carried_only = SimpleNamespace(
+            message=body, entities=[], reply_markup=None, media=None, preserved_links=carried,
+        )
+        carried_text = build_link_appendix(carried_only, kinds=("webpage",))
+        existing_lines = set(appendix_text.splitlines())
+        extra_lines = [line for line in carried_text.splitlines() if line not in existing_lines]
+        if extra_lines:
+            appendix_text = "\n".join(part for part in (appendix_text, *extra_lines) if part)
     source_line = f"🔗 {message_link_label}: {message_link}" if message_link else ""
     name = (source_name or "").strip() or None
 
@@ -999,6 +1385,8 @@ def compose_message(
         "source_name": name,
         "source_name_offset": name_offset,
         "source_name_length": utf16_length(name) if (name_block and name) else 0,
+        "entities": entities_for_text(cleaned_obj, body),
+        "message": cleaned_obj,
     }
 
 
@@ -1855,7 +2243,9 @@ def atomic_write_json(path: Path, data: dict) -> None:
     hedef dosyaya yazmıyoruz.
     """
     path = Path(path)
-    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    persisted_data = dict(data)
+    persisted_data.pop("notify_bot_token", None)
+    payload = json.dumps(persisted_data, ensure_ascii=False, indent=2) + "\n"
     directory = str(path.parent) if str(path.parent) else "."
     handle = tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=directory,
@@ -2087,7 +2477,9 @@ def apply_runtime_config(config: dict) -> list[str]:
     NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
     SINGLE_MESSAGE = config_flag(config.get("single_message"), True)
     CLEAN_COMMANDS = config_flag(config.get("clean_commands"), True)
-    token = str(config.get("notify_bot_token") or os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
+    # Bildirim token'ının tek kaynağı environment/Actions secret'ı olsun;
+    # config.json içindeki eski notify_bot_token alanı artık kullanılmaz.
+    token = str(os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
     NOTIFY_BOT_TOKEN = "" if token.lower() in {"null", "none", "yok"} else token
 
     if not FILTER_INCLUDE_ENABLED:
@@ -2600,9 +2992,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
         log.warning("admin_user_id boş: grup komutları kimse tarafından kullanılamaz.")
     if not NOTIFY_BOT_TOKEN:
         log.warning(
-            "notify_bot_token tanımlı değil: mesajları kendi hesabın gönderdiği için Telegram "
-            "BİLDİRİM ÜRETMEZ (Kayıtlı Mesajlar'da da grupta da). Sesli bildirim istiyorsan "
-            "@BotFather'dan bir bot oluşturup gruba ekle ve notify_bot_token alanına token'ı yaz."
+            "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil: mesajları kendi hesabın "
+            "gönderdiği için Telegram BİLDİRİM ÜRETMEZ. Sesli bildirim istiyorsan @BotFather'dan "
+            "bir bot oluşturup gruba ekle ve token'ı NOTIFY_BOT_TOKEN secret'ında sakla."
         )
 
     def is_control_event(event: events.NewMessage.Event) -> bool:
@@ -3062,7 +3454,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 DESTINATION,
                 media,
                 caption=composed["text"],
-                formatting_entities=entities_for_text(event, composed["body"]),
+                formatting_entities=composed["entities"],
                 force_document=False,
             )
         composed = compose_message(event, limit=MESSAGE_LIMIT - 100,
@@ -3070,7 +3462,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         return await client.send_message(
             DESTINATION,
             composed["text"],
-            formatting_entities=entities_for_text(event, composed["body"]),
+            formatting_entities=composed["entities"],
             link_preview=True,
         )
 
@@ -3097,7 +3489,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             DESTINATION,
             media_buffer(data, media_upload_name(message)),
             caption=composed["text"] or None,
-            formatting_entities=entities_for_text(event, composed["body"]),
+            formatting_entities=composed["entities"],
             attributes=reupload_attributes(message),
             force_document=False,
         )
@@ -3114,7 +3506,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         return await client.send_message(
             DESTINATION,
             composed["text"] + note,
-            formatting_entities=entities_for_text(event, composed["body"]),
+            formatting_entities=composed["entities"],
             link_preview=True,
         )
 
@@ -3172,7 +3564,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 event, limit=CAPTION_LIMIT - 24, link_kinds=BOT_LINK_KINDS,
                 message_link=message_link, source_name=footer_name,
             )
-            entities = bot_api_entities(event, composed["body"]) + source_name_entity(composed)
+            entities = bot_api_entities(composed["message"], composed["body"]) + source_name_entity(composed)
             try:
                 data = await client.download_media(event.message, bytes)
             except Exception as exc:  # noqa: BLE001 - medya inmezse bildirim yine gitsin
@@ -3194,7 +3586,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             event, limit=MESSAGE_LIMIT - 200, link_kinds=BOT_LINK_KINDS,
             message_link=message_link, source_name=footer_name,
         )
-        entities = bot_api_entities(event, composed["body"]) + source_name_entity(composed)
+        entities = bot_api_entities(composed["message"], composed["body"]) + source_name_entity(composed)
         text = composed["text"] or f"🔔 Yeni fırsat – {source_name}"
         ok, detail = await send_bot_ping(
             NOTIFY_BOT_TOKEN, DESTINATION_ID, text,
@@ -3209,7 +3601,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
     async def deliver(event: events.NewMessage.Event, source_name: str) -> tuple[bool, str]:
         """Sırayla iletim yollarını dene; ilk başarılı olanı kullan."""
         last_error = "denenmedi"
-        for mode in DELIVERY_CHAIN:
+        sanitized = sanitize_message(event)
+        modes = DELIVERY_CHAIN
+        if sanitized.changed:
+            # Forward özgün iletiyi değiştirmeden taşır; temizleme gereken
+            # iletilerde kopyalama zincirine geç ki yasaklı içerik kaçmasın.
+            modes = [mode for mode in DELIVERY_CHAIN if mode != "forward"]
+            log.info("Mesaj temizleme gerektiriyor; 'forward' atlanacak (kaynak: %s).", source_name)
+        for mode in modes:
             try:
                 result = await SENDERS[mode](event)
             except errors.FloodWaitError as exc:
@@ -3300,8 +3699,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 reply += ("\nGizli linkler ve buton linkleri de bildirime eklenir; "
                           "medya varsa bot onu da gönderir.")
             else:
-                reply += ("\n⚠️ notify_bot_token yok: mesajı kendi hesabın gönderdiği için "
-                          "bildirim almazsın. @BotFather'dan bot oluşturup gruba ekle.")
+                reply += ("\n⚠️ NOTIFY_BOT_TOKEN yok: mesajı kendi hesabın gönderdiği için "
+                          "bildirim almazsın. BotFather'dan bot oluşturup gruba ekle ve token'ı "
+                          "GitHub Actions secret'ı olarak tanımla.")
             await control_reply(event, reply)
         elif command in {"/source", "/sources", "/kaynak", "/kaynaklar"}:
             await control_reply(event, build_source_text())

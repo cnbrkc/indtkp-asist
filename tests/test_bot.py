@@ -863,6 +863,12 @@ class AtomicWriteTest(unittest.TestCase):
         bot.atomic_write_json(self.path, {"yeni": True})
         self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"yeni": True})
 
+    def test_legacy_token_is_never_persisted(self):
+        bot.atomic_write_json(self.path, {"notify_bot_token": "legacy-test-value", "setting": True})
+        written = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertNotIn("notify_bot_token", written)
+        self.assertEqual(written["setting"], True)
+
     def test_failure_leaves_original_file_intact(self):
         self.path.write_text('{"eski": true}', encoding="utf-8")
         with mock.patch.object(bot.json, "dumps", side_effect=ValueError("boom")):
@@ -1060,7 +1066,7 @@ class RealConfigTest(unittest.TestCase):
         self.assertIsInstance(config["control_chat"], int)
         self.assertIsInstance(config["destination"], int)
         self.assertEqual(bot.parse_admin_ids(config["admin_user_id"]), {1143378073})
-        self.assertIn("notify_bot_token", config)
+        self.assertNotIn("notify_bot_token", config)
         with mock.patch.dict(os.environ, CheckEnvironmentTest.good_env, clear=False):
             self.assertEqual(bot.check_environment(config), [])
 
@@ -1070,7 +1076,7 @@ if __name__ == "__main__":
 
 
 class BotPingTest(unittest.TestCase):
-    """notify_bot_token ile gönderilen bildirim ping'i."""
+    """NOTIFY_BOT_TOKEN secret'ıyla gönderilen bildirim ping'i."""
 
     def test_no_token_returns_false_without_calling_api(self):
         with mock.patch("bot.urllib.request.urlopen") as urlopen:
@@ -1101,9 +1107,9 @@ class BotPingTest(unittest.TestCase):
 
 
 class EnvOverrideTest(unittest.TestCase):
-    def _config_file(self):
+    def _config_file(self, config=None):
         handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
-        json.dump({"source_chats": ["@firsatz"], "control_chat": "me"}, handle)
+        json.dump(config if config is not None else {"source_chats": ["@firsatz"], "control_chat": "me"}, handle)
         handle.close()
         self.addCleanup(os.unlink, handle.name)
         return handle.name
@@ -1122,10 +1128,31 @@ class EnvOverrideTest(unittest.TestCase):
             config = bot.load_config(self._config_file())
         self.assertNotIn("delivery_modes", config)
 
+    def test_legacy_config_token_is_discarded(self):
+        path = self._config_file({
+            "source_chats": ["@firsatz"],
+            "control_chat": "me",
+            "notify_bot_token": "legacy-test-value",
+        })
+        with mock.patch.dict(os.environ, {"DELIVERY_MODES": "", "MAX_MEDIA_MB": ""}, clear=False):
+            config = bot.load_config(path)
+        self.assertNotIn("notify_bot_token", config)
+
     def test_match_mode_environment_override_is_loaded(self):
         with mock.patch.dict(os.environ, {"MATCH_MODE": "forward_all"}, clear=False):
             config = bot.load_config(self._config_file())
         self.assertEqual(config["match_mode"], "forward_all")
+
+    def test_notify_bot_secret_is_the_only_token_source(self):
+        old_token = bot.NOTIFY_BOT_TOKEN
+        self.addCleanup(setattr, bot, "NOTIFY_BOT_TOKEN", old_token)
+        with mock.patch.dict(os.environ, {"NOTIFY_BOT_TOKEN": "test-secret-token"}, clear=False):
+            bot.apply_runtime_config({"notify_bot_token": "ignored-legacy-value"})
+        self.assertEqual(bot.NOTIFY_BOT_TOKEN, "test-secret-token")
+
+        with mock.patch.dict(os.environ, {"NOTIFY_BOT_TOKEN": ""}, clear=False):
+            bot.apply_runtime_config({"notify_bot_token": "ignored-legacy-value"})
+        self.assertEqual(bot.NOTIFY_BOT_TOKEN, "")
 
 
 # ---------------------------------------------------------------------------
@@ -1263,15 +1290,142 @@ class ExtractLinksTest(unittest.TestCase):
     def test_inline_keyboard_is_rebuilt_for_bot_api(self):
         buttons = [SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)]
         message = make_message("çay", buttons=buttons)
-        self.assertEqual(bot.build_inline_keyboard(message), {"inline_keyboard": [[
-            {"text": "Fırsata Git", "url": "https://amzn.to/btn"},
-        ]]})
+        self.assertEqual(bot.build_inline_keyboard(message), {"inline_keyboard": [
+            [{"text": "Fırsata Git", "url": "https://amzn.to/btn"}],
+            [
+                {"text": "Akakçe'de ara", "url": "https://www.akakce.com/arama/?q=%C3%A7ay"},
+                {"text": "Google Alışveriş", "url": "https://www.google.com/search?udm=28&q=%C3%A7ay&hl=tr&gl=tr"},
+                {"text": "Market Fiyatı", "url": "https://marketfiyati.org.tr"},
+            ],
+        ]})
 
     def test_non_url_buttons_are_ignored(self):
         callback = SimpleNamespace(text="Onayla", url=None, type=SimpleNamespace(data=b"1"))
         message = make_message("çay", buttons=[callback])
-        self.assertIsNone(bot.build_inline_keyboard(message))
+        keyboard = bot.build_inline_keyboard(message)
+        self.assertEqual(keyboard, {"inline_keyboard": [[
+            {"text": "Akakçe'de ara", "url": "https://www.akakce.com/arama/?q=%C3%A7ay"},
+            {"text": "Google Alışveriş", "url": "https://www.google.com/search?udm=28&q=%C3%A7ay&hl=tr&gl=tr"},
+            {"text": "Market Fiyatı", "url": "https://marketfiyati.org.tr"},
+        ]]})
         self.assertEqual(bot.extract_links(message), [])
+
+
+class MessageSanitizationTest(unittest.TestCase):
+    def test_only_standalone_disclosure_terms_are_removed(self):
+        text = (
+            "🔥 ÇAY #işbirliği #İŞBİRLİĞİ işbirliği #REKLAM reklamcı kampanyalı "
+            "promoreklam foo#reklam https://example.com/reklam #isbirligi"
+        )
+        cleaned = bot.sanitize_message(make_message(text, media=False))
+        self.assertEqual(
+            cleaned.message,
+            "🔥 ÇAY reklamcı kampanyalı promoreklam foo#reklam "
+            "https://example.com/reklam #isbirligi",
+        )
+        self.assertTrue(cleaned.changed)
+
+    def test_removes_whatsapp_links_and_remaps_utf16_entities(self):
+        text = (
+            "🔥 ÇAY #reklam WhatsApp'tan bilgi https://wa.me/123 "
+            "gizli WhatsApp bağlantısı burada 9 TL."
+        )
+        hidden_label = "gizli WhatsApp bağlantısı"
+        hidden_start = text.index(hidden_label)
+        price_start = text.index("9 TL")
+        entities = [
+            tl_types.MessageEntityTextUrl(
+                offset=bot.utf16_length(text[:hidden_start]),
+                length=bot.utf16_length(hidden_label),
+                url="https://chat.whatsapp.com/invite",
+            ),
+            tl_types.MessageEntityBold(
+                offset=bot.utf16_length(text[:price_start]), length=bot.utf16_length("9 TL"),
+            ),
+        ]
+        cleaned = bot.sanitize_message(make_message(text, entities=entities, media=False))
+        self.assertEqual(
+            cleaned.message,
+            "🔥 ÇAY WhatsApp'tan bilgi gizli WhatsApp bağlantısı burada 9 TL.",
+            "gizli linkin görünen etiketi metin olarak korunmalı",
+        )
+        self.assertEqual(len(cleaned.entities), 1, "WhatsApp hyperlink entity'si kaldırılmalı")
+        entity = cleaned.entities[0]
+        self.assertEqual(
+            bot.utf16_slice(cleaned.message, entity.offset, entity.length), "9 TL",
+            "emoji ve silinen içerikten sonra biçim entity'si kaymamalı",
+        )
+        self.assertEqual(bot.extract_links(cleaned), [])
+        self.assertTrue(cleaned.changed)
+
+    def test_external_link_on_removed_disclosure_label_is_preserved(self):
+        text = "🔥 #reklam"
+        entity = tl_types.MessageEntityTextUrl(
+            offset=bot.utf16_length("🔥 "), length=bot.utf16_length("#reklam"),
+            url="https://example.com/campaign",
+        )
+        composed = bot.compose_message(make_message(text, entities=[entity], media=False))
+        self.assertNotIn("#reklam", composed["text"])
+        self.assertIn("https://example.com/campaign", composed["text"],
+                      "temizlenen etiketin başka domaine giden gizli URL'si korunmalı")
+        with_links_disabled = bot.compose_message(
+            make_message(text, entities=[entity], media=False), link_kinds=(),
+        )
+        self.assertIn("https://example.com/campaign", with_links_disabled["text"],
+                      "temizlenen etiketteki bağımsız bağlantı link_appendix=off iken de kaybolmamalı")
+
+    def test_whatsapp_host_matching_is_not_substring_based(self):
+        self.assertTrue(bot.is_whatsapp_url("https://wa.me/905551234567"))
+        self.assertTrue(bot.is_whatsapp_url("https://api.whatsapp.com/send?phone=1"))
+        other_host = "https://notwhatsapp.com/path"
+        self.assertFalse(bot.is_whatsapp_url(other_host))
+        self.assertFalse(bot.is_whatsapp_url("https://whatsapp.com.example.org/path"))
+        self.assertFalse(bot.is_whatsapp_url("https://example.com/?next=wa.me"))
+        self.assertEqual(
+            bot.sanitize_message(make_message(other_host, media=False)).message, other_host,
+            "WhatsApp adına benzeyen diğer domain'ler korunmalı",
+        )
+
+    def test_search_service_detection_uses_existing_button_labels(self):
+        redirect = "https://link.example/redirect"
+        self.assertEqual(bot._price_search_service(redirect, "Akakçe'de ara"), "akakce")
+        self.assertEqual(bot._price_search_service(redirect, "Google Alışveriş"), "google_shopping")
+        self.assertEqual(bot._price_search_service(redirect, "Market Fiyatı"), "market_fiyati")
+
+    def test_search_buttons_deduplicate_services_already_present(self):
+        text = "Çay https://www.akakce.com/arama/?q=cay Google Alışveriş"
+        hidden_label = "Google Alışveriş"
+        entity = tl_types.MessageEntityTextUrl(
+            offset=bot.utf16_length(text[:text.index(hidden_label)]),
+            length=bot.utf16_length(hidden_label),
+            url="https://www.google.com/search?udm=28&q=cay&hl=tr&gl=tr",
+        )
+        market_button = SimpleNamespace(
+            text="Market Fiyatı", url="https://marketfiyati.org.tr", type=None,
+        )
+        message = make_message(text, entities=[entity], buttons=[market_button], media=False)
+        keyboard = bot.build_inline_keyboard(message)
+        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+        services = [bot._price_search_service(button["url"], button["text"]) for button in buttons]
+        self.assertEqual(services.count("akakce"), 0, "görünen Akakçe URL'si tekrar eklenmemeli")
+        self.assertEqual(services.count("google_shopping"), 0, "gizli Google linki tekrar eklenmemeli")
+        self.assertEqual(services.count("market_fiyati"), 1, "kaynak Market Fiyatı düğmesi korunmalı")
+        self.assertEqual(len(buttons), 1)
+
+    def test_only_missing_services_are_added_and_body_is_unchanged(self):
+        text = "Çay fırsatı https://akakce.com/arama/?q=cay"
+        message = make_message(text, media=False)
+        keyboard = bot.build_inline_keyboard(message)
+        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+        self.assertEqual([button["text"] for button in buttons], ["Google Alışveriş", "Market Fiyatı"])
+        composed = bot.compose_message(message)
+        self.assertEqual(composed["text"], text, "inline düğmeler gövdeye karakter eklememeli")
+
+    def test_market_fiyati_is_added_without_a_product_query(self):
+        keyboard = bot.build_inline_keyboard(make_message("", media=False))
+        self.assertEqual(keyboard, {"inline_keyboard": [[
+            {"text": "Market Fiyatı", "url": "https://marketfiyati.org.tr"},
+        ]]})
 
 
 class NoteCommandMessagesTest(unittest.TestCase):
