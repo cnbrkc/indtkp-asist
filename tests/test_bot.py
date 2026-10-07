@@ -1295,7 +1295,7 @@ class ExtractLinksTest(unittest.TestCase):
             [
                 {"text": "Akakçe'de ara", "url": "https://www.akakce.com/arama/?q=%C3%A7ay"},
                 {"text": "Google Alışveriş", "url": "https://www.google.com/search?udm=28&q=%C3%A7ay&hl=tr&gl=tr"},
-                {"text": "Market Fiyatı", "url": "https://marketfiyati.org.tr"},
+                {"text": "Market Fiyatı", "url": "https://marketfiyati.org.tr/ara?q=%C3%A7ay"},
             ],
         ]})
 
@@ -1306,7 +1306,7 @@ class ExtractLinksTest(unittest.TestCase):
         self.assertEqual(keyboard, {"inline_keyboard": [[
             {"text": "Akakçe'de ara", "url": "https://www.akakce.com/arama/?q=%C3%A7ay"},
             {"text": "Google Alışveriş", "url": "https://www.google.com/search?udm=28&q=%C3%A7ay&hl=tr&gl=tr"},
-            {"text": "Market Fiyatı", "url": "https://marketfiyati.org.tr"},
+            {"text": "Market Fiyatı", "url": "https://marketfiyati.org.tr/ara?q=%C3%A7ay"},
         ]]})
         self.assertEqual(bot.extract_links(message), [])
 
@@ -1426,6 +1426,173 @@ class MessageSanitizationTest(unittest.TestCase):
         self.assertEqual(keyboard, {"inline_keyboard": [[
             {"text": "Market Fiyatı", "url": "https://marketfiyati.org.tr"},
         ]]})
+
+    def test_market_fiyati_button_opens_the_product_search(self):
+        """Düğme ana sayfaya değil, ürünün arama sonucuna gitmeli."""
+        keyboard = bot.build_inline_keyboard(make_message("Çay 5 TL", media=False))
+        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+        market = next(button for button in buttons if button["text"] == "Market Fiyatı")
+        self.assertEqual(market["url"], "https://marketfiyati.org.tr/ara?q=%C3%87ay%205%20TL")
+
+    def test_market_fiyati_search_url_encodes_the_query(self):
+        """Türkçe karakterler ve boşluk %XX ile kodlanır (sitede doğrulanan biçim)."""
+        self.assertEqual(
+            bot._price_search_url("market_fiyati", "Çamaşır Deterjanı"),
+            "https://marketfiyati.org.tr/ara?q=%C3%87ama%C5%9F%C4%B1r%20Deterjan%C4%B1",
+        )
+        # Sorgudaki '/' yolu bozmasın diye o da kodlanır.
+        self.assertEqual(
+            bot._price_search_url("market_fiyati", "a/b c"),
+            "https://marketfiyati.org.tr/ara?q=a%2Fb%20c",
+        )
+
+    def test_market_fiyati_search_url_collapses_runaway_whitespace(self):
+        """Baştaki/sondaki ve ardışık boşluklar sorguya sızmamalı."""
+        self.assertEqual(
+            bot._price_search_url("market_fiyati", "  A101   Süt 1 Lt "),
+            "https://marketfiyati.org.tr/ara?q=A101%20S%C3%BCt%201%20Lt",
+        )
+
+    def test_market_fiyati_falls_back_to_home_without_a_usable_query(self):
+        """Sorgu yoksa anlamsız '/ara?q=' yerine ana sayfa korunur."""
+        self.assertEqual(bot._price_search_url("market_fiyati", ""), bot.MARKET_FIYATI_HOME)
+        self.assertEqual(bot._price_search_url("market_fiyati", "   \n\t "), bot.MARKET_FIYATI_HOME)
+
+    def test_market_fiyati_search_url_is_not_duplicated(self):
+        """Kaynakta zaten bir /ara?q= linki varsa ikinci düğme eklenmemeli."""
+        message = make_message(
+            "Çay https://marketfiyati.org.tr/ara?q=%C3%A7ay", media=False,
+        )
+        keyboard = bot.build_inline_keyboard(message)
+        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+        services = [bot._price_search_service(button["url"], button["text"]) for button in buttons]
+        self.assertEqual(services.count("market_fiyati"), 0)
+
+    def test_other_price_services_are_unchanged(self):
+        """Market Fiyatı düzeltmesi Akakçe/Google adreslerini değiştirmemeli."""
+        self.assertEqual(
+            bot._price_search_url("akakce", "çay"),
+            "https://www.akakce.com/arama/?q=%C3%A7ay",
+        )
+        self.assertEqual(
+            bot._price_search_url("google_shopping", "çay"),
+            "https://www.google.com/search?udm=28&q=%C3%A7ay&hl=tr&gl=tr",
+        )
+
+
+class BlankLineNormalizationTest(unittest.TestCase):
+    """Temizlik sonrası arta kalan çoklu boş satırlar tek boş satıra iner."""
+
+    def test_removed_link_does_not_leave_a_hole(self):
+        """WhatsApp linki/#reklam silinince geriye boş satır yığını kalmamalı."""
+        text = "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n129,90 TL\n\nhttps://wa.me/905551234567\n#reklam\n\nStoklarla sınırlı"
+        cleaned = bot.sanitize_message(make_message(text, media=False)).message
+        self.assertEqual(
+            cleaned,
+            "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n129,90 TL\n\nStoklarla sınırlı",
+        )
+        self.assertNotIn("\n\n\n", cleaned, "bölümler arasında en fazla bir boş satır kalmalı")
+
+    def test_three_or_more_newlines_collapse_to_one_blank_line(self):
+        cleaned = bot.sanitize_message(make_message("a\n\n\n\n\nb", media=False)).message
+        self.assertEqual(cleaned, "a\n\nb")
+
+    def test_single_newline_is_preserved(self):
+        """Bitişik satırlar birleştirilmemeli; tek boşluk farkı korunur."""
+        for text in ("a\nb", "a\n\nb"):
+            self.assertEqual(bot.sanitize_message(make_message(text, media=False)).message, text)
+
+    def test_leading_and_trailing_blank_lines_are_trimmed(self):
+        cleaned = bot.sanitize_message(make_message("\n\n\n  çay 5 TL \n\n\n", media=False)).message
+        self.assertEqual(cleaned, "çay 5 TL")
+
+    def test_crlf_line_endings_are_normalized(self):
+        cleaned = bot.sanitize_message(make_message("a\r\n\r\n\r\nb", media=False)).message
+        self.assertEqual(cleaned, "a\n\nb")
+
+    def test_spaces_between_newlines_are_dropped(self):
+        cleaned = bot.sanitize_message(make_message("a\n  \t \nb", media=False)).message
+        self.assertEqual(cleaned, "a\n\nb")
+
+    def test_first_line_indentation_is_kept(self):
+        """Satır içi boşluk içerik sayılır; yalnızca boş satırlar atılır."""
+        cleaned = bot.sanitize_message(make_message("    girintili\nmetin", media=False)).message
+        self.assertEqual(cleaned, "    girintili\nmetin")
+
+    def test_only_whitespace_becomes_empty(self):
+        self.assertEqual(bot.sanitize_message(make_message("\n\n \t\n", media=False)).message, "")
+
+    def test_collapse_never_drops_content(self):
+        """Güvence: temizlik gerekçesi olmayan hiçbir karakter kaybolmaz."""
+        samples = [
+            "çay 5 TL",
+            "a\n\n\n\n\nb\n\n\n\nc",
+            "\n\n\n  çok   boşluklu   metin  \n\n\t\n  ",
+            "a\r\n\r\n\r\nb\r\nc",
+            "🔥 başlık\n\n\nfiyat 9,90 TL",
+            "    girintili\n\n\n\nmetin",
+        ]
+        for text in samples:
+            cleaned = bot.sanitize_message(make_message(text, media=False)).message
+            self.assertEqual(
+                "".join(char for char in cleaned if not char.isspace()),
+                "".join(char for char in text if not char.isspace()),
+                f"içerik kayboldu: {text!r} -> {cleaned!r}",
+            )
+
+    def test_collapse_keeps_every_word_besides_cleaned_tokens(self):
+        """WhatsApp/#reklam dışında silinen hiçbir kelime olmamalı."""
+        text = "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n\n\n129,90 TL\n\nhttps://wa.me/905551234567\n#reklam\n\nStoklarla sınırlı"
+        cleaned = bot.sanitize_message(make_message(text, media=False)).message
+        for word in ("🔥", "A101", "Çamaşır", "Deterjanı", "4", "Lt", "129,90", "TL", "Stoklarla", "sınırlı"):
+            self.assertIn(word, cleaned, f"{word!r} kaybolmamalı")
+        self.assertNotIn("wa.me", cleaned)
+        self.assertNotIn("reklam", cleaned)
+
+    def test_entity_offsets_are_remapped_after_collapse(self):
+        """Boş satırlar silinince biçim entity'leri kaymamalı (UTF-16)."""
+        text = "🔥 Başlık\n\n\n\nhttps://wa.me/905551234567\n\n\n\n9 TL"
+        entity = tl_types.MessageEntityBold(
+            offset=bot.utf16_length(text[:text.index("9 TL")]),
+            length=bot.utf16_length("9 TL"),
+        )
+        cleaned = bot.sanitize_message(make_message(text, entities=[entity], media=False))
+        self.assertEqual(len(cleaned.entities), 1, "entity silinmemeli")
+        moved = cleaned.entities[0]
+        self.assertEqual(
+            bot.utf16_slice(cleaned.message, moved.offset, moved.length), "9 TL",
+            "boş satır sıkıştırmasından sonra entity yanlış metni kapsamamalı",
+        )
+
+    def test_collapse_is_idempotent(self):
+        once = bot.sanitize_message(make_message("a\n\n\n\nb\n\n\n\nc", media=False)).message
+        twice = bot.sanitize_message(make_message(once, media=False)).message
+        self.assertEqual(once, twice)
+
+    def test_blank_line_spans_returns_nothing_for_clean_text(self):
+        self.assertEqual(bot._blank_line_spans("a\n\nb"), [])
+        self.assertEqual(bot._blank_line_spans("düz metin"), [])
+
+    def test_composed_message_has_one_blank_line_between_sections(self):
+        """Başlık / fiyat / ürün linki / mesaj linki / grup: her biri bir boş satırla."""
+        text = "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n\n\n129,90 TL\n\n\n\nStoklarla sınırlı"
+        composed = bot.compose_message(
+            make_message(text, media=False, webpage="https://example.com/urun"),
+            message_link="https://t.me/firsatz/123",
+            source_name="FırsatZ",
+        )
+        self.assertEqual(composed["text"], (
+            "🔥 A101 Çamaşır Deterjanı 4 Lt"
+            "\n\n129,90 TL"
+            "\n\nStoklarla sınırlı"
+            "\n\n🔗 https://example.com/urun"
+            "\n\n🔗 Mesajı Gör: https://t.me/firsatz/123"
+            "\n\nFırsatZ"
+        ))
+
+    def test_changed_flag_is_set_when_only_blank_lines_differ(self):
+        self.assertTrue(bot.sanitize_message(make_message("a\n\n\n\nb", media=False)).changed)
+        self.assertFalse(bot.sanitize_message(make_message("a\n\nb", media=False)).changed)
 
 
 class NoteCommandMessagesTest(unittest.TestCase):

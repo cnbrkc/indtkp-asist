@@ -426,6 +426,13 @@ Kaçırılmayacak fırsat!
 FırsatZ          ← kalın, etiketsiz, linksiz
 ```
 
+Bölümler (başlık/fiyat, ürün linki, `Mesajı Gör`, kaynak grup adı) arasında **tam bir
+boş satır** olur; fazlası değil. Reklam/işbirliği etiketi veya WhatsApp bağlantısı
+silinince geriye kalan çoklu boş satırlar otomatik olarak tek boş satıra indirilir,
+baş/sondaki boş satırlar atılır. Bu sıkıştırma **yalnızca** boşluk, tab, `\r` ve satır
+sonu karakterlerini alır — metin içeriği, emojiler ve entity offset'leri korunur, veri
+kaybolmaz.
+
 - Kaynak adı "Fırsatı Gönderen" gibi bir **etiketle yazılmaz** ve **hiçbir linke
   bağlanmaz**; yalnızca hangi gruptan geldiği kalın olarak görünür
   (`source_footer: false` ile tamamen kapatılabilir).
@@ -503,11 +510,19 @@ denenmez; sırayla deneyip ilk başarılı olanı kullanır:
 
 Bildirim botu, kaynakta aynı hizmete ait bağlantı yoksa **Akakçe'de ara** ve
 **Google Alışveriş** düğmelerini mesaj metninden oluşturduğu arama sorgusuyla ekler;
-ürün türünü sınıflandırmaz. **Market Fiyatı** düğmesi standarttır ve yalnızca kaynakta
+ürün türünü sınıflandırmaz. **Market Fiyatı** düğmesi de aynı sorguyu kullanır ve
+`https://marketfiyati.org.tr/ara?q=<ürün>` adresine gider; yani düğme artık ana sayfaya
+değil, **doğrudan o ürünün arama sonuç sayfasına** götürür. Sorgu çıkarılamazsa (metin
+yoksa veya yalnızca boşluktan oluşuyorsa) ana sayfaya düşer. Düğme yalnızca kaynakta
 zaten Market Fiyatı bağlantısı varsa tekrarlanmaz. Mevcut hizmet URL'si/gizli linki/URL
 butonu varsa o hizmet için yeni düğme eklenmez. Düğmeler inline klavyededir; gövde
 metnini uzatmaz ve 4096/1024 karakter sınırına yeni karakter eklemez. Bu düğmeler
 bildirim botu gerektirir; Telegram kullanıcı hesabı inline klavye gönderemez.
+
+> Market Fiyatı'nda ürün sayfası `marketfiyati.org.tr/detay/<kod>/<slug>` biçimindedir
+> ve `<kod>` (örn. `00UT`) yalnızca sitenin kendi arama sonucundan geldiği için dışarıdan
+> üretilemez. Bu yüzden düğme `/ara?q=` arama adresine gider; oradan ilgili ürüne tek
+> tıkla ulaşılır. Boşluklar sorguya `%20` olarak yazılır (sitede doğrulanan biçim).
 
 Temizleme gereken iletide `forward` atlanır (özgün mesaj değişmeden iletileceği için);
 kopyalama/yedek zinciri temizlenmiş metin ve entity offset'leriyle çalışır. Böylece
