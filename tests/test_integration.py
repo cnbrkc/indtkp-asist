@@ -128,6 +128,8 @@ class FakeEvent:
 class FakeClient:
     """Telethon yerine geçen, çağrıları kaydeden sahte istemci."""
 
+    default_history: list = []  # main() öncesi doldurulur (açılış taraması testleri)
+
     def __init__(self, *args, **kwargs):
         self.handlers = []
         self.sent = []
@@ -139,7 +141,8 @@ class FakeClient:
         self.unresolved = []
         self.sent_ids = []        # send_message/send_file ile giden mesaj ID'leri
         self.deleted = []         # (entity, [id...], revoke) silme çağrıları
-        self.history = []         # (chat_id, metin) — iter_messages için sahte geçmiş
+        self.edited = []          # (entity, message_id, metin, kwargs) düzenleme çağrıları
+        self.history = list(type(self).default_history)  # iter_messages için sahte geçmiş
         self.fail_modes = set()   # test senaryosu için kapatılacak yollar
         self._next_id = 100
 
@@ -204,18 +207,36 @@ class FakeClient:
         return []
 
     def iter_messages(self, entity, limit=None, **kwargs):
-        """Telethon gibi async generator döndürür (await edilmez)."""
+        """Telethon gibi async generator döndürür (await edilmez).
+
+        Geçmiş kayıtları ``(chat_id, metin)`` ya da genişletilmiş
+        ``(chat_id, metin, sender_id, tarih, medya, entity'ler, mesaj_id)``
+        demetleridir; verilmeyen alanlara varsayılan yazılır.
+        """
         async def _iterate():
             sent = 0
-            for chat_id, text in self.history:
+            for record in self.history:
+                chat_id, text = record[0], record[1]
                 if chat_id != entity:
                     continue
                 if limit is not None and sent >= limit:
                     break
                 sent += 1
-                yield SimpleNamespace(id=sent, message=text, media=None, entities=[])
+                sender_id = record[2] if len(record) > 2 else None
+                date = record[3] if len(record) > 3 else None
+                media = record[4] if len(record) > 4 else None
+                if media is True:
+                    media = types.MessageMediaPhoto(photo=types.PhotoEmpty(id=1))
+                entities = record[5] if len(record) > 5 else []
+                message_id = record[6] if len(record) > 6 else sent
+                yield SimpleNamespace(id=message_id, message=text, media=media,
+                                      entities=list(entities), sender_id=sender_id, date=date)
 
         return _iterate()
+
+    async def edit_message(self, entity, message, text, **kwargs):
+        self.edited.append((entity, message, text, dict(kwargs)))
+        return FakeSent(message if isinstance(message, int) else self._new_id(), text)
 
     async def download_media(self, message, file=None):
         if "download" in self.fail_modes:
@@ -265,10 +286,11 @@ def reset_state():
     bot.DESTINATION_ID = None
     bot.PENDING.clear()
     bot.COMMAND_MESSAGES.clear()
+    bot.DEDUP_CACHE.clear()
     bot.STATS["cleaned_commands"] = 0
     bot.STATS.update({"seen": 0, "matched": 0, "forwarded": 0, "failed": 0,
                       "commands": 0, "modes": {}, "cleaned": 0, "last_match": None,
-                      "last_match_source": None})
+                      "last_match_source": None, "deduped": 0, "dedup_edits": 0})
 
 
 class MainHarness:
@@ -1901,3 +1923,320 @@ class AnalyzeCommandTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DedupFlowTest(MainHarness, unittest.TestCase):
+    """Aynı başlıklı fırsat tek mesajda toplanır; tekrar ilk mesaja rozet işler."""
+
+    def setUp(self):
+        reset_state()
+        FakeClient.default_history = []
+        self.config_path = self._write_config(source_chats=["@firsatz"])
+        self.client = self._run_main(self.config_path)
+        self.source_id = next(iter(bot.SOURCE_IDS))
+
+    def tearDown(self):
+        os.unlink(self.config_path)
+        FakeClient.default_history = []
+        reset_state()
+
+    def _send(self, text, settle=0.05, **kwargs):
+        async def _run():
+            await self.client.handlers[1][1](FakeEvent(self.source_id, 7, text, **kwargs))
+            await asyncio.sleep(settle)  # rozet görevi aynı döngüde bitsin
+        asyncio.run(_run())
+
+    def test_same_title_twice_sends_once_and_badges_first(self):
+        self._send("Sıcak ÇAY 5 TL")
+        self.assertEqual(len(self.client.delivered), 1)
+        first_id = self.client.sent_ids[0]
+        self._send("Sıcak ÇAY 5 TL")
+        self.assertEqual(len(self.client.delivered), 1, "tekrar gruba düşmemeli")
+        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(bot.STATS["dedup_edits"], 1)
+        self.assertEqual(len(self.client.edited), 1)
+        entity, message_id, text, kwargs = self.client.edited[0]
+        self.assertEqual(entity, GROUP_ID)
+        self.assertEqual(message_id, first_id, "rozet ilk mesaja işlenmeli")
+        self.assertTrue(text.startswith("✅ 2 kaynakta paylaşıldı"), text)
+        self.assertIn("Sıcak ÇAY 5 TL", text, "gövde korunmalı")
+        badge_head = "✅ 2 kaynakta paylaşıldı · teyitli fırsat"
+        formatting = kwargs["formatting_entities"]
+        self.assertIsInstance(formatting[0], types.MessageEntityBold)
+        self.assertEqual((formatting[0].offset, formatting[0].length),
+                         (0, bot.utf16_length(badge_head)))
+
+    def test_third_copy_escalates_badge_without_stacking(self):
+        self._send("Sıcak ÇAY 5 TL")
+        self._send("Sıcak ÇAY 5 TL")
+        # İkinci rozet, aynı sohbetteki düzenleme hız sınırına (1,2 sn) takılır.
+        self._send("Sıcak ÇAY 5 TL", settle=1.6)
+        self.assertEqual(len(self.client.delivered), 1)
+        self.assertEqual(bot.STATS["deduped"], 2)
+        self.assertEqual(len(self.client.edited), 2)
+        text = self.client.edited[-1][2]
+        self.assertTrue(text.startswith("🔥 3 kaynakta paylaşıldı"), text)
+        self.assertNotIn("✅ 2 kaynakta", text, "eski rozet yenisiyle değişmeli")
+
+    def test_different_titles_send_separately(self):
+        self._send("Sıcak ÇAY 5 TL")
+        self._send("Soğuk ÇAY 3 TL")
+        self.assertEqual(len(self.client.delivered), 2)
+        self.assertEqual(bot.STATS["deduped"], 0)
+        self.assertEqual(self.client.edited, [])
+
+    def test_title_match_ignores_case(self):
+        self._send("ÇAY 5 TL")
+        self._send("çay 5 tl")
+        self.assertEqual(len(self.client.delivered), 1)
+        self.assertEqual(bot.STATS["deduped"], 1)
+
+    def test_messages_without_title_are_never_merged(self):
+        """Başlıksız (salt medya) iletiler birleştirilmez, her zaman gönderilir."""
+        reset_state()
+        path = self._write_config(source_chats=["@firsatz"], include_keywords=[], exclude_keywords=[])
+        self.addCleanup(os.unlink, path)
+        client = self._run_main(path)
+        source_id = next(iter(bot.SOURCE_IDS))
+
+        async def _run():
+            for _ in range(2):
+                await client.handlers[1][1](FakeEvent(source_id, 7, None, media=False))
+                await asyncio.sleep(0.01)
+        asyncio.run(_run())
+        self.assertEqual(len(client.delivered), 2)
+        self.assertEqual(bot.STATS["deduped"], 0)
+
+    def test_dedup_disabled_sends_everything(self):
+        reset_state()
+        path = self._write_config(source_chats=["@firsatz"], dedup_enabled=False)
+        self.addCleanup(os.unlink, path)
+        client = self._run_main(path)
+        source_id = next(iter(bot.SOURCE_IDS))
+
+        async def _run():
+            for _ in range(2):
+                await client.handlers[1][1](FakeEvent(source_id, 7, "Sıcak ÇAY 5 TL"))
+                await asyncio.sleep(0.01)
+        asyncio.run(_run())
+        self.assertEqual(len(client.delivered), 2)
+        self.assertEqual(bot.STATS["deduped"], 0)
+
+    def test_simultaneous_duplicates_send_once(self):
+        """Aynı anda gelen kopyalar: rezervasyon sayesinde tek gönderim."""
+
+        async def _burst():
+            handler = self.client.handlers[1][1]
+            await asyncio.gather(
+                handler(FakeEvent(self.source_id, 7, "Aynı ÇAY")),
+                handler(FakeEvent(self.source_id, 8, "Aynı ÇAY")),
+            )
+            await asyncio.sleep(0.05)
+        asyncio.run(_burst())
+        self.assertEqual(len(self.client.delivered), 1)
+        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(len(self.client.edited), 1)
+
+
+class DedupPreloadTest(MainHarness, unittest.TestCase):
+    """Açılış taraması: yeniden başlamada aynı başlık ikinci kez düşmez."""
+
+    def setUp(self):
+        reset_state()
+        FakeClient.default_history = []
+
+    def tearDown(self):
+        FakeClient.default_history = []
+        reset_state()
+
+    def _run_with_history(self, history, **overrides):
+        FakeClient.default_history = list(history)
+        path = self._write_config(source_chats=["@firsatz"], **overrides)
+        self.addCleanup(os.unlink, path)
+        return self._run_main(path)
+
+    def _send_and_settle(self, client, text):
+        async def _run():
+            await client.handlers[1][1](FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text))
+            await asyncio.sleep(0.05)
+        asyncio.run(_run())
+
+    def test_previous_deal_suppresses_repeat_after_restart(self):
+        old_deal = (GROUP_ID, "Çay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9\n\nfirsatz",
+                    ADMIN_ID, None, None, [], 777)
+        client = self._run_with_history([old_deal])
+        self.assertEqual(len(bot.DEDUP_CACHE), 1)
+        self._send_and_settle(client, "Çay 5 TL")
+        self.assertEqual(client.delivered, [])
+        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(len(client.edited), 1)
+        self.assertEqual(client.edited[0][1], 777, "rozet eski mesaja işlenmeli")
+        self.assertTrue(client.edited[0][2].startswith("✅ 2 kaynakta"), client.edited[0][2])
+
+    def test_human_chatter_is_never_indexed(self):
+        """İnsan sohbeti kayda alınmaz; fırsat kaçmasın diye temkinli taraf seçilir."""
+        human = (GROUP_ID, "arkadaşlar çay 5 tl demiş", 999999, None, None, [], 55)
+        client = self._run_with_history([human])
+        self.assertEqual(bot.DEDUP_CACHE, {})
+        self._send_and_settle(client, "arkadaşlar çay 5 tl demiş")
+        self.assertEqual(len(client.delivered), 1)
+        self.assertEqual(bot.STATS["deduped"], 0)
+
+    def test_bot_message_without_token_suppresses_but_cannot_badge(self):
+        foreign = (GROUP_ID, "Çay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9",
+                   123456789, None, None, [], 66)
+        client = self._run_with_history([foreign])
+        self.assertEqual(len(bot.DEDUP_CACHE), 1)
+        self._send_and_settle(client, "Çay 5 TL")
+        self.assertEqual(client.delivered, [])
+        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(client.edited, [], "token yoksa eski bot iletisi düzenlenemez")
+
+    def test_old_message_outside_window_is_ignored(self):
+        ancient = (GROUP_ID, "Çay 5 TL", ADMIN_ID, 1000000000, None, [], 70)
+        client = self._run_with_history([ancient])
+        self.assertEqual(bot.DEDUP_CACHE, {})
+        self._send_and_settle(client, "Çay 5 TL")
+        self.assertEqual(len(client.delivered), 1)
+
+    def test_badged_history_restores_counter(self):
+        badged = (GROUP_ID, "🔥 3 kaynakta paylaşıldı!\n📌 Kaynaklar: A\n\nÇay 5 TL",
+                  ADMIN_ID, None, None, [], 71)
+        client = self._run_with_history([badged])
+        key = bot.dedup_key("Çay 5 TL")
+        self.assertEqual(bot.DEDUP_CACHE[key]["count"], 3)
+        self._send_and_settle(client, "Çay 5 TL")
+        self.assertEqual(client.delivered, [])
+        text = client.edited[-1][2]
+        self.assertTrue(text.startswith("🔥🔥 4 kaynakta paylaşıldı"), text)
+        self.assertNotIn("🔥 3 kaynakta", text)
+
+
+class DedupBotBadgeTest(unittest.TestCase):
+    """Bildirim botu yolunda rozet Bot API düzenlemesiyle işlenir."""
+
+    def setUp(self):
+        reset_state()
+        FakeClient.default_history = []
+        self.ping_calls: list[dict] = []
+        self.media_calls: list[dict] = []
+        self.edit_text_calls: list[dict] = []
+        self.edit_caption_calls: list[dict] = []
+        self._patchers = []
+        self._next_bot_id = 5000
+
+    def tearDown(self):
+        for patcher in self._patchers:
+            patcher.stop()
+        FakeClient.default_history = []
+        reset_state()
+
+    def _patch(self, target, replacement):
+        patcher = mock.patch.object(bot, target, replacement)
+        patcher.start()
+        self._patchers.append(patcher)
+
+    def _run(self, **config_extra):
+        config = {
+            "source_chats": ["@firsatz"],
+            "destination": GROUP_ID,
+            "include_keywords": ["çay"],
+            "exclude_keywords": [],
+            "match_mode": "any",
+            "copy_mode": "copy",
+            "control_chat": GROUP_ID,
+            "admin_user_id": ADMIN_ID,
+            "auto_restart": False,
+            "notify_on_start": False,
+        }
+        config.update(config_extra)
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(config, handle)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+
+        created = []
+
+        async def fake_ping(token, chat_id, text, **kwargs):
+            self._next_bot_id += 1
+            self.ping_calls.append({"token": token, "chat_id": chat_id, "text": text,
+                                    "message_id": self._next_bot_id, **kwargs})
+            return bot.BotSendResult(True, "bildirim gönderildi", self._next_bot_id)
+
+        async def fake_media(token, chat_id, **kwargs):
+            self._next_bot_id += 1
+            self.media_calls.append({"token": token, "chat_id": chat_id,
+                                     "message_id": self._next_bot_id, **kwargs})
+            return bot.BotSendResult(True, "bildirim medyası gönderildi", self._next_bot_id)
+
+        async def fake_edit_text(token, chat_id, message_id, text, **kwargs):
+            self.edit_text_calls.append({"token": token, "chat_id": chat_id,
+                                         "message_id": message_id, "text": text, **kwargs})
+            return True, "düzenlendi"
+
+        async def fake_edit_caption(token, chat_id, message_id, caption, **kwargs):
+            self.edit_caption_calls.append({"token": token, "chat_id": chat_id,
+                                            "message_id": message_id, "caption": caption, **kwargs})
+            return True, "düzenlendi"
+
+        def factory(*args, **kwargs):
+            client = FakeClient(*args, **kwargs)
+            created.append(client)
+            return client
+
+        self._patch("send_bot_ping", fake_ping)
+        self._patch("send_bot_media", fake_media)
+        self._patch("edit_bot_text", fake_edit_text)
+        self._patch("edit_bot_caption", fake_edit_caption)
+        test_env = {**BASE_ENV, "NOTIFY_BOT_TOKEN": "123:ABC"}
+        with mock.patch.dict(os.environ, test_env, clear=False), \
+             mock.patch.object(bot, "TelegramClient", factory), \
+             mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
+            asyncio.run(bot.main(["--config", handle.name]))
+        return created[0]
+
+    def _send(self, client, text, settle=0.05, **kwargs):
+        async def _run():
+            await client.handlers[1][1](FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text, **kwargs))
+            await asyncio.sleep(settle)
+        asyncio.run(_run())
+
+    def test_duplicate_badges_bot_media_caption(self):
+        client = self._run()
+        self._send(client, "Çay fırsatı")
+        self._send(client, "Çay fırsatı")
+        self.assertEqual(len(self.media_calls), 1, "tekrar bot bildirimi atmamalı")
+        self.assertEqual(self.ping_calls, [])
+        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(len(self.edit_caption_calls), 1)
+        call = self.edit_caption_calls[0]
+        self.assertEqual(call["message_id"], self.media_calls[0]["message_id"])
+        self.assertTrue(call["caption"].startswith("✅ 2 kaynakta paylaşıldı"), call["caption"])
+        self.assertIn("Çay fırsatı", call["caption"])
+        bold = call["entities"][0]
+        self.assertEqual(bold["type"], "bold")
+        self.assertEqual(bold["offset"], 0)
+        self.assertEqual(call["keyboard"], self.media_calls[0]["keyboard"],
+                         "düğmeler düzenlemede korunmalı")
+
+    def test_duplicate_badges_bot_text_message(self):
+        client = self._run()
+        self._send(client, "Çay fırsatı", media=False)
+        self._send(client, "Çay fırsatı", media=False)
+        self.assertEqual(len(self.ping_calls), 1)
+        self.assertEqual(len(self.edit_text_calls), 1)
+        call = self.edit_text_calls[0]
+        self.assertEqual(call["message_id"], self.ping_calls[0]["message_id"])
+        self.assertTrue(call["text"].startswith("✅ 2 kaynakta paylaşıldı"), call["text"])
+
+    def test_third_copy_updates_bot_badge(self):
+        client = self._run()
+        self._send(client, "Çay fırsatı", media=False)
+        self._send(client, "Çay fırsatı", media=False)
+        # İkinci rozet hız sınırına takılır, biraz daha beklenir.
+        self._send(client, "Çay fırsatı", settle=1.6, media=False)
+        self.assertEqual(len(self.ping_calls), 1)
+        self.assertEqual(len(self.edit_text_calls), 2)
+        text = self.edit_text_calls[-1]["text"]
+        self.assertTrue(text.startswith("🔥 3 kaynakta paylaşıldı"), text)
+        self.assertNotIn("✅ 2 kaynakta", text)

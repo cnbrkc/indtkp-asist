@@ -1940,3 +1940,333 @@ class ConfigFlagTest(unittest.TestCase):
         self.assertFalse(bot.config_flag(None, False))
         self.assertFalse(bot.config_flag("yok", False))
         self.assertTrue(bot.config_flag("", True))
+
+
+# ---------------------------------------------------------------------------
+# Tekrar birleştirme (aynı başlık, tek mesaj)
+# ---------------------------------------------------------------------------
+
+
+class DedupKeyTest(unittest.TestCase):
+    def test_identical_titles_share_a_key(self):
+        self.assertEqual(bot.dedup_key("Sıcak ÇAY 5 TL"), bot.dedup_key("Sıcak ÇAY 5 TL"))
+
+    def test_case_and_whitespace_differences_are_ignored(self):
+        """Kopyala-yapıştır başlıklar birebir aynı olur; harf/boşluk farkı tolere edilir."""
+        self.assertEqual(bot.dedup_key("  Sıcak   ÇAY 5 TL  "), bot.dedup_key("sıcak çay 5 tl"))
+        self.assertEqual(bot.dedup_key("İNDİRİM"), bot.dedup_key("indirim"))
+
+    def test_different_titles_have_different_keys(self):
+        self.assertNotEqual(bot.dedup_key("Çay 5 TL"), bot.dedup_key("Kahve 5 TL"))
+
+    def test_empty_titles_have_no_key(self):
+        """Başlıksız (medya-özel) iletiler birleştirilmez, her zaman gönderilir."""
+        for title in (None, "", "   ", "\n\t "):
+            self.assertIsNone(bot.dedup_key(title), repr(title))
+
+
+class DedupBadgeTest(unittest.TestCase):
+    def test_first_copy_has_no_badge(self):
+        self.assertEqual(bot.dedup_badge(1, ["A"]), "")
+        self.assertEqual(bot.dedup_badge(0), "")
+
+    def test_emphasis_escalates_with_count(self):
+        two = bot.dedup_badge(2, ["FırsatZ"])
+        three = bot.dedup_badge(3, ["FırsatZ", "B"])
+        four = bot.dedup_badge(4)
+        five = bot.dedup_badge(5)
+        self.assertTrue(two.startswith("✅ 2 kaynakta paylaşıldı"), two)
+        self.assertTrue(three.startswith("🔥 3 kaynakta paylaşıldı"), three)
+        self.assertTrue(four.startswith("🔥🔥 4 kaynakta paylaşıldı"), four)
+        self.assertIn("5 KAYNAKTA PAYLAŞILDI", five)
+        self.assertIn("🚨", five)
+
+    def test_sources_line_lists_names(self):
+        badge = bot.dedup_badge(3, ["FırsatZ", "indirim_tr"])
+        self.assertIn("📌 Kaynaklar: FırsatZ, indirim_tr", badge)
+
+    def test_sources_line_is_capped(self):
+        badge = bot.dedup_badge(6, ["a", "b", "c", "d", "e", "f"])
+        self.assertIn("📌 Kaynaklar: a, b, c, d +2", badge)
+        long_name = "x" * 100
+        self.assertLessEqual(len(bot.dedup_badge(2, [long_name]).splitlines()[1]), 60)
+
+    def test_short_badge_is_headline_only(self):
+        self.assertNotIn("\n", bot.dedup_badge(5, ["a", "b"], short=True))
+        self.assertIn("5", bot.dedup_badge(5, short=True))
+
+
+class StripDedupBadgeTest(unittest.TestCase):
+    def test_plain_text_is_untouched(self):
+        text = "Sıcak ÇAY 5 TL\nAçıklama satırı"
+        self.assertEqual(bot.strip_dedup_badge(text), (1, text))
+
+    def test_full_badge_is_removed(self):
+        text = "🔥 3 kaynakta paylaşıldı!\n📌 Kaynaklar: A, B\n\nSıcak ÇAY 5 TL"
+        count, base = bot.strip_dedup_badge(text)
+        self.assertEqual(count, 3)
+        self.assertEqual(base, "Sıcak ÇAY 5 TL")
+
+    def test_short_and_loud_badges_are_removed(self):
+        count, base = bot.strip_dedup_badge("✅ 2 kaynakta paylaşıldı · teyitli fırsat\n\nÇay")
+        self.assertEqual((count, base), (2, "Çay"))
+        count, base = bot.strip_dedup_badge("🚨 7 KAYNAKTA PAYLAŞILDI — KAÇIRMA! 🚨\n\nÇay")
+        self.assertEqual((count, base), (7, "Çay"))
+
+    def test_badge_roundtrip(self):
+        """Üretilen her rozet geri sökülebilmeli (açılış taraması için)."""
+        for count in (2, 3, 4, 5, 12):
+            for short in (False, True):
+                badge = bot.dedup_badge(count, ["A", "B"], short=short)
+                parsed, base = bot.strip_dedup_badge(f"{badge}\n\nGövde")
+                self.assertEqual(parsed, count, badge)
+                self.assertEqual(base, "Gövde", badge)
+
+    def test_lookalike_first_line_is_not_a_badge(self):
+        text = "2 kaynakta paylaşıldı yazan normal bir satır\nGövde"
+        self.assertEqual(bot.strip_dedup_badge(text), (1, text))
+
+
+class DedupPrefixAndRebaseTest(unittest.TestCase):
+    def test_prefix_is_empty_without_badge(self):
+        self.assertEqual(bot.dedup_current_prefix("Sıcak ÇAY"), "")
+        self.assertEqual(bot.dedup_current_prefix(""), "")
+        self.assertEqual(bot.dedup_current_prefix(None), "")
+
+    def test_prefix_covers_badge_block(self):
+        badge = bot.dedup_badge(3, ["A"])
+        full = f"{badge}\n\nGövde"
+        self.assertEqual(bot.dedup_current_prefix(full), f"{badge}\n\n")
+
+    def test_bot_entities_inside_old_badge_are_dropped_and_rest_shifted(self):
+        badge_bold = {"type": "bold", "offset": 0, "length": 10}
+        link = {"type": "text_link", "offset": 40, "length": 5, "url": "https://x"}
+        result = bot.dedup_rebased_bot_entities([badge_bold, link], 30, 50)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["offset"], 60)
+        self.assertEqual(result[0]["url"], "https://x")
+        # Orijinal sözlük değişmemeli.
+        self.assertEqual(link["offset"], 40)
+
+    def test_telethon_entities_are_rebased_without_mutating(self):
+        from telethon.tl import types as tl
+
+        badge_bold = tl.MessageEntityBold(offset=0, length=10)
+        bold = tl.MessageEntityBold(offset=40, length=5)
+        result = bot.dedup_rebased_tl_entities([badge_bold, bold], 30, 50)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].offset, 60)
+        self.assertEqual(result[0].length, 5)
+        self.assertEqual(bold.offset, 40)
+
+    def test_boundary_spanning_entities_are_dropped(self):
+        spanning = {"type": "bold", "offset": 25, "length": 10}
+        self.assertEqual(bot.dedup_rebased_bot_entities([spanning], 30, 50), [])
+
+
+class GuessSourceTest(unittest.TestCase):
+    def test_footer_after_message_link_is_the_source(self):
+        text = "Çay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz"
+        self.assertEqual(bot.guess_source_from_text(text), "firsatz")
+
+    def test_missing_marker_means_no_guess(self):
+        self.assertEqual(bot.guess_source_from_text("Çay 5 TL\n\nfirsatz"), "")
+
+    def test_marker_without_footer_means_no_guess(self):
+        self.assertEqual(bot.guess_source_from_text("Çay\n\n🔗 Mesajı Gör: https://t.me/x/1"), "")
+        self.assertEqual(bot.guess_source_from_text("Çay\n\n🔗 Mesajı Gör: https://t.me/x/1\n\n"), "")
+
+    def test_suspicious_footer_is_rejected(self):
+        long_line = "x" * 81
+        self.assertEqual(bot.guess_source_from_text(f"A\n🔗 Mesajı Gör: u\n\n{long_line}"), "")
+        self.assertEqual(bot.guess_source_from_text("A\n🔗 Mesajı Gör: u\n\nhttps://b.c"), "")
+
+
+class PruneDedupCacheTest(unittest.TestCase):
+    NOW = 1700000000.0
+
+    def _entry(self, age, pending=False):
+        entry = bot.new_dedup_entry("Başlık", "K", object())
+        entry["pending"] = pending
+        entry["first_seen"] = self.NOW - age
+        return entry
+
+    def test_expired_entries_are_dropped(self):
+        cache = {"eski": self._entry(13 * 3600), "yeni": self._entry(60)}
+        dropped = bot.prune_dedup_cache(cache, self.NOW, 12 * 3600, 300)
+        self.assertEqual(dropped, 1)
+        self.assertEqual(set(cache), {"yeni"})
+
+    def test_stuck_reservations_are_released(self):
+        cache = {"takili": self._entry(bot.DEDUP_RESERVE_TTL + 1, pending=True)}
+        dropped = bot.prune_dedup_cache(cache, self.NOW, 12 * 3600, 300)
+        self.assertEqual(dropped, 1)
+        self.assertEqual(cache, {})
+
+    def test_young_pending_entries_survive(self):
+        cache = {"bekleyen": self._entry(5, pending=True)}
+        self.assertEqual(bot.prune_dedup_cache(cache, self.NOW, 12 * 3600, 300), 0)
+        self.assertIn("bekleyen", cache)
+
+    def test_overflow_evicts_oldest_ready_first(self):
+        cache = {
+            "en-eski": self._entry(300),
+            "ortanca": self._entry(200),
+            "bekleyen": self._entry(250, pending=True),
+            "en-yeni": self._entry(100),
+        }
+        dropped = bot.prune_dedup_cache(cache, self.NOW, 12 * 3600, 2)
+        self.assertEqual(dropped, 2)
+        self.assertIn("bekleyen", cache, "rezervasyon kapasite için düşürülmemeli")
+        self.assertIn("en-yeni", cache)
+
+
+class NewDedupEntryTest(unittest.TestCase):
+    def test_reservation_defaults(self):
+        token = object()
+        entry = bot.new_dedup_entry("Başlık", "Kaynak", token)
+        self.assertTrue(entry["pending"])
+        self.assertFalse(entry["failed"])
+        self.assertIs(entry["token"], token)
+        self.assertEqual(entry["count"], 1)
+        self.assertEqual(entry["sources"], ["Kaynak"])
+        self.assertIsNone(entry["editable"])
+        self.assertFalse(entry["ready"].is_set())
+
+
+class BotSendResultTest(unittest.TestCase):
+    def test_unpacks_like_the_old_two_tuple(self):
+        ok, detail = bot.BotSendResult(True, "gönderildi", 4242)
+        self.assertTrue(ok)
+        self.assertEqual(detail, "gönderildi")
+
+    def test_carries_message_id(self):
+        result = bot.BotSendResult(True, "ok", 4242)
+        self.assertEqual(result.message_id, 4242)
+        self.assertIsNone(bot.BotSendResult(False, "hata").message_id)
+
+    def test_plain_tuples_still_work_via_getattr(self):
+        """Eski fake'ler düz 2'li döner; üretim kodu getattr ile okur."""
+        self.assertIsNone(getattr((True, "ok"), "message_id", None))
+
+    def test_message_id_from_result(self):
+        self.assertEqual(bot.message_id_from_result({"message_id": 7}), 7)
+        self.assertIsNone(bot.message_id_from_result({"message_id": True}))
+        self.assertIsNone(bot.message_id_from_result({}))
+        self.assertIsNone(bot.message_id_from_result(None))
+        self.assertIsNone(bot.message_id_from_result("bozuk"))
+
+
+class FirstSentHelpersTest(unittest.TestCase):
+    def test_single_and_list_results(self):
+        item = SimpleNamespace(id=11, message="metin", entities=["e"])
+        self.assertEqual(bot.first_sent_text(item), "metin")
+        self.assertEqual(bot.first_sent_entities(item), ["e"])
+        self.assertEqual(bot.first_sent_text([None, item]), "metin")
+        self.assertIsNone(bot.first_sent_text(None))
+        self.assertIsNone(bot.first_sent_entities(SimpleNamespace(id=1)))
+        self.assertIsNone(bot.first_sent_text(SimpleNamespace(id=1, message="")))
+
+
+class EditBotHelpersTest(unittest.TestCase):
+    def _response(self, payload):
+        fake = io.BytesIO(json.dumps(payload).encode())
+        fake.__enter__ = lambda self: self
+        fake.__exit__ = lambda self, *a: False
+        return fake
+
+    def test_send_ping_returns_message_id(self):
+        with mock.patch("bot.urllib.request.urlopen",
+                        return_value=self._response({"ok": True, "result": {"message_id": 4242}})):
+            result = asyncio.run(bot.send_bot_ping("123:ABC", -5092968106, "selam"))
+        ok, _ = result
+        self.assertTrue(ok)
+        self.assertEqual(result.message_id, 4242)
+
+    def test_edit_text_posts_entities_and_keyboard(self):
+        with mock.patch("bot.urllib.request.urlopen",
+                        return_value=self._response({"ok": True, "result": True})) as urlopen:
+            ok, _ = asyncio.run(bot.edit_bot_text(
+                "123:ABC", -5092968106, 9, "yeni",
+                entities=[{"type": "bold", "offset": 0, "length": 4}],
+                keyboard={"inline_keyboard": []},
+            ))
+        self.assertTrue(ok)
+        request = urlopen.call_args[0][0]
+        self.assertTrue(request.full_url.endswith("/editMessageCaption".replace("Caption", "Text")))
+        payload = json.loads(request.data.decode())
+        self.assertEqual(payload["message_id"], 9)
+        self.assertEqual(json.loads(payload["entities"])[0]["type"], "bold")
+        self.assertIn("reply_markup", payload)
+
+    def test_edit_caption_posts_to_caption_method(self):
+        with mock.patch("bot.urllib.request.urlopen",
+                        return_value=self._response({"ok": True, "result": True})) as urlopen:
+            ok, _ = asyncio.run(bot.edit_bot_caption("123:ABC", -5092968106, 9, "açıklama"))
+        self.assertTrue(ok)
+        request = urlopen.call_args[0][0]
+        self.assertTrue(request.full_url.endswith("/editMessageCaption"))
+        self.assertEqual(json.loads(request.data.decode())["caption"], "açıklama")
+
+    def test_not_modified_counts_as_success(self):
+        with mock.patch("bot.urllib.request.urlopen",
+                        return_value=self._response({"ok": False, "description": "message is not modified"})):
+            ok, detail = asyncio.run(bot.edit_bot_text("t", 1, 2, "aynı"))
+        self.assertTrue(ok)
+        self.assertIn("güncel", detail)
+
+    def test_edit_without_token_does_not_call_api(self):
+        with mock.patch("bot.urllib.request.urlopen") as urlopen:
+            ok, detail = asyncio.run(bot.edit_bot_text("", 1, 2, "x"))
+        self.assertFalse(ok)
+        self.assertIn("tanımlı değil", detail)
+        urlopen.assert_not_called()
+
+
+class DedupConfigTest(unittest.TestCase):
+    def test_invalid_window_and_scan_are_reported(self):
+        base = {
+            "source_chats": ["@firsatz"],
+            "destination": "me",
+            "match_mode": "any",
+            "copy_mode": "copy",
+            "control_chat": "me",
+            "admin_user_id": None,
+        }
+        env = dict(CheckEnvironmentTest.good_env)
+        with mock.patch.dict(os.environ, env, clear=False):
+            self.assertEqual(bot.check_environment(dict(base)), [])
+            bad_window = dict(base, dedup_window_hours=99)
+            self.assertTrue(any("dedup_window_hours" in p for p in bot.check_environment(bad_window)))
+            bad_scan = dict(base, dedup_scan_limit="çok")
+            self.assertTrue(any("dedup_scan_limit" in p for p in bot.check_environment(bad_scan)))
+
+    def test_runtime_config_applies_dedup_settings(self):
+        saved = (bot.DEDUP_ENABLED, bot.DEDUP_WINDOW_SECONDS, bot.DEDUP_SCAN_LIMIT)
+        self.addCleanup(setattr, bot, "DEDUP_ENABLED", saved[0])
+        self.addCleanup(setattr, bot, "DEDUP_WINDOW_SECONDS", saved[1])
+        self.addCleanup(setattr, bot, "DEDUP_SCAN_LIMIT", saved[2])
+        bot.apply_runtime_config({})
+        self.assertTrue(bot.DEDUP_ENABLED)
+        self.assertEqual(bot.DEDUP_WINDOW_SECONDS, 12 * 3600)
+        self.assertEqual(bot.DEDUP_SCAN_LIMIT, 30)
+        bot.apply_runtime_config({"dedup_enabled": False, "dedup_window_hours": 6, "dedup_scan_limit": 10})
+        self.assertFalse(bot.DEDUP_ENABLED)
+        self.assertEqual(bot.DEDUP_WINDOW_SECONDS, 6 * 3600)
+        self.assertEqual(bot.DEDUP_SCAN_LIMIT, 10)
+        with self.assertLogs("telegram-filter", level="WARNING"):
+            bot.apply_runtime_config({"dedup_window_hours": "bozuk", "dedup_scan_limit": "yok"})
+        self.assertEqual(bot.DEDUP_WINDOW_SECONDS, 12 * 3600)
+        self.assertEqual(bot.DEDUP_SCAN_LIMIT, 30)
+
+    def test_env_overrides_are_loaded(self):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump({"source_chats": ["@firsatz"], "control_chat": "me"}, handle)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        env = {"DEDUP_ENABLED": "false", "DEDUP_WINDOW_HOURS": "6", "DEDUP_SCAN_LIMIT": "10"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            config = bot.load_config(handle.name)
+        self.assertEqual(config["dedup_enabled"], "false")
+        self.assertEqual(config["dedup_window_hours"], "6")
+        self.assertEqual(config["dedup_scan_limit"], "10")
