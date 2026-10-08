@@ -177,7 +177,7 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `notify_media` | `true` / `false` | Bildirim botu fotoğraf/videoyu da göndersin. |
 | `clean_commands` | `true` / `false` | **Komut temizliği.** `control_chat`'te yeni bir komut yazıldığında bir önceki komut ve bot yanıtı silinir; ekranda yalnızca son mesaj kalır. İndirim bildirimleri bu temizliğin **dışındadır, asla silinmez.** Varsayılan `true`. |
 | `single_message` | `true` / `false` | **Tek mesaj modu.** Bildirim botu mesajı gruba attıysa, hesabın attığı kopya gruptan silinir; böylece her fırsat tek mesaj olarak kalır. Bildirim gidemezse kopya **silinmez**. Varsayılan `true`. |
-| `dedup_enabled` | `true` / `false` | **Tekrar birleştirme.** Aynı başlıklı fırsat tek mesajda toplanır; tekrarlar gruba atılmaz, ilk mesaja "2/3/5 kaynakta paylaşıldı" rozeti işlenir ([9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj)). Varsayılan `true`. |
+| `dedup_enabled` | `true` / `false` | **Tekrar birleştirme.** Aynı başlıklı fırsat tek mesajda toplanır; tekrarlar gruba atılmaz, ilk mesaja `✅ 2 kaynakta paylaşıldı · teyitli fırsat` gibi **tek satırlık** rozet işlenir ([9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj)). Varsayılan `true`. |
 | `dedup_window_hours` | sayı | Aynı başlık kaç saat boyunca "aynı fırsat" sayılsın (1–72, varsayılan 12). |
 | `dedup_scan_limit` | sayı | Açılışta önbelleğe alınacak son ileti sayısı (0–100, varsayılan 30; `0` = tarama yapma). |
 | `control_chat` | sayı / `"me"` | Komutların dinleneceği sohbet. `me` = Kayıtlı Mesajlar. |
@@ -423,7 +423,8 @@ bildirim üretmez. Bu yüzden fırsat gruba düşse bile telefonuna uyarı gelme
 ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığı mesaj üretir.
 
 **Bildirim biçimi:** mesajın içeriği (biçimi, emojileri ve gizli linkleriyle; yalnızca
-belirtilen reklam/işbirliği etiketleri ve WhatsApp bağlantıları temizlenir) +
+belirtilen reklam/işbirliği etiketleri, WhatsApp bağlantıları ve kanal tanıtımı/hashtag
+satırları temizlenir) +
 `🔗 Mesajı Gör: <orijinal mesaj linki>` satırı + **en altta kalın kaynak grup adı**.
 Ürün arama bağlantıları mesaj metnine yazılmadan inline düğme olarak gösterilir:
 
@@ -450,6 +451,13 @@ kaybolmaz.
 - Metinden yalnızca bağımsız `#işbirliği`, `işbirliği`, `#reklam`, `reklam` ifadeleri
   ile doğrudan WhatsApp URL'leri çıkarılır. WhatsApp'a gizlenmiş hyperlink'in görünen
   etiketi düz metin olarak korunur; başka kelime ve domain'ler silinmez.
+- **Kanal tanıtımı ve hashtag satırları temizlenir:** `💚Whatsapp Önemli Fırsatlar` gibi
+  mesajlaşma kanalı tanıtımları ve `#amazon #indirimalarmi` gibi yalnızca etiketlerden
+  oluşan satırlar bildirime hiç girmez (kullanıcı isteği: "tertemiz görünüm"). Kurallar
+  dar tutulur: satırda hem bir kanal adı (WhatsApp/Telegram) geçmeli hem de satırdaki
+  **tüm kelimeler** tanıtım sözlüğünden gelmelidir. Sözlükte olmayan tek bir kelime
+  satırı korur; bu yüzden `WhatsApp'tan bilgi ... 9 TL` gibi içerik satırları,
+  fiyat/ürün satırları ve tüm mesaj silinmesini gerektiren durumlar olduğu gibi kalır.
 
 **Adımlar (2 dakika)**
 
@@ -520,10 +528,19 @@ denenmez; sırayla deneyip ilk başarılı olanı kullanır:
 
 Bildirim botu, kaynakta aynı hizmete ait bağlantı yoksa **Akakçe'de ara** ve
 **Google Alışveriş** düğmelerini mesaj metninden oluşturduğu arama sorgusuyla ekler;
-ürün türünü sınıflandırmaz. **Market Fiyatı** düğmesi de aynı sorguyu kullanır ve
-`https://marketfiyati.org.tr/ara?q=<ürün>` adresine gider; yani düğme artık ana sayfaya
-değil, **doğrudan o ürünün arama sonuç sayfasına** götürür. Sorgu çıkarılamazsa (metin
-yoksa veya yalnızca boşluktan oluşuyorsa) ana sayfaya düşer. Düğme yalnızca kaynakta
+ürün türünü sınıflandırmaz. **Market Fiyatı** düğmesi `https://marketfiyati.org.tr/ara?q=<ürün>`
+adresine gider; yani düğme ana sayfaya değil, **doğrudan ürünün arama sonuç sayfasına**
+götürür. Sorgular başlıktan (mesajın ilk satırından) üretilir; **baştaki emoji/sembol
+sorguya girmez** (aksi halde arama boş dönüyordu):
+
+| Düğme | Arama sorgusu | Örnek başlık → sorgu |
+|---|---|---|
+| Akakçe'de ara · Google Alışveriş | başlığın tamamı | `🛍️ Urban Care Body Series Duş Jeli 500 Ml` → `Urban Care Body Series Duş Jeli 500 Ml` |
+| Market Fiyatı | başlığın **ilk iki kelimesi** | `🛍️ Urban Care Body Series Duş Jeli 500 Ml` → `Urban Care` |
+
+Market Fiyatı'nda tam ürün adı sonuç döndürmediği için arama yalnızca başlığın ilk iki
+kelimesiyle yapılır (kelime sayısı `MARKET_FIYATI_QUERY_WORDS`). Sorgu çıkarılamazsa
+(metin yoksa veya yalnızca boşluktan oluşuyorsa) ana sayfaya düşer. Düğme yalnızca kaynakta
 zaten Market Fiyatı bağlantısı varsa tekrarlanmaz. Mevcut hizmet URL'si/gizli linki/URL
 butonu varsa o hizmet için yeni düğme eklenmez. Düğmeler inline klavyededir; gövde
 metnini uzatmaz ve 4096/1024 karakter sınırına yeni karakter eklemez. Bu düğmeler
@@ -554,11 +571,12 @@ indirimin "gerçek ve teyitli" olduğunun işaretidir. Bu yüzden tekrar birleş
 açıktır (varsayılan):
 
 - **İlk kopya** her zamanki gibi gönderilir ve başlığı bellekteki listeye yazılır.
-- **Sonraki aynı başlıklı kopyalar gruba ATILMAZ.** Onun yerine ilk mesaja rozet işlenir:
+- **Sonraki aynı başlıklı kopyalar gruba ATILMAZ.** Onun yerine ilk mesaja rozet işlenir.
+  Rozet **tek satırdır**: sayı ve "teyitli fırsat" etiketi yeter, kaynak adları tek tek
+  yazılmaz (kullanıcı isteği: 5 kaynak alt alta yazılınca bildirim karışıyordu):
 
 ```text
-🔥 3 kaynakta paylaşıldı!
-📌 Kaynaklar: FırsatZ, indirim_tr, ozelfirsat
+🔥 3 kaynakta paylaşıldı! · teyitli fırsat
 
 Sıcak ÇAY 5 TL
 Kaçırılmayacak fırsat!
@@ -569,6 +587,9 @@ Kaçırılmayacak fırsat!
   `🚨 5 KAYNAKTA PAYLAŞILDI — KAÇIRMA! 🚨`. Telegram'da mesaj rengine
   müdahale edilemez; kalın + emoji + büyük harf, platformun sunduğu en güçlü
   vurgu kombinasyonudur.
+- Eski sürümün ikinci satırdaki `📌 Kaynaklar: ...` listesi artık yazılmaz; daha önce
+  gönderilmiş rozetler okunurken (açılış taraması) o satır yine atlanır, yani geriye
+  dönük uyumluluk korunur.
 - Eşleşme **başlığa** (mesajın ilk satırına) göredir; büyük/küçük harf ve boşluk
   farkları yok sayılır. Başlıksız (salt medya) iletiler birleştirilmez.
 
@@ -686,6 +707,19 @@ Bu repodaki güncel davranış değişiklikleri:
    arama düğmeleri ileti gövdesini uzatmaz. Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin) ve [8. bölüm](#8-gizli-bağlantılar).
 4. **Bildirim botu token'ı yalnızca `NOTIFY_BOT_TOKEN` secret'ından okunur.**
    Eski config alanı ve güncel `config.json` değeri kaldırıldı; geçmişteki token'ı iptal et.
+5. **Tekrar rozeti tek satıra indi.** İkinci ve sonraki kopyalarda ilk mesaja işlenen rozet
+   `✅ 2 kaynakta paylaşıldı · teyitli fırsat` biçiminde **tek satırdır**; kaynak adları tek
+   tek yazılmaz (5 kaynak alt alta yazılınca bildirim karışıyordu). Daha önce gönderilmiş
+   mesajlardaki `📌 Kaynaklar: ...` satırı okunurken yine atlanır.
+   Ayrıntı: [9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj).
+6. **Kanal tanıtımı ve hashtag satırları temizlenir.** `💚Whatsapp Önemli Fırsatlar`,
+   `📲 WhatsApp grubumuz`, `#amazon #indirimalarmi` gibi satırlar bildirime hiç girmez;
+   fiyat/ürün satırları ve içerik taşıyan satırlar korunur (dar kural — veri kaybı yok).
+   Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin).
+7. **Market Fiyatı araması başlığın ilk iki kelimesiyle yapılır.** Tam ürün adı sitede sonuç
+   döndürmediği için düğme `.../ara?q=Urban%20Care` gibi kısa sorguya gider; ayrıca tüm
+   arama sorgularından baştaki emoji/sembol atılır (emoji yüzünden sorgular boş dönüyordu).
+   Ayrıntı: [8. bölüm](#8-gizli-bağlantılar).
 
 ### 1. PR'ı `main`'e merge et
 
