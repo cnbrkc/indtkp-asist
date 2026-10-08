@@ -364,7 +364,8 @@ class TelegramCommandTest(unittest.TestCase):
     def test_filter_toggle_commands_are_active(self):
         self.assertIn("/open", bot.CMD_FILTER_OPEN)
         self.assertIn("/close", bot.CMD_FILTER_CLOSE)
-        self.assertEqual(bot.FILTER_COMMANDS, bot.CMD_FILTER_OPEN | bot.CMD_FILTER_CLOSE)
+        self.assertEqual(bot.CMD_FILTER_OPEN | bot.CMD_FILTER_CLOSE,
+                         {"/open", "/close"})
         self.assertIn("/ekle", bot.SETTINGS_COMMANDS)
         self.assertIn("/çıkar", bot.SETTINGS_COMMANDS)
         self.assertIn("/kaydet", bot.SETTINGS_COMMANDS)
@@ -374,7 +375,7 @@ class TelegramCommandTest(unittest.TestCase):
         """Eski /hepsinial ve /filtrelial komutları tamamen kaldırıldı."""
         for command in ("/hepsinial", "/filtrelial"):
             with self.subTest(command=command):
-                self.assertNotIn(command, bot.FILTER_COMMANDS)
+                self.assertNotIn(command, bot.CMD_FILTER_OPEN | bot.CMD_FILTER_CLOSE)
                 self.assertNotIn(command, bot.SETTINGS_COMMANDS)
                 self.assertNotIn(command, bot.HELP_TEXT)
                 self.assertNotIn(command, bot.build_main_menu_text())
@@ -1428,11 +1429,39 @@ class MessageSanitizationTest(unittest.TestCase):
         ]]})
 
     def test_market_fiyati_button_opens_the_product_search(self):
-        """Düğme ana sayfaya değil, ürünün arama sonucuna gitmeli."""
+        """Düğme ana sayfaya değil, başlığın ilk iki kelimesinin sonucuna gitmeli."""
         keyboard = bot.build_inline_keyboard(make_message("Çay 5 TL", media=False))
         buttons = [button for row in keyboard["inline_keyboard"] for button in row]
         market = next(button for button in buttons if button["text"] == "Market Fiyatı")
-        self.assertEqual(market["url"], "https://marketfiyati.org.tr/ara?q=%C3%87ay%205%20TL")
+        self.assertEqual(market["url"], "https://marketfiyati.org.tr/ara?q=%C3%87ay%205")
+
+    def test_market_fiyati_query_uses_the_first_two_title_words(self):
+        """Kullanıcı isteği: tam ürün adı sonuç döndürmüyor, ilk iki kelime dönüyor."""
+        self.assertEqual(
+            bot.market_fiyati_query(
+                "🛍️ Urban Care Body Series Monoi Refreshing Duş Jeli 500 Ml"
+            ),
+            "Urban Care",
+            "başlıktaki emoji sorguya girmemeli",
+        )
+        self.assertEqual(bot.market_fiyati_query("Çay"), "Çay")
+        self.assertEqual(bot.market_fiyati_query(""), "")
+
+    def test_market_fiyati_button_uses_the_short_query_for_long_titles(self):
+        keyboard = bot.build_inline_keyboard(
+            make_message("🛍️ Urban Care Body Series Monoi Duş Jeli 500 Ml", media=False),
+        )
+        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+        market = next(button for button in buttons if button["text"] == "Market Fiyatı")
+        self.assertEqual(market["url"], "https://marketfiyati.org.tr/ara?q=Urban%20Care")
+
+    def test_search_queries_drop_the_leading_emoji(self):
+        """Sorgu emoji ile başlarsa hem Akakçe hem Google boş sonuç veriyordu."""
+        keyboard = bot.build_inline_keyboard(make_message("🔥 Sıcak ÇAY 5 TL", media=False))
+        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+        akakce = next(button for button in buttons if button["text"] == "Akakçe'de ara")
+        self.assertEqual(akakce["url"], "https://www.akakce.com/arama/?q=S%C4%B1cak+%C3%87AY+5+TL")
+        self.assertNotIn("%F0%9F", akakce["url"], "emoji sorguya girmemeli")
 
     def test_market_fiyati_search_url_encodes_the_query(self):
         """Türkçe karakterler ve boşluk %XX ile kodlanır (sitede doğrulanan biçim)."""
@@ -1593,6 +1622,111 @@ class BlankLineNormalizationTest(unittest.TestCase):
     def test_changed_flag_is_set_when_only_blank_lines_differ(self):
         self.assertTrue(bot.sanitize_message(make_message("a\n\n\n\nb", media=False)).changed)
         self.assertFalse(bot.sanitize_message(make_message("a\n\nb", media=False)).changed)
+
+
+class PromoLineCleanupTest(unittest.TestCase):
+    """Kanal tanıtımı ve salt hashtag satırları bildirime hiç girmez.
+
+    Kullanıcı isteği: "💚Whatsapp Önemli Fırsatlar" ve "#amazon #indirimalarmi"
+    satırları temizlensin; ürün/fiyat satırlarına dokunulmasın.
+    """
+
+    def _cleaned(self, text):
+        return bot.sanitize_message(make_message(text, media=False)).message
+
+    def test_whatsapp_channel_promo_line_is_removed(self):
+        text = "Çay 5 TL\n\n💚Whatsapp Önemli Fırsatlar\n\nStoklarla sınırlı"
+        self.assertEqual(self._cleaned(text), "Çay 5 TL\n\nStoklarla sınırlı")
+
+    def test_hashtag_only_line_is_removed(self):
+        text = "Çay 5 TL\n\n#amazon #indirimalarmi\n\nStoklarla sınırlı"
+        self.assertEqual(self._cleaned(text), "Çay 5 TL\n\nStoklarla sınırlı")
+
+    def test_real_world_footer_is_cleaned_as_a_block(self):
+        """Örnek bildirim: tanıtım + hashtag bloğu tek boş satıra iner."""
+        text = (
+            "🛍️ Urban Care Duş Jeli 500 Ml\n\n"
+            "💰 Fiyat : 107 TL\n\n"
+            "💚Whatsapp Önemli Fırsatlar\n\n"
+            "#amazon #indirimalarmi"
+        )
+        cleaned = self._cleaned(text)
+        self.assertEqual(cleaned, "🛍️ Urban Care Duş Jeli 500 Ml\n\n💰 Fiyat : 107 TL")
+        self.assertNotIn("Whatsapp", cleaned)
+        self.assertNotIn("#amazon", cleaned)
+
+    def test_whatsapp_line_with_content_is_kept(self):
+        """Sözlükte olmayan kelime satırı korur: veri kaybı yok."""
+        for line in (
+            "WhatsApp'tan sipariş için yazın 9 TL indirim",
+            "WhatsApp grubunda 120 TL kupon",
+            "WhatsApp'tan bilgi gizli WhatsApp bağlantısı burada 9 TL.",
+        ):
+            with self.subTest(line=line):
+                self.assertIn(line, self._cleaned(f"Çay 5 TL\n\n{line}"))
+
+    def test_channel_promo_variants_are_removed(self):
+        """Ek/çekim farkı tanıtım satırının silinmesini engellememeli."""
+        for line in (
+            "💚Whatsapp Önemli Fırsatlar",
+            "WhatsApp'ın önemli fırsat kanalı",
+            "WhatsApp kanalımıza katılın ve indirimleri kaçırmayın",
+            "📲 WhatsApp grubunda her gün fırsat",
+            "Telegram kanalımıza katılın",
+            "👉 #fırsat #indirim",
+        ):
+            with self.subTest(line=line):
+                self.assertNotIn(line, self._cleaned(f"Çay 5 TL\n\n{line}"))
+
+    def test_line_without_a_channel_mention_is_left_alone(self):
+        """Kanal adı geçmeyen satır silinmez (dar kural: veri kaybı yok)."""
+        line = "📢 Kanalımıza katılın"
+        self.assertIn(line, self._cleaned(f"Çay 5 TL\n\n{line}"))
+
+    def test_hashtag_with_other_words_is_kept(self):
+        text = "Çay 5 TL\n\n#fırsat gerçekten kaçmaz"
+        self.assertIn("#fırsat gerçekten kaçmaz", self._cleaned(text))
+
+    def test_price_line_is_never_removed(self):
+        text = "Çay 5 TL\n\n30 Günün En Düşük Fiyatı"
+        self.assertEqual(self._cleaned(text), text)
+
+    def test_message_of_only_promo_lines_keeps_its_content(self):
+        """Her şey silinecekse hiçbir şey silinmez (boş bildirim gönderilmez)."""
+        text = "#amazon #indirimalarmi"
+        self.assertEqual(self._cleaned(text), text)
+
+    def test_cleanup_marks_the_copy_as_changed(self):
+        """Temizlik gereken mesajda forward atlanır (özgün içerik geri gelmesin)."""
+        cleaned = bot.sanitize_message(
+            make_message("Çay 5 TL\n\n💚Whatsapp Önemli Fırsatlar", media=False),
+        )
+        self.assertTrue(cleaned.changed)
+
+    def test_entities_after_removed_lines_are_remapped(self):
+        """Satır silinince emoji/entity offset'leri kaymamalı (veri kaybı yok)."""
+        text = (
+            "🛍️ Urban Care Duş Jeli 500 Ml\n\n"
+            "💚Whatsapp Önemli Fırsatlar\n\n"
+            "#amazon #indirimalarmi\n\n"
+            "9️⃣ Son 3 ürün"
+        )
+        label = "Son 3 ürün"
+        entity = tl_types.MessageEntityBold(
+            offset=bot.utf16_length(text[:text.index(label)]),
+            length=bot.utf16_length(label),
+        )
+        cleaned = bot.sanitize_message(make_message(text, entities=[entity], media=False))
+        self.assertEqual(
+            cleaned.message,
+            "🛍️ Urban Care Duş Jeli 500 Ml\n\n9️⃣ Son 3 ürün",
+        )
+        self.assertEqual(len(cleaned.entities), 1)
+        kept = cleaned.entities[0]
+        self.assertEqual(
+            bot.utf16_slice(cleaned.message, kept.offset, kept.length), label,
+            "silinen satırlardan sonra biçim entity'si kaymamalı",
+        )
 
 
 class NoteCommandMessagesTest(unittest.TestCase):
@@ -1967,12 +2101,12 @@ class DedupKeyTest(unittest.TestCase):
 
 class DedupBadgeTest(unittest.TestCase):
     def test_first_copy_has_no_badge(self):
-        self.assertEqual(bot.dedup_badge(1, ["A"]), "")
+        self.assertEqual(bot.dedup_badge(1), "")
         self.assertEqual(bot.dedup_badge(0), "")
 
     def test_emphasis_escalates_with_count(self):
-        two = bot.dedup_badge(2, ["FırsatZ"])
-        three = bot.dedup_badge(3, ["FırsatZ", "B"])
+        two = bot.dedup_badge(2)
+        three = bot.dedup_badge(3)
         four = bot.dedup_badge(4)
         five = bot.dedup_badge(5)
         self.assertTrue(two.startswith("✅ 2 kaynakta paylaşıldı"), two)
@@ -1981,18 +2115,18 @@ class DedupBadgeTest(unittest.TestCase):
         self.assertIn("5 KAYNAKTA PAYLAŞILDI", five)
         self.assertIn("🚨", five)
 
-    def test_sources_line_lists_names(self):
-        badge = bot.dedup_badge(3, ["FırsatZ", "indirim_tr"])
-        self.assertIn("📌 Kaynaklar: FırsatZ, indirim_tr", badge)
-
-    def test_sources_line_is_capped(self):
-        badge = bot.dedup_badge(6, ["a", "b", "c", "d", "e", "f"])
-        self.assertIn("📌 Kaynaklar: a, b, c, d +2", badge)
-        long_name = "x" * 100
-        self.assertLessEqual(len(bot.dedup_badge(2, [long_name]).splitlines()[1]), 60)
+    def test_badge_is_a_single_line_with_the_trust_tag(self):
+        """Kullanıcı isteği: kaynak adları alt alta yazılmasın, tek satır yeter."""
+        for count in (2, 3, 4):
+            with self.subTest(count=count):
+                badge = bot.dedup_badge(count)
+                self.assertNotIn("\n", badge, badge)
+                self.assertNotIn("📌", badge, "kaynak listesi satırı olmamalı")
+                self.assertIn("teyitli fırsat", badge, badge)
+                self.assertIn(str(count), badge, badge)
 
     def test_short_badge_is_headline_only(self):
-        self.assertNotIn("\n", bot.dedup_badge(5, ["a", "b"], short=True))
+        self.assertNotIn("\n", bot.dedup_badge(5, short=True))
         self.assertIn("5", bot.dedup_badge(5, short=True))
 
 
@@ -2017,7 +2151,7 @@ class StripDedupBadgeTest(unittest.TestCase):
         """Üretilen her rozet geri sökülebilmeli (açılış taraması için)."""
         for count in (2, 3, 4, 5, 12):
             for short in (False, True):
-                badge = bot.dedup_badge(count, ["A", "B"], short=short)
+                badge = bot.dedup_badge(count, short=short)
                 parsed, base = bot.strip_dedup_badge(f"{badge}\n\nGövde")
                 self.assertEqual(parsed, count, badge)
                 self.assertEqual(base, "Gövde", badge)
@@ -2034,7 +2168,7 @@ class DedupPrefixAndRebaseTest(unittest.TestCase):
         self.assertEqual(bot.dedup_current_prefix(None), "")
 
     def test_prefix_covers_badge_block(self):
-        badge = bot.dedup_badge(3, ["A"])
+        badge = bot.dedup_badge(3)
         full = f"{badge}\n\nGövde"
         self.assertEqual(bot.dedup_current_prefix(full), f"{badge}\n\n")
 
@@ -2064,29 +2198,11 @@ class DedupPrefixAndRebaseTest(unittest.TestCase):
         self.assertEqual(bot.dedup_rebased_bot_entities([spanning], 30, 50), [])
 
 
-class GuessSourceTest(unittest.TestCase):
-    def test_footer_after_message_link_is_the_source(self):
-        text = "Çay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz"
-        self.assertEqual(bot.guess_source_from_text(text), "firsatz")
-
-    def test_missing_marker_means_no_guess(self):
-        self.assertEqual(bot.guess_source_from_text("Çay 5 TL\n\nfirsatz"), "")
-
-    def test_marker_without_footer_means_no_guess(self):
-        self.assertEqual(bot.guess_source_from_text("Çay\n\n🔗 Mesajı Gör: https://t.me/x/1"), "")
-        self.assertEqual(bot.guess_source_from_text("Çay\n\n🔗 Mesajı Gör: https://t.me/x/1\n\n"), "")
-
-    def test_suspicious_footer_is_rejected(self):
-        long_line = "x" * 81
-        self.assertEqual(bot.guess_source_from_text(f"A\n🔗 Mesajı Gör: u\n\n{long_line}"), "")
-        self.assertEqual(bot.guess_source_from_text("A\n🔗 Mesajı Gör: u\n\nhttps://b.c"), "")
-
-
 class PruneDedupCacheTest(unittest.TestCase):
     NOW = 1700000000.0
 
     def _entry(self, age, pending=False):
-        entry = bot.new_dedup_entry("Başlık", "K", object())
+        entry = bot.new_dedup_entry("Başlık", object())
         entry["pending"] = pending
         entry["first_seen"] = self.NOW - age
         return entry
@@ -2124,12 +2240,11 @@ class PruneDedupCacheTest(unittest.TestCase):
 class NewDedupEntryTest(unittest.TestCase):
     def test_reservation_defaults(self):
         token = object()
-        entry = bot.new_dedup_entry("Başlık", "Kaynak", token)
+        entry = bot.new_dedup_entry("Başlık", token)
         self.assertTrue(entry["pending"])
         self.assertFalse(entry["failed"])
         self.assertIs(entry["token"], token)
         self.assertEqual(entry["count"], 1)
-        self.assertEqual(entry["sources"], ["Kaynak"])
         self.assertIsNone(entry["editable"])
         self.assertFalse(entry["ready"].is_set())
 

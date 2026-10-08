@@ -1669,6 +1669,30 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         self.assertNotIn("wa.me", delivered)
         self.assertIn("https://amzn.to/firsat", delivered)
 
+    def test_channel_promo_and_hashtag_lines_are_cleaned_from_the_copy(self):
+        """Kullanıcı isteği: "💚Whatsapp Önemli Fırsatlar" ve hashtag satırı gitmesin."""
+        # Ürün adında "çay" geçmediği için kelime filtresi bu testte devre dışı.
+        reset_state()
+        path = self._write_config(include_keywords=[])
+        self.addCleanup(os.unlink, path)
+        self.client = self._run_main(path)
+        text = (
+            "🛍️ Urban Care Duş Jeli 500 Ml\n\n"
+            "💰 Fiyat : 107 TL / 3 adet alımda 64 TL\n\n"
+            "https://www.amazon.com.tr/dp/B0CB49N31Z\n\n"
+            "💚Whatsapp Önemli Fırsatlar\n\n"
+            "#amazon #indirimalarmi"
+        )
+        self._send(text, media=False)
+        delivered = self._texts(self.client)
+        self.assertEqual(self.client.forwarded, [], "temizleme gereken ileti forward edilmemeli")
+        self.assertIn("Urban Care Duş Jeli 500 Ml", delivered)
+        self.assertIn("107 TL / 3 adet alımda 64 TL", delivered)
+        self.assertIn("https://www.amazon.com.tr/dp/B0CB49N31Z", delivered)
+        self.assertNotIn("Whatsapp", delivered)
+        self.assertNotIn("#amazon", delivered)
+        self.assertNotIn("#indirimalarmi", delivered)
+
     def test_caption_limit_is_respected(self):
         """Uzun açıklamada bile mesaj linki korunur, Telegram sınırı aşılmaz."""
         self.client.fail_modes.update({"forward", "copy"})
@@ -1977,6 +2001,16 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         text = self.client.edited[-1][2]
         self.assertTrue(text.startswith("🔥 3 kaynakta paylaşıldı"), text)
         self.assertNotIn("✅ 2 kaynakta", text, "eski rozet yenisiyle değişmeli")
+
+    def test_badge_lists_no_source_names(self):
+        """Kullanıcı isteği: kaynak adları alt alta yazılmasın, tek satır kalsın."""
+        self._send("Sıcak ÇAY 5 TL")
+        self._send("Sıcak ÇAY 5 TL")
+        text = self.client.edited[0][2]
+        self.assertTrue(text.startswith("✅ 2 kaynakta paylaşıldı · teyitli fırsat"), text)
+        self.assertNotIn("📌", text)
+        self.assertNotIn("Kaynaklar:", text)
+        self.assertEqual(len(text.split("\n\n")[0].splitlines()), 1, "rozet tek satır olmalı")
 
     def test_different_titles_send_separately(self):
         self._send("Sıcak ÇAY 5 TL")

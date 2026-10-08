@@ -119,6 +119,9 @@ PRICE_SEARCH_BUTTONS = (
 )
 # Market Fiyatı ana sayfası; sorgu olduğunda "/ara?q=..." ile ürün aramasına gider.
 MARKET_FIYATI_HOME = "https://marketfiyati.org.tr"
+# Market Fiyatı tam ürün adıyla sonuç döndürmüyor; aramada başlığın ilk iki
+# kelimesi kullanılır ("Urban Care Body Series ..." → "Urban Care").
+MARKET_FIYATI_QUERY_WORDS = 2
 MAX_INLINE_KEYBOARD_BUTTONS = 100
 BOT_API_MEDIA_LIMIT_MB = {"photo": 10, "video": 50, "document": 50}
 
@@ -915,6 +918,38 @@ DISCLOSURE_TOKEN_RE = re.compile(r"(?<![\w#])#?(?:işbirliği|reklam)(?!\w)", re
 # Temizlikten arta kalan fazladan boş satırları bulmak için kullanılır.
 _BLANK_RUN_RE = re.compile(r"[ \t\r]*(?:\n[ \t\r]*)+")
 _EDGE_BLANK_RE = re.compile(r"\A[ \t\r\n]+|[ \t\r\n]+\Z")
+# Arama sorgusunun başındaki emoji/sembol ("🛍️", "-", "|") sorguya girmemeli.
+_LEADING_NOISE_RE = re.compile(r"\A[^\w]+", re.UNICODE)
+
+# --- Kanal tanıtımı ve hashtag satırları ------------------------------------
+# Kaynaklar mesajın altına kendi kanallarını ve etiket yığınını ekler:
+#   💚Whatsapp Önemli Fırsatlar
+#   #amazon #indirimalarmi
+# Kullanıcı isteği: bunlar bildirime hiç girmesin ("tertemiz görünüm"). İki
+# kural bilerek dar tutulur; böylece fiyat/ürün bilgisi taşıyan satır asla
+# silinmez (veri kaybı yok):
+#   1) Satırdaki TÜM kelimeler hashtag'lerden geliyorsa (salt etiket satırı).
+#   2) Satır bir mesajlaşma kanalını (WhatsApp/Telegram) tanıtıyor ve
+#      kelimelerinin TAMAMI tanıtım sözlüğünden geliyorsa.
+# Sözlükte olmayan tek bir kelime satırı korur: "WhatsApp'tan bilgi ...
+# 9 TL" içerik satırı olduğu gibi kalır.
+# Kelime = harf/sayı dizisi (emoji ve noktalama atlanır). Türkçe ek, kesme
+# işaretiyle ayrıldığında ("WhatsApp'ın", "kanalımıza") kelimenin parçası
+# sayılır; böylece ek yüzünden tanıtım satırı gözden kaçmaz.
+WORD_TOKEN_RE = re.compile(r"([^\W_]+)(?:['’][^\W_]+)?", re.UNICODE)
+HASHTAG_WORD_RE = re.compile(r"#([^\W_]+)", re.UNICODE)
+# Kök sözlüğü: 4+ harfli kökler önek eşleşir (fırsat→fırsatlar, katıl→katılın),
+# kısa kelimeler birebir eşleşir (ve, ile, mi…). Türkçe küçük harfle yazılır.
+PROMO_WORD_ROOTS = frozenset("""
+abone aile amazon bize bizi biz bildirim bu burada buradan burdan da davet de
+duyuru edin ekle ekleyin fırsat gel gelin grup grub gün güncel haber hemen her
+herkes hepsiburada ile için indirim istersen kampanya kanal katıl kaçır link
+olun önemli paylaş sayfa sitemiz şimdi takip telegram topluluk trendyol tüm üye
+ve whatsapp watsap web wp yazın
+""".split())
+# Tanıtım satırı sayılmak için satırda bu köklerden biri geçmelidir: satır bir
+# mesajlaşma kanalını tanıtıyorsa (WhatsApp/Telegram) tanıtım satırı sayılır.
+CHANNEL_WORD_ROOTS = ("whatsapp", "watsap", "whats", "wp", "telegram")
 
 
 def utf16_length(text: str) -> int:
@@ -1154,6 +1189,45 @@ def clean_disclosure_tokens(text: str) -> str:
     return _remove_spans(text, _disclosure_spans(text, protected=url_spans))
 
 
+def _word_matches(token: str, roots: Iterable[str]) -> bool:
+    """Kelime kök sözlüğüyle eşleşiyor mu? (4+ harfli kökler önek, kısalar tam)."""
+    word = normalize(token)
+    for root in roots:
+        if word == root or (len(root) >= 4 and word.startswith(root)):
+            return True
+    return False
+
+
+def _promo_line_spans(text: str) -> list[tuple[int, int]]:
+    """Kanal tanıtımı ve salt hashtag satırlarının silinecek aralıkları.
+
+    Kullanıcı isteği: bildirimde "💚Whatsapp Önemli Fırsatlar" ve
+    "#amazon #indirimalarmi" gibi satırlar hiç görünmesin. Kurallar dardır;
+    fiyat/ürün satırı taşıyan bir satır silinmez (bkz. PROMO_WORD_ROOTS).
+    Silinecek aralık satır sonunu İÇERMEZ; artakalan boş satırlar
+    ``_blank_line_spans`` ile sıkıştırılır.
+    """
+    spans: list[tuple[int, int]] = []
+    for match in re.finditer(r"[^\n]+", text or ""):
+        masked = URL_RE.sub(" ", match.group(0))  # URL harfleri kelime sayılmasın
+        words = WORD_TOKEN_RE.findall(masked)
+        if not words:
+            continue
+        tagged = HASHTAG_WORD_RE.findall(masked)
+        if tagged and len(tagged) == len(words):
+            spans.append((match.start(), match.end()))  # yalnızca etiketler
+            continue
+        if not any(_word_matches(word, CHANNEL_WORD_ROOTS) for word in words):
+            continue
+        if all(_word_matches(word, PROMO_WORD_ROOTS) for word in words):
+            spans.append((match.start(), match.end()))
+    # Tüm içerik silinecekse (örn. mesaj yalnızca tanıtım satırlarından oluşuyorsa)
+    # hiçbir şey silme: boş bildirim göndermektense satır kalsın.
+    if spans and not any(char.isalnum() for char in _remove_spans(text, spans)):
+        return []
+    return spans
+
+
 def _remap_entities(
     text: str,
     new_text: str,
@@ -1189,12 +1263,13 @@ def _remap_entities(
 def sanitize_message(obj: Any) -> SimpleNamespace:
     """İletilecek kopyayı temizle; kaynak Telethon mesajına hiçbir zaman dokunma.
 
-    Yalnızca bağımsız ``#işbirliği``/``işbirliği``/``#reklam``/``reklam``
-    ifadeleri ile doğrudan WhatsApp URL'leri, gizli WhatsApp entity'leri ve
-    WhatsApp hedefli inline butonlar kaldırılır. Diğer metin, entity, medya ve
-    linkler korunur. Silme işleminin artığında oluşan çoklu boş satırlar tek
-    boş satıra indirilir (``_blank_line_spans``); bu adım yalnızca boşluk
-    karakterlerini alır, metin içeriğini değiştirmez.
+    Kaldırılanlar: bağımsız ``#işbirliği``/``işbirliği``/``#reklam``/``reklam``
+    ifadeleri, doğrudan WhatsApp URL'leri, gizli WhatsApp entity'leri, WhatsApp
+    hedefli inline butonlar ve kanal tanıtımı/salt hashtag satırları
+    (``_promo_line_spans``). Diğer metin, entity, medya ve linkler korunur.
+    Silme işleminin artığında oluşan çoklu boş satırlar tek boş satıra indirilir
+    (``_blank_line_spans``); bu adım yalnızca boşluk karakterlerini alır, metin
+    içeriğini değiştirmez.
     """
     message = _as_message(obj)
     text = message_text(obj)
@@ -1213,6 +1288,9 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
 
     disclosure_spans = _disclosure_spans(text, protected=visible_urls)
     removed.extend(disclosure_spans)
+    # Kanal tanıtımı ("💚Whatsapp Önemli Fırsatlar") ve salt hashtag satırları
+    # ("#amazon #indirimalarmi") bildirime hiç girmez.
+    removed.extend(_promo_line_spans(text))
     removed_spans = _merge_spans(removed)
     cleaned_text = _remove_spans(text, removed_spans)
     remapped_entities = _remap_entities(text, cleaned_text, entities, removed_spans) if removed_spans else list(entities)
@@ -1420,14 +1498,32 @@ def build_link_appendix(obj: Any, kinds: Sequence[str] | None = ("button", "webp
 
 
 def _search_query(obj: Any, limit: int = 200) -> str:
-    """İlk kullanılabilir metin satırından URL/etiketleri çıkartıp arama sorgusu kur."""
+    """İlk kullanılabilir metin satırından URL/etiketleri çıkartıp arama sorgusu kur.
+
+    Satırın başındaki emoji/sembol (``🛍️ Urban Care...``) sorgunun parçası
+    olmamalı; aksi halde arama sonucu boş döner.
+    """
     text = message_text(obj)
     text = URL_RE.sub(" ", text)
     for raw_line in text.splitlines():
-        line = " ".join(clean_disclosure_tokens(raw_line).split()).strip(" \t-–—|:;,.!🔥⚡️⭐️✅❗️")
+        line = " ".join(clean_disclosure_tokens(raw_line).split())
+        line = _LEADING_NOISE_RE.sub("", line)
         if any(char.isalnum() for char in line):
             return line[:limit].strip()
     return ""
+
+
+def market_fiyati_query(title: str, words: int = MARKET_FIYATI_QUERY_WORDS) -> str:
+    """Market Fiyatı araması için başlığın ilk ``words`` kelimesi.
+
+    Kullanıcı isteği: Market Fiyatı'na tam ürün adı yazılınca
+    ("Urban Care Body Series Monoi Refreshing Duş Jeli 500 Ml") sonuç
+    dönmüyor; başlığın ilk iki kelimesi ("Urban Care") sonuç döndürüyor.
+    Kelimeler emoji/noktalama atlanarak alınır. Sorgu boşalırsa ana sayfaya
+    düşülür (bkz. ``_price_search_url``).
+    """
+    tokens = WORD_TOKEN_RE.findall(title or "")
+    return " ".join(tokens[: max(1, int(words))])
 
 
 def _price_search_service(url: str, label: str = "") -> str | None:
@@ -1470,6 +1566,9 @@ def _price_search_service(url: str, label: str = "") -> str | None:
 
 def _price_search_url(service: str, query: str) -> str:
     """Hizmetin ürün arama bağlantısını kur.
+
+    ``query`` çağıran tarafından seçilir; Market Fiyatı düğmesi için
+    ``market_fiyati_query`` başlığın ilk iki kelimesini verir.
 
     Market Fiyatı'nda ürün sayfası ``/detay/<kod>/<slug>`` biçimindedir ve
     ``<kod>`` (örn. ``00UT``) yalnızca sitenin kendi arama sonucundan geldiği
@@ -1518,6 +1617,8 @@ def build_inline_keyboard(obj: Any) -> dict | None:
         if (service := _price_search_service(link["url"], link.get("label") or ""))
     }
     query = _search_query(message)
+    # Market Fiyatı tam başlıkla sonuç döndürmüyor: başlığın ilk iki kelimesi.
+    market_query = market_fiyati_query(query)
     additions: list[dict[str, str]] = []
     for service, label in PRICE_SEARCH_BUTTONS:
         # Market Fiyatı düğmesi standarttır. Akakçe/Google aramaları için,
@@ -1526,7 +1627,8 @@ def build_inline_keyboard(obj: Any) -> dict | None:
             continue
         if service in present_services:
             continue
-        additions.append({"text": label, "url": _price_search_url(service, query)})
+        service_query = market_query if service == "market_fiyati" else query
+        additions.append({"text": label, "url": _price_search_url(service, service_query)})
 
     available_slots = max(0, MAX_INLINE_KEYBOARD_BUTTONS - existing_button_count)
     if additions and available_slots:
@@ -1802,10 +1904,11 @@ def bot_media_descriptor(obj: Any) -> dict[str, Any] | None:
 #     her tekrarda geçmiş taramak hem bildirimi geciktirir hem FloodWait/429
 #     riskini artırırdı).
 #   * Sonraki aynı başlıklı kopyalar gruba ATILMAZ; ilk mesaja rozet işlenir:
-#     "✅ 2 kaynakta paylaşıldı", "🔥 3 kaynakta paylaşıldı!" ...
-#   * Rozet kalın + emoji + (sayı büyüdükçe) büyük harfe dönen bir başlıktır.
-#     Telegram'da mesaj rengi değiştirilemez; kalın + emoji + büyük harf,
-#     platformun sunduğu en güçlü vurgu kombinasyonudur.
+#     "✅ 2 kaynakta paylaşıldı · teyitli fırsat", "🔥 3 kaynakta paylaşıldı!"...
+#   * Rozet TEK SATIRDIR: kaynak adları tek tek yazılmaz (kullanıcı isteği:
+#     5 kaynak alt alta yazılınca bildirim karışıyordu); sayı ve "teyitli
+#     fırsat" etiketi yeter. Kalın + emoji + (sayı büyüdükçe) büyük harf,
+#     Telegram'ın sunduğu en güçlü vurgu kombinasyonudur.
 #   * Eşleşme penceresi ``dedup_window_hours`` ile sınırlıdır (varsayılan 12):
 #     iki hafta sonra aynı ürün yine indirime girerse YENİ fırsat sayılır.
 #   * Bot yeniden başlayınca bellek boşalır; açılışta hedeften SON
@@ -1816,12 +1919,13 @@ def bot_media_descriptor(obj: Any) -> dict[str, Any] | None:
 # diğerleri onun bitmesini bekleyip tekrara düşer (bkz. main() içindeki
 # dedup_before_send / dedup_after_send).
 
-# Rozet satırı: "✅ 2 kaynakta paylaşıldı ..." / "🔥🔥 4 kaynakta ..." /
+# Rozet satırı: "✅ 2 kaynakta paylaşıldı · teyitli fırsat" / "🔥🔥 4 kaynakta ..." /
 # "🚨 5 KAYNAKTA PAYLAŞILDI — KAÇIRMA! 🚨" (büyük/küçük harf farkını yok say).
 DEDUP_BADGE_RE = re.compile(r"^(✅|🔥+|🚨)\s*(\d+)\s+kaynakta\s+paylaşıldı", re.IGNORECASE)
+# Eski sürüm rozeti ikinci satırda kaynak adlarını listelerdi ("📌 Kaynaklar: ...").
+# Yeni rozet tek satır; bu önek yalnızca ESKİ mesajların rozeti sökülürken
+# (açılış taraması) o satırı atlamak için korunur — geriye dönük uyumluluk.
 DEDUP_SOURCES_PREFIX = "📌"
-DEDUP_MAX_SOURCES_IN_BADGE = 4
-DEDUP_SOURCE_NAME_LEN = 24
 # Aynı sohbete Bot API ~1/sn sınırı uygular; rozet güncellemeleri
 # bunun altında kalmak için mesaj başına bu kadar aralık bırakır.
 DEDUP_EDIT_MIN_INTERVAL = 1.2
@@ -1841,42 +1945,33 @@ def dedup_key(title: str | None) -> str | None:
     return key or None
 
 
-def dedup_badge(count: int, sources: Sequence[str] | None = None, *, short: bool = False) -> str:
+def dedup_badge(count: int, *, short: bool = False) -> str:
     """Tekrar rozetinin metni; ilk gönderimde (``count < 2``) boş döner.
 
+    Tek satır: sayı + "teyitli fırsat" etiketi. Kaynak adları tek tek
+    yazılmaz (kullanıcı isteği: 5 kaynak alt alta yazılınca mesaj karışıyor).
     Sayı büyüdükçe vurgu artar: ✅ → 🔥 → 🔥🔥 → 🚨 + BÜYÜK HARF.
-    ``short=True`` yalnızca başlık satırını verir (dar açıklamalar için).
+    ``short=True`` dar açıklamalar (medya altı) için kısaltılmış başlığı verir.
     """
     if count < 2:
         return ""
     if count == 2:
-        head = "✅ 2 kaynakta paylaşıldı · teyitli fırsat"
-    elif count == 3:
-        head = "🔥 3 kaynakta paylaşıldı!"
-    elif count == 4:
-        head = "🔥🔥 4 kaynakta paylaşıldı!!"
-    elif short:
-        head = f"🚨 {count} kaynakta paylaşıldı!"
-    else:
-        head = f"🚨 {count} KAYNAKTA PAYLAŞILDI — KAÇIRMA! 🚨"
+        return "✅ 2 kaynakta paylaşıldı · teyitli fırsat"
+    if count == 3:
+        return "🔥 3 kaynakta paylaşıldı! · teyitli fırsat"
+    if count == 4:
+        return "🔥🔥 4 kaynakta paylaşıldı!! · teyitli fırsat"
     if short:
-        return head
-    names = [str(name).strip() for name in (sources or []) if str(name).strip()]
-    if not names:
-        return head
-    shown = [name[:DEDUP_SOURCE_NAME_LEN] for name in names[:DEDUP_MAX_SOURCES_IN_BADGE]]
-    extra = len(names) - len(shown)
-    line = f"{DEDUP_SOURCES_PREFIX} Kaynaklar: " + ", ".join(shown)
-    if extra > 0:
-        line += f" +{extra}"
-    return f"{head}\n{line}"
+        return f"🚨 {count} kaynakta paylaşıldı!"
+    return f"🚨 {count} KAYNAKTA PAYLAŞILDI — KAÇIRMA! 🚨"
 
 
 def strip_dedup_badge(text: str | None) -> tuple[int, str]:
     """Metnin başındaki rozeti sök: (sayaç, rozetsiz metin).
 
     Rozet yoksa sayaç 1'dir. Açılış taramasında eski rozetli mesajların
-    sayacını geri kazanmak için kullanılır.
+    sayacını geri kazanmak için kullanılır. Eski sürümün ikinci satırdaki
+    "📌 Kaynaklar: ..." listesi de atılır (yeni rozette o satır yok).
     """
     lines = (text or "").split("\n")
     if not lines:
@@ -1976,34 +2071,12 @@ def dedup_rebased_tl_entities(
     return shift_telethon_entities(kept, new_prefix_len - old_prefix_len)
 
 
-def guess_source_from_text(text: str | None) -> str:
-    """Bildirim metninden kaynak adını tahmin et (yalnızca açılış taraması).
-
-    Biçim sabittir: ``🔗 Mesajı Gör: ...`` satırından sonraki ilk dolu satır
-    kaynak adıdır. Bulunamazsa ``""`` döner; yanlış tahmin rozeti bozar,
-    bu yüzden emin olunamayan durumda boş dönmek kuraldır.
-    """
-    lines = (text or "").splitlines()
-    for index, line in enumerate(lines):
-        if MESSAGE_LINK_LABEL in line:
-            for following in lines[index + 1:]:
-                name = following.strip()
-                if not name:
-                    continue
-                if len(name) > 80 or "http" in name.lower() or "://" in name:
-                    return ""
-                return name
-            return ""
-    return ""
-
-
-def new_dedup_entry(title: str, source: str, token: Any) -> dict[str, Any]:
+def new_dedup_entry(title: str, token: Any) -> dict[str, Any]:
     """Gönderim rezervasyonu konmuş yeni önbellek kaydı (``pending=True``)."""
     now = time.time()
     return {
         "title": title,
         "count": 1,
-        "sources": [source] if source else [],
         "first_seen": now,
         "last_seen": now,
         "pending": True,     # ilk mesaj henüz gönderilmedi
@@ -2661,7 +2734,6 @@ CMD_SETTINGS_REVERT = _expand_commands({"/iptal"})
 CMD_FILTER_OPEN = _expand_commands({"/open"})
 CMD_FILTER_CLOSE = _expand_commands({"/close"})
 CMD_ANALYZE = _expand_commands({"/analiz", "/kelimeanalizi"})
-FILTER_COMMANDS = frozenset().union(CMD_FILTER_OPEN, CMD_FILTER_CLOSE)
 SETTINGS_COMMANDS = frozenset().union(
     CMD_SETTINGS_MENU, CMD_SETTINGS_ADD, CMD_SETTINGS_REMOVE,
     CMD_SETTINGS_SAVE, CMD_SETTINGS_REVERT,
@@ -3128,15 +3200,6 @@ async def resolve_chat_groups(
     return notes, None
 
 
-async def reply_chunked(event: Any, text: str, limit: int = 3500) -> None:
-    """Uzun yanıtı Telegram'ın 4096 karakter sınırına göre parçalara böl."""
-    chunks = chunk_text(text, limit)
-    if not chunks:
-        return
-    for chunk in chunks:
-        await event.reply(chunk)
-
-
 def note_command_messages(chat_id: int, message_ids: Sequence[int]) -> list[int]:
     """Son komut alışverişinin mesaj ID'lerini kaydet; silinecek eskileri döndür.
 
@@ -3437,8 +3500,9 @@ def run_check(config_path: str | None) -> int:
 
 
 async def main(argv: Sequence[str] | None = None) -> int:
-    global SELF_ID, SOURCE_FOOTER, NOTIFY_MEDIA
-    global MESSAGE_LINK_LINE, LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
+    # Filtre/link bayraklarını apply_runtime_config yazar; burada yalnızca
+    # kimlik atanır (diğer adlar yalnızca okunur, `global` gerekmez).
+    global SELF_ID
 
     args = build_parser().parse_args(argv)
     if args.check:
@@ -4067,7 +4131,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     # diğerleri bekleyip tekrara düşer. Rozet güncellemesi arka planda yapılır,
     # yeni fırsatların bildirimini ASLA bekletmez.
 
-    async def dedup_before_send(key: str, title: str, source: str) -> tuple[str, Any]:
+    async def dedup_before_send(key: str, title: str) -> tuple[str, Any]:
         """Karar ver: ``("send", token)`` yeni gönderim, ``("dup", None)`` tekrar.
 
         Rezervasyon sahibi takılırsa bekleyen devralır; fırsatın kaybolmasındansa
@@ -4080,13 +4144,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 prune_dedup_cache(DEDUP_CACHE, time.time(), DEDUP_WINDOW_SECONDS, DEDUP_MAX_ENTRIES)
                 entry = DEDUP_CACHE.get(key)
                 if entry is None or entry.get("failed"):
-                    DEDUP_CACHE[key] = new_dedup_entry(title, source, token)
+                    DEDUP_CACHE[key] = new_dedup_entry(title, token)
                     return "send", token
                 if not entry.get("pending"):
                     entry["count"] += 1
                     entry["last_seen"] = time.time()
-                    if source and source not in entry["sources"]:
-                        entry["sources"].append(source)
                     asyncio.create_task(dedup_apply_badge(key))
                     return "dup", None
                 waiter_event = entry["ready"]
@@ -4102,7 +4164,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         current["failed"] = True
                         current["ready"].set()
                         token = object()
-                        DEDUP_CACHE[key] = new_dedup_entry(title, source, token)
+                        DEDUP_CACHE[key] = new_dedup_entry(title, token)
                         return "send", token
                 if steals >= 3:
                     log.warning("Tekrar kilidi çözülemedi, açık gönderiliyor (başlık: %.40s).", title)
@@ -4164,7 +4226,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 if entry is None or entry.get("pending") or not entry.get("editable"):
                     return
                 count = int(entry.get("count", 0))
-                sources = list(entry.get("sources") or [])
                 editable = entry["editable"]
                 kind = entry.get("kind", "text")
                 current_text = entry.get("text") or ""
@@ -4185,7 +4246,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 log.warning("Rozet gövdesi boş, güncelleme atlandı (başlık: %.40s).",
                             entry.get("title", ""))
                 return
-            badges = [dedup_badge(count, sources), dedup_badge(count, sources, short=True)]
+            badges = [dedup_badge(count), dedup_badge(count, short=True)]
             tried: set[str] = set()
             for badge in badges:
                 if not badge or badge in tried:
@@ -4207,7 +4268,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     ]
                     if DESTINATION_ID is None or not isinstance(bot_message_id, int):
                         break
-                    for attempt in range(2):
+                    for _ in range(2):
                         if kind == "media":
                             ok, detail = await edit_bot_caption(
                                 NOTIFY_BOT_TOKEN, DESTINATION_ID, bot_message_id, new_text,
@@ -4345,7 +4406,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 async with DEDUP_LOCK:
                     existing = DEDUP_CACHE.get(key)
                     if existing is None:
-                        record = new_dedup_entry(title, guess_source_from_text(base), object())
+                        record = new_dedup_entry(title, object())
                         record["pending"] = False
                         record["failed"] = False
                         record["ready"].set()
@@ -4372,9 +4433,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         else:
                             existing["count"] = int(existing.get("count", 1)) + 1
                         existing["last_seen"] = max(float(existing.get("last_seen", seen_at)), seen_at)
-                        guessed = guess_source_from_text(base)
-                        if guessed and guessed not in existing["sources"]:
-                            existing["sources"].append(guessed)
             except Exception as exc:  # noqa: BLE001 - tek ileti taramayı durdurmaz
                 log.debug("Önbelleğe alınamayan ileti: %s: %s", type(exc).__name__, exc)
         if added:
@@ -4650,7 +4708,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if not dedup_id:
             await deliver(event, source_name)
             return
-        decision, token = await dedup_before_send(dedup_id, dedup_title, source_name)
+        decision, token = await dedup_before_send(dedup_id, dedup_title)
         if decision == "dup":
             STATS["deduped"] += 1
             log.info("Tekrar birleştirildi (kaynak=%s): %.60s", source_name, dedup_title)
