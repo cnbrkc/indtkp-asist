@@ -56,6 +56,8 @@ STATS = {
     "modes": {},      # hangi iletim yolu kaç kez işe yaradı
     "cleaned": 0,     # bildirim gittikten sonra silinen hesap kopyası
     "cleaned_commands": 0,  # komut sohbetinde silinen eski komut/yanıt mesajı
+    "deduped": 0,     # aynı başlıkla birleştirilen (yeniden gönderilmeyen) tekrar
+    "dedup_edits": 0,  # tekrarda ilk mesaja işlenen rozet güncellemesi
     "last_match": None,
     "last_match_source": None,
 }
@@ -93,6 +95,15 @@ SINGLE_MESSAGE = True
 CLEAN_COMMANDS = True
 # chat_id -> son komut alışverişinin mesaj ID'leri (yalnızca komut diyaloğu).
 COMMAND_MESSAGES: dict[int, list[int]] = {}
+# Tekrar birleştirme (dedup): aynı başlıklı fırsat tek mesajda toplanır.
+# Ayrıntı: aşağıdaki "Tekrar birleştirme" bölümü.
+DEDUP_ENABLED = True       # aynı başlıklı tekrarlar birleştirilsin mi?
+DEDUP_WINDOW_SECONDS = 12 * 3600  # aynı başlık kaç saniye boyunca "aynı fırsat" sayılsın
+DEDUP_SCAN_LIMIT = 30      # açılışta hedefteki son kaç mesaj önbelleğe alınsın
+DEDUP_MAX_ENTRIES = 300    # bellekte tutulacak en fazla başlık (en eskiler düşer)
+# normalize edilmiş başlık -> kayıt sözlüğü (bkz. new_dedup_entry).
+DEDUP_CACHE: dict[str, dict[str, Any]] = {}
+DEDUP_LOCK = asyncio.Lock()  # kayıt/rezervasyon kısa kritik bölümü
 
 # Telegram sınırları (Bot API ve kullanıcı hesabı için ortak olanlar).
 MESSAGE_LIMIT = 4096          # normal mesaj metni
@@ -158,6 +169,10 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict:
         config["delivery_modes"] = [x.strip() for x in os.environ["DELIVERY_MODES"].split(",") if x.strip()]
     if os.getenv("MAX_MEDIA_MB"):
         config["max_media_mb"] = os.environ["MAX_MEDIA_MB"]
+    if os.getenv("DEDUP_WINDOW_HOURS"):
+        config["dedup_window_hours"] = os.environ["DEDUP_WINDOW_HOURS"]
+    if os.getenv("DEDUP_SCAN_LIMIT"):
+        config["dedup_scan_limit"] = os.environ["DEDUP_SCAN_LIMIT"]
     for key in ("destination", "match_mode", "copy_mode", "control_chat"):
         if os.getenv(key.upper()):
             config[key] = os.environ[key.upper()]
@@ -167,7 +182,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict:
         config["auto_restart"] = os.environ["AUTO_RESTART"].strip().lower() in {
             "1", "true", "yes", "evet", "on",
         }
-    for key in ("append_links", "clean_commands", "source_footer", "notify_media", "message_link", "single_message"):
+    for key in ("append_links", "clean_commands", "source_footer", "notify_media", "message_link", "single_message",
+                "dedup_enabled"):
         env_value = os.getenv(key.upper())
         if env_value is not None and env_value.strip():
             config[key] = env_value
@@ -451,6 +467,18 @@ def check_environment(config: dict | None = None) -> list[str]:
     except (TypeError, ValueError):
         problems.append("config.json → max_media_mb bir sayı olmalı.")
     try:
+        window = int(config.get("dedup_window_hours", 12))
+        if not 1 <= window <= 72:
+            problems.append("config.json → dedup_window_hours 1–72 saat arasında olmalı.")
+    except (TypeError, ValueError):
+        problems.append("config.json → dedup_window_hours bir sayı olmalı.")
+    try:
+        scan = int(config.get("dedup_scan_limit", 30))
+        if not 0 <= scan <= 100:
+            problems.append("config.json → dedup_scan_limit 0–100 arasında olmalı.")
+    except (TypeError, ValueError):
+        problems.append("config.json → dedup_scan_limit bir sayı olmalı.")
+    try:
         parse_chat_value(config.get("destination", "me"))
     except ValueError as exc:
         problems.append(f"config.json → destination geçersiz: {exc}")
@@ -507,6 +535,16 @@ def print_report(config: dict, problems: list[str]) -> None:
           f"| tek mesaj: {'açık' if config_flag(config.get('single_message')) else 'kapalı'} "
           f"| kaynak adı (kalın): {'açık' if config_flag(config.get('source_footer')) else 'kapalı'} "
           f"| komut temizliği: {'açık' if config_flag(config.get('clean_commands')) else 'kapalı'}", flush=True)
+    try:
+        window_hours = int(config.get("dedup_window_hours", 12))
+    except (TypeError, ValueError):
+        window_hours = 12
+    try:
+        scan_limit = int(config.get("dedup_scan_limit", 30))
+    except (TypeError, ValueError):
+        scan_limit = 30
+    print(f"Tekrar birleştirme : {'açık' if config_flag(config.get('dedup_enabled'), True) else 'kapalı'} "
+          f"(pencere: {window_hours} sa · açılış taraması: son {scan_limit} mesaj)", flush=True)
     print(f"Otomatik yenileme  : {config.get('auto_restart', True)} "
           f"({os.getenv('RESTART_AFTER_MINUTES', '330')} dk sonra)", flush=True)
     if problems:
@@ -609,9 +647,34 @@ def encode_multipart(fields: dict[str, Any], files: Sequence[tuple[str, str, str
     return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
-async def _bot_api_request(
+class BotSendResult(tuple):
+    """``(ok, detail)`` gibi açılan ama gönderilen mesajın ID'sini de taşıyan sonuç.
+
+    Var olan ``ok, detail = await send_bot_ping(...)`` çağrıları ve testlerdeki
+    düz 2'li fake'ler bozulmadan çalışmaya devam eder; yeni kod mesaj ID'sine
+    ``getattr(sonuç, "message_id", None)`` ile erişir (fake'lerde ``None`` döner).
+    """
+
+    def __new__(cls, ok: bool, detail: str, message_id: int | None = None) -> BotSendResult:
+        self = super().__new__(cls, (bool(ok), str(detail)))
+        self.ok = bool(ok)
+        self.detail = str(detail)
+        self.message_id = message_id
+        return self
+
+
+def message_id_from_result(result: Any) -> int | None:
+    """Bot API ``result`` sözlüğünden mesaj ID'sini al; yoksa ``None``."""
+    message_id = result.get("message_id") if isinstance(result, dict) else None
+    if isinstance(message_id, bool):
+        return None
+    return int(message_id) if isinstance(message_id, int) else None
+
+
+async def _bot_api_request_full(
     token: str, method: str, *, payload: bytes, content_type: str, what: str,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, dict[str, Any] | None]:
+    """Bot API çağrısı; başarılı sonucun ``result`` sözlüğünü de döndürür."""
     request = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/{method}",
         data=payload,
@@ -622,15 +685,25 @@ async def _bot_api_request(
         with await asyncio.to_thread(urllib.request.urlopen, request, timeout=30) as response:
             body = json.loads(response.read().decode("utf-8", "replace") or "{}")
         if body.get("ok"):
-            return True, f"{what} gönderildi"
-        return False, f"Bot API ok=false: {body.get('description')}"
+            result = body.get("result")
+            return True, f"{what} gönderildi", result if isinstance(result, dict) else None
+        return False, f"Bot API ok=false: {body.get('description')}", None
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:200]
         log.error("Bildirim bot'u hata verdi: HTTP %s %s", exc.code, detail)
-        return False, f"HTTP {exc.code}: {detail}"
+        return False, f"HTTP {exc.code}: {detail}", None
     except Exception as exc:  # noqa: BLE001 - bildirim başarısızlığı akışı durdurmaz
         log.warning("Bildirim gönderilemedi: %s", type(exc).__name__)
-        return False, f"{type(exc).__name__}"
+        return False, f"{type(exc).__name__}", None
+
+
+async def _bot_api_request(
+    token: str, method: str, *, payload: bytes, content_type: str, what: str,
+) -> tuple[bool, str]:
+    ok, detail, _ = await _bot_api_request_full(
+        token, method, payload=payload, content_type=content_type, what=what,
+    )
+    return ok, detail
 
 
 async def send_bot_ping(
@@ -650,9 +723,12 @@ async def send_bot_ping(
 
     ``entities`` ve ``keyboard`` verilirse mesaj, kaynaktaki biçimlendirmeyi
     (gizli bağlantılar dâhil) ve buton linklerini korur.
+
+    Dönen değer ``(ok, detail)`` gibi açılır; ``.message_id`` özniteliği
+    gönderilen Bot API mesajının ID'sini verir (başarısızlıkta ``None``).
     """
     if not token:
-        return False, "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil."
+        return BotSendResult(False, "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil.")
     payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:MESSAGE_LIMIT]}
     if entities:
         payload["entities"] = json.dumps(entities)
@@ -660,10 +736,11 @@ async def send_bot_ping(
         payload["reply_markup"] = json.dumps(keyboard)
     if link_preview is not None:
         payload["link_preview_options"] = json.dumps({"is_disabled": not link_preview})
-    return await _bot_api_request(
+    ok, detail, result = await _bot_api_request_full(
         token, "sendMessage",
         payload=json.dumps(payload).encode(), content_type="application/json", what="bildirim",
     )
+    return BotSendResult(ok, detail, message_id_from_result(result))
 
 
 async def send_bot_media(
@@ -678,9 +755,13 @@ async def send_bot_media(
     entities: list[dict[str, Any]] | None = None,
     keyboard: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
-    """Bildirim botuyla fotoğraf/video/dosya gönder (medya da bildirim üretsin)."""
+    """Bildirim botuyla fotoğraf/video/dosya gönder (medya da bildirim üretsin).
+
+    Dönen değer ``(ok, detail)`` gibi açılır; ``.message_id`` özniteliği
+    gönderilen Bot API mesajının ID'sini verir (başarısızlıkta ``None``).
+    """
     if not token:
-        return False, "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil."
+        return BotSendResult(False, "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil.")
     method = {"photo": "sendPhoto", "video": "sendVideo"}.get(kind, "sendDocument")
     field = {"photo": "photo", "video": "video"}.get(kind, "document")
     fields: dict[str, Any] = {"chat_id": chat_id}
@@ -691,9 +772,71 @@ async def send_bot_media(
     if keyboard:
         fields["reply_markup"] = json.dumps(keyboard)
     body, content_type = encode_multipart(fields, [(field, filename, mime_type, data)])
-    return await _bot_api_request(
+    ok, detail, result = await _bot_api_request_full(
         token, method, payload=body, content_type=content_type, what=f"bildirim medyası ({kind})",
     )
+    return BotSendResult(ok, detail, message_id_from_result(result))
+
+
+async def edit_bot_text(
+    token: str,
+    chat_id: int | str,
+    message_id: int,
+    text: str,
+    *,
+    entities: list[dict[str, Any]] | None = None,
+    keyboard: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
+    """Bildirim botunun gönderdiği bir metin mesajını yerinde günceller.
+
+    Tekrar birleştirmede ilk mesaja rozet ("3 kaynakta paylaşıldı" gibi)
+    işlerken kullanılır. Bot kendi mesajını düzenleyebilir; içerik değişmediyse
+    Telegram "message is not modified" der, bu başarı sayılır.
+    """
+    if not token:
+        return False, "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil."
+    payload: dict[str, Any] = {
+        "chat_id": chat_id, "message_id": message_id, "text": text[:MESSAGE_LIMIT],
+    }
+    if entities:
+        payload["entities"] = json.dumps(entities)
+    if keyboard:
+        payload["reply_markup"] = json.dumps(keyboard)
+    ok, detail = await _bot_api_request(
+        token, "editMessageText",
+        payload=json.dumps(payload).encode(), content_type="application/json", what="bildirim güncellemesi",
+    )
+    if not ok and "message is not modified" in detail:
+        return True, "değişiklik yok (zaten güncel)"
+    return ok, detail
+
+
+async def edit_bot_caption(
+    token: str,
+    chat_id: int | str,
+    message_id: int,
+    caption: str,
+    *,
+    entities: list[dict[str, Any]] | None = None,
+    keyboard: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
+    """Bildirim botunun gönderdiği bir medyanın açıklamasını yerinde günceller."""
+    if not token:
+        return False, "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil."
+    payload: dict[str, Any] = {
+        "chat_id": chat_id, "message_id": message_id, "caption": caption[:CAPTION_LIMIT],
+    }
+    if entities:
+        payload["caption_entities"] = json.dumps(entities)
+    if keyboard:
+        payload["reply_markup"] = json.dumps(keyboard)
+    ok, detail = await _bot_api_request(
+        token, "editMessageCaption",
+        payload=json.dumps(payload).encode(), content_type="application/json", what="bildirim güncellemesi",
+    )
+    if not ok and "message is not modified" in detail:
+        return True, "değişiklik yok (zaten güncel)"
+    return ok, detail
 
 
 # ---------------------------------------------------------------------------
@@ -839,6 +982,31 @@ def sent_message_ids(result: Any) -> list[int]:
         if isinstance(message_id, int) and not isinstance(message_id, bool):
             ids.append(message_id)
     return ids
+
+
+def first_sent_item(result: Any) -> Any | None:
+    """Gönderim çıktısının ilk mesaj nesnesi (ID'lisi tercih edilir)."""
+    items = result if isinstance(result, (list, tuple, set)) else [result]
+    for item in items:
+        message_id = getattr(item, "id", None)
+        if isinstance(message_id, int) and not isinstance(message_id, bool):
+            return item
+    for item in items:
+        if item is not None:
+            return item
+    return None
+
+
+def first_sent_text(result: Any) -> str | None:
+    """Gönderilen iletinin metni/açıklaması; okunamazsa ``None``."""
+    text = getattr(first_sent_item(result), "message", None)
+    return text if isinstance(text, str) and text else None
+
+
+def first_sent_entities(result: Any) -> list[Any] | None:
+    """Gönderilen iletinin biçim entity'leri; yoksa ``None``."""
+    entities = getattr(first_sent_item(result), "entities", None)
+    return list(entities) if entities else None
 
 
 def button_link(button: Any) -> tuple[str, str] | None:
@@ -1622,6 +1790,287 @@ def bot_media_descriptor(obj: Any) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
+# Tekrar birleştirme (aynı fırsat, tek mesaj)
+# ---------------------------------------------------------------------------
+#
+# Aynı indirim 3-5 kanal tarafından dakikalar içinde, çoğu zaman birebir aynı
+# başlıkla paylaşılır. Her kopyayı gruba atmak mesaj kalabalığı yapar; oysa
+# tekrarlar indirimin "gerçek ve teyitli" olduğunun işaretidir. Bu yüzden:
+#
+#   * İlk kopya her zamanki gibi gönderilir ve başlığı bellekteki
+#     ``DEDUP_CACHE`` sözlüğüne yazılır (mesaj başına EK API çağrısı YOKTUR;
+#     her tekrarda geçmiş taramak hem bildirimi geciktirir hem FloodWait/429
+#     riskini artırırdı).
+#   * Sonraki aynı başlıklı kopyalar gruba ATILMAZ; ilk mesaja rozet işlenir:
+#     "✅ 2 kaynakta paylaşıldı", "🔥 3 kaynakta paylaşıldı!" ...
+#   * Rozet kalın + emoji + (sayı büyüdükçe) büyük harfe dönen bir başlıktır.
+#     Telegram'da mesaj rengi değiştirilemez; kalın + emoji + büyük harf,
+#     platformun sunduğu en güçlü vurgu kombinasyonudur.
+#   * Eşleşme penceresi ``dedup_window_hours`` ile sınırlıdır (varsayılan 12):
+#     iki hafta sonra aynı ürün yine indirime girerse YENİ fırsat sayılır.
+#   * Bot yeniden başlayınca bellek boşalır; açılışta hedeften SON
+#     ``dedup_scan_limit`` mesaj (varsayılan 30, tek API çağrısı) okunup
+#     önbellek yeniden kurulur. İşlem başına tarama yapılmaz.
+#
+# Yarış durumu: aynı anda gelen kopyalar için gönderen "rezervasyon" koyar;
+# diğerleri onun bitmesini bekleyip tekrara düşer (bkz. main() içindeki
+# dedup_before_send / dedup_after_send).
+
+# Rozet satırı: "✅ 2 kaynakta paylaşıldı ..." / "🔥🔥 4 kaynakta ..." /
+# "🚨 5 KAYNAKTA PAYLAŞILDI — KAÇIRMA! 🚨" (büyük/küçük harf farkını yok say).
+DEDUP_BADGE_RE = re.compile(r"^(✅|🔥+|🚨)\s*(\d+)\s+kaynakta\s+paylaşıldı", re.IGNORECASE)
+DEDUP_SOURCES_PREFIX = "📌"
+DEDUP_MAX_SOURCES_IN_BADGE = 4
+DEDUP_SOURCE_NAME_LEN = 24
+# Aynı sohbete Bot API ~1/sn sınırı uygular; rozet güncellemeleri
+# bunun altında kalmak için mesaj başına bu kadar aralık bırakır.
+DEDUP_EDIT_MIN_INTERVAL = 1.2
+# Rezervasyon koyup bitirmeyen göndereni bekleme süresi (sonrası devralma).
+DEDUP_RESERVE_TIMEOUT = 60.0
+# Yarım kalmış rezervasyonun önbellekten atılma süresi (temizlik).
+DEDUP_RESERVE_TTL = 300.0
+
+
+def dedup_key(title: str | None) -> str | None:
+    """Başlığı tekrar-eşleşme anahtarına çevir; boş başlıkta ``None``.
+
+    Aynı kanalların kopyala-yapıştır yaptığı başlıklar birebir aynı olur;
+    büyük/küçük harf ve boşluk farkları yok sayılır (Türkçe duyarlı).
+    """
+    key = " ".join(normalize(title).split())
+    return key or None
+
+
+def dedup_badge(count: int, sources: Sequence[str] | None = None, *, short: bool = False) -> str:
+    """Tekrar rozetinin metni; ilk gönderimde (``count < 2``) boş döner.
+
+    Sayı büyüdükçe vurgu artar: ✅ → 🔥 → 🔥🔥 → 🚨 + BÜYÜK HARF.
+    ``short=True`` yalnızca başlık satırını verir (dar açıklamalar için).
+    """
+    if count < 2:
+        return ""
+    if count == 2:
+        head = "✅ 2 kaynakta paylaşıldı · teyitli fırsat"
+    elif count == 3:
+        head = "🔥 3 kaynakta paylaşıldı!"
+    elif count == 4:
+        head = "🔥🔥 4 kaynakta paylaşıldı!!"
+    elif short:
+        head = f"🚨 {count} kaynakta paylaşıldı!"
+    else:
+        head = f"🚨 {count} KAYNAKTA PAYLAŞILDI — KAÇIRMA! 🚨"
+    if short:
+        return head
+    names = [str(name).strip() for name in (sources or []) if str(name).strip()]
+    if not names:
+        return head
+    shown = [name[:DEDUP_SOURCE_NAME_LEN] for name in names[:DEDUP_MAX_SOURCES_IN_BADGE]]
+    extra = len(names) - len(shown)
+    line = f"{DEDUP_SOURCES_PREFIX} Kaynaklar: " + ", ".join(shown)
+    if extra > 0:
+        line += f" +{extra}"
+    return f"{head}\n{line}"
+
+
+def strip_dedup_badge(text: str | None) -> tuple[int, str]:
+    """Metnin başındaki rozeti sök: (sayaç, rozetsiz metin).
+
+    Rozet yoksa sayaç 1'dir. Açılış taramasında eski rozetli mesajların
+    sayacını geri kazanmak için kullanılır.
+    """
+    lines = (text or "").split("\n")
+    if not lines:
+        return 1, text or ""
+    match = DEDUP_BADGE_RE.match(lines[0].strip())
+    if not match:
+        return 1, text or ""
+    try:
+        count = max(1, int(match.group(2)))
+    except ValueError:
+        count = 1
+    rest = lines[1:]
+    if rest and rest[0].strip().startswith(DEDUP_SOURCES_PREFIX):
+        rest = rest[1:]
+    while rest and not rest[0].strip():
+        rest = rest[1:]
+    return count, "\n".join(rest)
+
+
+def shift_bot_entities(
+    entities: Sequence[dict[str, Any]] | None, delta: int,
+) -> list[dict[str, Any]]:
+    """Bot API entity sözlüklerini ``delta`` UTF-16 birimi sağa kaydır (kopyalayarak)."""
+    shifted: list[dict[str, Any]] = []
+    for entity in entities or []:
+        if not isinstance(entity, dict):
+            continue
+        clone = dict(entity)
+        try:
+            clone["offset"] = int(clone.get("offset", 0)) + delta
+        except (TypeError, ValueError):
+            continue
+        shifted.append(clone)
+    return shifted
+
+
+def shift_telethon_entities(entities: Sequence[Any] | None, delta: int) -> list[Any]:
+    """Telethon entity'lerini ``delta`` UTF-16 birimi sağa kaydır (kopyalayarak)."""
+    shifted: list[Any] = []
+    for entity in entities or []:
+        try:
+            clone = copy.copy(entity)
+            clone.offset = int(getattr(entity, "offset", 0) or 0) + delta
+            clone.length = int(getattr(entity, "length", 0) or 0)
+        except Exception:  # noqa: BLE001 - bilinmeyen entity taşınamıyorsa atlanır
+            log.debug("Rozet kaydırma entity'yi taşıyamadı: %s", type(entity).__name__)
+            continue
+        if clone.length > 0 and clone.offset >= 0:
+            shifted.append(clone)
+    return shifted
+
+
+def dedup_current_prefix(text: str | None) -> str:
+    """Metnin başındaki mevcut rozet bloğu (yoksa ``""``).
+
+    Rozet güncellemesi eski rozeti bununla bulup yenisiyle değiştirir;
+    böylece rozet üst üste yığılmaz ve entity kaydırma tek adımda yapılır.
+    """
+    count, base = strip_dedup_badge(text)
+    if count <= 1 or not base:
+        return ""
+    full = text or ""
+    if not full.endswith(base):
+        return ""
+    return full[: len(full) - len(base)]
+
+
+def dedup_rebased_bot_entities(
+    entities: Sequence[dict[str, Any]] | None, old_prefix_len: int, new_prefix_len: int,
+) -> list[dict[str, Any]]:
+    """Rozet değişiminde Bot API entity'lerini taşı: eski rozet içindekiler atılır."""
+    kept: list[dict[str, Any]] = []
+    for entity in entities or []:
+        if not isinstance(entity, dict):
+            continue
+        try:
+            offset = int(entity.get("offset", 0))
+        except (TypeError, ValueError):
+            continue
+        if offset >= old_prefix_len:
+            kept.append(entity)
+    return shift_bot_entities(kept, new_prefix_len - old_prefix_len)
+
+
+def dedup_rebased_tl_entities(
+    entities: Sequence[Any] | None, old_prefix_len: int, new_prefix_len: int,
+) -> list[Any]:
+    """Rozet değişiminde Telethon entity'lerini taşı: eski rozet içindekiler atılır."""
+    kept: list[Any] = []
+    for entity in entities or []:
+        try:
+            offset = int(getattr(entity, "offset", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if offset >= old_prefix_len:
+            kept.append(entity)
+    return shift_telethon_entities(kept, new_prefix_len - old_prefix_len)
+
+
+def guess_source_from_text(text: str | None) -> str:
+    """Bildirim metninden kaynak adını tahmin et (yalnızca açılış taraması).
+
+    Biçim sabittir: ``🔗 Mesajı Gör: ...`` satırından sonraki ilk dolu satır
+    kaynak adıdır. Bulunamazsa ``""`` döner; yanlış tahmin rozeti bozar,
+    bu yüzden emin olunamayan durumda boş dönmek kuraldır.
+    """
+    lines = (text or "").splitlines()
+    for index, line in enumerate(lines):
+        if MESSAGE_LINK_LABEL in line:
+            for following in lines[index + 1:]:
+                name = following.strip()
+                if not name:
+                    continue
+                if len(name) > 80 or "http" in name.lower() or "://" in name:
+                    return ""
+                return name
+            return ""
+    return ""
+
+
+def new_dedup_entry(title: str, source: str, token: Any) -> dict[str, Any]:
+    """Gönderim rezervasyonu konmuş yeni önbellek kaydı (``pending=True``)."""
+    now = time.time()
+    return {
+        "title": title,
+        "count": 1,
+        "sources": [source] if source else [],
+        "first_seen": now,
+        "last_seen": now,
+        "pending": True,     # ilk mesaj henüz gönderilmedi
+        "failed": False,     # gönderim yarım kaldı / devralındı
+        "ready": asyncio.Event(),
+        "token": token,      # rezervasyon sahibi (devralmayı ayırt eder)
+        "editable": None,    # "bot" | "account" | None
+        "bot_message_id": None,
+        "account_message_id": None,
+        "kind": "text",      # "text" | "media" (bot düzenlemesinin yöntemini seçer)
+        "text": "",          # ilk mesajın güncel tam metni (rozette güncel tutulur)
+        "entities_bot": None,  # Bot API entity sözlükleri (güncel metne göre)
+        "entities_tl": None,   # Telethon entity'leri (güncel metne göre)
+        "keyboard": None,
+        "edit_lock": asyncio.Lock(),
+        "last_edit": 0.0,
+        "edit_fails": 0,     # üst üste rozet hatası (2'de düzenleme bırakılır)
+    }
+
+
+def prune_dedup_cache(
+    cache: dict[str, dict[str, Any]], now: float, window_seconds: float, max_entries: int,
+) -> int:
+    """Süresi dolmuş ve yarım kalmış kayıtları at; fazlaysa en eskileri düşür.
+
+    Dönen değer atılan kayıt sayısıdır. Bekleyen (``pending``) kayıtlar
+    ``DEDUP_RESERVE_TTL`` dolmadan atılmaz; kapasite aşımında önce hazır
+    kayıtlar elenir.
+    """
+    dropped = 0
+    for key in list(cache):
+        entry = cache.get(key) or {}
+        age = now - float(entry.get("first_seen", now))
+        if entry.get("pending"):
+            if age > DEDUP_RESERVE_TTL:
+                entry["failed"] = True
+                try:
+                    entry["ready"].set()
+                except Exception:  # noqa: BLE001 - temizlik akışı durdurmaz
+                    pass
+                del cache[key]
+                dropped += 1
+        elif age > window_seconds:
+            del cache[key]
+            dropped += 1
+    overflow = len(cache) - max(1, int(max_entries))
+    if overflow > 0:
+        ordered = sorted(cache.items(), key=lambda item: float(item[1].get("first_seen", now)))
+        for key, entry in ordered:
+            if overflow <= 0:
+                break
+            if entry.get("pending"):
+                continue
+            del cache[key]
+            overflow -= 1
+            dropped += 1
+        for key, entry in ordered:
+            if overflow <= 0:
+                break
+            if key in cache:
+                del cache[key]
+                overflow -= 1
+                dropped += 1
+    return dropped
+
+
+# ---------------------------------------------------------------------------
 # Komutlar
 # ---------------------------------------------------------------------------
 
@@ -1688,6 +2137,12 @@ def build_status_text(config: dict) -> str:
         f"• Komut temizliği: {'açık' if CLEAN_COMMANDS else 'kapalı'}"
         + (f" · silinen eski komut mesajı: {STATS.get('cleaned_commands', 0)}"
            if CLEAN_COMMANDS and STATS.get("cleaned_commands") else "")
+        + "\n"
+        + (
+            f"• Tekrar birleştirme: açık · birleştirilen {STATS.get('deduped', 0)}"
+            f" · rozet {STATS.get('dedup_edits', 0)} · izlenen {len(DEDUP_CACHE)} başlık"
+            if DEDUP_ENABLED else "• Tekrar birleştirme: kapalı"
+        )
     )
 
 
@@ -2510,6 +2965,7 @@ def apply_runtime_config(config: dict) -> list[str]:
     global LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
     global MESSAGE_LINK_LINE, SOURCE_FOOTER, NOTIFY_MEDIA, NOTIFY_BOT_TOKEN
     global SINGLE_MESSAGE, CLEAN_COMMANDS
+    global DEDUP_ENABLED, DEDUP_WINDOW_SECONDS, DEDUP_SCAN_LIMIT
 
     notes: list[str] = []
     FILTER_INCLUDE = [normalize(x) for x in config.get("include_keywords") or []]
@@ -2533,6 +2989,17 @@ def apply_runtime_config(config: dict) -> list[str]:
     NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
     SINGLE_MESSAGE = config_flag(config.get("single_message"), True)
     CLEAN_COMMANDS = config_flag(config.get("clean_commands"), True)
+    DEDUP_ENABLED = config_flag(config.get("dedup_enabled"), True)
+    try:
+        DEDUP_WINDOW_SECONDS = max(1, min(72, int(config.get("dedup_window_hours", 12)))) * 3600
+    except (TypeError, ValueError):
+        log.warning("dedup_window_hours sayı değil, 12 saat kabul edildi.")
+        DEDUP_WINDOW_SECONDS = 12 * 3600
+    try:
+        DEDUP_SCAN_LIMIT = max(0, min(100, int(config.get("dedup_scan_limit", 30))))
+    except (TypeError, ValueError):
+        log.warning("dedup_scan_limit sayı değil, 30 kabul edildi.")
+        DEDUP_SCAN_LIMIT = 30
     # Bildirim token'ının tek kaynağı environment/Actions secret'ı olsun;
     # config.json içindeki eski notify_bot_token alanı artık kullanılmaz.
     token = str(os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
@@ -3028,6 +3495,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
     if CLEAN_COMMANDS:
         log.info("Komut temizliği açık: yeni komutta önceki komut/yanıt silinir, "
                  "bildirimlere dokunulmaz.")
+    if DEDUP_ENABLED:
+        log.info("Tekrar birleştirme açık: aynı başlık %s boyunca tek mesajda toplanır, "
+                 "açılışta hedefteki son %d ileti taranır.",
+                 humanize(DEDUP_WINDOW_SECONDS), DEDUP_SCAN_LIMIT)
+    else:
+        log.info("Tekrar birleştirme kapalı: her eşleşme ayrı mesaj olarak iletilir.")
 
     # --- Kaynakları, kontrol sohbetini ve hedefi çöz.
     notes, fatal = await resolve_chat_groups(
@@ -3589,19 +4062,343 @@ async def main(argv: Sequence[str] | None = None) -> int:
         "link": send_link_card,
     }
 
-    async def notify_offer(event: events.NewMessage.Event, source_name: str) -> bool:
-        """Bildirim botuyla fırsatın kopyasını at; gönderildiyse ``True`` döner.
+    # --- Tekrar birleştirme --------------------------------------------------
+    # Aynı başlık aynı anda 3-5 kanaldan gelebilir; gönderen rezervasyon koyar,
+    # diğerleri bekleyip tekrara düşer. Rozet güncellemesi arka planda yapılır,
+    # yeni fırsatların bildirimini ASLA bekletmez.
+
+    async def dedup_before_send(key: str, title: str, source: str) -> tuple[str, Any]:
+        """Karar ver: ``("send", token)`` yeni gönderim, ``("dup", None)`` tekrar.
+
+        Rezervasyon sahibi takılırsa bekleyen devralır; fırsatın kaybolmasındansa
+        fazladan bir mesaj iyidir (fail-open).
+        """
+        token: Any = object()
+        steals = 0
+        while True:
+            async with DEDUP_LOCK:
+                prune_dedup_cache(DEDUP_CACHE, time.time(), DEDUP_WINDOW_SECONDS, DEDUP_MAX_ENTRIES)
+                entry = DEDUP_CACHE.get(key)
+                if entry is None or entry.get("failed"):
+                    DEDUP_CACHE[key] = new_dedup_entry(title, source, token)
+                    return "send", token
+                if not entry.get("pending"):
+                    entry["count"] += 1
+                    entry["last_seen"] = time.time()
+                    if source and source not in entry["sources"]:
+                        entry["sources"].append(source)
+                    asyncio.create_task(dedup_apply_badge(key))
+                    return "dup", None
+                waiter_event = entry["ready"]
+            try:
+                await asyncio.wait_for(waiter_event.wait(), timeout=DEDUP_RESERVE_TIMEOUT)
+            except TimeoutError:
+                steals += 1
+                async with DEDUP_LOCK:
+                    current = DEDUP_CACHE.get(key)
+                    if current is entry and current.get("pending"):
+                        log.warning("Tekrar rezervasyonu %ss'de bitmedi, devralınıyor (başlık: %.40s).",
+                                    int(DEDUP_RESERVE_TIMEOUT), title)
+                        current["failed"] = True
+                        current["ready"].set()
+                        token = object()
+                        DEDUP_CACHE[key] = new_dedup_entry(title, source, token)
+                        return "send", token
+                if steals >= 3:
+                    log.warning("Tekrar kilidi çözülemedi, açık gönderiliyor (başlık: %.40s).", title)
+                    return "send", token
+
+    async def dedup_after_send(
+        key: str, token: Any, success: bool, info: dict[str, Any] | None,
+    ) -> None:
+        """Rezervasyonu sonuçlandır: başarılıysa rozet bilgisini yaz, değilse düşür."""
+        async with DEDUP_LOCK:
+            entry = DEDUP_CACHE.get(key)
+            if entry is None or entry.get("token") is not token:
+                return  # devralınmış ya da budanmış; güncel kayda dokunma
+            if not success:
+                entry["failed"] = True
+                entry["ready"].set()
+                if DEDUP_CACHE.get(key) is entry:
+                    del DEDUP_CACHE[key]
+                return
+            info = info or {}
+            bot_info = info.get("bot") or {}
+            bot_id = bot_info.get("message_id")
+            account_ids = list(info.get("account_ids") or [])
+            if isinstance(bot_id, int) and not isinstance(bot_id, bool):
+                entry["editable"] = "bot"
+                entry["bot_message_id"] = bot_id
+                entry["kind"] = "media" if bot_info.get("kind") == "media" else "text"
+                entry["text"] = bot_info.get("text") or ""
+                entry["entities_bot"] = list(bot_info.get("entities") or [])
+                entry["keyboard"] = bot_info.get("keyboard")
+            elif account_ids and not info.get("account_deleted"):
+                entry["editable"] = "account"
+                entry["account_message_id"] = account_ids[0]
+                entry["text"] = info.get("account_text") or ""
+                entry["entities_tl"] = list(info.get("account_entities") or [])
+            else:
+                # Rozet işlenemez (örn. bot ID'si alınamadı) ama tekrar
+                # kaydı durur: sonraki kopyalar yine birleştirilir.
+                entry["editable"] = None
+            entry["pending"] = False
+            entry["ready"].set()
+
+    async def dedup_apply_badge(key: str) -> None:
+        """Arka planda ilk mesaja rozet işle; hata akışı durdurmaz."""
+        try:
+            await _dedup_apply_badge(key)
+        except Exception as exc:  # noqa: BLE001 - rozet görevi asla çökmemeli
+            log.warning("Rozet görevi beklenmedik hatayla bitti: %s: %s", type(exc).__name__, exc)
+
+    async def _dedup_apply_badge(key: str) -> None:
+        async with DEDUP_LOCK:
+            entry = DEDUP_CACHE.get(key)
+            if entry is None or entry.get("pending") or not entry.get("editable"):
+                return
+            edit_lock = entry["edit_lock"]
+        async with edit_lock:
+            async with DEDUP_LOCK:
+                entry = DEDUP_CACHE.get(key)
+                if entry is None or entry.get("pending") or not entry.get("editable"):
+                    return
+                count = int(entry.get("count", 0))
+                sources = list(entry.get("sources") or [])
+                editable = entry["editable"]
+                kind = entry.get("kind", "text")
+                current_text = entry.get("text") or ""
+                bot_entities = list(entry.get("entities_bot") or [])
+                tl_entities = list(entry.get("entities_tl") or [])
+                keyboard = entry.get("keyboard")
+                bot_message_id = entry.get("bot_message_id")
+                account_message_id = entry.get("account_message_id")
+                wait = DEDUP_EDIT_MIN_INTERVAL - (time.time() - float(entry.get("last_edit", 0.0)))
+            if count < 2 or not current_text:
+                return
+            if wait > 0:
+                await asyncio.sleep(wait)
+            # Eski rozet bloğu yenisiyle değişir (üst üste yığılmaz).
+            old_prefix = dedup_current_prefix(current_text)
+            body = current_text[len(old_prefix):] if old_prefix else current_text
+            if not body.strip():
+                log.warning("Rozet gövdesi boş, güncelleme atlandı (başlık: %.40s).",
+                            entry.get("title", ""))
+                return
+            badges = [dedup_badge(count, sources), dedup_badge(count, sources, short=True)]
+            tried: set[str] = set()
+            for badge in badges:
+                if not badge or badge in tried:
+                    continue
+                tried.add(badge)
+                new_text = f"{badge}\n\n{body}"
+                headline = badge.split("\n")[0]
+                new_prefix = f"{badge}\n\n"
+                old_len = utf16_length(old_prefix)
+                new_len = utf16_length(new_prefix)
+                if editable == "bot":
+                    limit = CAPTION_LIMIT if kind == "media" else MESSAGE_LIMIT
+                    if len(new_text) > limit:
+                        continue  # sığmadı, kısa rozeti dene
+                    shifted = dedup_rebased_bot_entities(bot_entities, old_len, new_len)
+                    new_entities: list[dict[str, Any]] | None = [
+                        {"type": "bold", "offset": 0, "length": utf16_length(headline)},
+                        *shifted,
+                    ]
+                    if DESTINATION_ID is None or not isinstance(bot_message_id, int):
+                        break
+                    for attempt in range(2):
+                        if kind == "media":
+                            ok, detail = await edit_bot_caption(
+                                NOTIFY_BOT_TOKEN, DESTINATION_ID, bot_message_id, new_text,
+                                entities=new_entities, keyboard=keyboard,
+                            )
+                        else:
+                            ok, detail = await edit_bot_text(
+                                NOTIFY_BOT_TOKEN, DESTINATION_ID, bot_message_id, new_text,
+                                entities=new_entities, keyboard=keyboard,
+                            )
+                        if ok:
+                            break
+                        if "retry after" in detail.lower() or "too many requests" in detail.lower():
+                            await asyncio.sleep(2)
+                            continue
+                        break
+                    if ok:
+                        async with DEDUP_LOCK:
+                            live = DEDUP_CACHE.get(key)
+                            if live is entry:
+                                live["text"] = new_text
+                                live["entities_bot"] = new_entities
+                                live["last_edit"] = time.time()
+                                live["edit_fails"] = 0
+                        STATS["dedup_edits"] += 1
+                        log.info("Rozet güncellendi (%s kaynak, bot iletisi %s).", count, bot_message_id)
+                        return
+                    log.info("Rozet bot iletisine işlenemedi (%s); kısa rozet deneniyor.", detail)
+                else:
+                    if not isinstance(account_message_id, int):
+                        break
+                    shifted_tl = dedup_rebased_tl_entities(tl_entities, old_len, new_len)
+                    new_tl = [
+                        types.MessageEntityBold(offset=0, length=utf16_length(headline)),
+                        *shifted_tl,
+                    ]
+                    try:
+                        await client.edit_message(
+                            DESTINATION, account_message_id, new_text,
+                            formatting_entities=new_tl, link_preview=True,
+                        )
+                    except errors.FloodWaitError as exc:
+                        log.warning("Rozet FloodWait (%s sn); kısa rozet denenmeden bırakılıyor.", exc.seconds)
+                        await asyncio.sleep(min(exc.seconds, 10))
+                        break
+                    except errors.MessageNotModifiedError:
+                        async with DEDUP_LOCK:
+                            live = DEDUP_CACHE.get(key)
+                            if live is entry:
+                                live["text"] = new_text
+                                live["entities_tl"] = new_tl
+                                live["last_edit"] = time.time()
+                        return
+                    except Exception as exc:  # noqa: BLE001 - rozet hatası fırsatı öldürmez
+                        log.info("Rozet hesap iletisine işlenemedi (%s: %s); kısa rozet deneniyor.",
+                                 type(exc).__name__, exc)
+                        continue
+                    async with DEDUP_LOCK:
+                        live = DEDUP_CACHE.get(key)
+                        if live is entry:
+                            live["text"] = new_text
+                            live["entities_tl"] = new_tl
+                            live["last_edit"] = time.time()
+                            live["edit_fails"] = 0
+                    STATS["dedup_edits"] += 1
+                    log.info("Rozet güncellendi (%s kaynak, hesap iletisi %s).", count, account_message_id)
+                    return
+            # Buraya düşüldüyse rozet işlenemedi; iki üst üste hatada bu
+            # başlık için düzenlemeyi bırak (birleştirme sürer).
+            async with DEDUP_LOCK:
+                live = DEDUP_CACHE.get(key)
+                if live is not None:
+                    live["edit_fails"] = int(live.get("edit_fails", 0)) + 1
+                    if live["edit_fails"] >= 2:
+                        live["editable"] = None
+                        log.info("Rozet iki kez başarısız oldu; bu başlık rozetsiz birleşecek.")
+
+    async def dedup_preload() -> None:
+        """Açılışta hedefin son iletilerini okuyup önbelleği ısıt (tek tarama).
+
+        Yeniden başlamalarda aynı başlığın ikinci kez gruba düşmesini önler.
+        İnsan sohbeti ASLA kayda alınmaz: yalnızca hesabın gönderdikleri ve
+        bildirim biçimindeki (rozetli/"Mesajı Gör"lü) iletiler işlenir.
+        Kayda alınmayan bir ileti en fazla fazladan bir bildirime yol açar;
+        yanlış kayıt ise fırsat kaybettirirdi — temkinli taraf seçildi.
+        """
+        if not DEDUP_ENABLED or DEDUP_SCAN_LIMIT <= 0 or DESTINATION_ID is None:
+            return
+        try:
+            recent: list[Any] = []
+            async for message in client.iter_messages(DESTINATION, limit=DEDUP_SCAN_LIMIT):
+                recent.append(message)
+        except Exception as exc:  # noqa: BLE001 - tarama açılışı öldürmemeli
+            log.warning("Tekrar önbelleği ısıtılamadı (%s: %s); boş başlanıyor.",
+                        type(exc).__name__, exc)
+            return
+        now = time.time()
+        added = 0
+        for message in reversed(recent):  # eskiden yeniye: ilk kopya kanonik olur
+            try:
+                text = getattr(message, "message", None) or ""
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                sender = getattr(message, "sender_id", None)
+                if sender is None:
+                    sender = getattr(getattr(message, "sender", None), "id", None)
+                badge_count, base = strip_dedup_badge(text)
+                looks_like_deal = badge_count > 1 or MESSAGE_LINK_LABEL in text
+                if sender == SELF_ID:
+                    editable: str | None = "account"
+                elif looks_like_deal:
+                    editable = "bot" if NOTIFY_BOT_TOKEN else None
+                else:
+                    continue  # insan sohbeti: kayda alma
+                title = message_title(base)
+                key = dedup_key(title)
+                if not key:
+                    continue
+                seen_at = now
+                sent_date = getattr(message, "date", None)
+                if sent_date is not None:
+                    try:
+                        seen_at = float(sent_date.timestamp()) if hasattr(sent_date, "timestamp") \
+                            else float(sent_date)
+                    except (TypeError, ValueError):
+                        seen_at = now
+                if now - seen_at > DEDUP_WINDOW_SECONDS:
+                    continue
+                message_id = getattr(message, "id", None)
+                if not isinstance(message_id, int) or isinstance(message_id, bool):
+                    continue
+                media = getattr(message, "media", None)
+                is_media = bool(media) and not isinstance(media, types.MessageMediaWebPage)
+                raw_entities = list(getattr(message, "entities", None) or [])
+                async with DEDUP_LOCK:
+                    existing = DEDUP_CACHE.get(key)
+                    if existing is None:
+                        record = new_dedup_entry(title, guess_source_from_text(base), object())
+                        record["pending"] = False
+                        record["failed"] = False
+                        record["ready"].set()
+                        record["count"] = max(1, badge_count)
+                        record["first_seen"] = seen_at
+                        record["last_seen"] = seen_at
+                        record["editable"] = editable
+                        record["kind"] = "media" if is_media else "text"
+                        record["text"] = text
+                        record["entities_tl"] = raw_entities
+                        if editable == "bot":
+                            record["bot_message_id"] = message_id
+                            record["entities_bot"] = [
+                                converted for entity in raw_entities
+                                if (converted := bot_api_entity(entity)) is not None
+                            ]
+                        elif editable == "account":
+                            record["account_message_id"] = message_id
+                        DEDUP_CACHE[key] = record
+                        added += 1
+                    elif not existing.get("pending"):
+                        if badge_count > 1:
+                            existing["count"] = max(int(existing.get("count", 1)), badge_count)
+                        else:
+                            existing["count"] = int(existing.get("count", 1)) + 1
+                        existing["last_seen"] = max(float(existing.get("last_seen", seen_at)), seen_at)
+                        guessed = guess_source_from_text(base)
+                        if guessed and guessed not in existing["sources"]:
+                            existing["sources"].append(guessed)
+            except Exception as exc:  # noqa: BLE001 - tek ileti taramayı durdurmaz
+                log.debug("Önbelleğe alınamayan ileti: %s: %s", type(exc).__name__, exc)
+        if added:
+            log.info("Tekrar önbelleği ısıtıldı: %d başlık (son %d ileti tarandı).",
+                     added, len(recent))
+
+    async def notify_offer(
+        event: events.NewMessage.Event, source_name: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Bildirim botuyla fırsatın kopyasını at; (gönderildi_mi, bilgi) döner.
 
         Tasarım: mesajın kendisi (biçimi ve gizli linkleriyle) → altına
         "🔗 <gizli linkler>" (varsa) → "🔗 Mesajı Gör: <t.me linki>" → en alta
         kaynak grup adı. Ad, "Fırsatı Gönderen" gibi bir etiket olmadan ve
         hiçbir linke bağlanmadan yalnızca kalın yazılır.
 
-        Dönen değer, tek mesaj modunda hesap kopyasının silinip
-        silinmeyeceğini belirler (bkz. delete_account_copy).
+        Dönen ilk değer, tek mesaj modunda hesap kopyasının silinip
+        silinmeyeceğini belirler (bkz. delete_account_copy). İkinci değer,
+        tekrar birleştirmenin rozet işleyebilmesi için gönderilen bot
+        mesajının kimlik/bilgi sözlüğüdür (boş olabilir).
         """
+        no_info: dict[str, Any] = {}
         if not NOTIFY_BOT_TOKEN or DESTINATION_ID is None:
-            return False
+            return False, no_info
         message_link = offer_link(event)
         keyboard = build_inline_keyboard(event)
         footer_name = source_name if SOURCE_FOOTER else None
@@ -3627,15 +4424,22 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 log.warning("Bildirim medyası indirilemedi (%s): %s", type(exc).__name__, exc)
                 data = None
             if data:
-                ok, detail = await send_bot_media(
+                send_result = await send_bot_media(
                     NOTIFY_BOT_TOKEN, DESTINATION_ID,
                     kind=descriptor["kind"], filename=descriptor["filename"],
                     mime_type=descriptor["mime"], data=data,
                     caption=composed["text"], entities=entities, keyboard=keyboard,
                 )
+                ok, detail = send_result
                 if ok:
                     log.info("Bildirim gönderildi (medya: %s, kaynak: %s).", descriptor["kind"], source_name)
-                    return True
+                    return True, {
+                        "message_id": getattr(send_result, "message_id", None),
+                        "kind": "media",
+                        "text": composed["text"],
+                        "entities": entities,
+                        "keyboard": keyboard,
+                    }
                 log.warning("Bildirim medyası gönderilemedi (%s) → metne düşülüyor.", detail)
 
         composed = compose_message(
@@ -3644,18 +4448,34 @@ async def main(argv: Sequence[str] | None = None) -> int:
         )
         entities = bot_api_entities(composed["message"], composed["body"]) + source_name_entity(composed)
         text = composed["text"] or f"🔔 Yeni fırsat – {source_name}"
-        ok, detail = await send_bot_ping(
+        send_result = await send_bot_ping(
             NOTIFY_BOT_TOKEN, DESTINATION_ID, text,
             entities=entities, keyboard=keyboard,
         )
+        ok, detail = send_result
         if ok:
             log.info("Bildirim gönderildi (metin, kaynak: %s).", source_name)
-            return True
+            return True, {
+                "message_id": getattr(send_result, "message_id", None),
+                "kind": "text",
+                "text": text,
+                "entities": entities,
+                "keyboard": keyboard,
+            }
         log.warning("Bildirim gönderilemedi: %s", detail)
-        return False
+        return False, no_info
 
-    async def deliver(event: events.NewMessage.Event, source_name: str) -> tuple[bool, str]:
-        """Sırayla iletim yollarını dene; ilk başarılı olanı kullan."""
+    async def deliver(
+        event: events.NewMessage.Event, source_name: str,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        """Sırayla iletim yollarını dene; ilk başarılı olanı kullan.
+
+        Üçüncü değer, tekrar birleştirmenin ilk mesaja rozet işleyebilmesi
+        için gönderim bilgisidir: ``bot`` (bot mesajı sözlüğü ya da ``None``),
+        ``account_ids`` (hesabın gönderdiği mesaj ID'leri),
+        ``account_deleted`` (tek mesaj modunda silinip silinmediği),
+        ``account_text``/``account_entities`` (hesap iletisinin metni/biçimi).
+        """
         last_error = "denenmedi"
         sanitized = sanitize_message(event)
         modes = DELIVERY_CHAIN
@@ -3671,7 +4491,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 STATS["failed"] += 1
                 log.warning("FloodWait (%s sn) – %s bekleniyor, mesaj atlandı.", exc.seconds, mode)
                 await asyncio.sleep(min(exc.seconds, 30))
-                return False, f"floodwait:{exc.seconds}"
+                return False, f"floodwait:{exc.seconds}", {}
             except Exception as exc:  # noqa: BLE001 - bir yol patlarsa sıradakini dene
                 last_error = f"{type(exc).__name__}: {exc}"
                 log.info("İletim yolu '%s' başarısız (%s) → sıradaki deneniyor.", mode, last_error)
@@ -3680,15 +4500,26 @@ async def main(argv: Sequence[str] | None = None) -> int:
             STATS["modes"][mode] = STATS["modes"].get(mode, 0) + 1
             if mode not in ("forward", "copy"):
                 log.info("Mesaj '%s' yedeğiyle iletildi (kaynak: %s).", mode, source_name)
+            account_ids = sent_message_ids(result)
             # Tek mesaj modu: bildirim botu gönderdiyse hesabın attığı kopyayı sil.
-            if await notify_offer(event, source_name) and SINGLE_MESSAGE:
-                await delete_account_copy(sent_message_ids(result), source_name)
-            return True, mode
+            bot_sent, bot_info = await notify_offer(event, source_name)
+            account_deleted = False
+            if bot_sent and SINGLE_MESSAGE:
+                await delete_account_copy(account_ids, source_name)
+                account_deleted = bool(account_ids)
+            return True, mode, {
+                "mode": mode,
+                "bot": bot_info if bot_sent else None,
+                "account_ids": account_ids,
+                "account_deleted": account_deleted,
+                "account_text": first_sent_text(result),
+                "account_entities": first_sent_entities(result),
+            }
 
         STATS["failed"] += 1
         log.error("Hiçbir iletim yolu çalışmadı (kaynak=%s, mesaj=%s). Son hata: %s",
                   source_name, getattr(event, "id", "?"), last_error)
-        return False, last_error
+        return False, last_error, {}
 
     # Handler'lara `chats=` VERMİYORUZ: Telethon o filtreyi ilk mesajda çözer ve
     # çözümleme hatası tüm update akışını öldürür. Filtreyi burada kendimiz yapıyoruz.
@@ -3810,7 +4641,22 @@ async def main(argv: Sequence[str] | None = None) -> int:
         source_name = next((item["name"] for item in SOURCES if item["id"] == event.chat_id), str(event.chat_id))
         STATS["last_match_source"] = source_name
         log.info("Eşleşti: %s / mesaj %s / %.80s", source_name, event.id, text)
-        await deliver(event, source_name)
+
+        # Tekrar birleştirme: aynı başlık pencere içindeyse gruba yeni mesaj
+        # ATILMAZ; ilk mesaja rozet işlenir (arka planda, bildirimi bekletmez).
+        # Başlık, gönderilen metinle aynı olması için temizlenmiş metinden alınır.
+        dedup_title = message_title(message_text(sanitize_message(event)))
+        dedup_id = dedup_key(dedup_title) if DEDUP_ENABLED else None
+        if not dedup_id:
+            await deliver(event, source_name)
+            return
+        decision, token = await dedup_before_send(dedup_id, dedup_title, source_name)
+        if decision == "dup":
+            STATS["deduped"] += 1
+            log.info("Tekrar birleştirildi (kaynak=%s): %.60s", source_name, dedup_title)
+            return
+        ok, _, info = await deliver(event, source_name)
+        await dedup_after_send(dedup_id, token, ok, info)
 
     if notify_on_start:
         try:
@@ -3828,6 +4674,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
     elif auto_restart:
         log.warning("auto_restart açık ama GH_PAT yok; oturum Actions süresi bitince kapanacak.")
     asyncio.create_task(heartbeat())
+
+    # Tekrar önbelleğini sıfırla ve hedefin son iletileriyle ısıt: yeniden
+    # başlamalarda aynı başlık ikinci kez gruba düşmesin (tek tarama).
+    DEDUP_CACHE.clear()
+    await dedup_preload()
 
     log.info("Dinleniyor... (kaynak=%d, kontrol=%s, hedef=%s)", len(SOURCE_IDS), sorted(CONTROL_IDS), DESTINATION_LABEL)
     await client.run_until_disconnected()

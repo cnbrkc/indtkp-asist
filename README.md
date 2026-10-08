@@ -17,11 +17,12 @@ Dahili/harici kelime ve takip edilen grup listelerini Telegram'dan yönetebilirs
 6. [Bildirim kurulumu](#6-bildirim-kurulumu-telefona-uyarı-gelsin)
 7. [İletim zinciri: korumalı kanallar](#7-iletim-zinciri-korumalı-kanallar)
 8. [Gizli bağlantılar](#8-gizli-bağlantılar)
-9. [ID'leri doğrulama](#9-idleri-doğrulama)
-10. [Sorun giderme](#10-sorun-giderme)
-11. [Güvenlik](#11-güvenlik)
-12. [Geliştirici notları](#12-geliştirici-notları)
-13. [Bu güncellemeden sonra yapılacaklar](#13-bu-güncellemeden-sonra-yapılacaklar)
+9. [Tekrar birleştirme](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj)
+10. [ID'leri doğrulama](#10-idleri-doğrulama)
+11. [Sorun giderme](#11-sorun-giderme)
+12. [Güvenlik](#12-güvenlik)
+13. [Geliştirici notları](#13-geliştirici-notları)
+14. [Bu güncellemeden sonra yapılacaklar](#14-bu-güncellemeden-sonra-yapılacaklar)
 
 ---
 
@@ -94,6 +95,10 @@ Deponun kökündeki [`config.json`](config.json) dosyasını GitHub'dan düzenle
   "source_footer": true,
   "notify_media": true,
   "clean_commands": true,
+  "single_message": true,
+  "dedup_enabled": true,
+  "dedup_window_hours": 12,
+  "dedup_scan_limit": 30,
   "control_chat": -5092968106,
   "admin_user_id": 1143378073,
   "auto_restart": true,
@@ -102,7 +107,7 @@ Deponun kökündeki [`config.json`](config.json) dosyasını GitHub'dan düzenle
 ```
 
 Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID bilmiyorsan
-[9. bölüm](#9-idleri-doğrulama)deki `/id` komutunu kullan.
+[10. bölüm](#10-idleri-doğrulama)deki `/id` komutunu kullan.
 
 > **ID'ler tırnak içinde de yazılabilir** (`"-5092968106"`); bot sayıya çevirir.
 
@@ -128,6 +133,8 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 ## 2. Nasıl çalışır ve sınırları
 
 - `bot.py` çalıştığı sürece mesajlar **anlık** işlenir; 1 dakika bekleyip tarama yapmaz.
+- Aynı başlıklı fırsatlar tek mesajda birleşir; tekrarlar ilk mesaja rozet olarak işlenir
+  ([9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj)).
 - **GitHub Actions kalıcı sunucu değildir.** Job yaklaşık 5 saat 50 dakika çalışır, sonra
   yeniden başlatılır. Başlatmalar arasında kısa boşluklar olabilir.
 - GitHub'ın scheduled workflow için resmi en kısa aralığı 5 dakikadır ve zamanlama
@@ -170,6 +177,9 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `notify_media` | `true` / `false` | Bildirim botu fotoğraf/videoyu da göndersin. |
 | `clean_commands` | `true` / `false` | **Komut temizliği.** `control_chat`'te yeni bir komut yazıldığında bir önceki komut ve bot yanıtı silinir; ekranda yalnızca son mesaj kalır. İndirim bildirimleri bu temizliğin **dışındadır, asla silinmez.** Varsayılan `true`. |
 | `single_message` | `true` / `false` | **Tek mesaj modu.** Bildirim botu mesajı gruba attıysa, hesabın attığı kopya gruptan silinir; böylece her fırsat tek mesaj olarak kalır. Bildirim gidemezse kopya **silinmez**. Varsayılan `true`. |
+| `dedup_enabled` | `true` / `false` | **Tekrar birleştirme.** Aynı başlıklı fırsat tek mesajda toplanır; tekrarlar gruba atılmaz, ilk mesaja "2/3/5 kaynakta paylaşıldı" rozeti işlenir ([9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj)). Varsayılan `true`. |
+| `dedup_window_hours` | sayı | Aynı başlık kaç saat boyunca "aynı fırsat" sayılsın (1–72, varsayılan 12). |
+| `dedup_scan_limit` | sayı | Açılışta önbelleğe alınacak son ileti sayısı (0–100, varsayılan 30; `0` = tarama yapma). |
 | `control_chat` | sayı / `"me"` | Komutların dinleneceği sohbet. `me` = Kayıtlı Mesajlar. |
 | `admin_user_id` | sayı / liste | `control_chat` bir grupsa **zorunlu**: komutları yalnızca bu ID'ler çalıştırabilir. |
 | `auto_restart` | `true` / `false` | `GH_PAT` varsa yenileme zincirini açar (bir sonraki açılışta geçerli). |
@@ -536,7 +546,49 @@ türlü taşınamayan linkleri metne ekler. `"all"` hepsini ham URL olarak da ya
 
 ---
 
-## 9. ID'leri doğrulama
+## 9. Tekrar birleştirme (aynı fırsat, tek mesaj)
+
+Aynı indirim 3-5 kanal tarafından dakikalar içinde, çoğu zaman birebir aynı
+başlıkla paylaşılır. Hepsini gruba atmak mesaj kalabalığı yapar; oysa tekrarlar
+indirimin "gerçek ve teyitli" olduğunun işaretidir. Bu yüzden tekrar birleştirme
+açıktır (varsayılan):
+
+- **İlk kopya** her zamanki gibi gönderilir ve başlığı bellekteki listeye yazılır.
+- **Sonraki aynı başlıklı kopyalar gruba ATILMAZ.** Onun yerine ilk mesaja rozet işlenir:
+
+```text
+🔥 3 kaynakta paylaşıldı!
+📌 Kaynaklar: FırsatZ, indirim_tr, ozelfirsat
+
+Sıcak ÇAY 5 TL
+Kaçırılmayacak fırsat!
+...
+```
+
+- Sayı büyüdükçe vurgu artar: `✅ 2 kaynakta...` → `🔥 3 ...` → `🔥🔥 4 ...` →
+  `🚨 5 KAYNAKTA PAYLAŞILDI — KAÇIRMA! 🚨`. Telegram'da mesaj rengine
+  müdahale edilemez; kalın + emoji + büyük harf, platformun sunduğu en güçlü
+  vurgu kombinasyonudur.
+- Eşleşme **başlığa** (mesajın ilk satırına) göredir; büyük/küçük harf ve boşluk
+  farkları yok sayılır. Başlıksız (salt medya) iletiler birleştirilmez.
+
+**Hız ve limitler:** eşleşme bellekteki listede yapılır; her iletide geçmiş
+taranmaz, yani bildirim gecikmez ve ileti başına ek API çağrısı yapılmaz
+(FloodWait/429 riski yok). Tek tarama açılışta bir kez yapılır: hedeften son
+`dedup_scan_limit` ileti (varsayılan 30, tek API çağrısı) okunup liste ısıtılır;
+böylece yeniden başlama sonrası aynı başlık ikinci kez düşmez. Rozet
+güncellemesi arka planda yapılır ve aynı sohbetteki düzenleme hız sınırının
+altında kalır. GitHub'a ek istek atılmaz.
+
+**Ayarlar** (`config.json`): `dedup_enabled` (varsayılan `true`),
+`dedup_window_hours` (aynı başlık kaç saat "aynı fırsat" sayılsın, 1–72,
+varsayılan 12; haftalar sonra aynı ürün yine indirime girerse YENİ fırsat sayılır),
+`dedup_scan_limit` (açılış taraması, 0–100, varsayılan 30; `0` = tarama yapma).
+`/status` birleştirilen tekrar ve rozet sayılarını gösterir.
+
+---
+
+## 10. ID'leri doğrulama
 
 En hızlı yol: **gruba `/id` yaz.**
 
@@ -558,7 +610,7 @@ doğru ID'yi al.
 
 ---
 
-## 10. Sorun giderme
+## 11. Sorun giderme
 
 | Belirti | Muhtemel neden | Çözüm |
 |---|---|---|
@@ -572,14 +624,15 @@ doğru ID'yi al.
 | Mesaj hiç gelmiyor | Kanal listede değil / hesap üye değil / kelime eşleşmiyor | `/source` ve `/status`a bak; log'daki `ÜYE DEĞİLSİN` uyarılarını kontrol et |
 | "Fırsata Git" var ama ham link yok | Link yazının altına gizlenmiş; tıklanabilir | Yazıya dokun. Ham URL istersen `link_appendix: "all"` |
 | Fotoğraf "unnamed" dosya olarak geliyor | Eski sürüm hatası | Bot'u güncelle |
-| `⚠️ ... yalnızca bu oturumda geçerli` | Ayar değişikliği depoya yazılamadı | [13. bölüm](#13-bu-güncellemeden-sonra-yapılacaklar) |
+| `⚠️ ... yalnızca bu oturumda geçerli` | Ayar değişikliği depoya yazılamadı | [14. bölüm](#14-bu-güncellemeden-sonra-yapılacaklar) |
 | `GH_PAT` ile yenileme olmuyor | Token izni yok veya süresi dolmuş | Token'da **Actions: Read and write** olduğunu ve expiration tarihini kontrol et |
 | Aynı mesaj iki kez geliyor | İki job aynı anda çalışmış | Actions concurrency ayarını ve açık run'ları kontrol et |
+| Aynı fırsat iki kez gruba düştü | Başlıklar birebir aynı değil, pencere doldu veya açılış taraması dışında kaldı | `/status` satırındaki birleştirme sayacına bak; gerekirse `dedup_window_hours` değerini artır |
 | `FloodWait` / rate limit | Çok fazla forward | Kaynak sayısını ve kelime filtresini daralt |
 
 ---
 
-## 11. Güvenlik
+## 12. Güvenlik
 
 - `SESSION_STRING`, API hash'i, bot token'ı ve telefon kodunu kimseye gösterme; `config.json`a
   secret yazma veya credential içeren değişikliği commit etme. Bildirim botu token'ı için
@@ -594,7 +647,7 @@ doğru ID'yi al.
 
 ---
 
-## 12. Geliştirici notları
+## 13. Geliştirici notları
 
 ```bash
 python -m unittest discover -s tests -v   # birim ve uçtan uca testler
@@ -610,7 +663,7 @@ Dosyalar: `bot.py` (tüm mantık), `config.json` (ayarlar), `generate_session.py
 
 ---
 
-## 13. Bu güncellemeden sonra yapılacaklar
+## 14. Bu güncellemeden sonra yapılacaklar
 
 Bu sürüm üç liste düzenlemesini ve iki filtre komutunu sunar: `/ekle` veya `/çıkar` →
 seçim → değer (virgülle birden çok) → `/kaydet` ya da `/iptal`; filtreler için `/open` ve
@@ -679,7 +732,7 @@ Yanıtta **`✅ repo'ya işlendi`** yazıyorsa kalıcılık çalışıyor demekt
 
 `⚠️ ... yalnızca bu oturumda geçerli` uyarısı alırsan önce **PR'ın merge edildiğinden ve
 yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâlâ uyarı varsa
-[10. bölümdeki](#10-sorun-giderme) ilgili satıra bak.
+[11. bölümdeki](#11-sorun-giderme) ilgili satıra bak.
 
 ### Hızlı özet
 
