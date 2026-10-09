@@ -7,6 +7,102 @@ Dahili/harici kelime ve takip edilen grup listelerini Telegram'dan yönetebilirs
 
 ---
 
+## Yeni: önce özel sohbetten yönetim, sonra isteğe bağlı kişisel fırsatlar
+
+Bu depoda `private_control: true`: **komutları gruba değil, mevcut bildirim botunun
+özel sohbetine yaz.** Fırsatların hedefi (`destination`), kaynaklar, grup filtreleri,
+iletim zinciri ve tekrar birleştirme ayarları değişmedi. `control_chat` eski değeriyle
+korunur ama bu modda gruptan komut işlenmez. **Kayıtlı Mesajlar** yedek kontrol yoludur.
+Eski kurulumlarda yeni alan yoksa önceki grup kontrol davranışı korunur.
+
+### 1. aşama — yalnızca yönetimi taşı
+
+1. Bu değişikliği birleştir ve takipçiyi yeni sürümle yeniden başlat. Aynı bot token'ını
+   kullanan eski çalışmayı kapat; tek bir `getUpdates` tüketicisi çalışmalı.
+2. Mevcut `NOTIFY_BOT_TOKEN` secret'ının tanımlı olduğundan emin ol; yeni bot veya yeni
+   token gerekmez. Botun gruptaki üyeliğini/yetkilerini değiştirme.
+3. Botun özel sohbetini aç. Takipçi hazır olduktan sonra `/start`, ardından `/durum` gönder.
+4. `/ayar`, `/ekle`, `/çıkar`, `/kaydet`, `/iptal`, `/open`, `/close`, `/kaynak`,
+   `/analiz`, `/restart` aynı işlevleri özel sohbetten yerine getirir. `/test` denemeyi
+   hâlâ **hedef gruba** gönderir; sonucu özelden yanıtlar.
+5. Botla özel sohbet geçmişi silinmez. Eski `clean_commands` davranışı yalnızca
+   kullanıcı hesabının kontrol sohbetlerinde (ör. Kayıtlı Mesajlar) geçerlidir.
+
+Komutları sadece hesap sahibi ve `admin_user_id` listesindeki kişiler kullanabilir.
+Bot, yetkisiz kişilerin mesajlarını ve gruptan gelen Bot API mesajlarını yok sayar.
+Bot API long polling ayrı bir arka plan görevidir; kaynak kanallar hâlâ aynı Telethon
+bağlantısıyla dinlenir. Açılıştan önce bekleyen bot komutları güvenlik için atlanır:
+cevap gelmediyse bot hazır olduktan sonra tekrar `/start` gönder.
+
+### 2. aşama — kişisel fırsatları istediğin zaman aç
+
+**Başlangıçta kapalıdır:** `dm_enabled: false`, `dm_keywords: []`. İlk aşamayı denedikten
+sonra hesap sahibi botun özel sohbetinde şu diyaloğu başlatabilir:
+
+```text
+Sen: /dmfiltre
+Bot: Yeni listenin tamamını virgülle ayırarak yaz.
+Sen: tcl, lg, iphone
+Bot: Kaydedildi ve anında uygulandı. Grup ayarları değişmedi.
+```
+
+Kısayol: `/dmfiltre tcl, lg, iphone`. Liste eskisinin **yerine geçer**, normal liste
+menülerinden farklı olarak **hemen kaydedilir**; ayrıca `/kaydet` gerekmez. Değer
+istenirken `/iptal` vazgeçer. Bekleyen bir grup ayarı taslağı varsa önce onu bitir.
+Ayarlar `config.json`'a ve mevcut GitHub kayıt yöntemiyle depoya yazılır; gönderilen
+kayıt raporunu kontrol et. Yerel dosyaya yazma başarısızsa eski ayar geri yüklenir.
+GitHub'a gönderim başarısızsa yereldeki ayar geçerlidir ama yeni Actions runner'ına
+aktarılmayabilir. **Özel kelimeler gizli değildir; config ve Git geçmişinde görünür.**
+
+| Komut | Etki |
+|---|---|
+| `/dmfiltre [kelime, ifade]` | Listeyi değiştirir ve kişisel bildirimleri açar |
+| `/dmdurum` | Liste, açık/kapalı durumu, bu oturumun gönderim/hata/kuyruk sayaçları |
+| `/dmkapat` | Listeyi koruyarak özel fırsatları kapatır; henüz gönderilmeyen kuyruk kayıtları da atlanır |
+| `/dmac` veya `/dmaç` | Kayıtlı listeyle tekrar açar; boş listeyi açmaz |
+
+Bu kişisel ayarlar ve alıcı **yalnızca hesabın sahibine** aittir; başka bir admin
+kişisel alıcıyı kendisine çeviremez. Çok kullanıcılı abonelik sistemi değildir.
+
+- Listeden **herhangi biri** eşleşir. Büyük/küçük harf farkı yok; `IPHONE`/`İPHONE`
+  eşleşir. Kelime sınırı kullanılır: `lg`, `bilgi` içindeki harflerden eşleşmez.
+  Tam model kodu/ifade yazılabilir. En fazla 100 kayıt, her biri 100 karakter.
+- Önce mevcut grup filtresi uygulanır. Hariç tutulan, gruba gönderilemeyen veya
+  mevcut tekrar birleştirmesiyle yeni grup mesajı oluşturulmayan fırsata özel kopya
+  gönderilmez. Bu aşama **gruba yeni gönderilen fırsatların aynasıdır**; geçmiş tarama,
+  fiyat düşüşü analizi veya gruptaki rozet düzenlemelerini DM'e eşitleme yapmaz.
+- Metin ve biçimlendirme entity'leri, gizli linkler, URL düğmeleri korunur. Medya
+  gruptaki iletiden Telegram'ın `copyMessage` yöntemiyle kopyalanır; tekrar indirilmez.
+  Sonuna yalnızca **`🎯 SANA ÖZEL`** eklenir. Bu sabit metin iPhone Kestirmeler filtresi
+  için kullanılabilir; telefon otomasyonu bu PR'ın kapsamında değildir.
+- Gruba gönderim/hesap kopyası temizliği tamamlandıktan sonra özel kopya ayrı,
+  en fazla 100 kayıtlık kuyruğa alınır. İşçi en fazla saniyede bir gönderim yapar;
+  **bu, tekrarlı alarm değildir: bir yeni fırsat = bir özel kopya.**
+- Bot engellenirse, özel sohbet başlatılmamışsa veya kopyalama başarısızsa grup
+  etkilenmez. Hata `/dmdurum` sayacına ve loga yazılır. 429 yanıtlarında sınırlı bekleme
+  uygulanır. Kuyruk dolarsa özel kopya atlanır ve sayılır; sınırsız bellek büyümez.
+- Grup bot mesajı başarısızken kullanıcı hesabının grup kopyası kalmışsa o ileti
+  okunarak özel kopya denenir. Telegram'ın kopyalayamadığı içerikler veya ek etiketle
+  uzunluk sınırını aşan yedek iletiler **sessizce kesilmez**, özel gönderim hatası sayılır.
+- Kuyruk ve sayaçlar bellektedir: yeniden başlatmada henüz gönderilmemiş özel
+  kopyalar kaybolabilir. Yapılandırma kalıcıdır. Garantili teslim/kalıcı outbox ve
+  tekrarlı alarm bu aşamada eklenmedi.
+
+### Sorun giderme ve geri dönüş
+
+- `/start` yanıtlamıyor: `NOTIFY_BOT_TOKEN`, hesap sahibi/admin kimliği ve logları
+  kontrol et. Token'ı sohbet, config veya loglara yazma.
+- Aynı token'ı başka long-polling uygulamasında kullanma (409 çakışması). Botta mevcut
+  webhook varsa uygulama onu otomatik silmez; özel komutları başlatmayıp loga uyarı
+  yazar. Diğer entegrasyonu kontrol ederek tek alıcı seç. Grup iletimi devam eder.
+- Token yoksa grup takipçisi çalışabilir ama özel komut/kopya gönderemez; Kayıtlı
+  Mesajlar'dan yönet veya secret'ı tamamla.
+- Eski grup komut düzenine dönmek için `private_control: false` yapıp yeniden başlat;
+  korunan `control_chat` yeniden geçerli olur. Özel fırsatları da kapatmak istersen
+  `dm_enabled: false` yap. `destination` veya grup filtrelerini değiştirme.
+
+---
+
 ## İçindekiler
 
 1. [Sıfırdan kurulum](#1-sıfırdan-kurulum-hatırlatma-listesi)
@@ -180,7 +276,10 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `dedup_enabled` | `true` / `false` | **Tekrar birleştirme.** Aynı başlıklı fırsat tek mesajda toplanır; tekrarlar gruba atılmaz, ilk mesaja `✅ 2 kaynakta paylaşıldı · teyitli fırsat` gibi **tek satırlık** rozet işlenir ([9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj)). Varsayılan `true`. |
 | `dedup_window_hours` | sayı | Aynı başlık kaç saat boyunca "aynı fırsat" sayılsın (1–72, varsayılan 12). |
 | `dedup_scan_limit` | sayı | Açılışta önbelleğe alınacak son ileti sayısı (0–100, varsayılan 30; `0` = tarama yapma). |
-| `control_chat` | sayı / `"me"` | Komutların dinleneceği sohbet. `me` = Kayıtlı Mesajlar. |
+| `control_chat` | sayı / `"me"` | Eski kontrol sohbeti; `private_control: true` iken yalnızca Kayıtlı Mesajlar yedeği aktiftir. |
+| `private_control` | `true` / `false` | Komutları bildirim botunun özel sohbetinden al; grup komutlarını kapat. Bu depoda `true`; alan yoksa eski davranış. `NOTIFY_BOT_TOKEN` gerekir. |
+| `dm_enabled` | `true` / `false` | Hesap sahibine kişisel fırsat kopyaları. Başlangıçta `false`. |
+| `dm_keywords` | metin listesi | Özel kopya filtresi; boş liste eşleşmez. `/dmfiltre` ile anında değiştirilir; grup listesinden bağımsızdır. |
 | `admin_user_id` | sayı / liste | `control_chat` bir grupsa **zorunlu**: komutları yalnızca bu ID'ler çalıştırabilir. |
 | `auto_restart` | `true` / `false` | `GH_PAT` varsa yenileme zincirini açar (bir sonraki açılışta geçerli). |
 | `notify_on_start` | `true` / `false` | Her açılışta hedefe kısa bir "başladım" mesajı gönderir. |
@@ -239,7 +338,8 @@ seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir. Türkçe `I`
 
 ### Komut temizliği (ekranda yalnızca son mesaj)
 
-`clean_commands` açıkken (varsayılan) komut sohbeti kendini temizler:
+`clean_commands` açıkken (varsayılan) **eski kullanıcı-hesabı kontrol sohbeti** kendini temizler.
+**Botla özel sohbette bu temizlik uygulanmaz; geçmiş korunur.**
 
 - Yeni bir komut yazdığında **bir önceki komutun** ve **botun ona verdiği yanıtın**
   tamamı silinir; ekranda yalnızca son komut ve yanıtı kalır.
