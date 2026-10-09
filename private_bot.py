@@ -6,6 +6,7 @@ import copy
 import json
 import logging
 import re
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -119,14 +120,60 @@ def authorized_private_message(message, allowed_ids):
     )
 
 
-async def poll_private_commands(api, allowed_ids, handler):
+BACKLOG_NOTICE = ("⏳ Bu mesaj takipçi başlamadan önce geldi; güvenlik için eski komutlar "
+                  "işlenmez. Şimdi hazırım, komutu tekrar gönder. (/durum, /komutlar)")
+CONFLICT_THRESHOLD = 3  # art arda bu kadar 409 görülürse ikinci tüketici var demektir
+
+
+async def _report(on_status, status, detail=""):
+    """Durum bildirimi isteğe bağlıdır ve poller'ı asla düşürmez."""
+    if on_status is None:
+        return
+    try:
+        await on_status(status, detail)
+    except Exception as exc:
+        log.warning("Özel komut durumu bildirilemedi (%s): %s", status, type(exc).__name__)
+
+
+async def _notify_skipped_backlog(api, old, allowed_ids, now, max_age):
+    """Açılıştan hemen önce yazılmış yetkili bir komut varsa sahibine haber ver.
+
+    Komut yine de işlenmez (tekrar oynatma güvenliği); ama kullanıcı "bot cevap
+    vermiyor" diye düşünmesin. Eski (max_age'den yaşlı) mesajlar sessiz geçilir.
+    """
+    message = (old[-1] if old else {}).get("message")
+    if not authorized_private_message(message, allowed_ids):
+        return False
+    sent_at = message.get("date")
+    if not isinstance(sent_at, (int, float)) or now - sent_at > max_age:
+        return False
+    try:
+        await api.call("sendMessage", {"chat_id": message["chat"]["id"], "text": BACKLOG_NOTICE})
+        return True
+    except Exception as exc:
+        log.warning("Açılış öncesi komut için uyarı gönderilemedi: %s", type(exc).__name__)
+        return False
+
+
+async def poll_private_commands(api, allowed_ids, handler, on_status=None, *,
+                                backlog_notice_seconds=900, clock=None):
     """One consumer per token. Never delete an existing webhook implicitly.
 
     Updates queued before startup are intentionally skipped, so an old /restart
     or half-finished settings dialogue cannot replay after a runner replacement.
+    If that skipped message is a fresh, authorized command, its author gets a
+    short notice to resend it instead of silence.
+
+    ``on_status(status, detail)`` is awaited on state changes that the user must
+    know about: ``running`` (ready, detail = bot username), ``webhook``,
+    ``unauthorized`` and ``conflict`` (persistent 409 → a second getUpdates
+    consumer uses the same token).
     """
     offset = None
     initialized = False
+    conflicts = 0
+    conflict_reported = False
+    clock = clock or time.time
     _poll_state("starting")
     while True:
         try:
@@ -135,11 +182,12 @@ async def poll_private_commands(api, allowed_ids, handler):
                 # yeniden deneme; bot kimliği de teşhis için kaydedilir.
                 me = await api.call("getMe", {}) or {}
                 _poll_state("starting", bot={"id": me.get("id"), "username": me.get("username")})
-                webhook = await api.call("getWebhookInfo", {})
+                webhook = await api.call("getWebhookInfo", {}) or {}
                 if webhook.get("url"):
                     _poll_state("webhook")
                     log.error("Özel komutlar başlatılamadı: bu botta webhook var. "
                               "Mevcut entegrasyonu kontrol et; webhook silinmedi.")
+                    await _report(on_status, "webhook", webhook.get("url", ""))
                     return
                 old = await api.call("getUpdates", {
                     "offset": -1, "limit": 1, "timeout": 0,
@@ -147,13 +195,21 @@ async def poll_private_commands(api, allowed_ids, handler):
                 })
                 if old:
                     offset = old[-1]["update_id"] + 1
+                    await _notify_skipped_backlog(api, old, allowed_ids(), clock(),
+                                                  backlog_notice_seconds)
                 initialized = True
+                conflicts = 0
                 _poll_state("running")
                 log.info("Bot özel komutları hazır; özel sohbetten /start gönder.")
+                await _report(on_status, "running", me.get("username") or "")
             payload = {"timeout": 20, "allowed_updates": ["message"]}
             if offset is not None:
                 payload["offset"] = offset
             updates = await api.call("getUpdates", payload)
+            if conflict_reported:
+                conflict_reported = False
+                await _report(on_status, "recovered", "")
+            conflicts = 0
             _poll_state("running", last_error="")
             for update in updates:
                 offset = update["update_id"] + 1
@@ -187,10 +243,16 @@ async def poll_private_commands(api, allowed_ids, handler):
                 log.error("Özel komutlar durduruldu: bot token'ı geçersiz (401). "
                           "BotFather'dan token'ı kontrol edip NOTIFY_BOT_TOKEN secret'ını "
                           "güncelle; takipçiyi yeniden başlat.")
+                await _report(on_status, "unauthorized", "401")
                 return
             if exc.code == 409:
+                conflicts += 1
                 log.warning("Özel komut bağlantısı: 409 çakışma; aynı token'la ikinci bir "
                             "getUpdates tüketicisi çalışıyor olabilir; yeniden denenecek.")
+                if conflicts >= CONFLICT_THRESHOLD and not conflict_reported:
+                    conflict_reported = True
+                    _poll_state("conflict")
+                    await _report(on_status, "conflict", f"{conflicts}x 409")
             else:
                 log.warning("Özel komut bağlantısı: %s; yeniden denenecek.", exc)
             await asyncio.sleep(5)
