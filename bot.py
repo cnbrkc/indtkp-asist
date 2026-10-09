@@ -40,6 +40,11 @@ from telethon import TelegramClient, errors, events, utils
 from telethon.sessions import StringSession
 from telethon.tl import types
 
+from private_bot import (
+    BotAPI, BotAPIError, PrivateControlEvent, PrivateOfferQueue,
+    dm_matches, edit_dm_keywords, poll_private_commands, private_copy_request,
+)
+
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(message)s",
@@ -443,6 +448,17 @@ def check_environment(config: dict | None = None) -> list[str]:
     if config is None:
         return problems
 
+    if not isinstance(config.get("private_control", False), bool):
+        problems.append("config.json → private_control true/false olmalı.")
+    if not isinstance(config.get("dm_enabled", False), bool):
+        problems.append("config.json → dm_enabled true/false olmalı.")
+    dm_words = config.get("dm_keywords", [])
+    if (not isinstance(dm_words, list) or len(dm_words) > 100
+            or any(not isinstance(w, str) or not w.strip() or len(w) > 100 for w in dm_words)):
+        problems.append("config.json → dm_keywords en fazla 100 dolu metinden oluşmalı (her biri ≤100 karakter).")
+    if config.get("private_control") and not os.getenv("NOTIFY_BOT_TOKEN", "").strip():
+        log.warning("Özel komutlar için NOTIFY_BOT_TOKEN gerekli; Kayıtlı Mesajlar yedek kontrol olarak açık.")
+
     sources = chat_values(config.get("source_chats"))
     if not sources:
         problems.append("config.json → source_chats boş. En az bir kanal/grup eklenmeli.")
@@ -514,7 +530,10 @@ def print_report(config: dict, problems: list[str]) -> None:
           f"SESSION_STRING={mask('SESSION_STRING')} GH_PAT={mask('GH_PAT')}", flush=True)
     print(f"Kaynaklar          : {len(config.get('source_chats') or [])} adet", flush=True)
     print(f"Hedef              : {config.get('destination', 'me')}", flush=True)
-    print(f"Kontrol sohbeti    : {config.get('control_chat', 'me')}", flush=True)
+    control_label = ("Bot özel sohbeti + Kayıtlı Mesajlar"
+                     if config_flag(config.get("private_control"), False)
+                     else config.get("control_chat", "me"))
+    print(f"Kontrol sohbeti    : {control_label}", flush=True)
     print(f"Admin ID'leri      : {sorted(parse_admin_ids(config.get('admin_user_id'))) or 'tanımsız'}", flush=True)
     filter_mode = match_mode_of(config)
     filter_label = {
@@ -2148,22 +2167,41 @@ def prune_dedup_cache(
 # ---------------------------------------------------------------------------
 
 HELP_TEXT = (
-    "Komutlar:\n"
-    "/status (/durum) – çalışma durumu\n"
-    "/test (/deneme) – hedefe deneme mesajı\n"
-    "/source (/kaynaklar) – izlenen kaynaklar\n"
-    "/id – sohbet ve kullanıcı ID'leri\n"
-    "/restart (/yenile) – yeni çalışma başlat\n"
-    "/analiz [adet] [tümü] – geçmiş başlıkları tara, kelime istatistiği ver\n"
-    "/open [dahili|harici|ikisi] – filtre aç (sormazsan menü sorar; kaydeder)\n"
-    "/close [dahili|harici|ikisi] – filtre kapat (sormazsan menü sorar; kaydeder)\n"
-    "/ayar, /ekle, /çıkar – listeleri düzenle (virgülle birden çok kayıt)\n"
-    "/kaydet, /iptal – taslağı kaydet / iptal et\n"
-    "/help (/yardim) – bu mesaj\n"
-    "\n"
-    "🧹 Komut temizliği: yeni komutta önceki komut ve yanıt silinir; bu sohbette\n"
-    "   ekranda yalnızca son mesaj kalır (indirim bildirimleri silinmez)."
-)
+    '/komutlar - Komutları ve açıklamalarını listeler.\n'
+    '/start - Özel sohbet kullanımını açıklar; fırsat hedefini değiştirmez.\n'
+    '/durum - Takipçinin durumunu, hedefini ve sayaçlarını gösterir.\n'
+    '/status - /durum ile aynı çalışma durumunu gösterir.\n'
+    '/dmfiltre - Kişisel kelimeleri, açık/kapalı durumunu ve sayaçlarını gösterir; değişiklik yapmaz.\n'
+    '/dmfiltreekle - Kişisel kelime ekler ve açar; argümansız sorar, hemen kaydeder.\n'
+    '/dmfiltrecikar - Kişisel kelime çıkarır; argümansız sorar, hemen kaydeder.\n'
+    '/dmac - Kayıtlı kişisel filtreyi açar; boş liste açılmaz.\n'
+    '/dmaç - /dmac ile aynı şekilde kişisel filtreyi açar.\n'
+    '/dmkapat - Kelimeleri koruyarak kişisel fırsat gönderimini kapatır.\n'
+    '/ayar - Grup dahili/harici kelimeleri ve kaynak listesi menüsünü gösterir.\n'
+    '/ayarlar - /ayar ile aynı liste menüsünü gösterir.\n'
+    '/ekle - Grup ayarlarında liste seçip kayıt ekleme taslağı başlatır.\n'
+    '/çıkar - Grup ayarlarında liste seçip kayıt çıkarma taslağı başlatır.\n'
+    '/cikar - /çıkar ile aynı kayıt çıkarma akışını başlatır.\n'
+    '/kaydet - Bekleyen grup listesi taslağını kaydeder; DM ekleme/çıkarma anında kaydedilir.\n'
+    '/iptal - Bekleyen ekleme/çıkarma veya filtre seçimini iptal eder.\n'
+    '/open - Grup filtresini açar; dahili, harici veya ikisi seçilebilir.\n'
+    '/close - Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir.\n'
+    '/kaynaklar - İzlenen kaynakları ve çözülemeyenleri listeler.\n'
+    '/kaynak - /kaynaklar ile aynı kaynak listesini gösterir.\n'
+    '/source - /kaynaklar ile aynı kaynak listesini gösterir.\n'
+    '/sources - /kaynaklar ile aynı kaynak listesini gösterir.\n'
+    '/analiz - Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü.\n'
+    '/kelimeanalizi - /analiz ile aynı geçmiş analizini çalıştırır.\n'
+    '/test - Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir.\n'
+    '/deneme - /test ile aynı grup gönderim denemesini yapar.\n'
+    '/id - Bulunduğun sohbetin ve kullanıcının kimliğini gösterir.\n'
+    '/restart - Yeni takipçi çalışması başlatır; GH_PAT gerekir.\n'
+    '/yenile - /restart ile aynı yenileme işlemini başlatır.\n'
+    '/yeniden - /restart ile aynı yenileme işlemini başlatır.\n'
+    '/help - /komutlar ile aynı açıklamalı komut listesini gösterir.\n'
+    '/yardim - /komutlar ile aynı açıklamalı komut listesini gösterir.\n'
+    '/yardım - /komutlar ile aynı açıklamalı komut listesini gösterir.\n'
+).rstrip()
 
 
 def build_status_text(config: dict) -> str:
@@ -2197,7 +2235,7 @@ def build_status_text(config: dict) -> str:
         + "\n"
         f"• Son eşleşme: {last_line}\n"
         f"• Hedef: {DESTINATION_LABEL}\n"
-        f"• Kontrol sohbeti: {', '.join(CONTROL_NAMES) or 'me'}\n"
+        f"• Kontrol sohbeti: {('Bot özel sohbeti + Kayıtlı Mesajlar' if config_flag(config.get('private_control'), False) else ', '.join(CONTROL_NAMES) or 'me')}\n"
         f"{filter_line}\n"
         f"• İletim sırası: {' → '.join(DELIVERY_CHAIN) or 'yok'}"
         + (f" | kullanılan: {', '.join(f'{k}×{v}' for k, v in STATS['modes'].items())}"
@@ -2739,7 +2777,8 @@ SETTINGS_COMMANDS = frozenset().union(
     CMD_SETTINGS_SAVE, CMD_SETTINGS_REVERT,
 )
 
-PENDING: dict[tuple[int, int], dict[str, Any]] = {}
+PendingKey = tuple[int, int] | tuple[str, int, int]
+PENDING: dict[PendingKey, dict[str, Any]] = {}
 PENDING_TTL_SECONDS = 600  # 10 dakika sonra bekleyen işlem düşer
 
 SAVE_STATUS_TEXT = {
@@ -2765,17 +2804,21 @@ def split_values(raw: Any) -> list[str]:
     return values
 
 
-def pending_key(event: Any) -> tuple[int, int]:
-    return (int(getattr(event, "chat_id", 0) or 0),
-            int(getattr(event, "sender_id", 0) or 0))
+def pending_key(event: Any) -> PendingKey:
+    # Bot DM and Saved Messages can have the same numeric chat/sender IDs.
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    sender_id = int(getattr(event, "sender_id", 0) or 0)
+    if isinstance(event, PrivateControlEvent):
+        return ("bot", chat_id, sender_id)
+    return (chat_id, sender_id)
 
 
-def set_pending(key: tuple[int, int], **data: Any) -> None:
+def set_pending(key: PendingKey, **data: Any) -> None:
     data["at"] = time.time()
     PENDING[key] = data
 
 
-def peek_pending(key: tuple[int, int]) -> dict[str, Any] | None:
+def peek_pending(key: PendingKey) -> dict[str, Any] | None:
     """Süresi dolmamış işlemi al; süresi dolduysa bellekten temizle."""
     item = PENDING.get(key)
     if item is None:
@@ -2786,7 +2829,7 @@ def peek_pending(key: tuple[int, int]) -> dict[str, Any] | None:
     return item
 
 
-def drop_pending(key: tuple[int, int]) -> None:
+def drop_pending(key: PendingKey) -> None:
     PENDING.pop(key, None)
 
 
@@ -3592,10 +3635,16 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
     def is_control_event(event: events.NewMessage.Event) -> bool:
         """Komut yalnızca kontrol sohbetinden gelirse işlenir."""
+        if isinstance(event, PrivateControlEvent):
+            return config_flag(store.config.get("private_control"), False)
+        if config_flag(store.config.get("private_control"), False):
+            return event.chat_id == SELF_ID  # emergency fallback, not the offer group
         return event.chat_id in CONTROL_IDS
 
     def is_admin_event(event: events.NewMessage.Event) -> bool:
         """Kayıtlı Mesajlar'a yazan hesabın sahibi; gruptaysa admin listesi geçerli."""
+        if isinstance(event, PrivateControlEvent):
+            return event.sender_id in (ADMIN_IDS | {SELF_ID}) and event.chat_id == event.sender_id
         if event.chat_id == SELF_ID:
             return True
         return event.sender_id in ADMIN_IDS
@@ -3631,7 +3680,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
         sent_ids: list[int] = []
         for chunk in chunk_text(text, limit):
             sent_ids += sent_message_ids(await event.reply(chunk))
-        if not CLEAN_COMMANDS:
+        # Keep private dialogue history; never let the user-client cleanup
+        # delete a DM offer or a bot message with a colliding numeric ID.
+        if isinstance(event, PrivateControlEvent) or not CLEAN_COMMANDS:
             return sent_ids
         chat_id = int(getattr(event, "chat_id", 0) or 0)
         current = [int(getattr(event, "id", 0) or 0), *sent_ids]
@@ -3674,9 +3725,132 @@ async def main(argv: Sequence[str] | None = None) -> int:
         return notes + resolved, fatal
 
     settings_lock = asyncio.Lock()
+    private_api = BotAPI(NOTIFY_BOT_TOKEN) if NOTIFY_BOT_TOKEN else None
+
+    async def prepare_private_offer(item):
+        # Turning off/changing the filter also cancels queued, unsent copies.
+        if not config_flag(store.config.get("dm_enabled"), False):
+            return None
+        if not dm_matches(item["match_text"], store.config.get("dm_keywords", [])):
+            return None
+        info = item.get("bot")
+        if not info:
+            ids = item.get("account_ids") or []
+            if not ids:
+                raise BotAPIError("Grup kopyası bulunamadı.")
+            message = await client.get_messages(item["destination"], ids=ids[0])
+            if message is None:
+                raise BotAPIError("Grup kopyası artık yok.")
+            text = getattr(message, "message", "") or ""
+            media = getattr(message, "media", None)
+            info = {
+                "message_id": message.id,
+                "kind": "media" if media and not isinstance(media, types.MessageMediaWebPage) else "text",
+                "text": text,
+                "entities": bot_api_entities(message, text),
+                "keyboard": item.get("keyboard"),
+            }
+        return private_copy_request(SELF_ID, item["destination"], info)
+
+    private_offers = PrivateOfferQueue(private_api, prepare_private_offer)
+
+    def enqueue_private_offer(event, info):
+        if not private_api or not config_flag(store.config.get("dm_enabled"), False):
+            return
+        text = message_text(sanitize_message(event))
+        if dm_matches(text, store.config.get("dm_keywords", [])):
+            private_offers.submit({
+                "destination": DESTINATION_ID, "match_text": text,
+                "bot": info.get("bot"), "account_ids": info.get("account_ids"),
+                "keyboard": build_inline_keyboard(event),
+            })
+
+    def dm_status():
+        words = store.config.get("dm_keywords", [])
+        enabled = config_flag(store.config.get("dm_enabled"), False)
+        return (
+            f"🎯 Kişisel bildirim: {'AÇIK' if enabled else 'KAPALI'}\n"
+            f"Kelimeler: {', '.join(words) or '(boş)'}\n"
+            "Herhangi biri eşleşirse gruba gönderilen yeni fırsatın özel kopyası gelir.\n"
+            "Grup filtreleri ve tekrar birleştirmesi geçerlidir. Tekrarlı alarm yok.\n"
+            f"Bu oturum: gönderilen {private_offers.sent}, hata {private_offers.failed}, "
+            f"kuyrukta {private_offers.queue.qsize()}, taşma {private_offers.dropped}\n"
+            "/dmfiltreekle - Kelime ekle\n"
+            "/dmfiltrecikar - Kelime çıkar\n"
+            "/dmac - Aç\n"
+            "/dmkapat - Kapat"
+        )
+
+    async def save_dm_setting(event, *, action=None, raw="", enabled=True):
+        async with settings_lock:
+            before = store.snapshot()
+            if action is not None:
+                existing = store.config.get("dm_keywords", [])
+                try:
+                    words = edit_dm_keywords(existing, raw, action)
+                except ValueError as exc:
+                    await control_reply(event, str(exc))
+                    return
+                if words == existing:
+                    pending = peek_pending(pending_key(event))
+                    if pending and pending.get("stage") == "dm_words":
+                        drop_pending(pending_key(event))
+                    await control_reply(event, "ℹ️ Bu kelimeler zaten listede; ayarlar değişmedi.\n" + dm_status())
+                    return
+                store.config["dm_keywords"] = words
+                # Adding a new interest opts in; removal preserves a paused
+                # filter and switches it off when the last keyword is removed.
+                enabled = bool(words) and (action == "add" or config_flag(before.get("dm_enabled"), False))
+            store.config["dm_enabled"] = enabled
+            ok, note = await save_config(store, "Kişisel bildirim ayarı güncellendi")
+            if not ok:
+                store.restore(before)
+                await control_reply(event, "❌ Kaydedilemedi; önceki ayar korundu.\n" + note)
+                return
+            pending = peek_pending(pending_key(event))
+            if pending and pending.get("stage") == "dm_words":
+                drop_pending(pending_key(event))
+            await control_reply(event, "✅ Anında uygulandı. Grup ayarları değişmedi.\n" + dm_status() + "\n" + note)
+
+    async def handle_dm_command(event, command, rest):
+        if not isinstance(event, PrivateControlEvent) or event.sender_id != SELF_ID:
+            await control_reply(event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
+            return
+        key = pending_key(event)
+        if command == "/dmfiltre":
+            await control_reply(event, dm_status() + (
+                "\n\nBu komut yalnızca bilgi gösterir. Kelime eklemek için /dmfiltreekle, "
+                "çıkarmak için /dmfiltrecikar kullan." if rest else ""
+            ))
+        elif command in {"/dmac", "/dmaç", "/dmkapat"}:
+            enabled = command != "/dmkapat"
+            if enabled and not store.config.get("dm_keywords"):
+                await control_reply(event, "Önce /dmfiltreekle ile kelimelerini ekle. Boş liste hiçbir şeyi göndermez.")
+                return
+            await save_dm_setting(event, enabled=enabled)
+        else:
+            if peek_pending(key):
+                await control_reply(event, "Önce bekleyen işlemi /kaydet veya /iptal ile tamamla.")
+                return
+            action = "add" if command == "/dmfiltreekle" else "remove"
+            if action == "remove" and not store.config.get("dm_keywords"):
+                await control_reply(event, "ℹ️ Kişisel liste boş; çıkarılacak kelime yok.\n" + dm_status())
+                return
+            if not rest:
+                set_pending(key, stage="dm_words", action=action)
+                prompt = ("Eklenecek kelimeleri virgülle ayırarak yaz: tcl, lg, iphone\n"
+                          "Mevcut kelimeler korunur; yeni kelime eklemek kişisel bildirimleri açar."
+                          if action == "add" else
+                          "Çıkarılacak kelimeleri virgülle ayırarak yaz; listedeki tam kelime/ifadeyi kullan.\n"
+                          "Diğer kelimeler korunur. Son kelime çıkarılırsa kişisel bildirimler kapanır.")
+                await control_reply(event, dm_status() + "\n\n" + prompt + "\n"
+                                    "Değişiklik hemen kaydedilir. /iptal ile vazgeç.\n"
+                                    "Not: kelimeler config.json ve depo geçmişine kaydedilir.")
+                return
+            await save_dm_setting(event, action=action, raw=rest)
 
     async def save_pending_change(event: events.NewMessage.Event,
-                                 key: tuple[int, int]) -> None:
+                                 key: PendingKey) -> None:
         """Taslağı çakışma kontrolünden geçir, uygula ve sadece şimdi GitHub'a yaz."""
         async with settings_lock:
             pending = peek_pending(key)
@@ -3929,6 +4103,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return False
 
         text = raw.strip()
+        if item.get("stage") == "dm_words":
+            if not isinstance(event, PrivateControlEvent) or event.sender_id != SELF_ID:
+                return False
+            await save_dm_setting(event, action=item["action"], raw=text)
+            return True
         if item.get("stage") == "filter":
             action = str(item.get("action") or "open")
             target = resolve_filter_target(text)
@@ -4565,7 +4744,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if bot_sent and SINGLE_MESSAGE:
                 await delete_account_copy(account_ids, source_name)
                 account_deleted = bool(account_ids)
-            return True, mode, {
+            info = {
                 "mode": mode,
                 "bot": bot_info if bot_sent else None,
                 "account_ids": account_ids,
@@ -4573,6 +4752,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 "account_text": first_sent_text(result),
                 "account_entities": first_sent_entities(result),
             }
+            try:
+                enqueue_private_offer(event, info)
+            except Exception as exc:
+                log.warning("Özel kopya kuyruğa alınamadı; grup korunuyor: %s", type(exc).__name__)
+            return True, mode, info
 
         STATS["failed"] += 1
         log.error("Hiçbir iletim yolu çalışmadı (kaynak=%s, mesaj=%s). Son hata: %s",
@@ -4620,8 +4804,18 @@ async def main(argv: Sequence[str] | None = None) -> int:
         log.info("Komut alındı: %s (chat=%s, sender=%s)", command, event.chat_id, event.sender_id)
 
         # Sabit komutlar önce: /source gibi adlar alan takma adıyla çakışabilir.
-        if command in {"/status", "/durum"}:
-            await control_reply(event, build_status_text(store.config))
+        if command == "/start":
+            await control_reply(event, "👋 Komutlarını artık burada verebilirsin. Fırsatlar aynı hedef gruba gider.\n"
+                                "Grup ayarları: /ayar · Durum: /durum · Tüm komutlar: /komutlar\n"
+                                "Kişisel fırsatlar: /dmfiltre · /dmfiltreekle · /dmfiltrecikar\n"
+                                "Özel sohbet geçmişi silinmez. Kayıtlı Mesajlar yedek kontrol olarak açık.")
+        elif command in {"/dmfiltre", "/dmfiltreekle", "/dmfiltrecikar", "/dmac", "/dmaç", "/dmkapat"}:
+            await handle_dm_command(event, command, rest)
+        elif command in {"/status", "/durum"}:
+            text = build_status_text(store.config)
+            if isinstance(event, PrivateControlEvent):
+                text += "\n\n" + dm_status()
+            await control_reply(event, text)
         elif command in {"/test", "/deneme"}:
             text = (
                 f"🧪 Deneme mesajı – {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -4651,6 +4845,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
         elif command in {"/source", "/sources", "/kaynak", "/kaynaklar"}:
             await control_reply(event, build_source_text())
         elif command == "/id":
+            if isinstance(event, PrivateControlEvent):
+                await control_reply(event,
+                    f"🆔 Özel sohbet / kullanıcı ID'n: {event.sender_id}\n"
+                    f"🎯 Fırsat hedefi değişmedi: {DESTINATION_LABEL}\n"
+                    "Bu özel sohbet ID'sini destination olarak yazmana gerek yok."
+                )
+                return
             try:
                 chat = await event.get_chat()
                 chat_kind = type(chat).__name__
@@ -4667,7 +4868,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         elif command in {"/restart", "/yenile", "/yeniden"}:
             ok, message = await dispatch_next_run(gh_pat)
             await control_reply(event, ("🔄 " if ok else "⚠️ ") + message)
-        elif command in {"/help", "/yardim", "/yardım"}:
+        elif command in {"/komutlar", "/help", "/yardim", "/yardım"}:
             await control_reply(event, HELP_TEXT)
         elif command in CMD_ANALYZE:
             await analyze_history(event, rest)
@@ -4739,7 +4940,19 @@ async def main(argv: Sequence[str] | None = None) -> int:
     await dedup_preload()
 
     log.info("Dinleniyor... (kaynak=%d, kontrol=%s, hedef=%s)", len(SOURCE_IDS), sorted(CONTROL_IDS), DESTINATION_LABEL)
-    await client.run_until_disconnected()
+    private_tasks = []
+    if private_api:
+        private_tasks.append(asyncio.create_task(private_offers.run()))
+        if config_flag(store.config.get("private_control"), False):
+            private_tasks.append(asyncio.create_task(poll_private_commands(
+                private_api, lambda: ADMIN_IDS | {SELF_ID}, on_control_message,
+            )))
+    try:
+        await client.run_until_disconnected()
+    finally:
+        for task in private_tasks:
+            task.cancel()
+        await asyncio.gather(*private_tasks, return_exceptions=True)
     return 0
 
 
