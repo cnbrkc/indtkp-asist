@@ -41,14 +41,29 @@ sonra hesap sahibi botun özel sohbetinde şu diyaloğu başlatabilir:
 
 ```text
 Sen: /dmfiltre
-Bot: Yeni listenin tamamını virgülle ayırarak yaz.
+Bot: Kişisel bildirim KAPALI. Kelimeler: (boş). Gönderim/hata sayaçları...
+Sen: /dmfiltreekle
+Bot: Eklenecek kelimeleri virgülle ayırarak yaz.
 Sen: tcl, lg, iphone
 Bot: Kaydedildi ve anında uygulandı. Grup ayarları değişmedi.
+Sen: /dmfiltrecikar
+Bot: Çıkarılacak kelimeleri virgülle ayırarak yaz.
+Sen: lg
+Bot: Kaydedildi. Kalan kelimeler: tcl, iphone.
 ```
 
-Kısayol: `/dmfiltre tcl, lg, iphone`. Liste eskisinin **yerine geçer**, normal liste
-menülerinden farklı olarak **hemen kaydedilir**; ayrıca `/kaydet` gerekmez. Değer
-istenirken `/iptal` vazgeçer. Bekleyen bir grup ayarı taslağı varsa önce onu bitir.
+Kısayollar: `/dmfiltreekle tcl, lg, iphone`, `/dmfiltrecikar lg`. Ekleme mevcut
+listeyi **koruyarak** yeni kelimeleri ekler; çıkarma yalnızca yazılan tam kelime/ifadeyi
+çıkarır. Büyük/küçük harf farkı yoktur. Aynı kelime ikinci kez eklenmez. Çıkarılacak
+kelimelerden biri listede yoksa hiçbir kayıt değiştirilmez; yazımı düzeltip yeniden dene.
+Yeni kelime eklemek kişisel bildirimleri açar. Çıkarma, kapalı filtreyi açmaz;
+son kelime çıkarılırsa filtre otomatik kapanır. Zaten mevcut kelimeleri eklemek ayarı
+ve açık/kapalı durumunu değiştirmez.
+
+Bu işlemler normal grup liste menülerinden farklı olarak **hemen kaydedilir**;
+ayrıca `/kaydet` gerekmez. Değer istenirken `/iptal` vazgeçer. Bekleyen bir ayar taslağı
+varsa yeni ekleme/çıkarma başlatmadan önce onu bitir. `/dmfiltre` yalnızca bilgi verir,
+bekleyen taslağı değiştirmez ve tek başına kelime istemez. Eski `/dmdurum` kaldırıldı.
 Ayarlar `config.json`'a ve mevcut GitHub kayıt yöntemiyle depoya yazılır; gönderilen
 kayıt raporunu kontrol et. Yerel dosyaya yazma başarısızsa eski ayar geri yüklenir.
 GitHub'a gönderim başarısızsa yereldeki ayar geçerlidir ama yeni Actions runner'ına
@@ -56,10 +71,15 @@ aktarılmayabilir. **Özel kelimeler gizli değildir; config ve Git geçmişinde
 
 | Komut | Etki |
 |---|---|
-| `/dmfiltre [kelime, ifade]` | Listeyi değiştirir ve kişisel bildirimleri açar |
-| `/dmdurum` | Liste, açık/kapalı durumu, bu oturumun gönderim/hata/kuyruk sayaçları |
+| `/dmfiltre` | Mevcut kelimeler, açık/kapalı durumu, bu oturumun gönderim/hata/kuyruk sayaçları; salt okunur |
+| `/dmfiltreekle [kelime, ifade]` | Kelime ekler; argüman yoksa eklenecek kelimeleri sorar |
+| `/dmfiltrecikar [kelime, ifade]` | Kelime çıkarır; argüman yoksa çıkarılacak kelimeleri sorar |
 | `/dmkapat` | Listeyi koruyarak özel fırsatları kapatır; henüz gönderilmeyen kuyruk kayıtları da atlanır |
 | `/dmac` veya `/dmaç` | Kayıtlı listeyle tekrar açar; boş listeyi açmaz |
+| `/komutlar` | Mevcut tüm komutları ve takma adlarını, her satırda `komut - açıklama` biçiminde gösterir |
+
+`/help`, `/yardim`, `/yardım` aynı açıklamalı listeyi açar. `/start` mesajından da
+`/komutlar` komutuna ulaşılabilir. Liste başlıksız, maddesiz, her satırda tek komuttur.
 
 Bu kişisel ayarlar ve alıcı **yalnızca hesabın sahibine** aittir; başka bir admin
 kişisel alıcıyı kendisine çeviremez. Çok kullanıcılı abonelik sistemi değildir.
@@ -79,7 +99,7 @@ kişisel alıcıyı kendisine çeviremez. Çok kullanıcılı abonelik sistemi d
   en fazla 100 kayıtlık kuyruğa alınır. İşçi en fazla saniyede bir gönderim yapar;
   **bu, tekrarlı alarm değildir: bir yeni fırsat = bir özel kopya.**
 - Bot engellenirse, özel sohbet başlatılmamışsa veya kopyalama başarısızsa grup
-  etkilenmez. Hata `/dmdurum` sayacına ve loga yazılır. 429 yanıtlarında sınırlı bekleme
+  etkilenmez. Hata `/dmfiltre` sayacına ve loga yazılır. 429 yanıtlarında sınırlı bekleme
   uygulanır. Kuyruk dolarsa özel kopya atlanır ve sayılır; sınırsız bellek büyümez.
 - Grup bot mesajı başarısızken kullanıcı hesabının grup kopyası kalmışsa o ileti
   okunarak özel kopya denenir. Telegram'ın kopyalayamadığı içerikler veya ek etiketle
@@ -279,7 +299,7 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `control_chat` | sayı / `"me"` | Eski kontrol sohbeti; `private_control: true` iken yalnızca Kayıtlı Mesajlar yedeği aktiftir. |
 | `private_control` | `true` / `false` | Komutları bildirim botunun özel sohbetinden al; grup komutlarını kapat. Bu depoda `true`; alan yoksa eski davranış. `NOTIFY_BOT_TOKEN` gerekir. |
 | `dm_enabled` | `true` / `false` | Hesap sahibine kişisel fırsat kopyaları. Başlangıçta `false`. |
-| `dm_keywords` | metin listesi | Özel kopya filtresi; boş liste eşleşmez. `/dmfiltre` ile anında değiştirilir; grup listesinden bağımsızdır. |
+| `dm_keywords` | metin listesi | Özel kopya filtresi; boş liste eşleşmez. `/dmfiltreekle` / `/dmfiltrecikar` ile anında değiştirilir; grup listesinden bağımsızdır. |
 | `admin_user_id` | sayı / liste | `control_chat` bir grupsa **zorunlu**: komutları yalnızca bu ID'ler çalıştırabilir. |
 | `auto_restart` | `true` / `false` | `GH_PAT` varsa yenileme zincirini açar (bir sonraki açılışta geçerli). |
 | `notify_on_start` | `true` / `false` | Her açılışta hedefe kısa bir "başladım" mesajı gönderir. |
@@ -357,6 +377,7 @@ seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir. Türkçe `I`
 
 | Komut | Açıklama |
 |---|---|
+| `/komutlar`, `/help`, `/yardim`, `/yardım` | Tüm komutları `komut - açıklama` biçiminde alt alta gösterir |
 | `/status`, `/durum` | Çalışma süresi, kaynak sayısı, sayaçlar, son eşleşme, hedef ve iki filtrenin açık/kapalı durumu |
 | `/test`, `/deneme` | Hedefe deneme iletisi gönderir; bildirim botu da denenir |
 | `/source`, `/sources`, `/kaynak`, `/kaynaklar` | İzlenen kaynakları ve çözülemeyenleri listeler |

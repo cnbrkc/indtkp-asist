@@ -165,6 +165,24 @@ def parse_dm_keywords(text):
     return words
 
 
+def edit_dm_keywords(existing, raw, action):
+    """Add/remove whole normalized phrases atomically; never replace the list."""
+    values = parse_dm_keywords(raw)
+    known = {normalize_keyword(word) for word in existing}
+    if action == "add":
+        result = list(existing) + [word for word in values if word not in known]
+        if len(result) > 100:
+            raise ValueError("Toplam en fazla 100 kelime/ifade kaydedebilirsin; hiçbir kayıt eklenmedi.")
+        return result
+    if action == "remove":
+        missing = [word for word in values if word not in known]
+        if missing:
+            raise ValueError("Listede bulunamadı: " + ", ".join(missing)
+                             + ". Hiçbir kayıt çıkarılmadı; /dmfiltre ile listeyi kontrol et.")
+        return [word for word in existing if normalize_keyword(word) not in values]
+    raise ValueError("Geçersiz kişisel filtre işlemi.")
+
+
 def dm_matches(text, keywords):
     normalized = normalize_keyword(text)
     return any(re.search(r"(?<!\w)" + re.escape(normalize_keyword(word)) + r"(?!\w)", normalized)

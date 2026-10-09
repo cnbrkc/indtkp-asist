@@ -64,7 +64,7 @@ class PrivatePureTests(unittest.TestCase):
             self.assertFalse(private.authorized_private_message(message, allowed))
 
     def test_pending_dialogues_do_not_collide_with_saved_messages(self):
-        private_event = private.PrivateControlEvent(FakeAPI(), dm_message("/dmfiltre"))
+        private_event = private.PrivateControlEvent(FakeAPI(), dm_message("/dmfiltreekle"))
         saved_event = FakeEvent(ADMIN_ID, ADMIN_ID, "/ekle")
         self.assertNotEqual(bot.pending_key(private_event), bot.pending_key(saved_event))
 
@@ -279,13 +279,13 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             fallback = FakeEvent(ADMIN_ID, ADMIN_ID, "/durum")
             await self.client.handlers[0][1](fallback)
             self.assertTrue(fallback.replies)
-            await self.command("/dmfiltre tcl", sender=77)
+            await self.command("/dmfiltreekle tcl", sender=77)
             self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], [])
         await self.run_scenario(scenario)
 
     async def test_dm_dialogue_immediate_save_exact_text_and_filters(self):
         async def scenario():
-            await self.command("/dmfiltre")
+            await self.command("/dmfiltreekle")
             await self.command("TCL, LG, iPhone")
             saved = json.loads(Path(self.path).read_text())
             self.assertTrue(saved["dm_enabled"])
@@ -307,7 +307,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
 
     async def test_media_and_keyboard_match_group(self):
         async def scenario():
-            await self.command("/dmfiltre tcl")
+            await self.command("/dmfiltreekle tcl")
             await self.offer("TCL televizyon")
             method, payload = self.api.offers[0]
             self.assertEqual(method, "copyMessage")
@@ -320,16 +320,16 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
 
     async def test_cancel_disable_and_failed_save(self):
         async def scenario():
-            await self.command("/dmfiltre")
+            await self.command("/dmfiltreekle")
             await self.command("/iptal")
             await self.command("tcl")
             self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], [])
             self.persist_ok = False
-            await self.command("/dmfiltre tcl")
+            await self.command("/dmfiltreekle tcl")
             await self.offer("TCL", media=False)
             self.assertFalse(self.api.offers)
             self.persist_ok = True
-            await self.command("/dmfiltre tcl")
+            await self.command("/dmfiltreekle tcl")
             await self.command("/dmkapat")
             await self.offer("TCL", media=False)
             self.assertFalse(self.api.offers)
@@ -340,7 +340,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
 
     async def test_group_dedup_does_not_create_extra_dm(self):
         async def scenario():
-            await self.command("/dmfiltre tcl")
+            await self.command("/dmfiltreekle tcl")
             await self.offer("TCL fırsat", media=False)
             await self.offer("TCL fırsat", media=False, message_id=2)
             self.assertEqual(len(self.api.offers), 1)
@@ -351,7 +351,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
     async def test_dm_failure_never_removes_or_blocks_group(self):
         async def scenario():
             self.api.fail_offers = True
-            await self.command("/dmfiltre tcl")
+            await self.command("/dmfiltreekle tcl")
             await self.offer("TCL", media=False)
             self.assertEqual(self.queues[0].failed, 1)
             self.assertEqual(bot.STATS["forwarded"], 1)
@@ -362,7 +362,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
 
     async def test_group_account_fallback_is_copied_without_deleting_group(self):
         async def scenario():
-            await self.command("/dmfiltre tcl")
+            await self.command("/dmfiltreekle tcl")
             group_message = FakeMessage(101, media=False, text="TCL fallback")
             with mock.patch.object(bot, "send_bot_ping", new_callable=mock.AsyncMock, return_value=(False, "error")), \
                  mock.patch.object(self.client, "get_messages", new_callable=mock.AsyncMock,
@@ -375,7 +375,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
     async def test_pending_group_draft_is_not_overwritten_by_dm_filter(self):
         async def scenario():
             await self.command("/ekle")
-            await self.command("/dmfiltre tcl")
+            await self.command("/dmfiltreekle tcl")
             self.assertIn("bekleyen işlemi", self.replies())
             await self.command("1")
             await self.command("kahve")
@@ -396,7 +396,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
 
     async def test_disabling_cancels_not_yet_sent_queue_items(self):
         async def scenario():
-            await self.command("/dmfiltre tcl")
+            await self.command("/dmfiltreekle tcl")
             # Queue a copy before the worker gets scheduled, then disable DM.
             event = FakeEvent(next(iter(bot.SOURCE_IDS)), 7, "TCL fırsat", media=False)
             await self.client.handlers[1][1](event)
@@ -410,7 +410,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
         async def scenario():
             await self.command("/durum", sender=88)
             self.assertIn("Takipçi aktif", self.replies())
-            await self.command("/dmfiltre tcl", sender=88)
+            await self.command("/dmfiltreekle tcl", sender=88)
             self.assertIn("yalnızca hesap sahibinin", self.replies())
             self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], [])
         await self.run_scenario(scenario, admin_user_id=[ADMIN_ID, 88])
@@ -421,3 +421,127 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.api.offers), 1)
             self.assertEqual(self.api.offers[0][1]["chat_id"], ADMIN_ID)
         await self.run_scenario(scenario, dm_keywords=["tcl"], dm_enabled=True)
+
+    async def test_dmfiltre_is_read_only_and_never_prompts_for_keywords(self):
+        async def scenario():
+            before = Path(self.path).read_text()
+            await self.command("/dmfiltre")
+            self.assertIn("Kelimeler: tcl, lg", self.replies())
+            self.assertIn("Kişisel bildirim: KAPALI", self.replies())
+            self.assertFalse(bot.PENDING)
+            self.assertEqual(Path(self.path).read_text(), before)
+            await self.command("/dmfiltre iphone")
+            await self.command("iphone")
+            self.assertIn("yalnızca bilgi gösterir", self.replies())
+            self.assertEqual(Path(self.path).read_text(), before)
+        await self.run_scenario(scenario, dm_keywords=["tcl", "lg"], dm_enabled=False)
+
+    async def test_add_is_incremental_and_duplicate_does_not_enable_paused_filter(self):
+        async def scenario():
+            await self.command("/dmfiltreekle TCL, lg, iphone, LG")
+            saved = json.loads(Path(self.path).read_text())
+            self.assertEqual(saved["dm_keywords"], ["tcl", "lg", "iphone"])
+            self.assertTrue(saved["dm_enabled"])
+            await self.command("/dmkapat")
+            await self.command("/dmfiltreekle TCL")
+            saved = json.loads(Path(self.path).read_text())
+            self.assertFalse(saved["dm_enabled"])
+            self.assertEqual(saved["dm_keywords"], ["tcl", "lg", "iphone"])
+        await self.run_scenario(scenario, dm_keywords=["tcl"], dm_enabled=False)
+
+    async def test_remove_dialogue_preserves_others_and_group_settings(self):
+        async def scenario():
+            await self.command("/dmfiltrecikar")
+            self.assertIn("Çıkarılacak kelimeleri", self.replies())
+            await self.command("LG, iphone")
+            saved = json.loads(Path(self.path).read_text())
+            self.assertEqual(saved["dm_keywords"], ["tcl"])
+            self.assertTrue(saved["dm_enabled"])
+            self.assertEqual(saved["include_keywords"], ["çay"])
+            self.assertEqual(saved["exclude_keywords"], ["çekiliş"])
+            self.assertEqual(saved["destination"], GROUP_ID)
+            await self.command("/dmfiltrecikar TCL")
+            saved = json.loads(Path(self.path).read_text())
+            self.assertEqual(saved["dm_keywords"], [])
+            self.assertFalse(saved["dm_enabled"])
+            await self.command("/dmfiltrecikar")
+            self.assertFalse(bot.PENDING)
+        await self.run_scenario(scenario, dm_keywords=["tcl", "lg", "iphone"], dm_enabled=True)
+
+    async def test_remove_keeps_filter_paused_and_rejects_unknown_atomically(self):
+        async def scenario():
+            await self.command("/dmfiltrecikar TCL, samsung")
+            self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], ["tcl", "lg"])
+            self.assertIn("Hiçbir kayıt çıkarılmadı", self.replies())
+            await self.command("/dmfiltrecikar lg")
+            saved = json.loads(Path(self.path).read_text())
+            self.assertEqual(saved["dm_keywords"], ["tcl"])
+            self.assertFalse(saved["dm_enabled"])
+        await self.run_scenario(scenario, dm_keywords=["tcl", "lg"], dm_enabled=False)
+
+    async def test_remove_cancel_and_failed_save_preserve_list(self):
+        async def scenario():
+            await self.command("/dmfiltrecikar")
+            await self.command("/iptal")
+            await self.command("lg")
+            self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], ["tcl", "lg"])
+            await self.command("/dmfiltrecikar")
+            self.persist_ok = False
+            await self.command("lg")
+            self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], ["tcl", "lg"])
+            self.assertTrue(bot.PENDING)
+            self.persist_ok = True
+            await self.command("lg")
+            self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], ["tcl"])
+            self.assertFalse(bot.PENDING)
+        await self.run_scenario(scenario, dm_keywords=["tcl", "lg"], dm_enabled=True)
+
+    async def test_dmfiltre_and_komutlar_preserve_pending_removal(self):
+        async def scenario():
+            await self.command("/dmfiltrecikar")
+            await self.command("/dmfiltre")
+            await self.command("/komutlar")
+            await self.command("lg")
+            self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], ["tcl"])
+        await self.run_scenario(scenario, dm_keywords=["tcl", "lg"])
+
+    async def test_master_command_and_aliases_share_one_line_per_command_format(self):
+        async def scenario():
+            for command in ("/komutlar", "/help", "/yardim", "/yardım"):
+                await self.command(command)
+                self.assertEqual(self.api.calls[-1][1]["text"], bot.HELP_TEXT)
+            for line in bot.HELP_TEXT.splitlines():
+                self.assertRegex(line, r"^/\S+ - \S.*$")
+            self.assertLess(len(bot.HELP_TEXT), 3500)
+            for command in ("/dmfiltre", "/dmfiltreekle", "/dmfiltrecikar", "/open", "/close",
+                            "/ekle", "/çıkar", "/kaydet", "/iptal", "/analiz", "/restart"):
+                self.assertTrue(any(line.startswith(command + " - ") for line in bot.HELP_TEXT.splitlines()))
+        await self.run_scenario(scenario)
+
+    async def test_dmdurum_removed_from_dispatch_and_help(self):
+        async def scenario():
+            await self.command("/dmdurum")
+            self.assertIn("Bilinmeyen komut: /dmdurum", self.replies())
+            self.assertNotIn("/dmdurum", bot.HELP_TEXT)
+            self.assertFalse(bot.PENDING)
+        await self.run_scenario(scenario)
+
+
+class DMEditPureTests(unittest.TestCase):
+    def test_limit_applies_to_combined_list(self):
+        existing = [f"word{i}" for i in range(100)]
+        with self.assertRaises(ValueError):
+            private.edit_dm_keywords(existing, "new", "add")
+        self.assertEqual(len(existing), 100)
+        self.assertEqual(private.edit_dm_keywords(existing, "word1", "add"), existing)
+
+    def test_remove_is_exact_phrase_not_substring(self):
+        existing = ["tcl tv", "lg"]
+        with self.assertRaises(ValueError):
+            private.edit_dm_keywords(existing, "tcl", "remove")
+        self.assertEqual(private.edit_dm_keywords(existing, "TCL TV", "remove"), ["lg"])
+        self.assertEqual(existing, ["tcl tv", "lg"])
+
+    def test_invalid_action_rejected(self):
+        with self.assertRaises(ValueError):
+            private.edit_dm_keywords(["tcl"], "lg", "replace")

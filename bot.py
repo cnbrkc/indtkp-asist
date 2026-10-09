@@ -42,7 +42,7 @@ from telethon.tl import types
 
 from private_bot import (
     BotAPI, BotAPIError, PrivateControlEvent, PrivateOfferQueue,
-    dm_matches, parse_dm_keywords, poll_private_commands, private_copy_request,
+    dm_matches, edit_dm_keywords, poll_private_commands, private_copy_request,
 )
 
 logging.basicConfig(
@@ -2167,25 +2167,41 @@ def prune_dedup_cache(
 # ---------------------------------------------------------------------------
 
 HELP_TEXT = (
-    "Komutlar:\n"
-    "/start – özel sohbet kullanım bilgisi\n"
-    "/dmfiltre [kelime, ifade] – kişisel listeyi değiştir (yalnızca özel sohbet)\n"
-    "/dmdurum, /dmac, /dmkapat – kişisel bildirim durumu / aç / kapat\n"
-    "/status (/durum) – çalışma durumu\n"
-    "/test (/deneme) – hedefe deneme mesajı\n"
-    "/source (/kaynaklar) – izlenen kaynaklar\n"
-    "/id – sohbet ve kullanıcı ID'leri\n"
-    "/restart (/yenile) – yeni çalışma başlat\n"
-    "/analiz [adet] [tümü] – geçmiş başlıkları tara, kelime istatistiği ver\n"
-    "/open [dahili|harici|ikisi] – filtre aç (sormazsan menü sorar; kaydeder)\n"
-    "/close [dahili|harici|ikisi] – filtre kapat (sormazsan menü sorar; kaydeder)\n"
-    "/ayar, /ekle, /çıkar – listeleri düzenle (virgülle birden çok kayıt)\n"
-    "/kaydet, /iptal – taslağı kaydet / iptal et\n"
-    "/help (/yardim) – bu mesaj\n"
-    "\n"
-    "🧹 Eski kontrol sohbetinde komut temizliği ayarı geçerlidir.\n"
-    "   Botla özel sohbetin geçmişi ve fırsatları silinmez."
-)
+    '/komutlar - Komutları ve açıklamalarını listeler.\n'
+    '/start - Özel sohbet kullanımını açıklar; fırsat hedefini değiştirmez.\n'
+    '/durum - Takipçinin durumunu, hedefini ve sayaçlarını gösterir.\n'
+    '/status - /durum ile aynı çalışma durumunu gösterir.\n'
+    '/dmfiltre - Kişisel kelimeleri, açık/kapalı durumunu ve sayaçlarını gösterir; değişiklik yapmaz.\n'
+    '/dmfiltreekle - Kişisel kelime ekler ve açar; argümansız sorar, hemen kaydeder.\n'
+    '/dmfiltrecikar - Kişisel kelime çıkarır; argümansız sorar, hemen kaydeder.\n'
+    '/dmac - Kayıtlı kişisel filtreyi açar; boş liste açılmaz.\n'
+    '/dmaç - /dmac ile aynı şekilde kişisel filtreyi açar.\n'
+    '/dmkapat - Kelimeleri koruyarak kişisel fırsat gönderimini kapatır.\n'
+    '/ayar - Grup dahili/harici kelimeleri ve kaynak listesi menüsünü gösterir.\n'
+    '/ayarlar - /ayar ile aynı liste menüsünü gösterir.\n'
+    '/ekle - Grup ayarlarında liste seçip kayıt ekleme taslağı başlatır.\n'
+    '/çıkar - Grup ayarlarında liste seçip kayıt çıkarma taslağı başlatır.\n'
+    '/cikar - /çıkar ile aynı kayıt çıkarma akışını başlatır.\n'
+    '/kaydet - Bekleyen grup listesi taslağını kaydeder; DM ekleme/çıkarma anında kaydedilir.\n'
+    '/iptal - Bekleyen ekleme/çıkarma veya filtre seçimini iptal eder.\n'
+    '/open - Grup filtresini açar; dahili, harici veya ikisi seçilebilir.\n'
+    '/close - Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir.\n'
+    '/kaynaklar - İzlenen kaynakları ve çözülemeyenleri listeler.\n'
+    '/kaynak - /kaynaklar ile aynı kaynak listesini gösterir.\n'
+    '/source - /kaynaklar ile aynı kaynak listesini gösterir.\n'
+    '/sources - /kaynaklar ile aynı kaynak listesini gösterir.\n'
+    '/analiz - Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü.\n'
+    '/kelimeanalizi - /analiz ile aynı geçmiş analizini çalıştırır.\n'
+    '/test - Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir.\n'
+    '/deneme - /test ile aynı grup gönderim denemesini yapar.\n'
+    '/id - Bulunduğun sohbetin ve kullanıcının kimliğini gösterir.\n'
+    '/restart - Yeni takipçi çalışması başlatır; GH_PAT gerekir.\n'
+    '/yenile - /restart ile aynı yenileme işlemini başlatır.\n'
+    '/yeniden - /restart ile aynı yenileme işlemini başlatır.\n'
+    '/help - /komutlar ile aynı açıklamalı komut listesini gösterir.\n'
+    '/yardim - /komutlar ile aynı açıklamalı komut listesini gösterir.\n'
+    '/yardım - /komutlar ile aynı açıklamalı komut listesini gösterir.\n'
+).rstrip()
 
 
 def build_status_text(config: dict) -> str:
@@ -3758,14 +3774,33 @@ async def main(argv: Sequence[str] | None = None) -> int:
             "Herhangi biri eşleşirse gruba gönderilen yeni fırsatın özel kopyası gelir.\n"
             "Grup filtreleri ve tekrar birleştirmesi geçerlidir. Tekrarlı alarm yok.\n"
             f"Bu oturum: gönderilen {private_offers.sent}, hata {private_offers.failed}, "
-            f"kuyrukta {private_offers.queue.qsize()}, taşma {private_offers.dropped}"
+            f"kuyrukta {private_offers.queue.qsize()}, taşma {private_offers.dropped}\n"
+            "/dmfiltreekle - Kelime ekle\n"
+            "/dmfiltrecikar - Kelime çıkar\n"
+            "/dmac - Aç\n"
+            "/dmkapat - Kapat"
         )
 
-    async def save_dm_setting(event, *, words=None, enabled=True):
+    async def save_dm_setting(event, *, action=None, raw="", enabled=True):
         async with settings_lock:
             before = store.snapshot()
-            if words is not None:
+            if action is not None:
+                existing = store.config.get("dm_keywords", [])
+                try:
+                    words = edit_dm_keywords(existing, raw, action)
+                except ValueError as exc:
+                    await control_reply(event, str(exc))
+                    return
+                if words == existing:
+                    pending = peek_pending(pending_key(event))
+                    if pending and pending.get("stage") == "dm_words":
+                        drop_pending(pending_key(event))
+                    await control_reply(event, "ℹ️ Bu kelimeler zaten listede; ayarlar değişmedi.\n" + dm_status())
+                    return
                 store.config["dm_keywords"] = words
+                # Adding a new interest opts in; removal preserves a paused
+                # filter and switches it off when the last keyword is removed.
+                enabled = bool(words) and (action == "add" or config_flag(before.get("dm_enabled"), False))
             store.config["dm_enabled"] = enabled
             ok, note = await save_config(store, "Kişisel bildirim ayarı güncellendi")
             if not ok:
@@ -3782,30 +3817,37 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await control_reply(event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
             return
         key = pending_key(event)
-        if command == "/dmdurum":
-            await control_reply(event, dm_status())
+        if command == "/dmfiltre":
+            await control_reply(event, dm_status() + (
+                "\n\nBu komut yalnızca bilgi gösterir. Kelime eklemek için /dmfiltreekle, "
+                "çıkarmak için /dmfiltrecikar kullan." if rest else ""
+            ))
         elif command in {"/dmac", "/dmaç", "/dmkapat"}:
             enabled = command != "/dmkapat"
             if enabled and not store.config.get("dm_keywords"):
-                await control_reply(event, "Önce /dmfiltre ile kelimelerini belirle. Boş liste hiçbir şeyi göndermez.")
+                await control_reply(event, "Önce /dmfiltreekle ile kelimelerini ekle. Boş liste hiçbir şeyi göndermez.")
                 return
             await save_dm_setting(event, enabled=enabled)
         else:
             if peek_pending(key):
                 await control_reply(event, "Önce bekleyen işlemi /kaydet veya /iptal ile tamamla.")
                 return
+            action = "add" if command == "/dmfiltreekle" else "remove"
+            if action == "remove" and not store.config.get("dm_keywords"):
+                await control_reply(event, "ℹ️ Kişisel liste boş; çıkarılacak kelime yok.\n" + dm_status())
+                return
             if not rest:
-                set_pending(key, stage="dm_words")
-                await control_reply(event, dm_status() + "\n\nYeni listenin tamamını virgülle ayırarak yaz: tcl, lg, iphone\n"
-                                    "Bu liste eskisinin YERİNE geçer ve hemen kaydedilir. /iptal ile vazgeç.\n"
+                set_pending(key, stage="dm_words", action=action)
+                prompt = ("Eklenecek kelimeleri virgülle ayırarak yaz: tcl, lg, iphone\n"
+                          "Mevcut kelimeler korunur; yeni kelime eklemek kişisel bildirimleri açar."
+                          if action == "add" else
+                          "Çıkarılacak kelimeleri virgülle ayırarak yaz; listedeki tam kelime/ifadeyi kullan.\n"
+                          "Diğer kelimeler korunur. Son kelime çıkarılırsa kişisel bildirimler kapanır.")
+                await control_reply(event, dm_status() + "\n\n" + prompt + "\n"
+                                    "Değişiklik hemen kaydedilir. /iptal ile vazgeç.\n"
                                     "Not: kelimeler config.json ve depo geçmişine kaydedilir.")
                 return
-            try:
-                words = parse_dm_keywords(rest)
-            except ValueError as exc:
-                await control_reply(event, str(exc))
-                return
-            await save_dm_setting(event, words=words)
+            await save_dm_setting(event, action=action, raw=rest)
 
     async def save_pending_change(event: events.NewMessage.Event,
                                  key: PendingKey) -> None:
@@ -4064,12 +4106,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if item.get("stage") == "dm_words":
             if not isinstance(event, PrivateControlEvent) or event.sender_id != SELF_ID:
                 return False
-            try:
-                words = parse_dm_keywords(text)
-            except ValueError as exc:
-                await control_reply(event, str(exc))
-                return True
-            await save_dm_setting(event, words=words)
+            await save_dm_setting(event, action=item["action"], raw=text)
             return True
         if item.get("stage") == "filter":
             action = str(item.get("action") or "open")
@@ -4769,10 +4806,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
         # Sabit komutlar önce: /source gibi adlar alan takma adıyla çakışabilir.
         if command == "/start":
             await control_reply(event, "👋 Komutlarını artık burada verebilirsin. Fırsatlar aynı hedef gruba gider.\n"
-                                "Grup ayarları: /ayar · Durum: /durum · Yardım: /help\n"
-                                "Kişisel fırsatlar isteğe bağlı: /dmfiltre · /dmdurum · /dmkapat\n"
+                                "Grup ayarları: /ayar · Durum: /durum · Tüm komutlar: /komutlar\n"
+                                "Kişisel fırsatlar: /dmfiltre · /dmfiltreekle · /dmfiltrecikar\n"
                                 "Özel sohbet geçmişi silinmez. Kayıtlı Mesajlar yedek kontrol olarak açık.")
-        elif command in {"/dmfiltre", "/dmdurum", "/dmac", "/dmaç", "/dmkapat"}:
+        elif command in {"/dmfiltre", "/dmfiltreekle", "/dmfiltrecikar", "/dmac", "/dmaç", "/dmkapat"}:
             await handle_dm_command(event, command, rest)
         elif command in {"/status", "/durum"}:
             text = build_status_text(store.config)
@@ -4831,7 +4868,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         elif command in {"/restart", "/yenile", "/yeniden"}:
             ok, message = await dispatch_next_run(gh_pat)
             await control_reply(event, ("🔄 " if ok else "⚠️ ") + message)
-        elif command in {"/help", "/yardim", "/yardım"}:
+        elif command in {"/komutlar", "/help", "/yardim", "/yardım"}:
             await control_reply(event, HELP_TEXT)
         elif command in CMD_ANALYZE:
             await analyze_history(event, rest)
