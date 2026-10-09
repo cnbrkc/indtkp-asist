@@ -110,16 +110,41 @@ kişisel alıcıyı kendisine çeviremez. Çok kullanıcılı abonelik sistemi d
 
 ### Sorun giderme ve geri dönüş
 
-- `/start` yanıtlamıyor: `NOTIFY_BOT_TOKEN`, hesap sahibi/admin kimliği ve logları
-  kontrol et. Token'ı sohbet, config veya loglara yazma.
-- Aynı token'ı başka long-polling uygulamasında kullanma (409 çakışması). Botta mevcut
-  webhook varsa uygulama onu otomatik silmez; özel komutları başlatmayıp loga uyarı
-  yazar. Diğer entegrasyonu kontrol ederek tek alıcı seç. Grup iletimi devam eder.
-- Token yoksa grup takipçisi çalışabilir ama özel komut/kopya gönderemez; Kayıtlı
-  Mesajlar'dan yönet veya secret'ı tamamla.
-- Eski grup komut düzenine dönmek için `private_control: false` yapıp yeniden başlat;
-  korunan `control_chat` yeniden geçerli olur. Özel fırsatları da kapatmak istersen
-  `dm_enabled: false` yap. `destination` veya grup filtrelerini değiştirme.
+Botun özel sohbetinde `/start` yanıtlanmıyorsa, sırayla şunları kontrol et (token'ı
+asla sohbete, config'e veya loglara yazma):
+
+1. **Secret eksik veya yanlış:** GitHub → Actions → son çalıştırmanın **"Ayarları
+   doğrula"** adımındaki raporda `NOTIFY_BOT_TOKEN=YOK` yazıyorsa secret tanımlı değil.
+   `Settings → Secrets and variables → Actions` üzerinden ekle/güncelle ve workflow'u
+   yeniden başlat. **Bu, en sık görülen nedendir.**
+2. **Botta webhook var:** Logda `Özel komutlar başlatılamadı: bu botta webhook var`
+   yazıyorsa botta webhook var; `getUpdates` ile çelişir ve özel komutlar hiç
+   başlamaz. Webhook'u kaldır (`https://api.telegram.org/bot<TOKEN>/deleteWebhook`)
+   veya webhook kullanan entegrasyonu kapat; tek alıcı olsun. Uygulama webhook'u
+   kendisi silmez.
+3. **İkinci bir tüketici var:** Logda `hata 409` (çakışma) yazıyorsa aynı token'la
+   başka bir `getUpdates` uygulaması (eski runner, yerel servis) çalışıyor; mesajlar
+   iki tüketici arasında bölüşülür. Tek örneğe indir.
+4. **Token geçersiz:** Logda `hata 401` / `token geçersiz` yazıyorsa token bozuk veya
+   yanlış botun token'ı; BotFather'da `/revoke` ile yenisini alıp secret'a koy.
+5. **Yanlış bot:** Kayıtlı Mesajlar'dan `/test` yaz; yanıttaki `🔎 Özel komut kanalı`
+   bölümünde botun kullanıcı adı (`@...`) görünür. Özel sohbette konuştuğun bot
+   **aynı** olmalı.
+6. **Grupta yazıyorsan:** Bu kanal grup mesajlarını tasarım gereği yok sayar (yalnızca
+   özel sohbet kabul eder). BotFather'daki gizlilik (privacy) modu grupta geçerlidir;
+   özel sohbette gerekmez. Komutları botun **özel sohbetine** yaz.
+7. **Bot ilk mesajı atamaz:** Telegram kuralı gereği bot sana ilk özel mesajı kendisi
+   atamaz. Botun özel sohbetini aç, **/start**'a bas ve botu engellemediğinden emin ol.
+   Bot engellenmişse veya hiç başlatılmamışsa ne komut yanıtı ne de kişisel fırsat
+   kopyası düşer.
+8. **Bekleyen mesajlar atlanır:** Takipçi kapalıyken gönderdiğin komutlar açılışta
+   güvenlik için atılır; takipçi hazır olduktan sonra komutu **yeniden** gönder.
+
+BotFather'dan yapman gerekenler: yeni bot açmana gerek yok (mevcut bildirim botu yeterli);
+botun kullanıcı adını yukarıdaki `/test` çıktısından doğrula. Eski grup komut düzenine
+dönmek için `private_control: false` yapıp yeniden başlat; korunan `control_chat` yeniden
+geçerli olur. Özel fırsatları da kapatmak istersen `dm_enabled: false` yap. `destination`
+veya grup filtrelerini değiştirme.
 
 ---
 

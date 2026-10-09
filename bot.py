@@ -42,7 +42,8 @@ from telethon.tl import types
 
 from private_bot import (
     BotAPI, BotAPIError, PrivateControlEvent, PrivateOfferQueue,
-    dm_matches, edit_dm_keywords, poll_private_commands, private_copy_request,
+    dm_matches, edit_dm_keywords, poll_health, poll_private_commands,
+    private_copy_request,
 )
 
 logging.basicConfig(
@@ -527,7 +528,8 @@ def print_report(config: dict, problems: list[str]) -> None:
     print("Telegram indirim takipçisi - yapılandırma raporu", flush=True)
     print("=" * 62, flush=True)
     print(f"Ortam değişkenleri : API_ID={mask('API_ID')} API_HASH={mask('API_HASH')} "
-          f"SESSION_STRING={mask('SESSION_STRING')} GH_PAT={mask('GH_PAT')}", flush=True)
+          f"SESSION_STRING={mask('SESSION_STRING')} GH_PAT={mask('GH_PAT')} "
+          f"NOTIFY_BOT_TOKEN={mask('NOTIFY_BOT_TOKEN')}", flush=True)
     print(f"Kaynaklar          : {len(config.get('source_chats') or [])} adet", flush=True)
     print(f"Hedef              : {config.get('destination', 'me')}", flush=True)
     control_label = ("Bot özel sohbeti + Kayıtlı Mesajlar"
@@ -3781,6 +3783,46 @@ async def main(argv: Sequence[str] | None = None) -> int:
             "/dmkapat - Kapat"
         )
 
+    async def private_channel_health() -> str:
+        """Özel komut kanalının teşhisi; /test ile görünür (token asla yazılmaz)."""
+        if not NOTIFY_BOT_TOKEN:
+            return ("🔎 Özel komut kanalı: KAPALI — NOTIFY_BOT_TOKEN tanımlı değil.\n"
+                    "Komutlar Kayıtlı Mesajlar'dan işlenir; bot sana özel mesaj atamaz.")
+        lines = ["🔎 Özel komut kanalı (bildirim botu):"]
+        try:
+            me = await private_api.call("getMe", {}) or {}
+            username = me.get("username")
+            lines.append(f"• Bot: @{username}" if username
+                         else "• Bot: kullanıcı adı alınamadı (token geçersiz olabilir).")
+        except BotAPIError as exc:
+            lines.append(f"• Bot: alınamadı — token geçersiz olabilir (hata {exc.code}).")
+        except Exception as exc:
+            lines.append(f"• Bot: alınamadı ({type(exc).__name__}).")
+        try:
+            webhook = await private_api.call("getWebhookInfo", {}) or {}
+            if webhook.get("url"):
+                lines.append("• Webhook: VAR — getUpdates ile çelişir; özel komutlar "
+                             "çalışmaz. Webhook'u kaldırıp takipçiyi yeniden başlat.")
+            else:
+                lines.append("• Webhook: yok")
+        except Exception as exc:
+            lines.append(f"• Webhook: alınamadı ({type(exc).__name__}).")
+        health = poll_health()
+        status = health.get("status")
+        label = {
+            "off": "başlatılmadı (private_control kapalı)",
+            "starting": "başlatılıyor",
+            "running": "çalışıyor",
+            "webhook": "webhook var — kapalı",
+            "unauthorized": "token geçersiz (401) — kapalı",
+        }.get(status, str(status))
+        lines.append(f"• Poller: {label}")
+        if health.get("last_error"):
+            lines.append(f"• Son hata: {health['last_error']}")
+        lines.append("Bot ilk özel mesajı kendisi atamaz: botun özel sohbetinde /start yaz "
+                     "ve botu engellemediğinden emin ol.")
+        return "\n".join(lines)
+
     async def save_dm_setting(event, *, action=None, raw="", enabled=True):
         async with settings_lock:
             before = store.snapshot()
@@ -4841,6 +4883,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 reply += ("\n⚠️ NOTIFY_BOT_TOKEN yok: mesajı kendi hesabın gönderdiği için "
                           "bildirim almazsın. BotFather'dan bot oluşturup gruba ekle ve token'ı "
                           "GitHub Actions secret'ı olarak tanımla.")
+            reply += "\n\n" + await private_channel_health()
             await control_reply(event, reply)
         elif command in {"/source", "/sources", "/kaynak", "/kaynaklar"}:
             await control_reply(event, build_source_text())
@@ -4919,11 +4962,20 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
     if notify_on_start:
         try:
+            if config_flag(store.config.get("private_control"), False):
+                control_note = (
+                    "\nÖzel komutlar: bildirim botunun özel sohbetinden /start ile başlar."
+                    if NOTIFY_BOT_TOKEN else
+                    "\n⚠️ Özel komutlar kapalı: NOTIFY_BOT_TOKEN yok; komutlar Kayıtlı "
+                    "Mesajlar'dan işlenir."
+                )
+            else:
+                control_note = ""
             await client.send_message(
                 DESTINATION,
                 f"🟢 Takipçi başladı: {len(SOURCE_IDS)} kaynak dinleniyor"
                 + (f", {len(SOURCE_FAILURES)} kaynak çözülemedi" if SOURCE_FAILURES else "")
-                + f".\nHedef: {DESTINATION_LABEL}",
+                + f".\nHedef: {DESTINATION_LABEL}" + control_note,
             )
         except Exception:  # noqa: BLE001
             log.exception("Başlangıç bildirimi gönderilemedi.")
