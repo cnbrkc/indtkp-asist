@@ -14,9 +14,34 @@ from types import SimpleNamespace
 log = logging.getLogger("telegram-filter.private")
 PRIVATE_SUFFIX = "\n\n🎯 SANA ÖZEL"
 
+# Özel komut poller'ının anlık durumu; /test ile teşhis için tutulur.
+POLL_STATE: dict = {
+    "status": "off",   # off | starting | running | webhook | unauthorized
+    "bot": None,       # getMe'den gelen {"id": ..., "username": ...}
+    "last_error": "",  # son taşıma hatası (boş = son poll başarılı)
+}
+
+
+def _poll_state(status, **extra):
+    POLL_STATE["status"] = status
+    POLL_STATE.update(extra)
+
+
+def poll_health() -> dict:
+    """Poller durumunun anlık kopyası; sır/anahtar dökmez."""
+    return {
+        "status": POLL_STATE["status"],
+        "bot": POLL_STATE["bot"],
+        "last_error": POLL_STATE["last_error"],
+    }
+
 
 class BotAPIError(Exception):
-    pass
+    """Bot API hatası; ``code`` Telegram/HTTP hata kodunu taşır (401, 403, 409...)."""
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 class BotAPI:
@@ -37,7 +62,7 @@ class BotAPI:
             try:
                 return json.loads(exc.read())
             except (ValueError, OSError):
-                raise BotAPIError(f"Telegram HTTP {exc.code}") from None
+                raise BotAPIError(f"Telegram HTTP {exc.code}", code=exc.code) from None
         except Exception as exc:
             raise BotAPIError(f"Telegram bağlantı hatası: {type(exc).__name__}") from None
 
@@ -53,7 +78,7 @@ class BotAPI:
                     await asyncio.sleep(delay)
                     continue
             # Do not echo arbitrary remote text or credentials to logs/users.
-            raise BotAPIError(f"Telegram API {method}: hata {code}")
+            raise BotAPIError(f"Telegram API {method}: hata {code}", code=code)
 
 
 class PrivateReply:
@@ -102,11 +127,17 @@ async def poll_private_commands(api, allowed_ids, handler):
     """
     offset = None
     initialized = False
+    _poll_state("starting")
     while True:
         try:
             if not initialized:
+                # Token'ı başta doğrula: geçersizse 401 ile hemen dur, boşuna
+                # yeniden deneme; bot kimliği de teşhis için kaydedilir.
+                me = await api.call("getMe", {}) or {}
+                _poll_state("starting", bot={"id": me.get("id"), "username": me.get("username")})
                 webhook = await api.call("getWebhookInfo", {})
                 if webhook.get("url"):
+                    _poll_state("webhook")
                     log.error("Özel komutlar başlatılamadı: bu botta webhook var. "
                               "Mevcut entegrasyonu kontrol et; webhook silinmedi.")
                     return
@@ -117,11 +148,13 @@ async def poll_private_commands(api, allowed_ids, handler):
                 if old:
                     offset = old[-1]["update_id"] + 1
                 initialized = True
+                _poll_state("running")
                 log.info("Bot özel komutları hazır; özel sohbetten /start gönder.")
             payload = {"timeout": 20, "allowed_updates": ["message"]}
             if offset is not None:
                 payload["offset"] = offset
             updates = await api.call("getUpdates", payload)
+            _poll_state("running", last_error="")
             for update in updates:
                 offset = update["update_id"] + 1
                 message = update.get("message")
@@ -136,12 +169,34 @@ async def poll_private_commands(api, allowed_ids, handler):
                             "chat_id": message["chat"]["id"],
                             "text": "⚠️ Komut tamamlanamadı. /durum ile kontrol edip yeniden dene.",
                         })
-                    except BotAPIError:
+                    except BotAPIError as send_exc:
+                        if send_exc.code == 403:
+                            log.error("Özel yanıt gönderilemedi (403): kullanıcı botu "
+                                      "engellemiş veya hiç /start dememiş olabilir; "
+                                      "bot ilk mesajı kendisi atamaz.")
+                        else:
+                            log.error("Özel yanıt gönderilemedi: Telegram hata %s", send_exc.code)
+                    except Exception:
                         pass
         except BotAPIError as exc:
-            log.warning("Özel komut bağlantısı: %s; yeniden denenecek.", exc)
+            _poll_state("running" if initialized else "starting", last_error=str(exc))
+            if exc.code == 401:
+                # Token geçersiz: yeniden denemek anlamsız; secret düzeltilip
+                # takipçi yeniden başlatılmalı.
+                _poll_state("unauthorized")
+                log.error("Özel komutlar durduruldu: bot token'ı geçersiz (401). "
+                          "BotFather'dan token'ı kontrol edip NOTIFY_BOT_TOKEN secret'ını "
+                          "güncelle; takipçiyi yeniden başlat.")
+                return
+            if exc.code == 409:
+                log.warning("Özel komut bağlantısı: 409 çakışma; aynı token'la ikinci bir "
+                            "getUpdates tüketicisi çalışıyor olabilir; yeniden denenecek.")
+            else:
+                log.warning("Özel komut bağlantısı: %s; yeniden denenecek.", exc)
             await asyncio.sleep(5)
         except Exception as exc:
+            _poll_state("running" if initialized else "starting",
+                        last_error=type(exc).__name__)
             log.error("Özel komut bağlantısı: %s; yeniden denenecek.", type(exc).__name__)
             await asyncio.sleep(5)
 
@@ -241,6 +296,15 @@ class PrivateOfferQueue:
                     method, payload = request
                     await self.api.call(method, payload)
                     self.sent += 1
+            except BotAPIError as exc:
+                self.failed += 1
+                if exc.code == 403:
+                    log.error("Özel fırsat gönderilemedi (403): kullanıcı botu engellemiş "
+                              "veya hiç /start dememiş olabilir; bot ilk özel mesajı kendisi "
+                              "atamaz. Grup iletimi korunuyor.")
+                else:
+                    log.warning("Özel fırsat gönderilemedi; grup korunuyor: Telegram hata %s",
+                                exc.code)
             except Exception as exc:
                 self.failed += 1
                 log.warning("Özel fırsat gönderilemedi; grup korunuyor: %s", type(exc).__name__)

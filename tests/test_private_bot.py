@@ -1,6 +1,8 @@
 """Private commands/copying: no Telegram credentials or network required."""
 import asyncio
+import contextlib
 import copy
+import io
 import json
 import os
 import sys
@@ -22,13 +24,22 @@ def dm_message(text, sender=ADMIN_ID, **extra):
             "from": {"id": sender}, "message_id": 500, "text": text, **extra}
 
 
+def reset_poll_state():
+    private.POLL_STATE.update({"status": "off", "bot": None, "last_error": ""})
+
+
 class FakeAPI:
     def __init__(self):
         self.calls = []
         self.fail_offers = False
+        self.webhook_url = ""
 
     async def call(self, method, payload):
         self.calls.append((method, copy.deepcopy(payload)))
+        if method == "getMe":
+            return {"id": 424242, "username": "takipci_bot", "is_bot": True}
+        if method == "getWebhookInfo":
+            return {"url": self.webhook_url}
         if self.fail_offers and private.PRIVATE_SUFFIX in (payload.get("text", "") + payload.get("caption", "")):
             raise private.BotAPIError("403")
         return {"message_id": len(self.calls) + 900}
@@ -105,6 +116,24 @@ class PrivatePureTests(unittest.TestCase):
             with mock.patch.dict(os.environ, BASE_ENV):
                 self.assertTrue(bot.check_environment(config))
 
+    def test_api_error_carries_code(self):
+        self.assertEqual(private.BotAPIError("hata", code=403).code, 403)
+        self.assertIsNone(private.BotAPIError("hata").code)
+
+    def test_check_report_shows_notify_bot_token_without_leaking_it(self):
+        config = {"source_chats": ["@firsatz"], "destination": GROUP_ID}
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {**BASE_ENV, "NOTIFY_BOT_TOKEN": "123:ABC"}):
+            with contextlib.redirect_stdout(out):
+                bot.print_report(config, [])
+        self.assertIn("NOTIFY_BOT_TOKEN=var", out.getvalue())
+        self.assertNotIn("123:ABC", out.getvalue())
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {**BASE_ENV, "NOTIFY_BOT_TOKEN": ""}):
+            with contextlib.redirect_stdout(out):
+                bot.print_report(config, [])
+        self.assertIn("NOTIFY_BOT_TOKEN=YOK", out.getvalue())
+
 
 class PrivateAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_api_retries_429_respecting_retry_after(self):
@@ -130,10 +159,13 @@ class PrivateAsyncTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(request.call_count, 1)
 
     async def test_poll_skips_backlog_and_unauthorized_messages(self):
+        reset_poll_state()
         calls, received = [], []
         class API:
             async def call(self, method, payload):
                 calls.append((method, payload))
+                if method == "getMe":
+                    return {"id": 424242, "username": "takipci_bot"}
                 if method == "getWebhookInfo":
                     return {"url": ""}
                 if payload.get("offset") == -1:
@@ -149,13 +181,62 @@ class PrivateAsyncTests(unittest.IsolatedAsyncioTestCase):
             await private.poll_private_commands(API(), lambda: {ADMIN_ID}, handle)
         self.assertEqual(received, ["/durum"])
         self.assertEqual(calls[-1][1]["offset"], 44)
+        health = private.poll_health()
+        self.assertEqual(health["status"], "running")
+        self.assertEqual(health["bot"], {"id": 424242, "username": "takipci_bot"})
 
     async def test_existing_webhook_is_not_deleted(self):
-        api = mock.Mock(call=mock.AsyncMock(return_value={"url": "https://existing.invalid"}))
+        reset_poll_state()
+        async def call(method, payload):
+            if method == "getMe":
+                return {"id": 1, "username": "bot"}
+            if method == "getWebhookInfo":
+                return {"url": "https://existing.invalid"}
+            raise AssertionError(method)
+        api = mock.Mock(call=mock.AsyncMock(side_effect=call))
         handler = mock.AsyncMock()
         await private.poll_private_commands(api, lambda: {ADMIN_ID}, handler)
-        api.call.assert_awaited_once_with("getWebhookInfo", {})
+        api.call.assert_any_await("getMe", {})
+        api.call.assert_any_await("getWebhookInfo", {})
         handler.assert_not_awaited()
+        self.assertEqual(private.poll_health()["status"], "webhook")
+
+    async def test_poll_stops_on_unauthorized_token(self):
+        reset_poll_state()
+        attempts = []
+        class API:
+            async def call(self, method, payload):
+                attempts.append(method)
+                raise private.BotAPIError("Telegram API getMe: hata 401", code=401)
+        handler = mock.AsyncMock()
+        # 401'de sonsuza kadar yeniden denemez; poller geri döner.
+        await private.poll_private_commands(API(), lambda: {ADMIN_ID}, handler)
+        handler.assert_not_awaited()
+        self.assertEqual(attempts, ["getMe"])
+        self.assertEqual(private.poll_health()["status"], "unauthorized")
+
+    async def test_poll_records_last_transport_error(self):
+        reset_poll_state()
+        class API:
+            def __init__(self):
+                self.polls = 0
+            async def call(self, method, payload):
+                if method == "getMe":
+                    return {"id": 7, "username": "takipci_bot"}
+                if method == "getWebhookInfo":
+                    return {"url": ""}
+                if payload.get("offset") == -1:
+                    return []
+                self.polls += 1
+                if self.polls == 1:
+                    raise private.BotAPIError("Telegram API getUpdates: hata 409", code=409)
+                raise asyncio.CancelledError
+        with mock.patch.object(private.asyncio, "sleep", new_callable=mock.AsyncMock):
+            with self.assertRaises(asyncio.CancelledError):
+                await private.poll_private_commands(API(), lambda: {ADMIN_ID}, mock.AsyncMock())
+        health = private.poll_health()
+        self.assertEqual(health["status"], "running")
+        self.assertIn("409", health["last_error"])
 
     async def test_queue_is_bounded_and_failure_does_not_stop_worker(self):
         api = FakeAPI()
@@ -182,6 +263,7 @@ class PrivateAsyncTests(unittest.IsolatedAsyncioTestCase):
 class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         reset_state()
+        reset_poll_state()
         self.api = FakeAPI()
         self.queues = []
         self.group_text = []
@@ -393,6 +475,39 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             await self.command("/id")
             self.assertIn("destination olarak yazmana gerek yok", self.replies())
         await self.run_scenario(scenario)
+
+    async def test_private_test_reports_channel_health(self):
+        async def scenario():
+            private.POLL_STATE.update({"status": "running",
+                                       "bot": {"id": 424242, "username": "takipci_bot"},
+                                       "last_error": ""})
+            await self.command("/test")
+            self.assertIn("Özel komut kanalı", self.replies())
+            self.assertIn("@takipci_bot", self.replies())
+            self.assertIn("Webhook: yok", self.replies())
+            self.assertIn("Poller: çalışıyor", self.replies())
+        await self.run_scenario(scenario)
+
+    async def test_private_test_warns_about_webhook(self):
+        async def scenario():
+            self.api.webhook_url = "https://ornek.invalid/hook"
+            await self.command("/test")
+            self.assertIn("Webhook: VAR", self.replies())
+        await self.run_scenario(scenario)
+
+    async def test_private_test_reports_missing_token(self):
+        async def scenario():
+            with mock.patch.object(bot, "NOTIFY_BOT_TOKEN", ""):
+                await self.command("/test")
+            self.assertIn("NOTIFY_BOT_TOKEN tanımlı değil", self.replies())
+        await self.run_scenario(scenario)
+
+    async def test_startup_note_announces_private_control(self):
+        async def scenario():
+            startup = [message for _, message in self.client.sent]
+            self.assertTrue(any("Özel komutlar: bildirim botunun özel sohbetinden /start"
+                                in message for message in startup))
+        await self.run_scenario(scenario, notify_on_start=True)
 
     async def test_disabling_cancels_not_yet_sent_queue_items(self):
         async def scenario():
