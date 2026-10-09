@@ -56,6 +56,10 @@
   "notify_on_start": true,
   "clean_commands": true,
   "private_control": true,
-  "dm_enabled": false,
-  "dm_keywords": []
+  "dm_enabled": true,
+  "dm_keywords": [
+    "tcl",
+    "lg",
+    "iphone"
+  ]
 }
