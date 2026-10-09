@@ -110,6 +110,22 @@ kişisel alıcıyı kendisine çeviremez. Çok kullanıcılı abonelik sistemi d
 
 ### Sorun giderme ve geri dönüş
 
+**Önce gruba düşen açılış mesajına bak.** Takipçi artık özel komut kanalını açılış
+bildiriminden *önce* başlatır ve gerçek durumu yazar:
+
+- `✅ Özel komutlar hazır: @botadi özel sohbetine yaz` → kanal çalışıyor; o bota yaz.
+  Aynı anda bot sana özelden de `🟢 Takipçi başladı; özel komutlar hazır` atar (daha önce
+  en az bir kez /start yazdıysan; Telegram botun ilk mesajı atmasına izin vermez).
+- `⚠️ Özel komutlar ÇALIŞMIYOR: ... webhook var / token geçersiz (401) / başka bir süreç
+  kullanıyor (409)` → nedeni yazılıdır, aşağıdaki ilgili maddeye git. Çalışma sırasında
+  bozulursa da aynı uyarı gruba düşer; düzelince `✅ ... toparlandı` gelir.
+- `⏳ Özel komutlar henüz hazır değil` → Telegram'a 10 sn içinde ulaşılamadı; biraz bekleyip
+  Kayıtlı Mesajlar'dan `/test` yaz, `🔎 Özel komut kanalı` bölümü poller durumunu gösterir.
+
+Takipçi hazır olmadan önce yazdığın komut işlenmez (eski bir `/restart`'ın tekrar
+oynamaması için) ama artık sessiz kalmaz: son 15 dakika içinde yazılmışsa bot
+`⏳ ... komutu tekrar gönder` diye uyarır.
+
 Botun özel sohbetinde `/start` yanıtlanmıyorsa, sırayla şunları kontrol et (token'ı
 asla sohbete, config'e veya loglara yazma):
 

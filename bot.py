@@ -3815,6 +3815,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             "running": "çalışıyor",
             "webhook": "webhook var — kapalı",
             "unauthorized": "token geçersiz (401) — kapalı",
+            "conflict": "409 çakışma — aynı token'ı başka bir süreç kullanıyor",
         }.get(status, str(status))
         lines.append(f"• Poller: {label}")
         if health.get("last_error"):
@@ -4960,17 +4961,97 @@ async def main(argv: Sequence[str] | None = None) -> int:
         ok, _, info = await deliver(event, source_name)
         await dedup_after_send(dedup_id, token, ok, info)
 
+    async def private_status_changed(status: str, detail: str) -> None:
+        """Özel komut kanalının durumunu sessizce log'a gömmek yerine kullanıcıya ilet.
+
+        * ``running``: hazır → yetkili kişilere özel mesaj (bot ancak daha önce
+          /start yazılmış sohbete yazabilir; 403 ise yalnızca log).
+        * ``webhook`` / ``unauthorized`` / ``conflict``: özel komutlar ÇALIŞMIYOR →
+          hedef gruba hesaptan uyarı; komutlar Kayıtlı Mesajlar'dan işlenmeye devam eder.
+        """
+        if status == "running":
+            if not notify_on_start:
+                return
+            text = ("🟢 Takipçi başladı; özel komutlar hazır.\n"
+                    f"Hedef: {DESTINATION_LABEL}\n"
+                    "Durum: /durum · Komutlar: /komutlar · Kişisel fırsatlar: /dmfiltre")
+            for user_id in sorted(ADMIN_IDS | {SELF_ID}):
+                try:
+                    await private_api.call("sendMessage", {"chat_id": user_id, "text": text})
+                except BotAPIError as exc:
+                    if exc.code == 403:
+                        log.warning("Açılış özel mesajı gönderilemedi (403, kullanıcı %s): "
+                                    "önce botun özel sohbetinde /start yazılmalı.", user_id)
+                    else:
+                        log.warning("Açılış özel mesajı gönderilemedi (kullanıcı %s): %s",
+                                    user_id, exc)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Açılış özel mesajı gönderilemedi (kullanıcı %s): %s",
+                                user_id, type(exc).__name__)
+            return
+        if status == "recovered":
+            text = "✅ Özel komut kanalı toparlandı; botun özel sohbetinden komut verebilirsin."
+        elif status == "webhook":
+            text = ("⚠️ Özel komutlar ÇALIŞMIYOR: bildirim botunda bir webhook tanımlı; "
+                    "getUpdates ile çelişiyor. Webhook'u kaldırıp takipçiyi yeniden başlat "
+                    "(webhook otomatik silinmez). Komutlar şimdilik Kayıtlı Mesajlar'dan işlenir.")
+        elif status == "unauthorized":
+            text = ("⚠️ Özel komutlar ÇALIŞMIYOR: bot token'ı geçersiz (401). "
+                    "NOTIFY_BOT_TOKEN secret'ını BotFather'dan kontrol edip güncelle. "
+                    "Komutlar şimdilik Kayıtlı Mesajlar'dan işlenir.")
+        elif status == "conflict":
+            text = ("⚠️ Özel komutlar ÇALIŞMIYOR: aynı bot token'ıyla ikinci bir getUpdates "
+                    f"tüketicisi var ({detail}). Eski bir çalışma/VM/başka bir proje aynı botu "
+                    "kullanıyor olabilir; onu kapat. Bu arada komutlar Kayıtlı Mesajlar'dan işlenir.")
+        else:
+            return
+        try:
+            await client.send_message(DESTINATION, text)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Özel komut durum uyarısı gruba gönderilemedi: %s", type(exc).__name__)
+
+    # Özel komut poller'ını açılış bildiriminden ÖNCE başlat: bildirimde gerçek
+    # durum ("hazır" / "webhook var" ...) yazılsın, "/start ile başlar" tahmini değil.
+    private_tasks = []
+    if private_api:
+        private_tasks.append(asyncio.create_task(private_offers.run()))
+        if config_flag(store.config.get("private_control"), False):
+            private_tasks.append(asyncio.create_task(poll_private_commands(
+                private_api, lambda: ADMIN_IDS | {SELF_ID}, on_control_message,
+                private_status_changed,
+            )))
+            await asyncio.sleep(0)  # poller görevi ilk adımını atsın
+            for _ in range(40):  # en fazla ~10 sn; sonra neyse o yazılır
+                if poll_health()["status"] not in {"off", "starting"}:
+                    break
+                await asyncio.sleep(0.25)
+
+    def private_control_note() -> str:
+        if not NOTIFY_BOT_TOKEN:
+            return ("\n⚠️ Özel komutlar kapalı: NOTIFY_BOT_TOKEN yok; komutlar Kayıtlı "
+                    "Mesajlar'dan işlenir.")
+        health = poll_health()
+        status = health.get("status")
+        username = (health.get("bot") or {}).get("username")
+        bot_label = f"@{username}" if username else "bildirim botu"
+        if status == "running":
+            return (f"\n✅ Özel komutlar hazır: {bot_label} özel sohbetine yaz "
+                    "(ilk kez ise önce /start).")
+        if status == "webhook":
+            return f"\n⚠️ Özel komutlar ÇALIŞMIYOR: {bot_label} üzerinde webhook var."
+        if status == "unauthorized":
+            return "\n⚠️ Özel komutlar ÇALIŞMIYOR: bot token'ı geçersiz (401)."
+        if status == "conflict":
+            return f"\n⚠️ Özel komutlar ÇALIŞMIYOR: {bot_label} token'ını başka bir süreç de kullanıyor (409)."
+        err = health.get("last_error")
+        return ("\n⏳ Özel komutlar henüz hazır değil"
+                + (f" ({err})" if err else "")
+                + "; /test ile kontrol edebilirsin.")
+
     if notify_on_start:
         try:
-            if config_flag(store.config.get("private_control"), False):
-                control_note = (
-                    "\nÖzel komutlar: bildirim botunun özel sohbetinden /start ile başlar."
-                    if NOTIFY_BOT_TOKEN else
-                    "\n⚠️ Özel komutlar kapalı: NOTIFY_BOT_TOKEN yok; komutlar Kayıtlı "
-                    "Mesajlar'dan işlenir."
-                )
-            else:
-                control_note = ""
+            control_note = (private_control_note()
+                            if config_flag(store.config.get("private_control"), False) else "")
             await client.send_message(
                 DESTINATION,
                 f"🟢 Takipçi başladı: {len(SOURCE_IDS)} kaynak dinleniyor"
@@ -4992,13 +5073,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
     await dedup_preload()
 
     log.info("Dinleniyor... (kaynak=%d, kontrol=%s, hedef=%s)", len(SOURCE_IDS), sorted(CONTROL_IDS), DESTINATION_LABEL)
-    private_tasks = []
-    if private_api:
-        private_tasks.append(asyncio.create_task(private_offers.run()))
-        if config_flag(store.config.get("private_control"), False):
-            private_tasks.append(asyncio.create_task(poll_private_commands(
-                private_api, lambda: ADMIN_IDS | {SELF_ID}, on_control_message,
-            )))
     try:
         await client.run_until_disconnected()
     finally:
