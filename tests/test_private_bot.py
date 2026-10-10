@@ -752,17 +752,17 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], ["tcl"])
         await self.run_scenario(scenario, dm_keywords=["tcl", "lg"])
 
-    async def test_master_command_and_aliases_share_one_line_per_command_format(self):
+    async def test_master_command_lists_all_canonical_commands(self):
         async def scenario():
-            for command in ("/komutlar", "/help", "/yardim", "/yardım"):
-                await self.command(command)
-                self.assertEqual(self.api.calls[-1][1]["text"], bot.HELP_TEXT)
+            await self.command("/komutlar")
+            self.assertEqual(self.api.calls[-1][1]["text"], bot.HELP_TEXT)
             for line in bot.HELP_TEXT.splitlines():
                 self.assertRegex(line, r"^/\S+ - \S.*$")
             self.assertLess(len(bot.HELP_TEXT), 3500)
-            for command in ("/dmfiltre", "/dmfiltreekle", "/dmfiltrecikar", "/open", "/close",
-                            "/ekle", "/çıkar", "/kaydet", "/iptal", "/analiz", "/restart"):
-                self.assertTrue(any(line.startswith(command + " - ") for line in bot.HELP_TEXT.splitlines()))
+            commands = [line.split(" - ", 1)[0] for line in bot.HELP_TEXT.splitlines()]
+            self.assertEqual(commands, [name for name, _ in bot.COMMAND_DESCRIPTIONS])
+            self.assertIn("/kaynaktest", commands)
+            self.assertIn("/start", commands)
         await self.run_scenario(scenario)
 
     async def test_dmdurum_removed_from_dispatch_and_help(self):

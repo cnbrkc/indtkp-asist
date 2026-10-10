@@ -22,7 +22,7 @@ Eski kurulumlarda yeni alan yoksa önceki grup kontrol davranışı korunur.
 2. Mevcut `NOTIFY_BOT_TOKEN` secret'ının tanımlı olduğundan emin ol; yeni bot veya yeni
    token gerekmez. Botun gruptaki üyeliğini/yetkilerini değiştirme.
 3. Botun özel sohbetini aç. Takipçi hazır olduktan sonra `/start`, ardından `/durum` gönder.
-4. `/ayar`, `/ekle`, `/çıkar`, `/kaydet`, `/iptal`, `/open`, `/close`, `/kaynak`,
+4. `/ayar`, `/ekle`, `/çıkar`, `/kaydet`, `/iptal`, `/open`, `/close`, `/kaynaklar`,
    `/kaynaktest`, `/analiz`, `/restart` aynı işlevleri özel sohbetten yerine getirir.
    `/test` denemeyi hâlâ **hedef gruba** gönderir; sonucu özelden yanıtlar.
 5. Botla özel sohbet geçmişi silinmez. Eski `clean_commands` davranışı yalnızca
@@ -63,7 +63,7 @@ ve açık/kapalı durumunu değiştirmez.
 Bu işlemler normal grup liste menülerinden farklı olarak **hemen kaydedilir**;
 ayrıca `/kaydet` gerekmez. Değer istenirken `/iptal` vazgeçer. Bekleyen bir ayar taslağı
 varsa yeni ekleme/çıkarma başlatmadan önce onu bitir. `/dmfiltre` yalnızca bilgi verir,
-bekleyen taslağı değiştirmez ve tek başına kelime istemez. Eski `/dmdurum` kaldırıldı.
+bekleyen taslağı değiştirmez ve tek başına kelime istemez.
 Ayarlar `config.json`'a ve mevcut GitHub kayıt yöntemiyle depoya yazılır; gönderilen
 kayıt raporunu kontrol et. Yerel dosyaya yazma başarısızsa eski ayar geri yüklenir.
 GitHub'a gönderim başarısızsa yereldeki ayar geçerlidir ama yeni Actions runner'ına
@@ -75,11 +75,11 @@ aktarılmayabilir. **Özel kelimeler gizli değildir; config ve Git geçmişinde
 | `/dmfiltreekle [kelime, ifade]` | Kelime ekler; argüman yoksa eklenecek kelimeleri sorar |
 | `/dmfiltrecikar [kelime, ifade]` | Kelime çıkarır; argüman yoksa çıkarılacak kelimeleri sorar |
 | `/dmkapat` | Listeyi koruyarak özel fırsatları kapatır; henüz gönderilmeyen kuyruk kayıtları da atlanır |
-| `/dmac` veya `/dmaç` | Kayıtlı listeyle tekrar açar; boş listeyi açmaz |
-| `/komutlar` | Mevcut tüm komutları ve takma adlarını, her satırda `komut - açıklama` biçiminde gösterir |
+| `/dmac` | Kayıtlı listeyle tekrar açar; boş listeyi açmaz |
+| `/komutlar` | Her desteklenen komutu ve açıklamasını tek kez listeler |
 
-`/help`, `/yardim`, `/yardım` aynı açıklamalı listeyi açar. `/start` mesajından da
-`/komutlar` komutuna ulaşılabilir. Liste başlıksız, maddesiz, her satırda tek komuttur.
+`/start` yanıtında `/komutlar` hatırlatılır. Yardım listesi başlıksız, maddesiz ve
+her satırda tek canonical komut olacak şekilde üretilir.
 
 Bu kişisel ayarlar ve alıcı **yalnızca hesabın sahibine** aittir; başka bir admin
 kişisel alıcıyı kendisine çeviremez. Çok kullanıcılı abonelik sistemi değildir.
@@ -273,7 +273,7 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 1. **Actions → Telegram indirim takipçisi → Run workflow → `main`** → çalıştır.
 2. **Ayarları doğrula** adımının log'unda yeşil "yapılandırma geçerli ✅" görmelisin.
 3. **Mesajları dinle** adımında `Bağlanıldı: ...` ve `Dinleniyor...` satırları gelmeli.
-4. Kontrol sohbetine `/status` yaz → bot yanıt veriyorsa komut yolu çalışıyor.
+4. Kontrol sohbetine `/durum` yaz → bot yanıt veriyorsa komut yolu çalışıyor.
 5. `/test` yaz → hedefe deneme mesajı düşmeli.
 6. Telefonuna bildirim gelsin istiyorsan [6. bölümdeki](#6-bildirim-kurulumu-telefona-uyarı-gelsin) bildirim botunu mutlaka kur.
 
@@ -283,7 +283,7 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 - [ ] `config.json` geçerli (`python bot.py --check` temiz geçiyor)
 - [ ] Kaynak kanallara kişisel hesapla üye olunmuş (log'da `ÜYE DEĞİLSİN` yok)
 - [ ] `/kaynaktest` her çözülmüş kaynaktan son mesajı okuyabiliyor
-- [ ] `/status` ve `/test` yanıt veriyor
+- [ ] `/durum` ve `/test` yanıt veriyor
 - [ ] (İsteğe bağlı) Bildirim botu kurulu, `/test` bildirim gönderiyor
 
 ---
@@ -292,7 +292,7 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 
 - `bot.py` çalıştığı ve kişisel hesap kaynaklara üye olduğu sürece, yapılandırılmış tüm
   kaynakların yeni Telegram mesajları aynı canlı event handler ile anlık alınır.
-- **Geçmişe dönük mesajlar otomatik iletilmez.** Bot kapalıyken/yeniden başlarken kaçanlar
+- **Geçmişe dönük mesajlar otomatik iletilmez.** Bot kapalıyken veya yeniden başlatılırken kaçanlar
   sonradan bildirim olarak backfill edilmez; `/analiz` ve `/kaynaktest` geçmişi yalnızca
   manuel kontrol/analiz için okur.
 - Aynı başlıklı fırsatlar tek mesajda birleşir; tekrarlar ilk mesaja rozet olarak işlenir
@@ -377,32 +377,12 @@ Kaynak mesajlarını hedef gruba iletir.
 /kaydet, /iptal — taslağı kaydet / iptal et.
 /analiz — Geçmiş başlıklarını tarar; en çok geçen kelimeleri istatistik olarak verir.
 /kaynaktest — Kaynaklardan son mesajı okuyarak erişimi sınar.
-/status, /source, /test, /id, /restart, /help — durum ve araçlar.
+/durum, /kaynaklar, /test, /id, /restart, /komutlar — durum ve araçlar.
 ```
 
-### Aktif komutların tamamı
-
-| Komut (kabul edilen diğer yazımlar) | Ne yapar |
-|---|---|
-| `/status` (`/durum`) | Çalışma süresi, kaynak sayısı, sayaçlar, son eşleşme ve hedef |
-| `/test` (`/deneme`) | Hedefe deneme iletisi gönderir |
-| `/source` (`/sources`, `/kaynak`, `/kaynaklar`) | İzlenen ve çözülemeyen kaynakları listeler |
-| `/kaynaktest` (`/testkaynak`, `/testkaynaklar`) | Her kaynakta son mesajı okuyarak erişimi test eder; isteğe bağlı sıra, kullanıcı adı veya ID ile tek kaynağı test eder |
-| `/id` | Sohbet ve kullanıcı ID'lerini gösterir |
-| `/restart` (`/yenile`, `/yeniden`) | Yeni Actions çalışması başlatır |
-| `/analiz` (`/kelimeanalizi`) | Geçmiş mesajların **başlığını** tarar; en çok geçen 25 kelimeyi ve en çok geçen 25 ilk kelimeyi verir |
-| `/ayar` (`/ayarlar`) | Düzenlenebilir listeleri ve ayar komutlarını gösterir |
-| `/open` | Filtre **açar**. Argümansız yazarsan "dahili mi, harici mi, ikisi mi?" diye sorar. Anında kaydeder. |
-| `/close` | Filtre **kapatır**. Argümansız yazarsan "hangisini kapatalım?" diye sorar. Anında kaydeder. |
-| `/ekle` | Dahili/harici kelime veya kaynak listesine kayıt ekler; tek mesajda virgülle **birden çok** kayıt gönderilebilir |
-| `/çıkar` (`/cikar`) | Seçilen listeden kayıt çıkarır; numaraları veya değerleri virgülle ayırıp **birden çok** kaydı birlikte çıkarabilirsin |
-| `/kaydet` (veya onayda `kaydet`) | Taslak değişikliği config'e yazar ve GitHub'a gönderir |
-| `/iptal` (veya onayda `iptal`) | Bekleyen taslağı siler |
-| `/help` (`/yardim`, `/yardım`) | Bu komut özetini gösterir |
-
-`/open` ve `/close` anında uygulanır ve kaydedilir; liste düzenlemeleri ise `/kaydet`
-seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir. Türkçe `I`/`İ` yazımları
-(`/ANALİZ`, `/Iptal` gibi) otomatik olarak eşleşir.
+`/open` ve `/close` anında uygulanır ve kaydedilir; grup listesi düzenlemeleri `/kaydet`
+seçilene kadar taslakta kalır, kişisel DM kelimeleri ise hemen kaydedilir. `/restart` için
+`GH_PAT` gerekir. Türkçe `I`/`İ` büyük harf yazımları (`/ANALİZ`, `/Iptal` gibi) otomatik eşleşir.
 
 ### Komut temizliği (ekranda yalnızca son mesaj)
 
@@ -421,32 +401,38 @@ seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir. Türkçe `I`
   gerekir). Silinemezse bot uyarı loglar, komut çalışmaya devam eder.
 - Kapatmak için `config.json` → `"clean_commands": false` (veya `CLEAN_COMMANDS=false`).
 
-### Tüm komutlar (açıklamalı)
+### Tüm desteklenen komutlar
 
 | Komut | Açıklama |
 |---|---|
-| `/komutlar`, `/help`, `/yardim`, `/yardım` | Tüm komutları `komut - açıklama` biçiminde alt alta gösterir |
-| `/status`, `/durum` | Çalışma süresi, kaynak sayısı, sayaçlar, son eşleşme, hedef ve iki filtrenin açık/kapalı durumu |
-| `/test`, `/deneme` | Hedefe deneme iletisi gönderir; bildirim botu da denenir |
-| `/source`, `/sources`, `/kaynak`, `/kaynaklar` | İzlenen kaynakları ve çözülemeyenleri listeler |
-| `/kaynaktest`, `/testkaynak`, `/testkaynaklar` | Tüm kaynaklardan son mesajı okuyarak erişimi test eder; sıra, `@kullanıcıadı` veya ID ile tek kaynak seçilebilir |
-| `/id` | Bu sohbetin ve senin kullanıcı ID'ni gösterir (config için hazır satırlar) |
-| `/restart`, `/yenile`, `/yeniden` | Yeni GitHub Actions çalışması başlatır (`GH_PAT` gerekir) |
-| `/analiz`, `/kelimeanalizi` | Geçmiş mesajların başlığını tarar; en çok geçen 25 kelime + 25 ilk kelime |
-| `/open` | Filtre açar; argümansız sorar (dahili / harici / ikisi), argümanla anında uygular |
-| `/close` | Filtre kapatır; argümansız sorar (dahili / harici / ikisi), argümanla anında uygular |
-| `/ayar`, `/ayarlar` | Düzenlenebilir listeleri ve komutları gösterir |
-| `/ekle` | Seçilen listeye kayıt ekler (virgülle birden çok kayıt) |
-| `/çıkar`, `/cikar` | Seçilen listeden kayıt çıkarır (numara veya değer; virgülle birden çok) |
-| `/kaydet` | Bekleyen taslağı `config.json`'a yazar ve GitHub'a gönderir |
-| `/iptal` | Bekleyen taslağı/seçimi siler; hiçbir ayar değişmez |
-| `/help`, `/yardim`, `/yardım` | Komut özetini gösterir |
+| `/komutlar` | Tüm desteklenen komutları ve açıklamalarını listeler |
+| `/start` | Özel sohbet kullanımını açıklar; fırsat hedefini değiştirmez |
+| `/durum` | Takipçinin durumunu, hedefini, sayaçlarını ve filtre durumunu gösterir |
+| `/dmfiltre` | Kişisel kelimeleri, açık/kapalı durumunu ve sayaçlarını gösterir |
+| `/dmfiltreekle` | Kişisel kelime ekler ve filtreyi açar; argümansız sorar, hemen kaydeder |
+| `/dmfiltrecikar` | Kişisel kelime çıkarır; argümansız sorar, hemen kaydeder |
+| `/dmac` | Kayıtlı kişisel filtreyi açar; boş listeyi açmaz |
+| `/dmkapat` | Kelimeleri koruyarak kişisel fırsat gönderimini kapatır |
+| `/ayar` | Grup dahili/harici kelimeleri ve kaynak listesi menüsünü gösterir |
+| `/ekle` | Grup ayarlarında liste seçip kayıt ekleme taslağı başlatır |
+| `/çıkar` | Grup ayarlarında liste seçip kayıt çıkarma taslağı başlatır |
+| `/kaydet` | Bekleyen grup listesi taslağını kaydeder; DM değişiklikleri anında kaydedilir |
+| `/iptal` | Bekleyen ekleme/çıkarma veya filtre seçimini iptal eder |
+| `/open` | Grup filtresini açar; dahili, harici veya ikisi seçilebilir |
+| `/close` | Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir |
+| `/kaynaklar` | İzlenen kaynakları ve çözülemeyenleri listeler |
+| `/kaynaktest` | Her kaynağın son ham mesajını ve yerel işlem yolunu denetler; canlı event sayısını raporlar |
+| `/analiz` | Kaynak geçmişindeki başlıkları analiz eder; örnek: `/analiz 100 tümü` |
+| `/test` | Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir |
+| `/id` | Bulunduğun sohbetin ve kullanıcının kimliğini gösterir |
+| `/restart` | Yeni takipçi çalışması başlatır; `GH_PAT` gerekir |
+
 
 **Tamamı virgülle ayrılmış hâli** (BotFather açıklamasına, sabitlenmiş mesaja ya da
 grubun komut menüsüne doğrudan yapıştırabilirsin):
 
 ```text
-/status, /durum, /test, /deneme, /source, /sources, /kaynak, /kaynaklar, /kaynaktest, /testkaynak, /testkaynaklar, /id, /restart, /yenile, /yeniden, /analiz, /kelimeanalizi, /open, /close, /ayar, /ayarlar, /ekle, /çıkar, /cikar, /kaydet, /iptal, /help, /yardim, /yardım
+/komutlar, /start, /durum, /dmfiltre, /dmfiltreekle, /dmfiltrecikar, /dmac, /dmkapat, /ayar, /ekle, /çıkar, /kaydet, /iptal, /open, /close, /kaynaklar, /kaynaktest, /analiz, /test, /id, /restart
 ```
 
 #### Kaynak mesaj erişimini test etme
@@ -538,7 +524,7 @@ hesabın kanaldan son mesajı okuyabildiğini ve üyelik durumunu kontrol et.
 
 ### Çıkarma
 
-1. **`/çıkar`** (Türkçe karakter olmadan **`/cikar`** da olur) yaz.
+1. **`/çıkar`** yaz.
 2. Kategoriyi seç; bot güncel listeyi numaralı olarak gösterir.
 3. Çıkarmak istediğin kayıtların numaralarını veya listedeki tam değerlerini gönder;
    birden çok kayıt için virgülle ayır: `1, 3, çekiliş`
@@ -709,7 +695,7 @@ denenmez; sırayla deneyip ilk başarılı olanı kullanır:
 
 - `delivery_modes` ile sırayı kendin belirleyebilirsin; yazmadığın yollar yedek olarak sona
   eklenir, bilinmeyen isim olursa `--check` uyarır.
-- `/status` komutu hangi yolun kaç kez işe yaradığını gösterir:
+- `/durum` komutu hangi yolun kaç kez işe yaradığını gösterir:
   `İletim sırası: forward → copy → media → text → link | kullanılan: forward×120, media×7`
 
 ---
@@ -830,7 +816,7 @@ altında kalır. GitHub'a ek istek atılmaz.
 `dedup_window_hours` (normalize ürün sorgusu kaç saat "aynı fırsat" sayılsın, 1–72,
 varsayılan 12; haftalar sonra aynı ürün yine indirime girerse YENİ fırsat sayılır),
 `dedup_scan_limit` (açılış taraması, 0–100, varsayılan 100; `0` = tarama yapma).
-`/status` birleştirilen tekrar ve rozet sayılarını gösterir.
+`/durum` birleştirilen tekrar ve rozet sayılarını gösterir.
 
 ---
 
@@ -867,13 +853,13 @@ doğru ID'yi al.
 | `Cannot find any entity corresponding to "-5092968106"` | ID metin olarak verilmiş | Sayı olarak yaz (güncel sürüm otomatik çeviriyor) |
 | Grup komutları çalışmıyor | `admin_user_id` boş veya `control_chat` yanlış | `/id` ile ID'leri doğrula; config'i güncelle |
 | Mesaj geliyor ama bildirim yok | Kendi hesabın gönderiyor; Telegram bildirim üretmez | [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin) |
-| Mesaj hiç gelmiyor | Kanal listede değil / hesap üye değil / kelime eşleşmiyor | `/source` ve `/status`a bak; log'daki `ÜYE DEĞİLSİN` uyarılarını kontrol et |
+| Mesaj hiç gelmiyor | Kanal listede değil / hesap üye değil / kelime eşleşmiyor | `/kaynaklar` ve `/durum`a bak; log'daki `ÜYE DEĞİLSİN` uyarılarını kontrol et |
 | "Fırsata Git" var ama ham link yok | Link yazının altına gizlenmiş; tıklanabilir | Yazıya dokun. Ham URL istersen `link_appendix: "all"` |
 | Fotoğraf "unnamed" dosya olarak geliyor | Eski sürüm hatası | Bot'u güncelle |
 | `⚠️ ... yalnızca bu oturumda geçerli` | Ayar değişikliği depoya yazılamadı | [14. bölüm](#14-bu-güncellemeden-sonra-yapılacaklar) |
 | `GH_PAT` ile yenileme olmuyor | Token izni yok veya süresi dolmuş | Token'da **Actions: Read and write** olduğunu ve expiration tarihini kontrol et |
 | Aynı mesaj iki kez geliyor | İki job aynı anda çalışmış | Actions concurrency ayarını ve açık run'ları kontrol et |
-| Aynı fırsat iki kez gruba düştü | Başlıklar birebir aynı değil, pencere doldu veya açılış taraması dışında kaldı | `/status` satırındaki birleştirme sayacına bak; gerekirse `dedup_window_hours` değerini artır |
+| Aynı fırsat iki kez gruba düştü | Başlıklar birebir aynı değil, pencere doldu veya açılış taraması dışında kaldı | `/durum` satırındaki birleştirme sayacına bak; gerekirse `dedup_window_hours` değerini artır |
 | `FloodWait` / rate limit | Çok fazla forward | Kaynak sayısını ve kelime filtresini daralt |
 
 ---

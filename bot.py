@@ -2459,43 +2459,55 @@ def prune_dedup_cache(
 # Komutlar
 # ---------------------------------------------------------------------------
 
-HELP_TEXT = (
-    '/komutlar - Komutları ve açıklamalarını listeler.\n'
-    '/start - Özel sohbet kullanımını açıklar; fırsat hedefini değiştirmez.\n'
-    '/durum - Takipçinin durumunu, hedefini ve sayaçlarını gösterir.\n'
-    '/status - /durum ile aynı çalışma durumunu gösterir.\n'
-    '/dmfiltre - Kişisel kelimeleri, açık/kapalı durumunu ve sayaçlarını gösterir; değişiklik yapmaz.\n'
-    '/dmfiltreekle - Kişisel kelime ekler ve açar; argümansız sorar, hemen kaydeder.\n'
-    '/dmfiltrecikar - Kişisel kelime çıkarır; argümansız sorar, hemen kaydeder.\n'
-    '/dmac - Kayıtlı kişisel filtreyi açar; boş liste açılmaz.\n'
-    '/dmaç - /dmac ile aynı şekilde kişisel filtreyi açar.\n'
-    '/dmkapat - Kelimeleri koruyarak kişisel fırsat gönderimini kapatır.\n'
-    '/ayar - Grup dahili/harici kelimeleri ve kaynak listesi menüsünü gösterir.\n'
-    '/ayarlar - /ayar ile aynı liste menüsünü gösterir.\n'
-    '/ekle - Grup ayarlarında liste seçip kayıt ekleme taslağı başlatır.\n'
-    '/çıkar - Grup ayarlarında liste seçip kayıt çıkarma taslağı başlatır.\n'
-    '/cikar - /çıkar ile aynı kayıt çıkarma akışını başlatır.\n'
-    '/kaydet - Bekleyen grup listesi taslağını kaydeder; DM ekleme/çıkarma anında kaydedilir.\n'
-    '/iptal - Bekleyen ekleme/çıkarma veya filtre seçimini iptal eder.\n'
-    '/open - Grup filtresini açar; dahili, harici veya ikisi seçilebilir.\n'
-    '/close - Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir.\n'
-    '/kaynaklar - İzlenen kaynakları ve çözülemeyenleri listeler.\n'
-    '/kaynak - /kaynaklar ile aynı kaynak listesini gösterir.\n'
-    '/source - /kaynaklar ile aynı kaynak listesini gösterir.\n'
-    '/sources - /kaynaklar ile aynı kaynak listesini gösterir.\n'
-    '/kaynaktest - Son ham mesajı, yerel kullanım yolunu ve canlı mesaj sayacını dener.\n'
-    '/analiz - Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü.\n'
-    '/kelimeanalizi - /analiz ile aynı geçmiş analizini çalıştırır.\n'
-    '/test - Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir.\n'
-    '/deneme - /test ile aynı grup gönderim denemesini yapar.\n'
-    '/id - Bulunduğun sohbetin ve kullanıcının kimliğini gösterir.\n'
-    '/restart - Yeni takipçi çalışması başlatır; GH_PAT gerekir.\n'
-    '/yenile - /restart ile aynı yenileme işlemini başlatır.\n'
-    '/yeniden - /restart ile aynı yenileme işlemini başlatır.\n'
-    '/help - /komutlar ile aynı açıklamalı komut listesini gösterir.\n'
-    '/yardim - /komutlar ile aynı açıklamalı komut listesini gösterir.\n'
-    '/yardım - /komutlar ile aynı açıklamalı komut listesini gösterir.\n'
-).rstrip()
+# Canonical command names are shared by the help catalog and dispatch paths.
+COMMAND_HELP = "/komutlar"
+COMMAND_START = "/start"
+COMMAND_STATUS = "/durum"
+COMMAND_DM_STATUS = "/dmfiltre"
+COMMAND_DM_ADD = "/dmfiltreekle"
+COMMAND_DM_REMOVE = "/dmfiltrecikar"
+COMMAND_DM_OPEN = "/dmac"
+COMMAND_DM_CLOSE = "/dmkapat"
+COMMAND_SETTINGS_MENU = "/ayar"
+COMMAND_SETTINGS_ADD = "/ekle"
+COMMAND_SETTINGS_REMOVE = "/çıkar"
+COMMAND_SETTINGS_SAVE = "/kaydet"
+COMMAND_SETTINGS_REVERT = "/iptal"
+COMMAND_FILTER_OPEN = "/open"
+COMMAND_FILTER_CLOSE = "/close"
+COMMAND_SOURCES = "/kaynaklar"
+COMMAND_SOURCE_TEST = "/kaynaktest"
+COMMAND_ANALYZE = "/analiz"
+COMMAND_TEST = "/test"
+COMMAND_ID = "/id"
+COMMAND_RESTART = "/restart"
+
+# This is the single, canonical command catalog. HELP_TEXT is generated from it so
+# /komutlar cannot drift from the names and descriptions users actually need.
+COMMAND_DESCRIPTIONS = (
+    (COMMAND_HELP, "Tüm desteklenen komutları ve açıklamalarını listeler."),
+    (COMMAND_START, "Özel sohbet kullanımını açıklar; fırsat hedefini değiştirmez."),
+    (COMMAND_STATUS, "Takipçinin durumunu, hedefini, sayaçlarını ve filtre durumunu gösterir."),
+    (COMMAND_DM_STATUS, "Kişisel kelimeleri, açık/kapalı durumunu ve sayaçlarını gösterir."),
+    (COMMAND_DM_ADD, "Kişisel kelime ekler ve filtreyi açar; argümansız sorar, hemen kaydeder."),
+    (COMMAND_DM_REMOVE, "Kişisel kelime çıkarır; argümansız sorar, hemen kaydeder."),
+    (COMMAND_DM_OPEN, "Kayıtlı kişisel filtreyi açar; boş listeyi açmaz."),
+    (COMMAND_DM_CLOSE, "Kelimeleri koruyarak kişisel fırsat gönderimini kapatır."),
+    (COMMAND_SETTINGS_MENU, "Grup dahili/harici kelimeleri ve kaynak listesi menüsünü gösterir."),
+    (COMMAND_SETTINGS_ADD, "Grup ayarlarında liste seçip kayıt ekleme taslağı başlatır."),
+    (COMMAND_SETTINGS_REMOVE, "Grup ayarlarında liste seçip kayıt çıkarma taslağı başlatır."),
+    (COMMAND_SETTINGS_SAVE, "Bekleyen grup listesi taslağını kaydeder; DM değişiklikleri anında kaydedilir."),
+    (COMMAND_SETTINGS_REVERT, "Bekleyen ekleme/çıkarma veya filtre seçimini iptal eder."),
+    (COMMAND_FILTER_OPEN, "Grup filtresini açar; dahili, harici veya ikisi seçilebilir."),
+    (COMMAND_FILTER_CLOSE, "Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir."),
+    (COMMAND_SOURCES, "İzlenen kaynakları ve çözülemeyenleri listeler."),
+    (COMMAND_SOURCE_TEST, "Her kaynağın son ham mesajını ve yerel işlem yolunu denetler; canlı event sayısını raporlar."),
+    (COMMAND_ANALYZE, "Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü."),
+    (COMMAND_TEST, "Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir."),
+    (COMMAND_ID, "Bulunduğun sohbetin ve kullanıcının kimliğini gösterir."),
+    (COMMAND_RESTART, "Yeni takipçi çalışması başlatır; GH_PAT gerekir."),
+)
+HELP_TEXT = "\n".join(f"{command} - {description}" for command, description in COMMAND_DESCRIPTIONS)
 
 
 def build_status_text(config: dict) -> str:
@@ -3049,24 +3061,20 @@ def build_list_change_confirmation(action: str, field: str, value: Any, config: 
     ])
 
 
-# Telegram ayar komutları yalnızca üç liste ve taslak kontrolleridir.
-def _expand_commands(names: set[str]) -> frozenset[str]:
-    """Türkçe büyük I/İ yazımlarını da komut eşleşmesine dahil et."""
-    expanded = set(names)
-    for name in names:
-        expanded.add(name.replace("i", "ı"))
-    return frozenset(expanded)
-
-
-CMD_SETTINGS_MENU = _expand_commands({"/ayar", "/ayarlar"})
-CMD_SETTINGS_ADD = _expand_commands({"/ekle"})
-CMD_SETTINGS_REMOVE = _expand_commands({"/çıkar", "/cikar"})
-CMD_SETTINGS_SAVE = _expand_commands({"/kaydet"})
-CMD_SETTINGS_REVERT = _expand_commands({"/iptal"})
-CMD_FILTER_OPEN = _expand_commands({"/open"})
-CMD_FILTER_CLOSE = _expand_commands({"/close"})
-CMD_ANALYZE = _expand_commands({"/analiz", "/kelimeanalizi"})
-CMD_SOURCE_TEST = _expand_commands({"/kaynaktest", "/testkaynak", "/testkaynaklar"})
+# Command groups are derived from the catalog constants and contain no aliases.
+# Turkish uppercase I/İ is normalized at parse time; it is not a second command.
+CMD_DM_COMMANDS = frozenset({
+    COMMAND_DM_STATUS, COMMAND_DM_ADD, COMMAND_DM_REMOVE, COMMAND_DM_OPEN, COMMAND_DM_CLOSE,
+})
+CMD_SETTINGS_MENU = frozenset({COMMAND_SETTINGS_MENU})
+CMD_SETTINGS_ADD = frozenset({COMMAND_SETTINGS_ADD})
+CMD_SETTINGS_REMOVE = frozenset({COMMAND_SETTINGS_REMOVE})
+CMD_SETTINGS_SAVE = frozenset({COMMAND_SETTINGS_SAVE})
+CMD_SETTINGS_REVERT = frozenset({COMMAND_SETTINGS_REVERT})
+CMD_FILTER_OPEN = frozenset({COMMAND_FILTER_OPEN})
+CMD_FILTER_CLOSE = frozenset({COMMAND_FILTER_CLOSE})
+CMD_ANALYZE = frozenset({COMMAND_ANALYZE})
+CMD_SOURCE_TEST = frozenset({COMMAND_SOURCE_TEST})
 SETTINGS_COMMANDS = frozenset().union(
     CMD_SETTINGS_MENU, CMD_SETTINGS_ADD, CMD_SETTINGS_REMOVE,
     CMD_SETTINGS_SAVE, CMD_SETTINGS_REVERT,
@@ -4154,13 +4162,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await control_reply(event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
             return
         key = pending_key(event)
-        if command == "/dmfiltre":
+        if command == COMMAND_DM_STATUS:
             await control_reply(event, dm_status() + (
                 "\n\nBu komut yalnızca bilgi gösterir. Kelime eklemek için /dmfiltreekle, "
                 "çıkarmak için /dmfiltrecikar kullan." if rest else ""
             ))
-        elif command in {"/dmac", "/dmaç", "/dmkapat"}:
-            enabled = command != "/dmkapat"
+        elif command in {COMMAND_DM_OPEN, COMMAND_DM_CLOSE}:
+            enabled = command != COMMAND_DM_CLOSE
             if enabled and not store.config.get("dm_keywords"):
                 await control_reply(event, "Önce /dmfiltreekle ile kelimelerini ekle. Boş liste hiçbir şeyi göndermez.")
                 return
@@ -4169,7 +4177,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if peek_pending(key):
                 await control_reply(event, "Önce bekleyen işlemi /kaydet veya /iptal ile tamamla.")
                 return
-            action = "add" if command == "/dmfiltreekle" else "remove"
+            action = "add" if command == COMMAND_DM_ADD else "remove"
             if action == "remove" and not store.config.get("dm_keywords"):
                 await control_reply(event, "ℹ️ Kişisel liste boş; çıkarılacak kelime yok.\n" + dm_status())
                 return
@@ -4333,7 +4341,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         targets = [item for item in SOURCES if item.get("joined")]
         if not targets:
-            await control_reply(event, "ℹ️ Taranacak kaynak yok. Önce /kaynak ile listeyi kontrol et.")
+            await control_reply(event, "ℹ️ Taranacak kaynak yok. Önce /kaynaklar ile listeyi kontrol et.")
             return
 
         started = time.time()
@@ -4430,7 +4438,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 else:
                     await control_reply(
                         event,
-                        "❌ Kaynak bulunamadı. /kaynak ile sırayı gör; kullanım: "
+                        "❌ Kaynak bulunamadı. /kaynaklar ile sırayı gör; kullanım: "
                         "/kaynaktest [sıra | @kullanıcı_adı | -100... ID].",
                     )
                     return
@@ -5363,24 +5371,24 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         STATS["commands"] += 1
         # Bekleyen liste düzenleme taslağını yalnızca /kaydet veya /iptal kapatır;
-        # /status gibi başka komutlar taslağı sessizce düşürmez.
+        # /durum gibi başka komutlar taslağı sessizce düşürmez.
         rest = raw[len(raw.split()[0]):].strip()
         log.info("Komut alındı: %s (chat=%s, sender=%s)", command, event.chat_id, event.sender_id)
 
-        # Sabit komutlar önce: /source gibi adlar alan takma adıyla çakışabilir.
-        if command == "/start":
+        # Sabit komutlar önce: alan değerleriyle çakışabilecek komutları çöz.
+        if command == COMMAND_START:
             await control_reply(event, "👋 Komutlarını artık burada verebilirsin. Fırsatlar aynı hedef gruba gider.\n"
                                 "Grup ayarları: /ayar · Durum: /durum · Tüm komutlar: /komutlar\n"
                                 "Kişisel fırsatlar: /dmfiltre · /dmfiltreekle · /dmfiltrecikar\n"
                                 "Özel sohbet geçmişi silinmez. Kayıtlı Mesajlar yedek kontrol olarak açık.")
-        elif command in {"/dmfiltre", "/dmfiltreekle", "/dmfiltrecikar", "/dmac", "/dmaç", "/dmkapat"}:
+        elif command in CMD_DM_COMMANDS:
             await handle_dm_command(event, command, rest)
-        elif command in {"/status", "/durum"}:
+        elif command == COMMAND_STATUS:
             text = build_status_text(store.config)
             if isinstance(event, PrivateControlEvent):
                 text += "\n\n" + dm_status()
             await control_reply(event, text)
-        elif command in {"/test", "/deneme"}:
+        elif command == COMMAND_TEST:
             text = (
                 f"🧪 Deneme mesajı – {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"Hedef: {DESTINATION_LABEL}\n"
@@ -5407,11 +5415,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
                           "GitHub Actions secret'ı olarak tanımla.")
             reply += "\n\n" + await private_channel_health()
             await control_reply(event, reply)
-        elif command in {"/source", "/sources", "/kaynak", "/kaynaklar"}:
+        elif command == COMMAND_SOURCES:
             await control_reply(event, build_source_text())
         elif command in CMD_SOURCE_TEST:
             await test_source_access(event, rest)
-        elif command == "/id":
+        elif command == COMMAND_ID:
             if isinstance(event, PrivateControlEvent):
                 await control_reply(event,
                     f"🆔 Özel sohbet / kullanıcı ID'n: {event.sender_id}\n"
@@ -5432,10 +5440,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 f'  "control_chat": {event.chat_id},\n'
                 f'  "admin_user_id": {event.sender_id}'
             )
-        elif command in {"/restart", "/yenile", "/yeniden"}:
+        elif command == COMMAND_RESTART:
             ok, message = await dispatch_next_run(gh_pat)
             await control_reply(event, ("🔄 " if ok else "⚠️ ") + message)
-        elif command in {"/komutlar", "/help", "/yardim", "/yardım"}:
+        elif command == COMMAND_HELP:
             await control_reply(event, HELP_TEXT)
         elif command in CMD_ANALYZE:
             await analyze_history(event, rest)

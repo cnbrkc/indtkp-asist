@@ -374,20 +374,29 @@ class IntegrationTest(MainHarness, unittest.TestCase):
     # --- komutlar -----------------------------------------------------------
 
     def test_status_command_answers_admin_in_group(self):
-        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/status"))
-        self.assertTrue(event.replies, "/status yanıt üretmedi")
+        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/durum"))
+        self.assertTrue(event.replies, "/durum yanıt üretmedi")
         self.assertIn("Takipçi aktif", event.replies[0])
 
-    def test_turkish_status_alias_works(self):
-        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/durum"))
-        self.assertIn("Takipçi aktif", event.replies[0])
+    def test_redundant_command_variants_are_not_dispatched(self):
+        removed_commands = (
+            "/status", "/dmaç", "/ayarlar", "/cikar", "/kaynak", "/source",
+            "/sources", "/testkaynak", "/testkaynaklar", "/kelimeanalizi",
+            "/deneme", "/yenile", "/yeniden", "/help", "/yardim", "/yardım",
+        )
+        for command in removed_commands:
+            with self.subTest(command=command):
+                event = self._call(
+                    self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, command),
+                )
+                self.assertIn(f"Bilinmeyen komut: {command}", "\n".join(event.replies))
 
     def test_help_command_works(self):
-        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/yardim"))
-        self.assertIn("Komutlar", event.replies[0])
+        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/komutlar"))
+        self.assertIn("/kaynaktest", event.replies[0])
 
     def test_source_command_lists_failures(self):
-        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/kaynak"))
+        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/kaynaklar"))
         self.assertIn("çözülemedi", event.replies[0])
 
     def test_source_test_reads_latest_message_reports_failures_and_live_events(self):
@@ -410,7 +419,7 @@ class IntegrationTest(MainHarness, unittest.TestCase):
 
     def test_source_test_can_target_a_source_by_username(self):
         event = self._call(
-            self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/testkaynak @firsatz"),
+            self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/kaynaktest @firsatz"),
         )
         report = "\n".join(event.replies)
         self.assertIn("Denenen çözülmüş kaynak: 1", report)
@@ -419,7 +428,7 @@ class IntegrationTest(MainHarness, unittest.TestCase):
 
     def test_command_from_stranger_gets_a_clear_error(self):
         """Yetkisiz kullanıcı sessizce yok sayılmaz: nedeni ve ID'si söylenir."""
-        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, 424242, "/status"))
+        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, 424242, "/durum"))
         self.assertTrue(event.replies, "yetkisiz komut yanıtsız kalmamalı")
         reply = event.replies[0]
         self.assertIn("yetkin yok", reply)
@@ -427,7 +436,7 @@ class IntegrationTest(MainHarness, unittest.TestCase):
         self.assertIn("admin_user_id", reply, "yetki config üzerinden verilmeli")
 
     def test_command_from_unrelated_chat_is_ignored(self):
-        event = self._call(self.client.handlers[0][1], FakeEvent(-1009999999999, ADMIN_ID, "/status"))
+        event = self._call(self.client.handlers[0][1], FakeEvent(-1009999999999, ADMIN_ID, "/durum"))
         self.assertEqual(event.replies, [])
 
     def test_saved_messages_command_works(self):
@@ -662,8 +671,8 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(self._config()["include_keywords"], [])
         self.assertEqual(bot.FILTER_INCLUDE, [])
 
-    def test_remove_accepts_exact_value_and_cikar_alias(self):
-        self._reply("/cikar")
+    def test_remove_accepts_exact_value_with_canonical_command(self):
+        self._reply("/çıkar")
         self._say("2")
         draft = self._say("ÇEKİLİŞ")
         self.assertIn("Çıkarılacak: çekiliş", draft)
@@ -870,7 +879,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
 
     def test_status_does_not_silently_drop_pending_flow(self):
         self._reply("/ekle")
-        self._reply("/status")
+        self._reply("/durum")
         self.assertTrue(bot.PENDING)
         self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "category")
 
@@ -986,13 +995,13 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
     # --- temel davranış -----------------------------------------------------
 
     def test_first_command_has_nothing_to_delete(self):
-        self._command("/status", 11)
+        self._command("/durum", 11)
         self.assertEqual(self.client.deleted, [], "ilk komutta silinecek eski mesaj yok")
 
     def test_previous_command_and_its_reply_are_deleted(self):
-        first = self._command("/status", 11)
+        first = self._command("/durum", 11)
         first_ids = self._exchange_ids(first)
-        self._command("/kaynak", 12)
+        self._command("/kaynaklar", 12)
         self.assertEqual(sorted(self._deleted_ids()), sorted(first_ids),
                          "önceki komut + yanıtı silinmeli")
         entity, ids, revoke = self.client.deleted[0]
@@ -1000,9 +1009,9 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
         self.assertTrue(revoke, "mesaj her iki taraftan da silinmeli")
 
     def test_console_keeps_only_the_last_exchange(self):
-        first = self._command("/status", 11)
-        second = self._command("/kaynak", 12)
-        last = self._command("/yardim", 13)
+        first = self._command("/durum", 11)
+        second = self._command("/kaynaklar", 12)
+        last = self._command("/komutlar", 13)
         deleted = self._deleted_ids()
         for step in (first, second):
             for mid in self._exchange_ids(step):
@@ -1040,15 +1049,15 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
 
     def test_offer_notification_is_never_deleted(self):
         offer_id = self._deliver_offer()
-        self._command("/status", 20)
-        self._command("/kaynak", 21)
+        self._command("/durum", 20)
+        self._command("/kaynaklar", 21)
         self.assertNotIn(offer_id, self._deleted_ids(),
                          "indirim bildirimi komut temizliğiyle silinmemeli")
         self.client.deleted.clear()
 
     def test_each_control_chat_has_its_own_dialogue(self):
         """Kayıtlı Mesajlar ve grup ayrı tutulur; biri diğerini silmez."""
-        group_command = self._command("/status", 90)
+        group_command = self._command("/durum", 90)
         self.assertEqual(bot.COMMAND_MESSAGES.get(GROUP_ID), self._exchange_ids(group_command))
         asyncio.run(self.client.handlers[0][1](FakeEvent(ADMIN_ID, ADMIN_ID, "/durum", message_id=91)))
         self.assertEqual(self.client.deleted, [],
@@ -1062,7 +1071,7 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
         path = self._write_config(clean_commands=False)
         self.addCleanup(os.unlink, path)
         client = self._run_main(path)
-        for index, command in enumerate(("/status", "/kaynak"), start=1):
+        for index, command in enumerate(("/durum", "/kaynaklar"), start=1):
             event = FakeEvent(GROUP_ID, ADMIN_ID, command, message_id=60 + index)
             asyncio.run(client.handlers[0][1](event))
         self.assertEqual(client.deleted, [], "clean_commands=false iken silme yapılmamalı")
@@ -1070,13 +1079,13 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
 
     def test_delete_failure_does_not_break_the_command(self):
         self.client.fail_modes.add("delete")
-        self._command("/status", 30)
-        second = self._command("/kaynak", 31)
+        self._command("/durum", 30)
+        second = self._command("/kaynaklar", 31)
         self.assertTrue(second.replies, "silme başarısız olsa da yanıt gelmeli")
         self.assertEqual(self.client.deleted, [])
 
     def test_status_reports_cleanup_state(self):
-        self._command("/status", 70)
+        self._command("/durum", 70)
         self._command("/durum", 71)
         reply = "\n".join(self._command("/durum", 72).replies)
         self.assertIn("Komut temizliği: açık", reply)

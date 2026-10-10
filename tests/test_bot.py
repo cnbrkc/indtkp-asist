@@ -245,12 +245,63 @@ class StatusTextTest(unittest.TestCase):
         self.assertIn("FırsatZ", sources)
         self.assertIn("çözülemedi", sources)
 
-    def test_help_text_lists_every_active_command_group(self):
-        for command in ("/status", "/test", "/source", "/id", "/restart", "/analiz",
-                        "/open", "/close", "/ayar", "/ekle", "/çıkar",
-                        "/kaydet", "/iptal", "/help"):
-            with self.subTest(command=command):
-                self.assertIn(command, bot.HELP_TEXT)
+    def test_help_text_is_the_complete_unique_canonical_command_catalog(self):
+        commands = tuple(command for command, _ in bot.COMMAND_DESCRIPTIONS)
+        help_lines = bot.HELP_TEXT.splitlines()
+        self.assertEqual(
+            tuple(line.split(" - ", 1)[0] for line in help_lines),
+            commands,
+            "her canonical komut açıklamasıyla tek kez listelenmeli",
+        )
+        self.assertEqual(len(commands), len(set(commands)))
+        self.assertTrue(all(description.strip() for _, description in bot.COMMAND_DESCRIPTIONS))
+        self.assertEqual(commands, (
+            "/komutlar", "/start", "/durum", "/dmfiltre", "/dmfiltreekle",
+            "/dmfiltrecikar", "/dmac", "/dmkapat", "/ayar", "/ekle", "/çıkar",
+            "/kaydet", "/iptal", "/open", "/close", "/kaynaklar", "/kaynaktest",
+            "/analiz", "/test", "/id", "/restart",
+        ))
+
+    def test_dispatch_paths_and_help_catalog_share_the_same_commands(self):
+        routed = {
+            bot.COMMAND_HELP, bot.COMMAND_START, bot.COMMAND_STATUS,
+            bot.COMMAND_TEST, bot.COMMAND_ID, bot.COMMAND_RESTART, bot.COMMAND_SOURCES,
+        }
+        routed.update(bot.CMD_DM_COMMANDS)
+        routed.update(bot.SETTINGS_COMMANDS)
+        routed.update(bot.CMD_FILTER_OPEN)
+        routed.update(bot.CMD_FILTER_CLOSE)
+        routed.update(bot.CMD_ANALYZE)
+        routed.update(bot.CMD_SOURCE_TEST)
+        documented = {command for command, _ in bot.COMMAND_DESCRIPTIONS}
+        self.assertEqual(routed, documented)
+
+    def test_redundant_command_variants_are_not_in_help_catalog(self):
+        commands = {command for command, _ in bot.COMMAND_DESCRIPTIONS}
+        for removed in (
+            "/status", "/dmaç", "/ayarlar", "/cikar", "/kaynak", "/source",
+            "/sources", "/testkaynak", "/testkaynaklar", "/kelimeanalizi",
+            "/deneme", "/yenile", "/yeniden", "/help", "/yardim", "/yardım",
+        ):
+            with self.subTest(command=removed):
+                self.assertNotIn(removed, commands)
+
+    def test_readme_command_table_and_botfather_list_match_help_catalog(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        commands = tuple(command for command, _ in bot.COMMAND_DESCRIPTIONS)
+        table = readme.split("### Tüm desteklenen komutlar\n", 1)[1].split(
+            "**Tamamı virgülle ayrılmış hâli**", 1,
+        )[0]
+        documented = tuple(
+            line.split("`", 2)[1]
+            for line in table.splitlines()
+            if line.startswith("| `/")
+        )
+        self.assertEqual(documented, commands)
+
+        command_menu = readme.split("**Tamamı virgülle ayrılmış hâli**", 1)[1]
+        command_menu = command_menu.split("```text\n", 1)[1].split("\n```", 1)[0]
+        self.assertEqual(tuple(command_menu.split(", ")), commands)
 
     def test_status_shows_both_filter_toggles(self):
         bot.SOURCES.clear()
