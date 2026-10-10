@@ -38,7 +38,8 @@
     "moliendo",
     "l’oreal",
     "pro plan",
-    "köpek maması"
+    "köpek maması",
+    "kedi maması"
   ],
   "match_mode": "any",
   "include_enabled": false,
