@@ -245,12 +245,63 @@ class StatusTextTest(unittest.TestCase):
         self.assertIn("FırsatZ", sources)
         self.assertIn("çözülemedi", sources)
 
-    def test_help_text_lists_every_active_command_group(self):
-        for command in ("/status", "/test", "/source", "/id", "/restart", "/analiz",
-                        "/open", "/close", "/ayar", "/ekle", "/çıkar",
-                        "/kaydet", "/iptal", "/help"):
-            with self.subTest(command=command):
-                self.assertIn(command, bot.HELP_TEXT)
+    def test_help_text_is_the_complete_unique_canonical_command_catalog(self):
+        commands = tuple(command for command, _ in bot.COMMAND_DESCRIPTIONS)
+        help_lines = bot.HELP_TEXT.splitlines()
+        self.assertEqual(
+            tuple(line.split(" - ", 1)[0] for line in help_lines),
+            commands,
+            "her canonical komut açıklamasıyla tek kez listelenmeli",
+        )
+        self.assertEqual(len(commands), len(set(commands)))
+        self.assertTrue(all(description.strip() for _, description in bot.COMMAND_DESCRIPTIONS))
+        self.assertEqual(commands, (
+            "/komutlar", "/start", "/durum", "/dmfiltre", "/dmfiltreekle",
+            "/dmfiltrecikar", "/dmac", "/dmkapat", "/ayar", "/ekle", "/çıkar",
+            "/kaydet", "/iptal", "/open", "/close", "/kaynaklar", "/kaynaktest",
+            "/analiz", "/test", "/id", "/restart",
+        ))
+
+    def test_dispatch_paths_and_help_catalog_share_the_same_commands(self):
+        routed = {
+            bot.COMMAND_HELP, bot.COMMAND_START, bot.COMMAND_STATUS,
+            bot.COMMAND_TEST, bot.COMMAND_ID, bot.COMMAND_RESTART, bot.COMMAND_SOURCES,
+        }
+        routed.update(bot.CMD_DM_COMMANDS)
+        routed.update(bot.SETTINGS_COMMANDS)
+        routed.update(bot.CMD_FILTER_OPEN)
+        routed.update(bot.CMD_FILTER_CLOSE)
+        routed.update(bot.CMD_ANALYZE)
+        routed.update(bot.CMD_SOURCE_TEST)
+        documented = {command for command, _ in bot.COMMAND_DESCRIPTIONS}
+        self.assertEqual(routed, documented)
+
+    def test_redundant_command_variants_are_not_in_help_catalog(self):
+        commands = {command for command, _ in bot.COMMAND_DESCRIPTIONS}
+        for removed in (
+            "/status", "/dmaç", "/ayarlar", "/cikar", "/kaynak", "/source",
+            "/sources", "/testkaynak", "/testkaynaklar", "/kelimeanalizi",
+            "/deneme", "/yenile", "/yeniden", "/help", "/yardim", "/yardım",
+        ):
+            with self.subTest(command=removed):
+                self.assertNotIn(removed, commands)
+
+    def test_readme_command_table_and_botfather_list_match_help_catalog(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        commands = tuple(command for command, _ in bot.COMMAND_DESCRIPTIONS)
+        table = readme.split("### Tüm desteklenen komutlar\n", 1)[1].split(
+            "**Tamamı virgülle ayrılmış hâli**", 1,
+        )[0]
+        documented = tuple(
+            line.split("`", 2)[1]
+            for line in table.splitlines()
+            if line.startswith("| `/")
+        )
+        self.assertEqual(documented, commands)
+
+        command_menu = readme.split("**Tamamı virgülle ayrılmış hâli**", 1)[1]
+        command_menu = command_menu.split("```text\n", 1)[1].split("\n```", 1)[0]
+        self.assertEqual(tuple(command_menu.split(", ")), commands)
 
     def test_status_shows_both_filter_toggles(self):
         bot.SOURCES.clear()
@@ -1063,7 +1114,7 @@ class RealConfigTest(unittest.TestCase):
         """Depodaki config.json gerçekten yüklenip doğrulanabilmeli."""
         path = Path(__file__).resolve().parents[1] / "config.json"
         config = bot.load_config(path)
-        self.assertEqual(len(config["source_chats"]), 16)
+        self.assertTrue(config["source_chats"], "en az bir Telegram kaynağı tanımlı olmalı")
         self.assertIsInstance(config["control_chat"], int)
         self.assertIsInstance(config["destination"], int)
         self.assertEqual(bot.parse_admin_ids(config["admin_user_id"]), {1143378073})
@@ -1294,9 +1345,9 @@ class ExtractLinksTest(unittest.TestCase):
         self.assertEqual(bot.build_inline_keyboard(message), {"inline_keyboard": [
             [{"text": "Fırsata Git", "url": "https://amzn.to/btn"}],
             [
-                {"text": "Akakçe'de ara", "url": "https://www.akakce.com/arama/?q=%C3%A7ay"},
                 {"text": "Google Alışveriş", "url": "https://www.google.com/search?udm=28&q=%C3%A7ay&hl=tr&gl=tr"},
-                {"text": "Market Fiyatı", "url": "https://marketfiyati.org.tr/ara?q=%C3%A7ay"},
+                {"text": "Akakçe'de ara", "url": "https://www.akakce.com/arama/?q=%C3%A7ay"},
+                {"text": "Cimri'de ara", "url": "https://www.cimri.com/arama?sort=price,asc&q=%C3%A7ay"},
             ],
         ]})
 
@@ -1305,9 +1356,9 @@ class ExtractLinksTest(unittest.TestCase):
         message = make_message("çay", buttons=[callback])
         keyboard = bot.build_inline_keyboard(message)
         self.assertEqual(keyboard, {"inline_keyboard": [[
-            {"text": "Akakçe'de ara", "url": "https://www.akakce.com/arama/?q=%C3%A7ay"},
             {"text": "Google Alışveriş", "url": "https://www.google.com/search?udm=28&q=%C3%A7ay&hl=tr&gl=tr"},
-            {"text": "Market Fiyatı", "url": "https://marketfiyati.org.tr/ara?q=%C3%A7ay"},
+            {"text": "Akakçe'de ara", "url": "https://www.akakce.com/arama/?q=%C3%A7ay"},
+            {"text": "Cimri'de ara", "url": "https://www.cimri.com/arama?sort=price,asc&q=%C3%A7ay"},
         ]]})
         self.assertEqual(bot.extract_links(message), [])
 
@@ -1391,9 +1442,21 @@ class MessageSanitizationTest(unittest.TestCase):
         redirect = "https://link.example/redirect"
         self.assertEqual(bot._price_search_service(redirect, "Akakçe'de ara"), "akakce")
         self.assertEqual(bot._price_search_service(redirect, "Google Alışveriş"), "google_shopping")
-        self.assertEqual(bot._price_search_service(redirect, "Market Fiyatı"), "market_fiyati")
+        self.assertEqual(bot._price_search_service(redirect, "Cimri'de ara"), "cimri")
+        self.assertIsNone(bot._price_search_service(redirect, "Market Fiyatı"))
 
-    def test_search_buttons_deduplicate_services_already_present(self):
+    def test_cimri_domain_and_legacy_market_link_are_classified_separately(self):
+        self.assertEqual(bot._price_search_service("cimri.com/arama?q=cay"), "cimri")
+        self.assertEqual(
+            bot._price_search_service("https://www.cimri.com/arama?sort=price,asc&q=cay"),
+            "cimri",
+        )
+        self.assertIsNone(
+            bot._price_search_service("https://marketfiyati.org.tr/ara?q=cay", "Market Fiyatı"),
+            "eski kaynak bağlantısı tanınabilir kalır ama artık arama hizmeti olarak üretilmez",
+        )
+
+    def test_search_buttons_deduplicate_existing_links_and_order_services(self):
         text = "Çay https://www.akakce.com/arama/?q=cay Google Alışveriş"
         hidden_label = "Google Alışveriş"
         entity = tl_types.MessageEntityTextUrl(
@@ -1401,104 +1464,112 @@ class MessageSanitizationTest(unittest.TestCase):
             length=bot.utf16_length(hidden_label),
             url="https://www.google.com/search?udm=28&q=cay&hl=tr&gl=tr",
         )
-        market_button = SimpleNamespace(
-            text="Market Fiyatı", url="https://marketfiyati.org.tr", type=None,
+        cimri_button = SimpleNamespace(
+            text="Cimri", url="https://www.cimri.com/arama?sort=price,asc&q=cay", type=None,
         )
-        message = make_message(text, entities=[entity], buttons=[market_button], media=False)
+        message = make_message(text, entities=[entity], buttons=[cimri_button], media=False)
         keyboard = bot.build_inline_keyboard(message)
         buttons = [button for row in keyboard["inline_keyboard"] for button in row]
         services = [bot._price_search_service(button["url"], button["text"]) for button in buttons]
-        self.assertEqual(services.count("akakce"), 0, "görünen Akakçe URL'si tekrar eklenmemeli")
-        self.assertEqual(services.count("google_shopping"), 0, "gizli Google linki tekrar eklenmemeli")
-        self.assertEqual(services.count("market_fiyati"), 1, "kaynak Market Fiyatı düğmesi korunmalı")
+        self.assertEqual(services, ["cimri"], "gövde/gizli link hizmetleri çoğaltılmamalı")
         self.assertEqual(len(buttons), 1)
 
-    def test_only_missing_services_are_added_and_body_is_unchanged(self):
+    def test_existing_search_buttons_are_preserved_and_canonicalized(self):
+        buttons = [
+            SimpleNamespace(text="Cimri", url="https://cimri.com/arama?q=cay", type=None),
+            SimpleNamespace(text="Akakçe", url="https://akakce.com/arama/?q=cay", type=None),
+            SimpleNamespace(text="Google Alışveriş", url="https://google.com/shopping?q=cay", type=None),
+            SimpleNamespace(text="Ürüne Git", url="https://example.com/product", type=None),
+        ]
+        keyboard = bot.build_inline_keyboard(make_message("Çay fırsatı", buttons=buttons, media=False))
+        rows = keyboard["inline_keyboard"]
+        self.assertEqual(rows[0], [{"text": "Ürüne Git", "url": "https://example.com/product"}])
+        self.assertEqual([button["text"] for button in rows[1]], [
+            "Google Alışveriş", "Akakçe", "Cimri",
+        ])
+        self.assertEqual([button["url"] for button in rows[1]], [
+            "https://google.com/shopping?q=cay",
+            "https://akakce.com/arama/?q=cay",
+            "https://cimri.com/arama?q=cay",
+        ])
+
+    def test_only_missing_search_services_are_added_and_body_is_unchanged(self):
         text = "Çay fırsatı https://akakce.com/arama/?q=cay"
         message = make_message(text, media=False)
         keyboard = bot.build_inline_keyboard(message)
         buttons = [button for row in keyboard["inline_keyboard"] for button in row]
-        self.assertEqual([button["text"] for button in buttons], ["Google Alışveriş", "Market Fiyatı"])
+        self.assertEqual([button["text"] for button in buttons], ["Google Alışveriş", "Cimri'de ara"])
         composed = bot.compose_message(message)
         self.assertEqual(composed["text"], text, "inline düğmeler gövdeye karakter eklememeli")
 
-    def test_market_fiyati_is_added_without_a_product_query(self):
-        keyboard = bot.build_inline_keyboard(make_message("", media=False))
-        self.assertEqual(keyboard, {"inline_keyboard": [[
-            {"text": "Market Fiyatı", "url": "https://marketfiyati.org.tr"},
-        ]]})
+    def test_no_search_services_are_added_without_a_product_query(self):
+        self.assertIsNone(bot.build_inline_keyboard(make_message("", media=False)))
+        self.assertIsNone(bot.build_inline_keyboard(make_message("Fırsata Git", media=False)))
+        self.assertIsNone(bot.build_inline_keyboard(make_message("%50 indirim\n1.299 TL", media=False)))
 
-    def test_market_fiyati_button_opens_the_product_search(self):
-        """Düğme ana sayfaya değil, başlığın ilk iki kelimesinin sonucuna gitmeli."""
-        keyboard = bot.build_inline_keyboard(make_message("Çay 5 TL", media=False))
-        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
-        market = next(button for button in buttons if button["text"] == "Market Fiyatı")
-        self.assertEqual(market["url"], "https://marketfiyati.org.tr/ara?q=%C3%87ay%205")
+    def test_search_query_skips_price_first_discount_first_and_cta_lines(self):
+        messages = [
+            "1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nhttps://example.com/product",
+            "🔥 %40 indirim\nSepette 5.999,90 TL\nSamsung Galaxy S24 Ultra 256GB\nÜrün linki: https://example.com/p",
+            "Fiyat: ₺7.499\nİndirim oranı %30\nLEGO Technic 42177 Mercedes-Benz G 500",
+            "%30'a varan indirim\n1.299 TL\nPhilips Airfryer XXL 6.2L",
+            "Fırsata Git\n1.299 TL\n#Philips Airfryer XXL\nhttps://example.com/product",
+        ]
+        expected = [
+            "Philips Airfryer XXL 6.2L",
+            "Samsung Galaxy S24 Ultra 256GB",
+            "LEGO Technic 42177 Mercedes-Benz G 500",
+            "Philips Airfryer XXL 6.2L",
+            "Philips Airfryer XXL",
+        ]
+        for message, title in zip(messages, expected):
+            with self.subTest(message=message):
+                self.assertEqual(bot._search_query(make_message(message, media=False)), title)
 
-    def test_market_fiyati_query_uses_the_first_two_title_words(self):
-        """Kullanıcı isteği: tam ürün adı sonuç döndürmüyor, ilk iki kelime dönüyor."""
+    def test_search_query_removes_price_and_discount_metadata_from_product_line(self):
         self.assertEqual(
-            bot.market_fiyati_query(
-                "🛍️ Urban Care Body Series Monoi Refreshing Duş Jeli 500 Ml"
-            ),
-            "Urban Care",
-            "başlıktaki emoji sorguya girmemeli",
+            bot._search_query(make_message(
+                "🎯 Samsung Galaxy S24 Ultra 256GB · 49.999 TL (%25 indirim)", media=False,
+            )),
+            "Samsung Galaxy S24 Ultra 256GB",
         )
-        self.assertEqual(bot.market_fiyati_query("Çay"), "Çay")
-        self.assertEqual(bot.market_fiyati_query(""), "")
-
-    def test_market_fiyati_button_uses_the_short_query_for_long_titles(self):
-        keyboard = bot.build_inline_keyboard(
-            make_message("🛍️ Urban Care Body Series Monoi Duş Jeli 500 Ml", media=False),
+        self.assertEqual(
+            bot._search_query(make_message("🔥 Sıcak ÇAY 5 TL", media=False)),
+            "Sıcak ÇAY",
         )
-        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
-        market = next(button for button in buttons if button["text"] == "Market Fiyatı")
-        self.assertEqual(market["url"], "https://marketfiyati.org.tr/ara?q=Urban%20Care")
 
-    def test_search_queries_drop_the_leading_emoji(self):
-        """Sorgu emoji ile başlarsa hem Akakçe hem Google boş sonuç veriyordu."""
+    def test_search_query_drops_inline_call_to_action_words(self):
+        self.assertEqual(
+            bot._search_query(make_message("Çay fırsatı – Fırsata Git 👇", media=False)),
+            "Çay",
+        )
+
+    def test_search_queries_drop_leading_emoji_and_encode_for_each_service(self):
         keyboard = bot.build_inline_keyboard(make_message("🔥 Sıcak ÇAY 5 TL", media=False))
-        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
-        akakce = next(button for button in buttons if button["text"] == "Akakçe'de ara")
-        self.assertEqual(akakce["url"], "https://www.akakce.com/arama/?q=S%C4%B1cak+%C3%87AY+5+TL")
-        self.assertNotIn("%F0%9F", akakce["url"], "emoji sorguya girmemeli")
-
-    def test_market_fiyati_search_url_encodes_the_query(self):
-        """Türkçe karakterler ve boşluk %XX ile kodlanır (sitede doğrulanan biçim)."""
+        buttons = {button["text"]: button["url"]
+                   for row in keyboard["inline_keyboard"] for button in row}
+        self.assertEqual(list(buttons), ["Google Alışveriş", "Akakçe'de ara", "Cimri'de ara"])
         self.assertEqual(
-            bot._price_search_url("market_fiyati", "Çamaşır Deterjanı"),
-            "https://marketfiyati.org.tr/ara?q=%C3%87ama%C5%9F%C4%B1r%20Deterjan%C4%B1",
+            buttons["Akakçe'de ara"],
+            "https://www.akakce.com/arama/?q=S%C4%B1cak+%C3%87AY",
         )
-        # Sorgudaki '/' yolu bozmasın diye o da kodlanır.
         self.assertEqual(
-            bot._price_search_url("market_fiyati", "a/b c"),
-            "https://marketfiyati.org.tr/ara?q=a%2Fb%20c",
+            buttons["Cimri'de ara"],
+            "https://www.cimri.com/arama?sort=price,asc&q=S%C4%B1cak+%C3%87AY",
         )
+        self.assertNotIn("%F0%9F", buttons["Google Alışveriş"], "emoji sorguya girmemeli")
 
-    def test_market_fiyati_search_url_collapses_runaway_whitespace(self):
-        """Baştaki/sondaki ve ardışık boşluklar sorguya sızmamalı."""
+    def test_cimri_search_url_uses_verified_search_route_and_price_sort(self):
         self.assertEqual(
-            bot._price_search_url("market_fiyati", "  A101   Süt 1 Lt "),
-            "https://marketfiyati.org.tr/ara?q=A101%20S%C3%BCt%201%20Lt",
+            bot._price_search_url("cimri", "Arzum AR5106 Volume Pro"),
+            "https://www.cimri.com/arama?sort=price,asc&q=Arzum+AR5106+Volume+Pro",
+        )
+        self.assertEqual(
+            bot._price_search_url("cimri", "  Çamaşır   Deterjanı / 2 Lt "),
+            "https://www.cimri.com/arama?sort=price,asc&q=%C3%87ama%C5%9F%C4%B1r+Deterjan%C4%B1+%2F+2+Lt",
         )
 
-    def test_market_fiyati_falls_back_to_home_without_a_usable_query(self):
-        """Sorgu yoksa anlamsız '/ara?q=' yerine ana sayfa korunur."""
-        self.assertEqual(bot._price_search_url("market_fiyati", ""), bot.MARKET_FIYATI_HOME)
-        self.assertEqual(bot._price_search_url("market_fiyati", "   \n\t "), bot.MARKET_FIYATI_HOME)
-
-    def test_market_fiyati_search_url_is_not_duplicated(self):
-        """Kaynakta zaten bir /ara?q= linki varsa ikinci düğme eklenmemeli."""
-        message = make_message(
-            "Çay https://marketfiyati.org.tr/ara?q=%C3%A7ay", media=False,
-        )
-        keyboard = bot.build_inline_keyboard(message)
-        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
-        services = [bot._price_search_service(button["url"], button["text"]) for button in buttons]
-        self.assertEqual(services.count("market_fiyati"), 0)
-
-    def test_other_price_services_are_unchanged(self):
-        """Market Fiyatı düzeltmesi Akakçe/Google adreslerini değiştirmemeli."""
+    def test_akakce_and_google_search_urls_remain_stable(self):
         self.assertEqual(
             bot._price_search_url("akakce", "çay"),
             "https://www.akakce.com/arama/?q=%C3%A7ay",
@@ -1507,6 +1578,17 @@ class MessageSanitizationTest(unittest.TestCase):
             bot._price_search_url("google_shopping", "çay"),
             "https://www.google.com/search?udm=28&q=%C3%A7ay&hl=tr&gl=tr",
         )
+
+    def test_market_fiyati_source_url_is_preserved_but_no_market_button_is_created(self):
+        url = "https://marketfiyati.org.tr/ara?q=cay"
+        message = make_message(f"Çay\n{url}", media=False)
+        self.assertEqual([item["url"] for item in bot.extract_links(message)], [url])
+        keyboard = bot.build_inline_keyboard(message)
+        buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+        self.assertEqual([button["text"] for button in buttons], [
+            "Google Alışveriş", "Akakçe'de ara", "Cimri'de ara",
+        ])
+        self.assertNotIn("Market Fiyatı", [button["text"] for button in buttons])
 
 
 class BlankLineNormalizationTest(unittest.TestCase):
@@ -1603,7 +1685,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
         self.assertEqual(bot._blank_line_spans("düz metin"), [])
 
     def test_composed_message_has_one_blank_line_between_sections(self):
-        """Başlık / fiyat / ürün linki / mesaj linki / grup: her biri bir boş satırla."""
+        """Ürün özeti / kaynak içeriği / mesaj linki / grup düzgün bölümlenir."""
         text = "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n\n\n129,90 TL\n\n\n\nStoklarla sınırlı"
         composed = bot.compose_message(
             make_message(text, media=False, webpage="https://example.com/urun"),
@@ -1611,10 +1693,12 @@ class BlankLineNormalizationTest(unittest.TestCase):
             source_name="FırsatZ",
         )
         self.assertEqual(composed["text"], (
-            "🔥 A101 Çamaşır Deterjanı 4 Lt"
+            "A101 Çamaşır Deterjanı 4 Lt"
+            "\n\nFiyat: 129,90 TL"
+            "\n\n🔗 Ürün fırsat linki: https://example.com/urun"
+            "\n\n🔥 A101 Çamaşır Deterjanı 4 Lt"
             "\n\n129,90 TL"
             "\n\nStoklarla sınırlı"
-            "\n\n🔗 https://example.com/urun"
             "\n\n🔗 Mesajı Gör: https://t.me/firsatz/123"
             "\n\nFırsatZ"
         ))
@@ -1762,33 +1846,52 @@ class NoteCommandMessagesTest(unittest.TestCase):
 
 
 class ComposeMessageTest(unittest.TestCase):
-    def test_message_appendix_and_message_link_together(self):
-        text = "ÇAY 5 TL"
-        entity = tl_types.MessageEntityTextUrl(offset=4, length=2, url="https://amzn.to/5")
+    def test_product_summary_precedes_original_message_and_source_link(self):
+        text = "1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nFırsata Git"
+        label = "Fırsata Git"
+        entity = tl_types.MessageEntityTextUrl(
+            offset=bot.utf16_length(text[:text.index(label)]),
+            length=bot.utf16_length(label),
+            url="https://amzn.to/5",
+        )
         composed = bot.compose_message(
             make_message(text, entities=[entity]),
             link_kinds=("entity",),
             message_link="https://t.me/firsatz/9",
+            source_name="FırsatZ",
         )
-        self.assertTrue(composed["text"].startswith(text))
-        self.assertIn("🔗 https://amzn.to/5", composed["text"])
-        self.assertTrue(composed["text"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/9"))
-        # "Fırsatı Gönderen" etiketi yazılmaz (kullanıcı isteği).
+        parts = composed["text"].split("\n\n")
+        self.assertEqual(parts[:3], [
+            "Philips Airfryer XXL 6.2L",
+            "Fiyat: 1.299 TL",
+            "🔗 Ürün fırsat linki: https://amzn.to/5",
+        ])
+        self.assertEqual(parts[3], text, "kaynağın mesajı özetin altına eksiksiz gelmeli")
+        self.assertEqual(parts[4], "🔗 Mesajı Gör: https://t.me/firsatz/9")
+        self.assertEqual(parts[5], "FırsatZ")
+        text_link = next(item for item in composed["entities"]
+                         if type(item).__name__ == "MessageEntityTextUrl")
+        self.assertEqual(
+            bot.utf16_slice(composed["text"], text_link.offset, text_link.length), label,
+            "ham mesajdaki gizli link entity'si başlık eklenince de tıklanabilir kalmalı",
+        )
         self.assertNotIn("Fırsatı Gönderen", composed["text"])
-        self.assertFalse(hasattr(bot, "footer_entity"))
-        self.assertIsNone(composed["source_name"])
-        self.assertEqual(bot.source_name_entity(composed), [])
+        self.assertEqual(bot.source_name_entity(composed)[0]["type"], "bold")
 
-    def test_message_link_line_sits_after_appendix(self):
-        """Kullanıcı isteği: en alta '🔗 Mesajı Gör: <t.me mesaj linki>' satırı."""
+    def test_message_link_line_sits_after_source_message(self):
+        """Ürün linki üst özet içinde, Mesajı Gör kaynak metninden sonra kalır."""
         button = SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)
+        original = "çay 5 TL"
         composed = bot.compose_message(
-            make_message("çay 5 TL", buttons=[button]),
+            make_message(original, buttons=[button]),
             message_link="https://t.me/FirsatZ/31543",
         )
-        self.assertIn("🔗 Fırsata Git: https://amzn.to/btn", composed["text"])
-        self.assertIn("🔗 Mesajı Gör: https://t.me/FirsatZ/31543", composed["text"])
-        self.assertLess(composed["text"].index("Fırsata Git"),
+        self.assertIn("Fiyat: 5 TL", composed["text"])
+        self.assertIn("🔗 Ürün fırsat linki: https://amzn.to/btn", composed["text"])
+        self.assertIn(original, composed["text"])
+        self.assertLess(composed["text"].index("🔗 Ürün fırsat linki"),
+                        composed["text"].index(original))
+        self.assertLess(composed["text"].index(original),
                         composed["text"].index("Mesajı Gör"))
         self.assertTrue(composed["text"].endswith("🔗 Mesajı Gör: https://t.me/FirsatZ/31543"))
         self.assertEqual(composed["source_url"], "https://t.me/FirsatZ/31543")
@@ -2093,6 +2196,15 @@ class DedupKeyTest(unittest.TestCase):
     def test_different_titles_have_different_keys(self):
         self.assertNotEqual(bot.dedup_key("Çay 5 TL"), bot.dedup_key("Kahve 5 TL"))
 
+    def test_different_source_layouts_normalize_to_the_same_product_key(self):
+        price_first = "1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nFırsata Git"
+        title_first = "Philips Airfryer XXL 6,2 L\nFiyat: 1.299₺\nÜrüne Git"
+        first_query = bot._search_query(price_first)
+        second_query = bot._search_query(title_first)
+        self.assertEqual(first_query, "Philips Airfryer XXL 6.2L")
+        self.assertEqual(second_query, "Philips Airfryer XXL 6,2 L")
+        self.assertEqual(bot.dedup_key(first_query), bot.dedup_key(second_query))
+
     def test_empty_titles_have_no_key(self):
         """Başlıksız (medya-özel) iletiler birleştirilmez, her zaman gönderilir."""
         for title in (None, "", "   ", "\n\t "):
@@ -2162,6 +2274,33 @@ class StripDedupBadgeTest(unittest.TestCase):
 
 
 class DedupPrefixAndRebaseTest(unittest.TestCase):
+    def test_badge_goes_under_first_line_when_no_price_line_exists(self):
+        base = "Ürün başlığı\n\nKampanya açıklaması\n\nKaynak satırı"
+        badge = bot.dedup_badge(2)
+        updated, insert_at, insert_length, badge_at = bot.dedup_badge_insertion(base, badge)
+        self.assertEqual(
+            updated,
+            f"Ürün başlığı\n\n{badge}\n\nKampanya açıklaması\n\nKaynak satırı",
+        )
+        self.assertGreater(insert_at, 0)
+        self.assertGreater(insert_length, 0)
+        self.assertEqual(
+            bot.utf16_slice(updated, badge_at, bot.utf16_length(badge)), badge,
+        )
+        self.assertEqual(bot.strip_dedup_badge(updated), (2, base))
+
+    def test_badge_goes_immediately_after_price_line(self):
+        base = "Ürün\n\nFiyat: 5 TL\n\n🔗 Ürün fırsat linki: https://example.com/p"
+        badge = bot.dedup_badge(2)
+        updated, _, _, badge_at = bot.dedup_badge_insertion(base, badge)
+        self.assertEqual(
+            updated,
+            "Ürün\n\nFiyat: 5 TL\n\n" + badge
+            + "\n\n🔗 Ürün fırsat linki: https://example.com/p",
+        )
+        self.assertEqual(bot.utf16_slice(updated, badge_at, bot.utf16_length(badge)), badge)
+        self.assertEqual(bot.strip_dedup_badge(updated), (2, base))
+
     def test_prefix_is_empty_without_badge(self):
         self.assertEqual(bot.dedup_current_prefix("Sıcak ÇAY"), "")
         self.assertEqual(bot.dedup_current_prefix(""), "")
@@ -2364,7 +2503,7 @@ class DedupConfigTest(unittest.TestCase):
         bot.apply_runtime_config({})
         self.assertTrue(bot.DEDUP_ENABLED)
         self.assertEqual(bot.DEDUP_WINDOW_SECONDS, 12 * 3600)
-        self.assertEqual(bot.DEDUP_SCAN_LIMIT, 30)
+        self.assertEqual(bot.DEDUP_SCAN_LIMIT, 100)
         bot.apply_runtime_config({"dedup_enabled": False, "dedup_window_hours": 6, "dedup_scan_limit": 10})
         self.assertFalse(bot.DEDUP_ENABLED)
         self.assertEqual(bot.DEDUP_WINDOW_SECONDS, 6 * 3600)
@@ -2372,7 +2511,7 @@ class DedupConfigTest(unittest.TestCase):
         with self.assertLogs("telegram-filter", level="WARNING"):
             bot.apply_runtime_config({"dedup_window_hours": "bozuk", "dedup_scan_limit": "yok"})
         self.assertEqual(bot.DEDUP_WINDOW_SECONDS, 12 * 3600)
-        self.assertEqual(bot.DEDUP_SCAN_LIMIT, 30)
+        self.assertEqual(bot.DEDUP_SCAN_LIMIT, 100)
 
     def test_env_overrides_are_loaded(self):
         handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")

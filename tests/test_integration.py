@@ -290,7 +290,7 @@ def reset_state():
     bot.STATS["cleaned_commands"] = 0
     bot.STATS.update({"seen": 0, "matched": 0, "forwarded": 0, "failed": 0,
                       "commands": 0, "modes": {}, "cleaned": 0, "last_match": None,
-                      "last_match_source": None, "deduped": 0, "dedup_edits": 0})
+                      "last_match_source": None, "source_seen": {}, "deduped": 0, "dedup_edits": 0})
 
 
 class MainHarness:
@@ -374,25 +374,61 @@ class IntegrationTest(MainHarness, unittest.TestCase):
     # --- komutlar -----------------------------------------------------------
 
     def test_status_command_answers_admin_in_group(self):
-        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/status"))
-        self.assertTrue(event.replies, "/status yanıt üretmedi")
+        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/durum"))
+        self.assertTrue(event.replies, "/durum yanıt üretmedi")
         self.assertIn("Takipçi aktif", event.replies[0])
 
-    def test_turkish_status_alias_works(self):
-        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/durum"))
-        self.assertIn("Takipçi aktif", event.replies[0])
+    def test_redundant_command_variants_are_not_dispatched(self):
+        removed_commands = (
+            "/status", "/dmaç", "/ayarlar", "/cikar", "/kaynak", "/source",
+            "/sources", "/testkaynak", "/testkaynaklar", "/kelimeanalizi",
+            "/deneme", "/yenile", "/yeniden", "/help", "/yardim", "/yardım",
+        )
+        for command in removed_commands:
+            with self.subTest(command=command):
+                event = self._call(
+                    self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, command),
+                )
+                self.assertIn(f"Bilinmeyen komut: {command}", "\n".join(event.replies))
 
     def test_help_command_works(self):
-        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/yardim"))
-        self.assertIn("Komutlar", event.replies[0])
+        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/komutlar"))
+        self.assertIn("/kaynaktest", event.replies[0])
 
     def test_source_command_lists_failures(self):
-        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/kaynak"))
+        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/kaynaklar"))
         self.assertIn("çözülemedi", event.replies[0])
+
+    def test_source_test_reads_latest_message_reports_failures_and_live_events(self):
+        source_id = next(iter(bot.SOURCE_IDS))
+        self.client.history.append((source_id, "Kahve Dünyası 250 g", 7, None, None, [], 123))
+        self._call(self.client.handlers[1][1], FakeEvent(source_id, 999, "Çay 5 TL", message_id=124))
+
+        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/kaynaktest"))
+        report = "\n".join(event.replies)
+        self.assertIn("KAYNAK MESAJ ERİŞİM TESTİ", report)
+        self.assertIn("Kahve Dünyası 250 g", report)
+        self.assertIn("#123", report)
+        self.assertIn("canlı event: 1", report)
+        self.assertIn("Ham: birebir OK", report, "son mesajın ham metin alanı karşılaştırılmalı")
+        self.assertIn("Kuru kullanım: ✅ kullanılabilir", report,
+                      "ham mesaj compose/dedup/search yoluna yerelde verilmeli")
+        self.assertIn("başlık Kahve Dünyası 250 g", report)
+        self.assertIn("@olmayan", report, "çözülemeyen sayfalar da raporda görünmeli")
+        self.assertIn("otomatik geri alınmaz", report)
+
+    def test_source_test_can_target_a_source_by_username(self):
+        event = self._call(
+            self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, "/kaynaktest @firsatz"),
+        )
+        report = "\n".join(event.replies)
+        self.assertIn("Denenen çözülmüş kaynak: 1", report)
+        self.assertIn("firsatz [@firsatz]", report)
+        self.assertNotIn("@olmayan", report)
 
     def test_command_from_stranger_gets_a_clear_error(self):
         """Yetkisiz kullanıcı sessizce yok sayılmaz: nedeni ve ID'si söylenir."""
-        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, 424242, "/status"))
+        event = self._call(self.client.handlers[0][1], FakeEvent(GROUP_ID, 424242, "/durum"))
         self.assertTrue(event.replies, "yetkisiz komut yanıtsız kalmamalı")
         reply = event.replies[0]
         self.assertIn("yetkin yok", reply)
@@ -400,7 +436,7 @@ class IntegrationTest(MainHarness, unittest.TestCase):
         self.assertIn("admin_user_id", reply, "yetki config üzerinden verilmeli")
 
     def test_command_from_unrelated_chat_is_ignored(self):
-        event = self._call(self.client.handlers[0][1], FakeEvent(-1009999999999, ADMIN_ID, "/status"))
+        event = self._call(self.client.handlers[0][1], FakeEvent(-1009999999999, ADMIN_ID, "/durum"))
         self.assertEqual(event.replies, [])
 
     def test_saved_messages_command_works(self):
@@ -635,8 +671,8 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(self._config()["include_keywords"], [])
         self.assertEqual(bot.FILTER_INCLUDE, [])
 
-    def test_remove_accepts_exact_value_and_cikar_alias(self):
-        self._reply("/cikar")
+    def test_remove_accepts_exact_value_with_canonical_command(self):
+        self._reply("/çıkar")
         self._say("2")
         draft = self._say("ÇEKİLİŞ")
         self.assertIn("Çıkarılacak: çekiliş", draft)
@@ -843,7 +879,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
 
     def test_status_does_not_silently_drop_pending_flow(self):
         self._reply("/ekle")
-        self._reply("/status")
+        self._reply("/durum")
         self.assertTrue(bot.PENDING)
         self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "category")
 
@@ -959,13 +995,13 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
     # --- temel davranış -----------------------------------------------------
 
     def test_first_command_has_nothing_to_delete(self):
-        self._command("/status", 11)
+        self._command("/durum", 11)
         self.assertEqual(self.client.deleted, [], "ilk komutta silinecek eski mesaj yok")
 
     def test_previous_command_and_its_reply_are_deleted(self):
-        first = self._command("/status", 11)
+        first = self._command("/durum", 11)
         first_ids = self._exchange_ids(first)
-        self._command("/kaynak", 12)
+        self._command("/kaynaklar", 12)
         self.assertEqual(sorted(self._deleted_ids()), sorted(first_ids),
                          "önceki komut + yanıtı silinmeli")
         entity, ids, revoke = self.client.deleted[0]
@@ -973,9 +1009,9 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
         self.assertTrue(revoke, "mesaj her iki taraftan da silinmeli")
 
     def test_console_keeps_only_the_last_exchange(self):
-        first = self._command("/status", 11)
-        second = self._command("/kaynak", 12)
-        last = self._command("/yardim", 13)
+        first = self._command("/durum", 11)
+        second = self._command("/kaynaklar", 12)
+        last = self._command("/komutlar", 13)
         deleted = self._deleted_ids()
         for step in (first, second):
             for mid in self._exchange_ids(step):
@@ -1013,15 +1049,15 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
 
     def test_offer_notification_is_never_deleted(self):
         offer_id = self._deliver_offer()
-        self._command("/status", 20)
-        self._command("/kaynak", 21)
+        self._command("/durum", 20)
+        self._command("/kaynaklar", 21)
         self.assertNotIn(offer_id, self._deleted_ids(),
                          "indirim bildirimi komut temizliğiyle silinmemeli")
         self.client.deleted.clear()
 
     def test_each_control_chat_has_its_own_dialogue(self):
         """Kayıtlı Mesajlar ve grup ayrı tutulur; biri diğerini silmez."""
-        group_command = self._command("/status", 90)
+        group_command = self._command("/durum", 90)
         self.assertEqual(bot.COMMAND_MESSAGES.get(GROUP_ID), self._exchange_ids(group_command))
         asyncio.run(self.client.handlers[0][1](FakeEvent(ADMIN_ID, ADMIN_ID, "/durum", message_id=91)))
         self.assertEqual(self.client.deleted, [],
@@ -1035,7 +1071,7 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
         path = self._write_config(clean_commands=False)
         self.addCleanup(os.unlink, path)
         client = self._run_main(path)
-        for index, command in enumerate(("/status", "/kaynak"), start=1):
+        for index, command in enumerate(("/durum", "/kaynaklar"), start=1):
             event = FakeEvent(GROUP_ID, ADMIN_ID, command, message_id=60 + index)
             asyncio.run(client.handlers[0][1](event))
         self.assertEqual(client.deleted, [], "clean_commands=false iken silme yapılmamalı")
@@ -1043,13 +1079,13 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
 
     def test_delete_failure_does_not_break_the_command(self):
         self.client.fail_modes.add("delete")
-        self._command("/status", 30)
-        second = self._command("/kaynak", 31)
+        self._command("/durum", 30)
+        second = self._command("/kaynaklar", 31)
         self.assertTrue(second.replies, "silme başarısız olsa da yanıt gelmeli")
         self.assertEqual(self.client.deleted, [])
 
     def test_status_reports_cleanup_state(self):
-        self._command("/status", 70)
+        self._command("/durum", 70)
         self._command("/durum", 71)
         reply = "\n".join(self._command("/durum", 72).replies)
         self.assertIn("Komut temizliği: açık", reply)
@@ -1195,8 +1231,10 @@ class NotificationTest(unittest.TestCase):
         urls = {item["url"] for item in hidden}
         self.assertIn("https://amzn.to/3xyz", urls, "gizli link tıklanabilir kalmalı")
         self.assertNotIn("https://t.me/firsatz/1", urls, "altbilgi linki artık eklenmez")
-        self.assertNotIn("https://amzn.to/3xyz", caption,
-                         "gizli link tekrar yazılmaz (akıllı mod)")
+        self.assertIn("🔗 Ürün fırsat linki: https://amzn.to/3xyz", caption,
+                      "ürün linki sabit üst özette görünmeli")
+        self.assertEqual(caption.count("https://amzn.to/3xyz"), 1,
+                         "gizli ürün linki üst özette bir kez yazılmalı")
 
     def test_link_appendix_all_lists_raw_urls_in_notification(self):
         """link_appendix: all → eski davranış: gizli linkler metne de yazılır."""
@@ -1204,8 +1242,11 @@ class NotificationTest(unittest.TestCase):
                             "link_appendix": "all"})
         entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/hepsi")
         self._send(client, "çay", entities=[entity])
-        self.assertIn("https://amzn.to/hepsi", self.calls[0]["text"])
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", self.calls[0]["text"])
+        text = self.calls[0]["text"]
+        self.assertIn("🔗 Ürün fırsat linki: https://amzn.to/hepsi", text)
+        self.assertEqual(text.count("https://amzn.to/hepsi"), 1,
+                         "ürün linki özette yer alır, aynı link ek olarak yinelenmez")
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", text)
 
     def test_button_links_become_inline_keyboard(self):
         client = self._run({"notify_bot_token": "123:ABC", "notify_media": False})
@@ -1215,12 +1256,12 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         call = self.calls[0]
         self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", call["text"])
-        self.assertNotIn("https://amzn.to/btn", call["text"],
-                         "bildirimde buton gerçek buton olarak gider, metne yazılmaz")
+        self.assertIn("🔗 Ürün fırsat linki: https://amzn.to/btn", call["text"],
+                      "ürün linki sabit özette görünür; inline buton da korunur")
         keyboard = call["keyboard"]["inline_keyboard"]
         self.assertEqual(keyboard[0], [{"text": "Fırsata Git", "url": "https://amzn.to/btn"}])
         self.assertEqual([button["text"] for button in keyboard[1]], [
-            "Akakçe'de ara", "Google Alışveriş", "Market Fiyatı",
+            "Google Alışveriş", "Akakçe'de ara", "Cimri'de ara",
         ])
 
     def test_legacy_button_schema_is_supported(self):
@@ -1256,9 +1297,13 @@ class NotificationTest(unittest.TestCase):
         entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/yok")
         self._send(client, "çay", entities=[entity])
         text = self.calls[0]["text"]
-        self.assertEqual(text, "çay")
+        self.assertEqual(text, (
+            "çay\n\nFiyat: Belirtilmemiş\n\n"
+            "🔗 Ürün fırsat linki: https://amzn.to/yok\n\nçay"
+        ))
+        self.assertNotIn("Mesajı Gör", text, "message_link=false yalnızca kaynak mesaj linkini kapatır")
         self.assertNotIn("Fırsatı Gönderen", text)
-        self.assertNotIn("https://amzn.to/yok", text)
+        self.assertEqual(text.count("https://amzn.to/yok"), 1)
 
     # --- eski davranışların korunması --------------------------------------
 
@@ -1342,14 +1387,14 @@ class DeliveryChainTest(unittest.TestCase):
         self.assertEqual(bot.DELIVERY_CHAIN, ["forward", "copy", "media", "text", "link"])
 
     def test_happy_path_uses_forward(self):
-        self._send()
+        self._send("Sıcak çay")
         self.assertEqual(len(self.client.forwarded), 1)
         self.assertEqual(bot.STATS["modes"].get("forward"), 1)
 
     def test_forward_blocked_falls_back_to_copy(self):
         """Korumalı kanal: forward CHAT_FORWARDS_RESTRICTED verir, copy denenir."""
         self.client.fail_modes.add("forward")
-        self._send()
+        self._send("Sıcak çay")
         self.assertEqual(self.client.forwarded, [])
         self.assertEqual(len(self.client.delivered), 1)
         self.assertEqual(bot.STATS["modes"].get("copy"), 1)
@@ -1357,14 +1402,14 @@ class DeliveryChainTest(unittest.TestCase):
     def test_forward_and_copy_blocked_falls_back_to_media_reupload(self):
         """En kritik senaryo: ikisi de korumalıysa medya indirilip yeniden yüklenir."""
         self.client.fail_modes.update({"forward", "copy"})
-        self._send()
+        self._send("Sıcak çay")
         self.assertEqual(len(self.client.files), 1, "medya yeniden yüklenmeli")
         self.assertEqual(bot.STATS["modes"].get("media"), 1)
 
     def test_reuploaded_photo_keeps_its_name_and_type(self):
         """Eski hata: bytes olarak yüklenen fotoğraf 'unnamed' adlı belgeye dönüşüyordu."""
         self.client.fail_modes.update({"forward", "copy"})
-        self._send()
+        self._send("Sıcak çay")
         self.assertEqual(self.client.file_names, ["firsat_1.jpg"], "uzantılı ad şart")
         self.assertNotIn("unnamed", self.client.file_names)
 
@@ -1571,7 +1616,9 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         delivered = self._texts(self.client)
         self.assertIn("Fırsata Git", delivered)
         self.assertIn("https://t.me/firsatz/1", delivered, "Mesajı Gör satırı eklenmeli")
-        self.assertNotIn("https://amzn.to/gizli", delivered, "link metne tekrar yazılmaz")
+        self.assertIn("🔗 Ürün fırsat linki: https://amzn.to/gizli", delivered)
+        self.assertEqual(delivered.count("https://amzn.to/gizli"), 1,
+                         "ürün linki üst özette bir kez yazılmalı")
         # Link tıklanabilir kalmalı: entity formatting_entities ile geçirilir.
         entities = self.client.sent_kwargs[0].get("formatting_entities") or []
         self.assertIn("https://amzn.to/gizli", [getattr(e, "url", None) for e in entities])
@@ -1601,7 +1648,8 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/hepsi")
         self._send("çay fırsatı", entities=[entity])
         delivered = self._texts(self.client)
-        self.assertIn("🔗 çay: https://amzn.to/hepsi", delivered)
+        self.assertIn("🔗 Ürün fırsat linki: https://amzn.to/hepsi", delivered)
+        self.assertEqual(delivered.count("https://amzn.to/hepsi"), 1)
         self.assertIn("https://t.me/firsatz/1", delivered)
 
     def test_button_link_is_written_into_copy(self):
@@ -1611,8 +1659,8 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
             FakeRow([FakeButton("Fırsata Git", inner_url="https://amzn.to/buton")]),
         ]))
         delivered = self._texts(self.client)
-        self.assertIn("https://amzn.to/buton", delivered)
-        self.assertIn("🔗 Fırsata Git", delivered)
+        self.assertIn("🔗 Ürün fırsat linki: https://amzn.to/buton", delivered)
+        self.assertNotIn("🔗 Fırsata Git", delivered, "sabit ürün linki etiketi kullanılmalı")
 
     def test_text_fallback_lists_hidden_links_and_source(self):
         """Son çare metin: hem buton linki hem orijinal mesaja giden link eklenir."""
@@ -1653,7 +1701,14 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         self.assertNotIn("wa.me", delivered)
         self.assertNotIn("chat.whatsapp.com", delivered)
         formatting = self.client.sent_kwargs[0].get("formatting_entities") or []
-        bold = next(entity for entity in formatting if type(entity).__name__ == "MessageEntityBold")
+        self.assertEqual(delivered.split("\n\n")[:3], [
+            "ÇAY", "Fiyat: 9 TL", "🔗 Ürün fırsat linki: Kaynak mesajda bulunamadı",
+        ])
+        bold = next(
+            entity for entity in formatting
+            if type(entity).__name__ == "MessageEntityBold"
+            and bot.utf16_slice(delivered, entity.offset, entity.length) == "9 TL"
+        )
         self.assertEqual(bot.utf16_slice(delivered, bold.offset, bold.length), "9 TL")
 
     def test_whatsapp_button_is_removed_but_other_button_link_survives(self):
@@ -1794,7 +1849,7 @@ class SingleMessageTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         keyboard = self.calls[0]["keyboard"]["inline_keyboard"]
         labels = [button["text"] for row in keyboard for button in row]
-        self.assertEqual(labels, ["Akakçe'de ara", "Google Alışveriş", "Market Fiyatı"])
+        self.assertEqual(labels, ["Google Alışveriş", "Akakçe'de ara", "Cimri'de ara"])
         for label in labels:
             self.assertNotIn(label, self.calls[0]["text"], "arama düğmesi gövde metnine eklenmemeli")
 
@@ -1802,8 +1857,8 @@ class SingleMessageTest(unittest.TestCase):
         client = self._run()
         text = "Sıcak ÇAY 5 TL https://www.akakce.com/arama/?q=cay"
         buttons = FakeMarkup([FakeRow([
+            FakeButton("Cimri", url="https://www.cimri.com/arama?sort=price,asc&q=cay"),
             FakeButton("Google Alışveriş", url="https://www.google.com/search?udm=28&q=cay"),
-            FakeButton("Market Fiyatı", url="https://marketfiyati.org.tr"),
         ])])
         self._send(client, text, reply_markup=buttons)
         keyboard = self.calls[0]["keyboard"]["inline_keyboard"]
@@ -1811,9 +1866,8 @@ class SingleMessageTest(unittest.TestCase):
             bot._price_search_service(button["url"], button["text"])
             for row in keyboard for button in row
         ]
-        self.assertEqual(services.count("akakce"), 0, "gövde URL'si için yeni Akakçe düğmesi eklenmemeli")
-        self.assertEqual(services.count("google_shopping"), 1)
-        self.assertEqual(services.count("market_fiyati"), 1)
+        self.assertEqual(services, ["google_shopping", "cimri"],
+                         "gövde Akakçe URL'si ve kaynak Google/Cimri düğmeleri çoğaltılmamalı")
 
     def test_deleted_message_is_the_account_copy_not_the_notification(self):
         """Silinen ID, hesabın attığı mesajın ID'si olmalı (bildirimin değil)."""
@@ -1851,7 +1905,7 @@ class SingleMessageTest(unittest.TestCase):
 
     def test_forward_mode_copy_is_deleted_too(self):
         client = self._run(copy_mode="forward", delivery_modes=["forward"])
-        self._send(client)
+        self._send(client, "ÇAY fırsatı")
         self.assertEqual(len(client.forwarded), 1)
         self.assertEqual(len(client.deleted), 1)
 
@@ -1982,13 +2036,43 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         entity, message_id, text, kwargs = self.client.edited[0]
         self.assertEqual(entity, GROUP_ID)
         self.assertEqual(message_id, first_id, "rozet ilk mesaja işlenmeli")
-        self.assertTrue(text.startswith("✅ 2 kaynakta paylaşıldı"), text)
-        self.assertIn("Sıcak ÇAY 5 TL", text, "gövde korunmalı")
+        blocks = text.split("\n\n")
+        self.assertEqual(blocks[0], "Sıcak ÇAY")
+        self.assertTrue(blocks[1].startswith("Fiyat: 5 TL"))
         badge_head = "✅ 2 kaynakta paylaşıldı · teyitli fırsat"
+        self.assertEqual(blocks[2], badge_head, "teyit rozeti fiyatın altına gelmeli")
+        self.assertIn("Sıcak ÇAY 5 TL", text, "gövde korunmalı")
         formatting = kwargs["formatting_entities"]
-        self.assertIsInstance(formatting[0], types.MessageEntityBold)
-        self.assertEqual((formatting[0].offset, formatting[0].length),
-                         (0, bot.utf16_length(badge_head)))
+        badge_entity = next(
+            entity for entity in formatting
+            if bot.utf16_slice(text, entity.offset, entity.length) == badge_head
+        )
+        self.assertIsInstance(badge_entity, types.MessageEntityBold)
+        self.assertGreater(badge_entity.offset, 0)
+
+    def test_same_product_merges_across_price_first_and_title_first_sources(self):
+        """Kaynak sırası/fiyat yazımı değişse de ürün başlığı ortak anahtar olur."""
+        second_source_id = -1001111111112
+        bot.SOURCE_IDS.add(second_source_id)
+        price_first = (
+            "1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nFırsata Git\nÇay fırsatı"
+        )
+        title_first = "Philips Airfryer XXL 6,2 L\nFiyat: 1.299₺\nhttps://shop.example/p\nÇay fırsatı"
+        self._send(price_first, media=False)
+        async def _send_second():
+            await self.client.handlers[1][1](
+                FakeEvent(second_source_id, 8, title_first, message_id=8, media=False),
+            )
+            await asyncio.sleep(0.05)
+        asyncio.run(_send_second())
+
+        self.assertEqual(len(self.client.delivered), 1, "ikinci sayfa aynı fırsatı çoğaltmamalı")
+        self.assertEqual(bot.STATS["deduped"], 1)
+        text = self.client.edited[0][2]
+        blocks = text.split("\n\n")
+        self.assertEqual(blocks[0], "Philips Airfryer XXL 6.2L")
+        self.assertTrue(blocks[1].startswith("Fiyat: 1.299 TL"))
+        self.assertTrue(blocks[2].startswith("✅ 2 kaynakta paylaşıldı"))
 
     def test_third_copy_escalates_badge_without_stacking(self):
         self._send("Sıcak ÇAY 5 TL")
@@ -1999,7 +2083,10 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.STATS["deduped"], 2)
         self.assertEqual(len(self.client.edited), 2)
         text = self.client.edited[-1][2]
-        self.assertTrue(text.startswith("🔥 3 kaynakta paylaşıldı"), text)
+        blocks = text.split("\n\n")
+        self.assertEqual(blocks[0], "Sıcak ÇAY")
+        self.assertTrue(blocks[1].startswith("Fiyat: 5 TL"))
+        self.assertTrue(blocks[2].startswith("🔥 3 kaynakta paylaşıldı"), text)
         self.assertNotIn("✅ 2 kaynakta", text, "eski rozet yenisiyle değişmeli")
 
     def test_badge_lists_no_source_names(self):
@@ -2007,10 +2094,13 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         self._send("Sıcak ÇAY 5 TL")
         self._send("Sıcak ÇAY 5 TL")
         text = self.client.edited[0][2]
-        self.assertTrue(text.startswith("✅ 2 kaynakta paylaşıldı · teyitli fırsat"), text)
+        blocks = text.split("\n\n")
+        self.assertTrue(blocks[0].startswith("Sıcak ÇAY"))
+        self.assertTrue(blocks[1].startswith("Fiyat: 5 TL"))
+        self.assertTrue(blocks[2].startswith("✅ 2 kaynakta paylaşıldı · teyitli fırsat"), text)
         self.assertNotIn("📌", text)
         self.assertNotIn("Kaynaklar:", text)
-        self.assertEqual(len(text.split("\n\n")[0].splitlines()), 1, "rozet tek satır olmalı")
+        self.assertEqual(len(blocks[2].splitlines()), 1, "rozet tek satır olmalı")
 
     def test_different_titles_send_separately(self):
         self._send("Sıcak ÇAY 5 TL")
@@ -2105,7 +2195,7 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.STATS["deduped"], 1)
         self.assertEqual(len(client.edited), 1)
         self.assertEqual(client.edited[0][1], 777, "rozet eski mesaja işlenmeli")
-        self.assertTrue(client.edited[0][2].startswith("✅ 2 kaynakta"), client.edited[0][2])
+        self.assertTrue(client.edited[0][2].startswith("Çay 5 TL\n\n✅ 2 kaynakta"), client.edited[0][2])
 
     def test_human_chatter_is_never_indexed(self):
         """İnsan sohbeti kayda alınmaz; fırsat kaçmasın diye temkinli taraf seçilir."""
@@ -2137,12 +2227,12 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
         badged = (GROUP_ID, "🔥 3 kaynakta paylaşıldı!\n📌 Kaynaklar: A\n\nÇay 5 TL",
                   ADMIN_ID, None, None, [], 71)
         client = self._run_with_history([badged])
-        key = bot.dedup_key("Çay 5 TL")
+        key = bot.dedup_key(bot._search_query("Çay 5 TL"))
         self.assertEqual(bot.DEDUP_CACHE[key]["count"], 3)
         self._send_and_settle(client, "Çay 5 TL")
         self.assertEqual(client.delivered, [])
         text = client.edited[-1][2]
-        self.assertTrue(text.startswith("🔥🔥 4 kaynakta paylaşıldı"), text)
+        self.assertTrue(text.startswith("Çay 5 TL\n\n🔥🔥 4 kaynakta paylaşıldı"), text)
         self.assertNotIn("🔥 3 kaynakta", text)
 
 
@@ -2245,11 +2335,15 @@ class DedupBotBadgeTest(unittest.TestCase):
         self.assertEqual(len(self.edit_caption_calls), 1)
         call = self.edit_caption_calls[0]
         self.assertEqual(call["message_id"], self.media_calls[0]["message_id"])
-        self.assertTrue(call["caption"].startswith("✅ 2 kaynakta paylaşıldı"), call["caption"])
+        caption_blocks = call["caption"].split("\n\n")
+        self.assertEqual(caption_blocks[0], "Çay fırsatı")
+        badge = "✅ 2 kaynakta paylaşıldı · teyitli fırsat"
+        self.assertEqual(caption_blocks[1], badge)
         self.assertIn("Çay fırsatı", call["caption"])
-        bold = call["entities"][0]
+        bold = next(entity for entity in call["entities"]
+                    if bot.utf16_slice(call["caption"], entity["offset"], entity["length"]) == badge)
         self.assertEqual(bold["type"], "bold")
-        self.assertEqual(bold["offset"], 0)
+        self.assertGreater(bold["offset"], 0)
         self.assertEqual(call["keyboard"], self.media_calls[0]["keyboard"],
                          "düğmeler düzenlemede korunmalı")
 
@@ -2261,7 +2355,9 @@ class DedupBotBadgeTest(unittest.TestCase):
         self.assertEqual(len(self.edit_text_calls), 1)
         call = self.edit_text_calls[0]
         self.assertEqual(call["message_id"], self.ping_calls[0]["message_id"])
-        self.assertTrue(call["text"].startswith("✅ 2 kaynakta paylaşıldı"), call["text"])
+        text_blocks = call["text"].split("\n\n")
+        self.assertEqual(text_blocks[0], "Çay fırsatı")
+        self.assertTrue(text_blocks[1].startswith("✅ 2 kaynakta paylaşıldı"), call["text"])
 
     def test_third_copy_updates_bot_badge(self):
         client = self._run()
@@ -2272,5 +2368,7 @@ class DedupBotBadgeTest(unittest.TestCase):
         self.assertEqual(len(self.ping_calls), 1)
         self.assertEqual(len(self.edit_text_calls), 2)
         text = self.edit_text_calls[-1]["text"]
-        self.assertTrue(text.startswith("🔥 3 kaynakta paylaşıldı"), text)
+        text_blocks = text.split("\n\n")
+        self.assertEqual(text_blocks[0], "Çay fırsatı")
+        self.assertTrue(text_blocks[1].startswith("🔥 3 kaynakta paylaşıldı"), text)
         self.assertNotIn("✅ 2 kaynakta", text)
