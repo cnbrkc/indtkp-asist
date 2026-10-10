@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import base64
 import copy
+import hashlib
 import io
 import json
 import logging
@@ -62,10 +63,11 @@ STATS = {
     "modes": {},      # hangi iletim yolu kaç kez işe yaradı
     "cleaned": 0,     # bildirim gittikten sonra silinen hesap kopyası
     "cleaned_commands": 0,  # komut sohbetinde silinen eski komut/yanıt mesajı
-    "deduped": 0,     # aynı başlıkla birleştirilen (yeniden gönderilmeyen) tekrar
+    "deduped": 0,     # aynı ürün sorgusuyla birleştirilen (yeniden gönderilmeyen) tekrar
     "dedup_edits": 0,  # tekrarda ilk mesaja işlenen rozet güncellemesi
     "last_match": None,
     "last_match_source": None,
+    "source_seen": {},  # kaynak chat_id -> bu oturumda alınan canlı NewMessage sayısı
 }
 
 # Kaynak/kontrol listelerinin açılışta çözülmüş hâli (main() doldurur).
@@ -101,13 +103,13 @@ SINGLE_MESSAGE = True
 CLEAN_COMMANDS = True
 # chat_id -> son komut alışverişinin mesaj ID'leri (yalnızca komut diyaloğu).
 COMMAND_MESSAGES: dict[int, list[int]] = {}
-# Tekrar birleştirme (dedup): aynı başlıklı fırsat tek mesajda toplanır.
+# Tekrar birleştirme (dedup): aynı normalize ürün sorgulu fırsat tek mesaja toplanır.
 # Ayrıntı: aşağıdaki "Tekrar birleştirme" bölümü.
-DEDUP_ENABLED = True       # aynı başlıklı tekrarlar birleştirilsin mi?
-DEDUP_WINDOW_SECONDS = 12 * 3600  # aynı başlık kaç saniye boyunca "aynı fırsat" sayılsın
-DEDUP_SCAN_LIMIT = 30      # açılışta hedefteki son kaç mesaj önbelleğe alınsın
-DEDUP_MAX_ENTRIES = 300    # bellekte tutulacak en fazla başlık (en eskiler düşer)
-# normalize edilmiş başlık -> kayıt sözlüğü (bkz. new_dedup_entry).
+DEDUP_ENABLED = True       # aynı ürün başlıklı tekrarlar birleştirilsin mi?
+DEDUP_WINDOW_SECONDS = 12 * 3600  # normalize ürün başlığı kaç saniye "aynı fırsat" sayılsın
+DEDUP_SCAN_LIMIT = 100     # açılışta hedefteki son kaç mesaj önbelleğe alınsın
+DEDUP_MAX_ENTRIES = 1000   # bellekte tutulacak en fazla başlık (en eskiler düşer)
+# normalize ürün sorgusu -> kayıt sözlüğü (bkz. new_dedup_entry).
 DEDUP_CACHE: dict[str, dict[str, Any]] = {}
 DEDUP_LOCK = asyncio.Lock()  # kayıt/rezervasyon kısa kritik bölümü
 
@@ -118,16 +120,12 @@ LINK_APPENDIX_LIMIT = 4       # ileti sonuna en fazla kaç gizli bağlantı yaz�
 MESSAGE_LINK_LABEL = "Mesajı Gör"
 # Arama bağlantıları mesaj metnine yazılmaz; yalnızca Bot API inline klavyesine
 # eklenir. Böylece arama düğmeleri Telegram'ın 4096/1024 karakter sınırını tüketmez.
+# Arama düğmelerinin kullanıcı isteğindeki sabit sırası.
 PRICE_SEARCH_BUTTONS = (
-    ("akakce", "Akakçe'de ara"),
     ("google_shopping", "Google Alışveriş"),
-    ("market_fiyati", "Market Fiyatı"),
+    ("akakce", "Akakçe'de ara"),
+    ("cimri", "Cimri'de ara"),
 )
-# Market Fiyatı ana sayfası; sorgu olduğunda "/ara?q=..." ile ürün aramasına gider.
-MARKET_FIYATI_HOME = "https://marketfiyati.org.tr"
-# Market Fiyatı tam ürün adıyla sonuç döndürmüyor; aramada başlığın ilk iki
-# kelimesi kullanılır ("Urban Care Body Series ..." → "Urban Care").
-MARKET_FIYATI_QUERY_WORDS = 2
 MAX_INLINE_KEYBOARD_BUTTONS = 100
 BOT_API_MEDIA_LIMIT_MB = {"photo": 10, "video": 50, "document": 50}
 
@@ -493,7 +491,7 @@ def check_environment(config: dict | None = None) -> list[str]:
     except (TypeError, ValueError):
         problems.append("config.json → dedup_window_hours bir sayı olmalı.")
     try:
-        scan = int(config.get("dedup_scan_limit", 30))
+        scan = int(config.get("dedup_scan_limit", 100))
         if not 0 <= scan <= 100:
             problems.append("config.json → dedup_scan_limit 0–100 arasında olmalı.")
     except (TypeError, ValueError):
@@ -564,9 +562,9 @@ def print_report(config: dict, problems: list[str]) -> None:
     except (TypeError, ValueError):
         window_hours = 12
     try:
-        scan_limit = int(config.get("dedup_scan_limit", 30))
+        scan_limit = int(config.get("dedup_scan_limit", 100))
     except (TypeError, ValueError):
-        scan_limit = 30
+        scan_limit = 100
     print(f"Tekrar birleştirme : {'açık' if config_flag(config.get('dedup_enabled'), True) else 'kapalı'} "
           f"(pencere: {window_hours} sa · açılış taraması: son {scan_limit} mesaj)", flush=True)
     print(f"Otomatik yenileme  : {config.get('auto_restart', True)} "
@@ -928,7 +926,7 @@ URL_RE = re.compile(
     r"(?:https?://|whatsapp://|t\.me/|telegram\.me/|www\.|wa\.me/|wa\.link/)"
     r"[^\s<>\"')\]}]+"
     r"|(?<![\w.-])(?:[\w-]+\.)*(?:wa\.me|wa\.link|whatsapp\.(?:com|net)|akakce\.com|"
-    r"marketfiyati\.org\.tr|google\.com(?:\.tr)?)(?:[/?#][^\s<>\"')\]}]*)?"
+    r"marketfiyati\.org\.tr|cimri\.com|google\.com(?:\.tr)?)(?:[/?#][^\s<>\"')\]}]*)?"
     r"(?=$|[\s<>\"')\]},;:!?…])"
     r")",
     re.IGNORECASE,
@@ -994,7 +992,7 @@ def clean_url(url: Any) -> str:
     lowered = text.lower()
     scheme_less_service = re.match(
         r"(?:[\w-]+\.)*(?:wa\.me|wa\.link|whatsapp\.(?:com|net)|akakce\.com|"
-        r"marketfiyati\.org\.tr|google\.com(?:\.tr)?)(?:$|[/?#])",
+        r"marketfiyati\.org\.tr|cimri\.com|google\.com(?:\.tr)?)(?:$|[/?#])",
         lowered,
     )
     if lowered.startswith(("t.me/", "telegram.me/", "www.")) or scheme_less_service:
@@ -1011,7 +1009,9 @@ def _as_message(obj: Any) -> Any:
 
 
 def message_text(obj: Any) -> str:
-    """Mesajın ham metni (biçimlendirmeden bağımsız)."""
+    """Mesajın ham metni (biçimlendirmeden bağımsız); metin girdisini de kabul et."""
+    if isinstance(obj, str):
+        return obj
     message = _as_message(obj)
     text = getattr(message, "message", None)
     if isinstance(text, str):
@@ -1506,10 +1506,18 @@ def missing_links(
     return result
 
 
-def build_link_appendix(obj: Any, kinds: Sequence[str] | None = ("button", "webpage")) -> str:
-    """Gizli bağlantıları iletinin sonuna eklenecek metne çevir."""
+def build_link_appendix(
+    obj: Any,
+    kinds: Sequence[str] | None = ("button", "webpage"),
+    *,
+    exclude_urls: Iterable[str] = (),
+) -> str:
+    """Gizli bağlantıları iletinin sonuna ekle; istenen URL'leri yineleme."""
+    excluded = {clean_url(url).rstrip("/").lower() for url in exclude_urls if url}
     lines: list[str] = []
     for item in missing_links(obj, kinds=kinds):
+        if item["url"].rstrip("/").lower() in excluded:
+            continue
         label = (item.get("label") or "").strip()
         if label and label.lower() not in item["url"].lower():
             lines.append(f"🔗 {label[:40]}: {item['url']}")
@@ -1518,37 +1526,98 @@ def build_link_appendix(obj: Any, kinds: Sequence[str] | None = ("button", "webp
     return "\n".join(lines)
 
 
-def _search_query(obj: Any, limit: int = 200) -> str:
-    """İlk kullanılabilir metin satırından URL/etiketleri çıkartıp arama sorgusu kur.
+# Fiyatlar ve indirim yüzdeleri ürün adı değildir; bazı kaynaklar bunları
+# başlığın önüne, bazıları arkasına yazar. Arama sorgusunda yalnızca satırdaki
+# ürün metni kalır. Bu işlem tamamen yereldir (ağ isteği yoktur).
+_SEARCH_AMOUNT = r"(?:\d{1,3}(?:[.,\s]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)"
+_SEARCH_CURRENCY = r"(?:YTL|TRY|TL|USD|EUR|₺|[$€£])"
+_SEARCH_PRICE_RE = re.compile(
+    rf"(?<![\w])(?:{_SEARCH_CURRENCY}\s*{_SEARCH_AMOUNT}|"
+    rf"{_SEARCH_AMOUNT}\s*{_SEARCH_CURRENCY})(?![\w])",
+    re.IGNORECASE,
+)
+_SEARCH_DISCOUNT_RE = re.compile(
+    r"(?<![\w])(?:(?:%|yüzde|yuzde)\s*\d{1,3}(?:[.,]\d+)?"
+    r"(?:['’]?(?:ya|ye|a|e|ı|i|u|ü))?|"
+    r"\d{1,3}(?:[.,]\d+)?\s*%(?:['’]?(?:ya|ye|a|e|ı|i|u|ü))?)"
+    r"(?:\s*(?:indirim(?:li)?|discount|off|tasarruf))?",
+    re.IGNORECASE,
+)
+_SEARCH_NOISE_WORDS = frozenset(normalize(word) for word in """
+    fiyat fiyatı fiyati fiyatlar price pricing tl try ytl usd eur
+    indirim indirimli indirimde indirimden discount discounts off tasarruf savings
+    yüzde yuzde oran oranı orani percent
+    kampanya kampanyası kampanyasi kampanyalı kampanyali campaign fırsat firsat
+    fırsatı firsati fırsata firsata fırsatın firsatin deal
+    sepette sepete kupon kuponu kuponla coupon voucher kod kodu promo
+    bugün bugun şimdi simdi güncel guncel son eski yeni düşen dusen düştü dustu
+    düşüş dusus varan kadar yerine daha ucuza ucuzladı ucuzladi
+    stok stokta stoklarla sınırlı sinirli geçerli gecerli
+    taksit taksitle peşin pesin kargo ücretsiz ucretsiz bedava
+    ürün ürünü urun urunu ürüne urune başlık baslik özellik özelliği ozellik detay
+    link linki linkten product ürünler urunler
+    hemen kaçmaz kacmaz kaçırma kacirma tıkla tikla satın satin
+    alırken alirken oranında oraninda
+    whatsapp whatsapptan whatsapp'tan reklamcı reklamci reklam bilgi gizli bağlantı baglanti
+    bağlantısı baglantisi burada
+    den ye
+""".split())
+_SEARCH_CTA_ONLY_WORDS = frozenset({"al", "bak", "git", "gor", "gör", "incele", "tikla", "tıkla"})
 
-    Satırın başındaki emoji/sembol (``🛍️ Urban Care...``) sorgunun parçası
-    olmamalı; aksi halde arama sonucu boş döner.
+
+def _search_line_candidate(raw_line: str) -> str:
+    """Fiyat/indirim/CTA satırlarını ayıkla, ürün adı olabilecek metni döndür."""
+    line = URL_RE.sub(" ", raw_line or "")
+    line = clean_disclosure_tokens(line)
+    # Hashtag-only tanıtım satırları sanitize_message tarafından kaldırılır;
+    # başlıkta gerçek bir ürün adı varsa kelimeyi koruyup # işaretini sil.
+    line = re.sub(r"(?<!\w)#(?=\w)", "", line)
+    line = _SEARCH_PRICE_RE.sub(" ", line)
+    line = _SEARCH_DISCOUNT_RE.sub(" ", line)
+    line = WORD_TOKEN_RE.sub(
+        lambda match: " " if normalize(match.group()) in _SEARCH_NOISE_WORDS
+        or normalize(match.group()) in _SEARCH_CTA_ONLY_WORDS else match.group(),
+        line,
+    )
+    line = _LEADING_NOISE_RE.sub("", line)
+    line = re.sub(r"[^\w\s&+.,;:'’/–—-]+", " ", line, flags=re.UNICODE)
+    line = re.sub(r"[()\[\]{}]+", " ", line)
+    line = re.sub(r"\s+", " ", line).strip(" \t\r\n,;:.|/\\-–—·•")
+    if not any(char.isalpha() for char in line):
+        return ""
+    tokens = [normalize(token) for token in WORD_TOKEN_RE.findall(line)]
+    if tokens and set(tokens) <= _SEARCH_CTA_ONLY_WORDS:
+        return ""
+    return line
+
+
+def _search_query(obj: Any, limit: int = 200) -> str:
+    """Farklı kaynak şablonlarından ürün adını bulup arama sorgusu kur.
+
+    Fiyat/indirim satırları atlanır; başta fiyat/yüzde, sonda ürün linki olan
+    mesajlarda da ilk ürün adı satırı seçilir. Metin değiştirilmez ve herhangi
+    bir servise istek atılmaz; bildirim yoluna ek gecikme getirmez.
     """
-    text = message_text(obj)
-    text = URL_RE.sub(" ", text)
+    text = URL_RE.sub(" ", message_text(obj))
     for raw_line in text.splitlines():
-        line = " ".join(clean_disclosure_tokens(raw_line).split())
-        line = _LEADING_NOISE_RE.sub("", line)
-        if any(char.isalnum() for char in line):
-            return line[:limit].strip()
+        candidate = _search_line_candidate(raw_line)
+        if candidate:
+            return candidate[:limit].strip()
     return ""
 
 
-def market_fiyati_query(title: str, words: int = MARKET_FIYATI_QUERY_WORDS) -> str:
-    """Market Fiyatı araması için başlığın ilk ``words`` kelimesi.
+PRICE_LINE_LABEL = "Fiyat:"
+PRODUCT_LINK_LABEL = "🔗 Ürün fırsat linki:"
 
-    Kullanıcı isteği: Market Fiyatı'na tam ürün adı yazılınca
-    ("Urban Care Body Series Monoi Refreshing Duş Jeli 500 Ml") sonuç
-    dönmüyor; başlığın ilk iki kelimesi ("Urban Care") sonuç döndürüyor.
-    Kelimeler emoji/noktalama atlanarak alınır. Sorgu boşalırsa ana sayfaya
-    düşülür (bkz. ``_price_search_url``).
-    """
-    tokens = WORD_TOKEN_RE.findall(title or "")
-    return " ".join(tokens[: max(1, int(words))])
+
+def extract_offer_price(obj: Any) -> str | None:
+    """Kaynak mesajdaki ilk açık para birimli fiyatı aynen çıkar."""
+    match = _SEARCH_PRICE_RE.search(message_text(obj))
+    return match.group(0).strip() if match else None
 
 
 def _price_search_service(url: str, label: str = "") -> str | None:
-    """Bir URL'nin Akakçe, Google Shopping veya Market Fiyatı olduğunu belirle."""
+    """Bir URL'nin Google Shopping, Akakçe veya Cimri olduğunu belirle."""
     try:
         parsed = urllib.parse.urlsplit(clean_url(url))
     except ValueError:
@@ -1563,10 +1632,10 @@ def _price_search_service(url: str, label: str = "") -> str | None:
     ):
         return "akakce"
     if (
-        host == "marketfiyati.org.tr" or host.endswith(".marketfiyati.org.tr")
-        or "market fiyat" in label_lower or "marketfiyati" in label_lower
+        host == "cimri.com" or host.endswith(".cimri.com")
+        or "cimri" in label_lower
     ):
-        return "market_fiyati"
+        return "cimri"
     if (
         host == "google.com" or host.endswith(".google.com")
         or host == "google.com.tr" or host.endswith(".google.com.tr")
@@ -1585,19 +1654,47 @@ def _price_search_service(url: str, label: str = "") -> str | None:
     return None
 
 
+_NON_PRODUCT_LINK_HOSTS = (
+    "t.me", "telegram.me", "wa.me", "wa.link", "whatsapp.com", "whatsapp.net",
+    "instagram.com", "facebook.com", "tiktok.com", "youtube.com", "twitter.com", "x.com",
+)
+_PRODUCT_LINK_LABEL_HINTS = (
+    "firsata git", "ürüne git", "urune git", "satın al", "satin al",
+    "ürün linki", "urun linki", "alışveriş", "alisveris", "ürünü gör", "urunu gor",
+)
+
+
+def extract_product_offer_link(obj: Any) -> str | None:
+    """Kaynağın ürün/mağaza linkini seç; Telegram ve fiyat-arama linklerini atla."""
+    candidates: list[tuple[int, int, str]] = []
+    for index, item in enumerate(extract_links(obj)):
+        url = clean_url(item.get("url"))
+        try:
+            parsed = urllib.parse.urlsplit(url)
+        except ValueError:
+            continue
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not host or any(host == blocked or host.endswith("." + blocked)
+                           for blocked in _NON_PRODUCT_LINK_HOSTS):
+            continue
+        label = normalize(item.get("label") or "")
+        if _price_search_service(url, label) or host == "marketfiyati.org.tr" \
+                or host.endswith(".marketfiyati.org.tr"):
+            continue
+        score = 0
+        if any(hint in label for hint in _PRODUCT_LINK_LABEL_HINTS):
+            score += 10
+        if item.get("kind") in {"entity", "button", "webpage"}:
+            score += 1
+        candidates.append((score, -index, url))
+    if not candidates:
+        return None
+    return max(candidates)[2]
+
+
 def _price_search_url(service: str, query: str) -> str:
-    """Hizmetin ürün arama bağlantısını kur.
-
-    ``query`` çağıran tarafından seçilir; Market Fiyatı düğmesi için
-    ``market_fiyati_query`` başlığın ilk iki kelimesini verir.
-
-    Market Fiyatı'nda ürün sayfası ``/detay/<kod>/<slug>`` biçimindedir ve
-    ``<kod>`` (örn. ``00UT``) yalnızca sitenin kendi arama sonucundan geldiği
-    için dışarıdan üretilemez. Bu yüzden sorgu ``/ara?q=`` adresine taşınır:
-    düğme artık ana sayfaya değil, doğrudan o ürünün sonuç sayfasına gider
-    (``/ara?q=Çamaşır Deterjanı`` → "… Aramanızın Sonuçları"). Sorgu yoksa
-    ana sayfa korunur.
-    """
+    """Ürün arama adresini kur (query başlık ayıklayıcısından gelir)."""
+    query = " ".join((query or "").split())
     if service == "akakce":
         return "https://www.akakce.com/arama/?" + urllib.parse.urlencode({"q": query})
     if service == "google_shopping":
@@ -1605,20 +1702,21 @@ def _price_search_url(service: str, query: str) -> str:
             ("udm", "28"), ("q", query), ("hl", "tr"), ("gl", "tr"),
         ))
         return "https://www.google.com/search?" + params
-    query = " ".join((query or "").split())
-    if not query:
-        return MARKET_FIYATI_HOME
-    # Boşluklar %20 olarak kodlanır: sitede doğrulanan biçim budur.
-    return MARKET_FIYATI_HOME + "/ara?" + urllib.parse.urlencode(
-        {"q": query}, quote_via=urllib.parse.quote,
-    )
+    if service == "cimri":
+        # Cimri'nin arama sonuç sayfası bu yapıyı kullanıyor. Fiyat artan
+        # sıralaması en ucuz teklifi üste taşır; virgül URL'de sabit bırakılır.
+        return "https://www.cimri.com/arama?sort=price,asc&q=" + urllib.parse.quote_plus(query)
+    raise ValueError(f"Bilinmeyen fiyat arama hizmeti: {service}")
 
 
 def build_inline_keyboard(obj: Any) -> dict | None:
-    """Kaynak butonlarını koru ve eksik arama hizmetlerini klavyeye ekle."""
+    """Kaynak butonlarını koru; arama düğmelerini Google/Akakçe/Cimri sırala."""
     message = sanitize_message(obj)
     markup = getattr(message, "reply_markup", None)
     rows: list[list[dict[str, str]]] = []
+    search_buttons: dict[str, list[dict[str, str]]] = {
+        service: [] for service, _ in PRICE_SEARCH_BUTTONS
+    }
     existing_button_count = 0
     for row in getattr(markup, "rows", None) or []:
         buttons: list[dict[str, str]] = []
@@ -1627,10 +1725,16 @@ def build_inline_keyboard(obj: Any) -> dict | None:
             if not info:
                 continue
             url, label = info
-            buttons.append({"text": (label or url)[:64], "url": url})
+            item = {"text": (label or url)[:64], "url": url}
+            existing_button_count += 1
+            service = _price_search_service(url, label or "")
+            if service in search_buttons:
+                search_buttons[service].append(item)
+            else:
+                buttons.append(item)
+        # Kaynak butonları kendi sıraları ve satır gruplarıyla korunur.
         if buttons:
             rows.append(buttons)
-            existing_button_count += len(buttons)
 
     present_services = {
         service
@@ -1638,22 +1742,22 @@ def build_inline_keyboard(obj: Any) -> dict | None:
         if (service := _price_search_service(link["url"], link.get("label") or ""))
     }
     query = _search_query(message)
-    # Market Fiyatı tam başlıkla sonuç döndürmüyor: başlığın ilk iki kelimesi.
-    market_query = market_fiyati_query(query)
-    additions: list[dict[str, str]] = []
-    for service, label in PRICE_SEARCH_BUTTONS:
-        # Market Fiyatı düğmesi standarttır. Akakçe/Google aramaları için,
-        # sınıflandırma yapmadan, mevcut ilk metin satırını kullanır.
-        if service != "market_fiyati" and not query:
-            continue
-        if service in present_services:
-            continue
-        service_query = market_query if service == "market_fiyati" else query
-        additions.append({"text": label, "url": _price_search_url(service, service_query)})
-
     available_slots = max(0, MAX_INLINE_KEYBOARD_BUTTONS - existing_button_count)
-    if additions and available_slots:
-        rows.append(additions[:available_slots])
+    generated = 0
+    search_row: list[dict[str, str]] = []
+    for service, label in PRICE_SEARCH_BUTTONS:
+        # Kaynaktaki bilinen arama butonu korunur, ancak standart sıraya alınır.
+        if search_buttons[service]:
+            search_row.extend(search_buttons[service])
+            continue
+        # Gövdedeki/gizli bağlantı aynı hizmeti zaten sunuyorsa çoğaltma.
+        if service in present_services or not query or generated >= available_slots:
+            continue
+        search_row.append({"text": label, "url": _price_search_url(service, query)})
+        generated += 1
+
+    if search_row:
+        rows.append(search_row)
     return {"inline_keyboard": rows} if rows else None
 
 
@@ -1666,74 +1770,137 @@ def compose_message(
     message_link_label: str = MESSAGE_LINK_LABEL,
     source_name: str | None = None,
 ) -> dict[str, Any]:
-    """İletilecek metni kur: gövde + bağlantı ekleri + mesaj linki + kaynak adı.
+    """Ürün özeti → kaynak mesajı → kaynak mesaj linki → kaynak adı düzenini kur.
 
-    Sıra: ``gövde`` → ``🔗 <link>`` satırları → ``🔗 Mesajı Gör: <t.me>`` →
-    en altta **kaynak grup adı**. Kaynak adı etiketsizdir ("Fırsatı Gönderen"
-    gibi bir açıklama yazılmaz), bir linke bağlanmaz; yalnızca kalın yazılır
-    (entity'si ``source_name_entity`` ile kurulur). Ek satırlar kısa ama
-    kritiktir; bu yüzden önce onlara yer ayrılır, gövde gerekiyorsa kırpılır
-    (fotoğraf açıklaması 1024 karakterle sınırlıdır). Sığmazsa sırasıyla link
-    listesi, kaynak adı ve mesaj linki düşer; nihai güvence olan ``Mesajı Gör``
-    satırı en sona bırakılır.
+    Ürün başlığı, fiyat ve mağaza linki varsa sabit üst blokta gösterilir; altına
+    kaynaktan temizlenmiş mesajın kendisi, taşınamayan gizli linkler, isteğe bağlı
+    ``Mesajı Gör`` ve en altta kaynak adı gelir. Ürün özeti yalnızca başlıkla
+    birlikte fiyat veya ürün linki bulunabildiğinde üretilir. Kaynak mesajının
+    metni ve entity'leri değiştirilmez; yalnızca yeni blokların offset'leri kadar
+    kaydırılır. Kaynak mesajı yer yetmezse kırpılır, özet ve linkler önce korunur.
 
-    Dönen sözlükte ``body`` (kırpılmış olabilecek gövde), ``source_url`` ve
-    kaynak adının UTF-16 ``source_name_offset`` / ``source_name_length``
-    değerleri bulunur; entity'ler bunlara göre kurulur.
+    ``body`` kaynak metnini, ``content`` özet + kaynak metnini; ``entities`` ise
+    tüm çıktı için doğru UTF-16 konumlarını taşır. Bot API için ``message`` aynı
+    content/entity çiftini verir; ek blokların bağlantıları düz URL olarak kalır.
     """
     cleaned_obj = sanitize_message(obj)
-    body = message_text(cleaned_obj)
-    appendix_text = build_link_appendix(cleaned_obj, kinds=link_kinds) if link_kinds else ""
+    source_body = message_text(cleaned_obj)
+    product_title = _search_query(cleaned_obj)
+    price = extract_offer_price(cleaned_obj)
+    product_link = extract_product_offer_link(cleaned_obj)
+    structured = bool(product_title and (price or product_link))
+
+    summary = ""
+    if structured:
+        summary = "\n\n".join((
+            product_title,
+            f"{PRICE_LINE_LABEL} {price or 'Belirtilmemiş'}",
+            f"{PRODUCT_LINK_LABEL} {product_link or 'Kaynak mesajda bulunamadı'}",
+        ))
+
+    excluded_urls = (product_link,) if structured and product_link else ()
+    appendix_text = build_link_appendix(
+        cleaned_obj, kinds=link_kinds, exclude_urls=excluded_urls,
+    ) if link_kinds else ""
     # Disclosure sözcüğü altında saklı, WhatsApp dışı hedefi metinden silme:
     # etiket kaldırılmış olsa bile hedef URL link_appendix=off iken de korunmalı.
     carried = getattr(cleaned_obj, "preserved_links", None) or []
     if carried:
         carried_only = SimpleNamespace(
-            message=body, entities=[], reply_markup=None, media=None, preserved_links=carried,
+            message=source_body, entities=[], reply_markup=None, media=None, preserved_links=carried,
         )
-        carried_text = build_link_appendix(carried_only, kinds=("webpage",))
+        carried_text = build_link_appendix(
+            carried_only, kinds=("webpage",), exclude_urls=excluded_urls,
+        )
         existing_lines = set(appendix_text.splitlines())
         extra_lines = [line for line in carried_text.splitlines() if line not in existing_lines]
         if extra_lines:
             appendix_text = "\n".join(part for part in (appendix_text, *extra_lines) if part)
+
     source_line = f"🔗 {message_link_label}: {message_link}" if message_link else ""
     name = (source_name or "").strip() or None
-
     sep = "\n\n"
+
     appendix_block = f"{sep}{appendix_text}" if appendix_text else ""
     source_block = f"{sep}{source_line}" if source_line else ""
     name_block = f"{sep}{name}" if name else ""
+    summary_body_sep = sep if summary and source_body else ""
+    fixed_header_length = len(summary) + len(summary_body_sep)
 
-    # Yer yetmezse düşme sırası: link listesi → kaynak adı → Mesajı Gör satırı.
-    if len(appendix_block) + len(source_block) + len(name_block) >= limit:
+    # Yer yetmezse ürün özeti korunur; ek linkler → kaynak adı → mesaj linki
+    # sırasıyla düşer. Böylece başlık/fiyat/link mesajın en başında kalır.
+    if fixed_header_length + len(appendix_block) + len(source_block) + len(name_block) >= limit:
         appendix_block, appendix_text = "", ""
-    if len(source_block) + len(name_block) >= limit:
+    if fixed_header_length + len(source_block) + len(name_block) >= limit:
         name_block, name = "", None
-    if len(source_block) >= limit:
+    if fixed_header_length + len(source_block) >= limit:
         source_block, source_line = "", ""
+    if fixed_header_length >= limit:
+        # Aşırı uzun bir başlık/link ve çok küçük test/özel limitinde geçersiz
+        # yarım URL üretme; özgün gövde ve normal ekler için yer aç.
+        summary = ""
+        summary_body_sep = ""
+        fixed_header_length = 0
+        product_title = ""
+        price = None
+        product_link = None
 
-    reserved = len(appendix_block) + len(source_block) + len(name_block)
-    room = max(1, limit - reserved)
-    if len(body) > room:
-        body = body[: max(0, room - 1)].rstrip() + "…"
+    suffix_length = len(appendix_block) + len(source_block) + len(name_block)
+    body_room = max(0, limit - fixed_header_length - suffix_length)
+    body = source_body
+    if len(body) > body_room:
+        body = body[: max(0, body_room - 1)].rstrip() + "…" if body_room else ""
 
-    text = body + appendix_block + source_block
+    if summary and body:
+        content = summary + sep + body
+        body_offset = utf16_length(summary + sep)
+    elif summary:
+        content = summary
+        body_offset = 0
+    else:
+        content = body
+        body_offset = 0
+
+    content_entities: list[Any] = []
+    if summary and product_title:
+        content_entities.append(types.MessageEntityBold(
+            offset=0, length=utf16_length(product_title),
+        ))
+    content_entities.extend(shift_telethon_entities(
+        entities_for_text(cleaned_obj, body), body_offset,
+    ))
+
+    text = content + appendix_block + source_block
     name_offset = -1
     if name_block and name:
         name_offset = utf16_length(text + sep)
         text += name_block
+        content_entities.append(types.MessageEntityBold(
+            offset=name_offset, length=utf16_length(name),
+        ))
 
+    composed_message = SimpleNamespace(
+        message=content,
+        raw_text=content,
+        entities=list(content_entities[:len(content_entities) - (1 if name_offset >= 0 else 0)]),
+    )
     return {
         "text": text,
         "body": body,
+        "content": content,
         "appendix": appendix_text,
         "source_line": source_line,
         "source_url": message_link if source_line else None,
         "source_name": name,
         "source_name_offset": name_offset,
         "source_name_length": utf16_length(name) if (name_block and name) else 0,
-        "entities": entities_for_text(cleaned_obj, body),
-        "message": cleaned_obj,
+        "product_title": product_title or None,
+        "price": price,
+        "product_link": product_link,
+        "summary": summary,
+        "body_offset": body_offset,
+        "entities": content_entities,
+        "message": composed_message,
     }
 
 
@@ -1916,16 +2083,16 @@ def bot_media_descriptor(obj: Any) -> dict[str, Any] | None:
 # Tekrar birleştirme (aynı fırsat, tek mesaj)
 # ---------------------------------------------------------------------------
 #
-# Aynı indirim 3-5 kanal tarafından dakikalar içinde, çoğu zaman birebir aynı
-# başlıkla paylaşılır. Her kopyayı gruba atmak mesaj kalabalığı yapar; oysa
-# tekrarlar indirimin "gerçek ve teyitli" olduğunun işaretidir. Bu yüzden:
+# Aynı indirim 3-5 kanal tarafından dakikalar içinde, farklı fiyat/CTA
+# yerleşimleriyle paylaşılabilir. Her kopyayı gruba atmak mesaj kalabalığı yapar;
+# ürün adı sorgusu normalize edilerek ilk kopya bellekte kanonik kayıt olur.
 #
-#   * İlk kopya her zamanki gibi gönderilir ve başlığı bellekteki
-#     ``DEDUP_CACHE`` sözlüğüne yazılır (mesaj başına EK API çağrısı YOKTUR;
+#   * İlk kopya her zamanki gibi gönderilir ve ürün sorgusu ``DEDUP_CACHE``
+#     sözlüğüne yazılır (mesaj başına EK API çağrısı YOKTUR;
 #     her tekrarda geçmiş taramak hem bildirimi geciktirir hem FloodWait/429
 #     riskini artırırdı).
-#   * Sonraki aynı başlıklı kopyalar gruba ATILMAZ; ilk mesaja rozet işlenir:
-#     "✅ 2 kaynakta paylaşıldı · teyitli fırsat", "🔥 3 kaynakta paylaşıldı!"...
+#   * Sonraki aynı ürün sorgusuna sahip kopyalar gruba ATILMAZ; ilk mesaja
+#     fiyat satırının altına rozet işlenir: "✅ 2 kaynakta paylaşıldı · teyitli fırsat"...
 #   * Rozet TEK SATIRDIR: kaynak adları tek tek yazılmaz (kullanıcı isteği:
 #     5 kaynak alt alta yazılınca bildirim karışıyordu); sayı ve "teyitli
 #     fırsat" etiketi yeter. Kalın + emoji + (sayı büyüdükçe) büyük harf,
@@ -1933,7 +2100,7 @@ def bot_media_descriptor(obj: Any) -> dict[str, Any] | None:
 #   * Eşleşme penceresi ``dedup_window_hours`` ile sınırlıdır (varsayılan 12):
 #     iki hafta sonra aynı ürün yine indirime girerse YENİ fırsat sayılır.
 #   * Bot yeniden başlayınca bellek boşalır; açılışta hedeften SON
-#     ``dedup_scan_limit`` mesaj (varsayılan 30, tek API çağrısı) okunup
+#     ``dedup_scan_limit`` mesaj (varsayılan 100, tek API çağrısı) okunup
 #     önbellek yeniden kurulur. İşlem başına tarama yapılmaz.
 #
 # Yarış durumu: aynı anda gelen kopyalar için gönderen "rezervasyon" koyar;
@@ -1956,13 +2123,19 @@ DEDUP_RESERVE_TIMEOUT = 60.0
 DEDUP_RESERVE_TTL = 300.0
 
 
-def dedup_key(title: str | None) -> str | None:
-    """Başlığı tekrar-eşleşme anahtarına çevir; boş başlıkta ``None``.
+DEDUP_TOKEN_RE = re.compile(r"[^\W\d_]+|\d+", re.UNICODE)
 
-    Aynı kanalların kopyala-yapıştır yaptığı başlıklar birebir aynı olur;
-    büyük/küçük harf ve boşluk farkları yok sayılır (Türkçe duyarlı).
+
+def dedup_key(title: str | None) -> str | None:
+    """Ürün adını kaynak biçimlerinden bağımsız, noktalama duyarsız anahtara çevir.
+
+    Çağıran, fiyat/indirim/CTA satırlarını ayıklayan ``_search_query`` sonucunu
+    verir. Harf ve sayı token'larını sıralamak; baştaki emoji, tire, noktalama,
+    ``6.2L``/``6,2 L`` gibi yazım ve kelime sırası farklarını aynı üründe toplar.
+    Token tekrarları korunur; benzer ama farklı model numaraları eşleşmez.
     """
-    key = " ".join(normalize(title).split())
+    tokens = DEDUP_TOKEN_RE.findall(normalize(title))
+    key = " ".join(sorted(tokens))
     return key or None
 
 
@@ -1987,29 +2160,72 @@ def dedup_badge(count: int, *, short: bool = False) -> str:
     return f"🚨 {count} KAYNAKTA PAYLAŞILDI — KAÇIRMA! 🚨"
 
 
-def strip_dedup_badge(text: str | None) -> tuple[int, str]:
-    """Metnin başındaki rozeti sök: (sayaç, rozetsiz metin).
+def _dedup_badge_location(text: str) -> tuple[int, int, int] | None:
+    """Rozeti yalnızca eski üst satırda veya yeni fiyat bloğundan sonra tanı."""
+    offset = 0
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines[:8]):
+        content = line.rstrip("\r\n")
+        match = DEDUP_BADGE_RE.match(content.strip())
+        if not match:
+            offset += len(line)
+            continue
+        previous_nonempty = next(
+            (prior.strip() for prior in reversed(lines[:index]) if prior.strip()),
+            "",
+        )
+        has_price_before = any(
+            prior.strip().startswith(PRICE_LINE_LABEL) for prior in lines[:index]
+        )
+        if index != 0 and not previous_nonempty.startswith(PRICE_LINE_LABEL) \
+                and (has_price_before or index > 2):
+            offset += len(line)
+            continue
+        try:
+            count = max(1, int(match.group(2)))
+        except ValueError:
+            count = 1
+        return count, offset, offset + len(content)
+    return None
 
-    Rozet yoksa sayaç 1'dir. Açılış taramasında eski rozetli mesajların
-    sayacını geri kazanmak için kullanılır. Eski sürümün ikinci satırdaki
-    "📌 Kaynaklar: ..." listesi de atılır (yeni rozette o satır yok).
-    """
-    lines = (text or "").split("\n")
-    if not lines:
-        return 1, text or ""
-    match = DEDUP_BADGE_RE.match(lines[0].strip())
-    if not match:
-        return 1, text or ""
-    try:
-        count = max(1, int(match.group(2)))
-    except ValueError:
-        count = 1
-    rest = lines[1:]
-    if rest and rest[0].strip().startswith(DEDUP_SOURCES_PREFIX):
-        rest = rest[1:]
-    while rest and not rest[0].strip():
-        rest = rest[1:]
-    return count, "\n".join(rest)
+
+def _strip_dedup_badge_details(
+    text: str | None,
+) -> tuple[int, str, tuple[int, int, int]]:
+    """Rozeti çıkar ve (eski başlangıç, eski bitiş, kalan ayraç) UTF-16 aralığını ver."""
+    text = text or ""
+    location = _dedup_badge_location(text)
+    if location is None:
+        return 1, text, (0, 0, 0)
+    count, line_start, line_end = location
+
+    if line_start == 0:
+        tail = text[line_end:].lstrip("\r\n")
+        if tail and tail.splitlines()[0].strip().startswith(DEDUP_SOURCES_PREFIX):
+            tail = tail.split("\n", 1)[1] if "\n" in tail else ""
+            tail = tail.lstrip("\r\n")
+        removed_end = len(text) - len(tail)
+        return count, tail, (0, utf16_length(text[:removed_end]), 0)
+
+    before = text[:line_start]
+    after = text[line_end:]
+    prefix = before.rstrip("\r\n")
+    suffix = after.lstrip("\r\n")
+    replacement = "\n\n" if prefix and suffix else ""
+    removed_start = len(prefix)
+    removed_end = len(text) - len(suffix)
+    base = prefix + replacement + suffix
+    return count, base, (
+        utf16_length(text[:removed_start]),
+        utf16_length(text[:removed_end]),
+        utf16_length(replacement),
+    )
+
+
+def strip_dedup_badge(text: str | None) -> tuple[int, str]:
+    """Metnin başındaki eski veya fiyat-altındaki yeni rozeti güvenle söker."""
+    count, base, _ = _strip_dedup_badge_details(text)
+    return count, base
 
 
 def shift_bot_entities(
@@ -2046,18 +2262,93 @@ def shift_telethon_entities(entities: Sequence[Any] | None, delta: int) -> list[
 
 
 def dedup_current_prefix(text: str | None) -> str:
-    """Metnin başındaki mevcut rozet bloğu (yoksa ``""``).
-
-    Rozet güncellemesi eski rozeti bununla bulup yenisiyle değiştirir;
-    böylece rozet üst üste yığılmaz ve entity kaydırma tek adımda yapılır.
-    """
-    count, base = strip_dedup_badge(text)
-    if count <= 1 or not base:
-        return ""
+    """Yalnızca geriye dönük uyumluluk için eski üst-rozet önekini döndür."""
     full = text or ""
-    if not full.endswith(base):
+    location = _dedup_badge_location(full)
+    if location is None or location[1] != 0:
         return ""
-    return full[: len(full) - len(base)]
+    _, base, _ = _strip_dedup_badge_details(full)
+    return full[:len(full) - len(base)] if base and full.endswith(base) else full
+
+
+def dedup_badge_insertion(text: str, badge: str) -> tuple[str, int, int, int]:
+    """Rozeti fiyatın altına, fiyat yoksa ilk anlamlı satırın altına ekle."""
+    if not badge:
+        return text, 0, 0, 0
+    offset = 0
+    insert_at: int | None = None
+    first_line_end: int | None = None
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        if content.strip():
+            if first_line_end is None:
+                first_line_end = offset + len(content)
+            if content.strip().startswith(PRICE_LINE_LABEL):
+                insert_at = offset + len(content)
+                break
+        offset += len(line)
+    if insert_at is None:
+        insert_at = first_line_end if first_line_end is not None else 0
+    insertion = f"\n\n{badge}" if insert_at else f"{badge}\n\n"
+    new_text = text[:insert_at] + insertion + text[insert_at:]
+    start_units = utf16_length(text[:insert_at])
+    insertion_units = utf16_length(insertion)
+    badge_offset = start_units + (utf16_length("\n\n") if insert_at else 0)
+    return new_text, start_units, insertion_units, badge_offset
+
+
+def _rebase_entities_for_dedup_badge(
+    entities: Sequence[Any] | None,
+    removed: tuple[int, int, int],
+    insert_at: int,
+    insert_length: int,
+    *,
+    bot_api: bool = False,
+) -> list[Any]:
+    """Entity offset'lerini rozetin kaldırılıp fiyat altına eklenmesine göre taşı."""
+    old_start, old_end, replacement_length = removed
+    removed_length = max(0, old_end - old_start)
+    after_delta = replacement_length - removed_length
+    result: list[Any] = []
+    for entity in entities or []:
+        if bot_api:
+            if not isinstance(entity, dict):
+                continue
+            clone: Any = dict(entity)
+            try:
+                offset = int(clone.get("offset", 0))
+                length = int(clone.get("length", 0))
+            except (TypeError, ValueError):
+                continue
+        else:
+            try:
+                clone = copy.copy(entity)
+                offset = int(getattr(entity, "offset", 0) or 0)
+                length = int(getattr(entity, "length", 0) or 0)
+            except Exception:  # noqa: BLE001 - bilinmeyen entity taşınamıyorsa atla
+                continue
+        if offset < 0 or length <= 0:
+            continue
+        end = offset + length
+        if removed_length and offset < old_end and end > old_start:
+            continue  # eski rozetin kendi biçimlendirmesi / çakışan entity
+        if removed_length and offset >= old_end:
+            offset += after_delta
+        if offset < insert_at < offset + length:
+            length += insert_length
+        elif offset >= insert_at:
+            offset += insert_length
+        if bot_api:
+            clone["offset"] = offset
+            clone["length"] = length
+        else:
+            try:
+                clone.offset = offset
+                clone.length = length
+            except Exception:  # noqa: BLE001 - entity kopyalanamazsa atla
+                continue
+        result.append(clone)
+    return result
 
 
 def dedup_rebased_bot_entities(
@@ -2192,6 +2483,7 @@ HELP_TEXT = (
     '/kaynak - /kaynaklar ile aynı kaynak listesini gösterir.\n'
     '/source - /kaynaklar ile aynı kaynak listesini gösterir.\n'
     '/sources - /kaynaklar ile aynı kaynak listesini gösterir.\n'
+    '/kaynaktest - Son mesajın ham bütünlüğünü/kullanımını, geçmiş erişimini ve canlı event sayısını dener.\n'
     '/analiz - Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü.\n'
     '/kelimeanalizi - /analiz ile aynı geçmiş analizini çalıştırır.\n'
     '/test - Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir.\n'
@@ -2774,6 +3066,7 @@ CMD_SETTINGS_REVERT = _expand_commands({"/iptal"})
 CMD_FILTER_OPEN = _expand_commands({"/open"})
 CMD_FILTER_CLOSE = _expand_commands({"/close"})
 CMD_ANALYZE = _expand_commands({"/analiz", "/kelimeanalizi"})
+CMD_SOURCE_TEST = _expand_commands({"/kaynaktest", "/testkaynak", "/testkaynaklar"})
 SETTINGS_COMMANDS = frozenset().union(
     CMD_SETTINGS_MENU, CMD_SETTINGS_ADD, CMD_SETTINGS_REMOVE,
     CMD_SETTINGS_SAVE, CMD_SETTINGS_REVERT,
@@ -3113,10 +3406,10 @@ def apply_runtime_config(config: dict) -> list[str]:
         log.warning("dedup_window_hours sayı değil, 12 saat kabul edildi.")
         DEDUP_WINDOW_SECONDS = 12 * 3600
     try:
-        DEDUP_SCAN_LIMIT = max(0, min(100, int(config.get("dedup_scan_limit", 30))))
+        DEDUP_SCAN_LIMIT = max(0, min(100, int(config.get("dedup_scan_limit", 100))))
     except (TypeError, ValueError):
-        log.warning("dedup_scan_limit sayı değil, 30 kabul edildi.")
-        DEDUP_SCAN_LIMIT = 30
+        log.warning("dedup_scan_limit sayı değil, 100 kabul edildi.")
+        DEDUP_SCAN_LIMIT = 100
     # Bildirim token'ının tek kaynağı environment/Actions secret'ı olsun;
     # config.json içindeki eski notify_bot_token alanı artık kullanılmaz.
     token = str(os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
@@ -3598,14 +3891,15 @@ async def main(argv: Sequence[str] | None = None) -> int:
     if MESSAGE_LINK_LINE:
         log.info("Her iletinin sonuna '🔗 %s: <t.me mesaj linki>' satırı eklenecek.", MESSAGE_LINK_LABEL)
     if NOTIFY_BOT_TOKEN:
-        log.info("Bildirim biçimi: mesajın kopyası + '🔗 %s: <t.me linki>'%s%s",
+        log.info("Bildirim biçimi: ürün başlığı/fiyat/ürün linki → kaynak mesajı "
+                 "+ '🔗 %s: <t.me linki>'%s%s",
                  MESSAGE_LINK_LABEL, " + medya" if NOTIFY_MEDIA else "",
                  " + en altta kalın kaynak adı" if SOURCE_FOOTER else "")
     if CLEAN_COMMANDS:
         log.info("Komut temizliği açık: yeni komutta önceki komut/yanıt silinir, "
                  "bildirimlere dokunulmaz.")
     if DEDUP_ENABLED:
-        log.info("Tekrar birleştirme açık: aynı başlık %s boyunca tek mesajda toplanır, "
+        log.info("Tekrar birleştirme açık: aynı ürün sorgusu %s boyunca tek mesajda toplanır, "
                  "açılışta hedefteki son %d ileti taranır.",
                  humanize(DEDUP_WINDOW_SECONDS), DEDUP_SCAN_LIMIT)
     else:
@@ -4091,6 +4385,203 @@ async def main(argv: Sequence[str] | None = None) -> int:
         )
         await control_reply(event, report, stale=[status_id])
 
+    async def test_source_access(event: events.NewMessage.Event, rest: str) -> None:
+        """Geçmiş erişimini, ham mesaj bütünlüğünü ve yerel kullanım yolunu sınar.
+
+        Her kaynakta son tek mesaj okunur; mesaj gönderilmez/değiştirilmez ve
+        toplu test sırasında medya dosyaları indirilmez. Seçili kaynakta ham
+        metin uzunluğu/hash'i, entity aralıkları, medya/link metadatası ve
+        compose_message kuru çalıştırması ayrıca raporlanır.
+        """
+        requested = rest.strip().strip("'\"")
+        all_sources = list(SOURCES)
+        targets = all_sources
+        unresolved: list[tuple[Any, Exception]] = list(SOURCE_FAILURES)
+        if requested:
+            needle = requested.casefold()
+            target = None
+            if needle.isdigit():
+                index = int(needle)
+                if 1 <= index <= len(all_sources):
+                    target = all_sources[index - 1]
+            for item in all_sources:
+                aliases = {
+                    str(item.get("requested", "")).strip().lstrip("@").casefold(),
+                    str(item.get("username", "") or "").strip().lstrip("@").casefold(),
+                    str(item.get("name", "")).strip().casefold(),
+                    str(item.get("id", "")).strip().casefold(),
+                }
+                if needle in aliases or requested.casefold() in {
+                    str(item.get("requested", "")).strip().casefold(),
+                    str(item.get("username", "") or "").strip().casefold(),
+                }:
+                    target = item
+                    break
+            if target is not None:
+                targets = [target]
+                unresolved = []
+            else:
+                failed = next((entry for entry in SOURCE_FAILURES
+                               if needle in {str(entry[0]).strip().lstrip("@").casefold(),
+                                             str(entry[0]).strip().casefold()}), None)
+                if failed:
+                    targets = []
+                    unresolved = [failed]
+                else:
+                    await control_reply(
+                        event,
+                        "❌ Kaynak bulunamadı. /kaynak ile sırayı gör; kullanım: "
+                        "/kaynaktest [sıra | @kullanıcı_adı | -100... ID].",
+                    )
+                    return
+
+        tested = 0
+        readable = 0
+        joined = 0
+        raw_checked = 0
+        usable = 0
+        show_full_excerpt = bool(requested)
+        lines = [
+            "🧪 KAYNAK MESAJ ERİŞİM TESTİ",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"• Denenen çözülmüş kaynak: {len(targets)}",
+            "• Her kaynakta yalnızca en yeni 1 mesaj okunur; tüm geçmiş taranmaz.",
+            "• Ham mesaj değiştirilmeden denetlenir; kullanım testi yalnızca yerel kuru çalıştırmadır.",
+            "",
+        ]
+        live_counts = STATS.get("source_seen", {})
+        if not isinstance(live_counts, dict):
+            live_counts = {}
+        for item in targets:
+            tested += 1
+            name = " ".join(str(item.get("name") or item.get("id") or "kaynak").split())
+            configured_as = " ".join(str(item.get("requested") or item.get("id") or "").split())
+            source_label = f"{name} [{configured_as}]" if configured_as else name
+            live_count = int(live_counts.get(item["id"], 0) or 0)
+            is_joined = bool(item.get("joined"))
+            if is_joined:
+                joined += 1
+            try:
+                latest = None
+                async for message in client.iter_messages(item["id"], limit=1):
+                    latest = message
+                    break
+                readable += 1
+                if latest is None:
+                    lines.append(
+                        f"✅ {source_label} — geçmiş okunuyor, henüz mesaj yok · canlı event: {live_count}"
+                    )
+                    continue
+
+                message_id = getattr(latest, "id", None)
+                date = getattr(latest, "date", None)
+                age = ""
+                try:
+                    timestamp = date.timestamp() if hasattr(date, "timestamp") else float(date)
+                    age = f" · {humanize(time.time() - timestamp)} önce"
+                except (TypeError, ValueError, OverflowError, OSError):
+                    pass
+
+                raw_field = getattr(_as_message(latest), "message", None)
+                raw_text = message_text(latest)
+                empty_media_message = raw_field is None and not raw_text
+                raw_exact = isinstance(raw_field, str) and raw_text == raw_field
+                raw_integrity_ok = raw_exact or empty_media_message
+                media = getattr(_as_message(latest), "media", None)
+                media_descriptor = bot_media_descriptor(latest)
+                if media is None:
+                    media_label = "yok"
+                elif media_descriptor:
+                    size = int(media_descriptor.get("size", 0) or 0)
+                    media_label = f"{media_descriptor['kind']} · {size} B"
+                else:
+                    media_label = type(media).__name__
+
+                entities = message_entities(latest)
+                text_length = utf16_length(raw_text)
+                valid_entities = sum(
+                    1 for entity in entities
+                    if int(getattr(entity, "offset", 0) or 0) >= 0
+                    and int(getattr(entity, "length", 0) or 0) > 0
+                    and int(getattr(entity, "offset", 0) or 0)
+                    + int(getattr(entity, "length", 0) or 0) <= text_length
+                )
+                links = extract_links(latest)
+                product_title = _search_query(latest)
+                price = extract_offer_price(latest)
+                product_link = extract_product_offer_link(latest)
+                dry_run = compose_message(
+                    latest,
+                    limit=CAPTION_LIMIT - 24 if media else MESSAGE_LIMIT - 100,
+                    link_kinds=LINK_KINDS,
+                    source_name=name if SOURCE_FOOTER else None,
+                )
+                layout_ok = bool(dry_run["text"] or media or links)
+                if dry_run["summary"]:
+                    parts = dry_run["content"].split("\n\n")
+                    layout_ok = (
+                        layout_ok and len(parts) >= 3
+                        and parts[0] == product_title
+                        and parts[1].startswith(PRICE_LINE_LABEL)
+                    )
+                can_use = (
+                    raw_integrity_ok and valid_entities == len(entities) and layout_ok
+                    and bool(raw_text.strip() or media or links)
+                )
+                if can_use:
+                    usable += 1
+                raw_checked += int(raw_integrity_ok)
+
+                mark = "✅" if is_joined else "⚠️ ÜYE DEĞİL"
+                membership_note = "" if is_joined else " · yeni mesajlar gelmeyebilir"
+                suffix = f" · #{message_id}" if message_id is not None else ""
+                lines.append(
+                    f"{mark} {source_label} — son mesaj{suffix}{age} · canlı event: {live_count}{membership_note}"
+                )
+                digest = hashlib.sha256(raw_text.encode("utf-8", "replace")).hexdigest()[:12]
+                raw_status = (
+                    "birebir OK" if raw_exact
+                    else "metin yok (medya mesajı)" if empty_media_message
+                    else "ham metin alanı yok/uyuşmuyor"
+                )
+                lines.append(
+                    f"   Ham: {raw_status} · {len(raw_text)} karakter · sha256 {digest}"
+                    f" · entity {valid_entities}/{len(entities)} · link {len(links)} · medya {media_label}"
+                )
+                lines.append(
+                    "   Kuru kullanım: " + ("✅ kullanılabilir" if can_use else "⚠️ kontrol gerekli")
+                    + f" · başlık {product_title or 'bulunamadı'}"
+                    + f" · fiyat {price or 'bulunamadı'}"
+                    + f" · ürün linki {product_link or 'bulunamadı'}"
+                )
+                if show_full_excerpt and raw_text:
+                    excerpt_limit = 800
+                    excerpt = raw_text[:excerpt_limit]
+                    if len(raw_text) > excerpt_limit:
+                        excerpt += "\n… (rapor için kısaltıldı; tam metin hash/uzunlukla kontrol edildi)"
+                    indented = excerpt.replace("\n", "\n      ")
+                    lines.append(f"   Ham mesaj örneği:\n      {indented}")
+            except Exception as exc:  # noqa: BLE001 - bir kaynak diğerlerini engellemesin
+                log.warning("Kaynak erişim testi başarısız (%s): %s: %s",
+                            name, type(exc).__name__, exc)
+                lines.append(
+                    f"❌ {source_label} — geçmiş/ham mesaj kullanımı kontrol edilemedi"
+                    f" ({type(exc).__name__}) · canlı event: {live_count}"
+                )
+
+        for value, exc in unresolved:
+            lines.append(f"❌ {value} — kaynak çözülemedi ({type(exc).__name__})")
+        lines += [
+            "",
+            f"• Geçmiş okuma: {readable}/{tested} · ham içerik kontrolü: {raw_checked}/{readable}"
+            f" · kullanılabilir kuru deneme: {usable}/{readable}",
+            f"• Hesaptan üye olunan: {joined}/{tested} · canlı event sayacı bot bu çalışmaya başladığından beri tutulur.",
+            "ℹ️ Bu test kaynak mesajını göndermez/değiştirmez ve medya dosyasını indirmez; ham alanı,"
+            " entity/link/medya metadatasını ve mesajın yerel hazırlanma yolunu kontrol eder.",
+            "ℹ️ Canlı iletim bot çalışırken ve hesap kanala üyeyken yapılır; bot kapalıyken kaçan mesajlar otomatik geri alınmaz.",
+        ]
+        await control_reply(event, "\n".join(lines))
+
     async def handle_settings_command(event: events.NewMessage.Event,
                                       command: str, rest: str) -> None:
         """Üç izinli liste için taslak akışını yönet."""
@@ -4262,9 +4753,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
         media = getattr(message, "media", None)
         is_webpage = isinstance(media, types.MessageMediaWebPage)
         link = offer_link(event)
+        source_record = source_of(event)
+        footer_name = (source_record or {}).get("name") if SOURCE_FOOTER else None
         if media and not is_webpage:
-            composed = compose_message(event, limit=CAPTION_LIMIT - 24,
-                                       link_kinds=LINK_KINDS, message_link=link)
+            composed = compose_message(
+                event, limit=CAPTION_LIMIT - 24, link_kinds=LINK_KINDS,
+                message_link=link, source_name=footer_name,
+            )
             return await client.send_file(
                 DESTINATION,
                 media,
@@ -4272,8 +4767,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 formatting_entities=composed["entities"],
                 force_document=False,
             )
-        composed = compose_message(event, limit=MESSAGE_LIMIT - 100,
-                                   link_kinds=LINK_KINDS, message_link=link)
+        composed = compose_message(
+            event, limit=MESSAGE_LIMIT - 100, link_kinds=LINK_KINDS,
+            message_link=link, source_name=footer_name,
+        )
         return await client.send_message(
             DESTINATION,
             composed["text"],
@@ -4298,8 +4795,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
         data = await client.download_media(message, bytes)
         if not data:
             raise ValueError("medya indirilemedi")
-        composed = compose_message(event, limit=CAPTION_LIMIT - 24,
-                                   link_kinds=LINK_KINDS, message_link=offer_link(event))
+        source_record = source_of(event)
+        footer_name = (source_record or {}).get("name") if SOURCE_FOOTER else None
+        composed = compose_message(
+            event, limit=CAPTION_LIMIT - 24, link_kinds=LINK_KINDS,
+            message_link=offer_link(event), source_name=footer_name,
+        )
         return await client.send_file(
             DESTINATION,
             media_buffer(data, media_upload_name(message)),
@@ -4312,9 +4813,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
     async def send_text_only(event: events.NewMessage.Event) -> Any:
         # Gövdeye ek olarak gizli linkler (varsa) ve "Mesajı Gör" satırı eklenir;
         # ürün linki bir şekilde kaçsa bile tek dokunuşla fırsata ulaşılır.
-        composed = compose_message(event, limit=MESSAGE_LIMIT - 400,
-                                   link_kinds=LINK_KINDS, message_link=offer_link(event))
-        if not composed["body"].strip() and not composed["appendix"]:
+        source_record = source_of(event)
+        footer_name = (source_record or {}).get("name") if SOURCE_FOOTER else None
+        composed = compose_message(
+            event, limit=MESSAGE_LIMIT - 400, link_kinds=LINK_KINDS,
+            message_link=offer_link(event), source_name=footer_name,
+        )
+        if not composed["content"].strip() and not composed["appendix"]:
             raise ValueError("mesajda metin yok")
         has_media = bool(getattr(event.message, "media", None))
         note = "\n\n⚠️ Kaynak medyayı korumalı işaretlediği için medya iletilemedi." if has_media else ""
@@ -4330,8 +4835,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
         link = build_message_link(event, source_of(event))
         if not link:
             raise ValueError("bu sohbet türü için t.me bağlantısı üretilemiyor")
-        composed = compose_message(event, limit=2000, link_kinds=LINK_KINDS, message_link=link)
-        if composed["body"].strip():
+        source_record = source_of(event)
+        footer_name = (source_record or {}).get("name") if SOURCE_FOOTER else None
+        composed = compose_message(
+            event, limit=2000, link_kinds=LINK_KINDS,
+            message_link=link, source_name=footer_name,
+        )
+        if composed["content"].strip():
             body = composed["text"]
         else:
             body = f"🔗 {STATS['last_match_source'] or 'kaynak'} kanalındaki mesaj:\n{link}"
@@ -4461,10 +4971,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 return
             if wait > 0:
                 await asyncio.sleep(wait)
-            # Eski rozet bloğu yenisiyle değişir (üst üste yığılmaz).
-            old_prefix = dedup_current_prefix(current_text)
-            body = current_text[len(old_prefix):] if old_prefix else current_text
-            if not body.strip():
+            # Eski rozet (varsa) çıkarılır, yenisi Fiyat satırından sonra eklenir.
+            _, base, removed_badge = _strip_dedup_badge_details(current_text)
+            if not base.strip():
                 log.warning("Rozet gövdesi boş, güncelleme atlandı (başlık: %.40s).",
                             entry.get("title", ""))
                 return
@@ -4474,20 +4983,20 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 if not badge or badge in tried:
                     continue
                 tried.add(badge)
-                new_text = f"{badge}\n\n{body}"
+                new_text, insert_at, insert_length, badge_offset = dedup_badge_insertion(base, badge)
                 headline = badge.split("\n")[0]
-                new_prefix = f"{badge}\n\n"
-                old_len = utf16_length(old_prefix)
-                new_len = utf16_length(new_prefix)
                 if editable == "bot":
                     limit = CAPTION_LIMIT if kind == "media" else MESSAGE_LIMIT
                     if len(new_text) > limit:
                         continue  # sığmadı, kısa rozeti dene
-                    shifted = dedup_rebased_bot_entities(bot_entities, old_len, new_len)
-                    new_entities: list[dict[str, Any]] | None = [
-                        {"type": "bold", "offset": 0, "length": utf16_length(headline)},
+                    shifted = _rebase_entities_for_dedup_badge(
+                        bot_entities, removed_badge, insert_at, insert_length, bot_api=True,
+                    )
+                    new_entities: list[dict[str, Any]] | None = sorted([
                         *shifted,
-                    ]
+                        {"type": "bold", "offset": badge_offset,
+                         "length": utf16_length(headline)},
+                    ], key=lambda entity: int(entity.get("offset", 0)))
                     if DESTINATION_ID is None or not isinstance(bot_message_id, int):
                         break
                     for _ in range(2):
@@ -4522,11 +5031,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 else:
                     if not isinstance(account_message_id, int):
                         break
-                    shifted_tl = dedup_rebased_tl_entities(tl_entities, old_len, new_len)
-                    new_tl = [
-                        types.MessageEntityBold(offset=0, length=utf16_length(headline)),
+                    shifted_tl = _rebase_entities_for_dedup_badge(
+                        tl_entities, removed_badge, insert_at, insert_length,
+                    )
+                    new_tl = sorted([
                         *shifted_tl,
-                    ]
+                        types.MessageEntityBold(offset=badge_offset, length=utf16_length(headline)),
+                    ], key=lambda entity: int(getattr(entity, "offset", 0) or 0))
                     try:
                         await client.edit_message(
                             DESTINATION, account_message_id, new_text,
@@ -4598,14 +5109,18 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 if sender is None:
                     sender = getattr(getattr(message, "sender", None), "id", None)
                 badge_count, base = strip_dedup_badge(text)
-                looks_like_deal = badge_count > 1 or MESSAGE_LINK_LABEL in text
+                looks_like_deal = (
+                    badge_count > 1
+                    or MESSAGE_LINK_LABEL in text
+                    or PRODUCT_LINK_LABEL in text
+                )
                 if sender == SELF_ID:
                     editable: str | None = "account"
                 elif looks_like_deal:
                     editable = "bot" if NOTIFY_BOT_TOKEN else None
                 else:
                     continue  # insan sohbeti: kayda alma
-                title = message_title(base)
+                title = _search_query(base) or message_title(base)
                 key = dedup_key(title)
                 if not key:
                     continue
@@ -4697,7 +5212,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 event, limit=CAPTION_LIMIT - 24, link_kinds=BOT_LINK_KINDS,
                 message_link=message_link, source_name=footer_name,
             )
-            entities = bot_api_entities(composed["message"], composed["body"]) + source_name_entity(composed)
+            entities = bot_api_entities(composed["message"], composed["content"]) + source_name_entity(composed)
             try:
                 data = await client.download_media(event.message, bytes)
             except Exception as exc:  # noqa: BLE001 - medya inmezse bildirim yine gitsin
@@ -4726,7 +5241,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             event, limit=MESSAGE_LIMIT - 200, link_kinds=BOT_LINK_KINDS,
             message_link=message_link, source_name=footer_name,
         )
-        entities = bot_api_entities(composed["message"], composed["body"]) + source_name_entity(composed)
+        entities = bot_api_entities(composed["message"], composed["content"]) + source_name_entity(composed)
         text = composed["text"] or f"🔔 Yeni fırsat – {source_name}"
         send_result = await send_bot_ping(
             NOTIFY_BOT_TOKEN, DESTINATION_ID, text,
@@ -4759,11 +5274,17 @@ async def main(argv: Sequence[str] | None = None) -> int:
         last_error = "denenmedi"
         sanitized = sanitize_message(event)
         modes = DELIVERY_CHAIN
-        if sanitized.changed:
-            # Forward özgün iletiyi değiştirmeden taşır; temizleme gereken
-            # iletilerde kopyalama zincirine geç ki yasaklı içerik kaçmasın.
+        product_title = _search_query(sanitized)
+        has_offer_layout = bool(
+            product_title and (extract_offer_price(sanitized) or extract_product_offer_link(sanitized))
+        )
+        if sanitized.changed or has_offer_layout:
+            # Forward özgün iletiyi değiştirmeden taşır; temizleme veya üstte
+            # ürün özeti gereken iletilerde kopyalama zincirine geç ki hem
+            # çıktı düzeni korunsun hem de yasaklı içerik kaçmasın.
             modes = [mode for mode in DELIVERY_CHAIN if mode != "forward"]
-            log.info("Mesaj temizleme gerektiriyor; 'forward' atlanacak (kaynak: %s).", source_name)
+            reason = "temizleme" if sanitized.changed else "ürün özeti"
+            log.info("Mesaj %s gerektiriyor; 'forward' atlanacak (kaynak: %s).", reason, source_name)
         for mode in modes:
             try:
                 result = await SENDERS[mode](event)
@@ -4888,6 +5409,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await control_reply(event, reply)
         elif command in {"/source", "/sources", "/kaynak", "/kaynaklar"}:
             await control_reply(event, build_source_text())
+        elif command in CMD_SOURCE_TEST:
+            await test_source_access(event, rest)
         elif command == "/id":
             if isinstance(event, PrivateControlEvent):
                 await control_reply(event,
@@ -4932,6 +5455,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if DESTINATION_ID is not None and event.chat_id == DESTINATION_ID:
             return  # hedefe kendi gönderdiğimiz mesajı tekrar iletmeyelim
         STATS["seen"] += 1
+        source_seen = STATS.setdefault("source_seen", {})
+        if isinstance(source_seen, dict):
+            source_seen[event.chat_id] = int(source_seen.get(event.chat_id, 0) or 0) + 1
         text = event.raw_text or ""
         if not matches(text, FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE,
                        include_enabled=FILTER_INCLUDE_ENABLED,
@@ -4945,10 +5471,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
         STATS["last_match_source"] = source_name
         log.info("Eşleşti: %s / mesaj %s / %.80s", source_name, event.id, text)
 
-        # Tekrar birleştirme: aynı başlık pencere içindeyse gruba yeni mesaj
+        # Tekrar birleştirme: aynı ürün sorgusu pencere içindeyse gruba yeni mesaj
         # ATILMAZ; ilk mesaja rozet işlenir (arka planda, bildirimi bekletmez).
-        # Başlık, gönderilen metinle aynı olması için temizlenmiş metinden alınır.
-        dedup_title = message_title(message_text(sanitize_message(event)))
+        # Ürün sorgusu aynı temizlenmiş/gönderilecek içerikten ayıklanır.
+        dedup_title = _search_query(sanitize_message(event))
         dedup_id = dedup_key(dedup_title) if DEDUP_ENABLED else None
         if not dedup_id:
             await deliver(event, source_name)
@@ -5068,7 +5594,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     asyncio.create_task(heartbeat())
 
     # Tekrar önbelleğini sıfırla ve hedefin son iletileriyle ısıt: yeniden
-    # başlamalarda aynı başlık ikinci kez gruba düşmesin (tek tarama).
+    # başlamalarda aynı ürün sorgusu ikinci kez gruba düşmesin (tek tarama).
     DEDUP_CACHE.clear()
     await dedup_preload()
 
