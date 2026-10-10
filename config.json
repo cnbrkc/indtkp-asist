@@ -58,7 +58,7 @@
   "single_message": true,
   "dedup_enabled": true,
   "dedup_window_hours": 12,
-  "dedup_scan_limit": 30,
+  "dedup_scan_limit": 100,
   "control_chat": -5569562901,
   "admin_user_id": 1143378073,
   "auto_restart": true,

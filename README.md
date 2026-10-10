@@ -23,8 +23,8 @@ Eski kurulumlarda yeni alan yoksa önceki grup kontrol davranışı korunur.
    token gerekmez. Botun gruptaki üyeliğini/yetkilerini değiştirme.
 3. Botun özel sohbetini aç. Takipçi hazır olduktan sonra `/start`, ardından `/durum` gönder.
 4. `/ayar`, `/ekle`, `/çıkar`, `/kaydet`, `/iptal`, `/open`, `/close`, `/kaynak`,
-   `/analiz`, `/restart` aynı işlevleri özel sohbetten yerine getirir. `/test` denemeyi
-   hâlâ **hedef gruba** gönderir; sonucu özelden yanıtlar.
+   `/kaynaktest`, `/analiz`, `/restart` aynı işlevleri özel sohbetten yerine getirir.
+   `/test` denemeyi hâlâ **hedef gruba** gönderir; sonucu özelden yanıtlar.
 5. Botla özel sohbet geçmişi silinmez. Eski `clean_commands` davranışı yalnızca
    kullanıcı hesabının kontrol sohbetlerinde (ör. Kayıtlı Mesajlar) geçerlidir.
 
@@ -173,7 +173,7 @@ veya grup filtrelerini değiştirme.
 5. [Ayarları Telegram'dan düzenleme](#5-ayarları-telegramdan-düzenleme)
 6. [Bildirim kurulumu](#6-bildirim-kurulumu-telefona-uyarı-gelsin)
 7. [İletim zinciri: korumalı kanallar](#7-iletim-zinciri-korumalı-kanallar)
-8. [Gizli bağlantılar](#8-gizli-bağlantılar)
+8. [Gizli bağlantılar ve fiyat arama düğmeleri](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri)
 9. [Tekrar birleştirme](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj)
 10. [ID'leri doğrulama](#10-idleri-doğrulama)
 11. [Sorun giderme](#11-sorun-giderme)
@@ -255,7 +255,7 @@ Deponun kökündeki [`config.json`](config.json) dosyasını GitHub'dan düzenle
   "single_message": true,
   "dedup_enabled": true,
   "dedup_window_hours": 12,
-  "dedup_scan_limit": 30,
+  "dedup_scan_limit": 100,
   "control_chat": -5092968106,
   "admin_user_id": 1143378073,
   "auto_restart": true,
@@ -282,6 +282,7 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 - [ ] `API_ID`, `API_HASH`, `SESSION_STRING` secret'ları dolu
 - [ ] `config.json` geçerli (`python bot.py --check` temiz geçiyor)
 - [ ] Kaynak kanallara kişisel hesapla üye olunmuş (log'da `ÜYE DEĞİLSİN` yok)
+- [ ] `/kaynaktest` her çözülmüş kaynaktan son mesajı okuyabiliyor
 - [ ] `/status` ve `/test` yanıt veriyor
 - [ ] (İsteğe bağlı) Bildirim botu kurulu, `/test` bildirim gönderiyor
 
@@ -289,7 +290,11 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 
 ## 2. Nasıl çalışır ve sınırları
 
-- `bot.py` çalıştığı sürece mesajlar **anlık** işlenir; 1 dakika bekleyip tarama yapmaz.
+- `bot.py` çalıştığı ve kişisel hesap kaynaklara üye olduğu sürece, yapılandırılmış tüm
+  kaynakların yeni Telegram mesajları aynı canlı event handler ile anlık alınır.
+- **Geçmişe dönük mesajlar otomatik iletilmez.** Bot kapalıyken/yeniden başlarken kaçanlar
+  sonradan bildirim olarak backfill edilmez; `/analiz` ve `/kaynaktest` geçmişi yalnızca
+  manuel kontrol/analiz için okur.
 - Aynı başlıklı fırsatlar tek mesajda birleşir; tekrarlar ilk mesaja rozet olarak işlenir
   ([9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj)).
 - **GitHub Actions kalıcı sunucu değildir.** Job yaklaşık 5 saat 50 dakika çalışır, sonra
@@ -318,7 +323,7 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 
 | Alan | Tip | Açıklama |
 |---|---|---|
-| `source_chats` | liste | Dinlenen kanal/grup listesi: `@kullaniciadi` veya `-100...` ID. **Hesabın üye olmadığı kanaldan mesaj gelmez.** |
+| `source_chats` | liste | Dinlenen kanal/grup listesi: `@kullaniciadi` veya `-100...` ID. **Hesabın üye olmadığı kanaldan canlı mesaj gelmeyebilir; takipçi kapalıyken kaçan mesajlar geri oynatılmaz.** Erişimi `/kaynaktest` ile sınayabilirsin. |
 | `destination` | sayı / `"me"` | Filtrelenen mesajların gideceği sohbet. `me` = Kayıtlı Mesajlar (**bildirim gelmez**); grup ID'si yazarsan oraya düşer. |
 | `include_keywords` | liste | Aranacak kelimeler. Büyük/küçük harf farkı yoktur; `İ`/`I` doğru indirgenir. |
 | `exclude_keywords` | liste | Bunlardan biri geçerse mesaj atlanır (harici filtre **açıkken**). |
@@ -328,15 +333,15 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `copy_mode` | `forward` / `copy` | Eski alan. `delivery_modes` yoksa ilk denenecek yolu belirler. |
 | `delivery_modes` | liste | Korumalı kanallarda sırayla denenecek iletim yolları: `forward → copy → media → text → link` ([7. bölüm](#7-iletim-zinciri-korumalı-kanallar)). |
 | `max_media_mb` | sayı | `media` yolunda indirilecek en büyük medya (varsayılan 25, `0` = sınırsız). |
-| `link_appendix` | `smart` / `all` / `off` | Gizli linklerin eklenme biçimi ([8. bölüm](#8-gizli-bağlantılar)). |
+| `link_appendix` | `smart` / `all` / `off` | Gizli linklerin eklenme biçimi ([8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri)). |
 | `message_link` | `true` / `false` | Her iletinin sonuna `🔗 Mesajı Gör: <t.me linki>` ekler (nihai güvence; kapatman önerilmez). |
 | `source_footer` | `true` / `false` | Bildirimin **en altına kaynak grup adını kalın** yazar. "Fırsatı Gönderen" gibi bir etiket yazılmaz, ad bir linke bağlanmaz; yalnızca hangi gruptan geldiği görünür. Varsayılan `true`. |
 | `notify_media` | `true` / `false` | Bildirim botu fotoğraf/videoyu da göndersin. |
 | `clean_commands` | `true` / `false` | **Komut temizliği.** `control_chat`'te yeni bir komut yazıldığında bir önceki komut ve bot yanıtı silinir; ekranda yalnızca son mesaj kalır. İndirim bildirimleri bu temizliğin **dışındadır, asla silinmez.** Varsayılan `true`. |
 | `single_message` | `true` / `false` | **Tek mesaj modu.** Bildirim botu mesajı gruba attıysa, hesabın attığı kopya gruptan silinir; böylece her fırsat tek mesaj olarak kalır. Bildirim gidemezse kopya **silinmez**. Varsayılan `true`. |
-| `dedup_enabled` | `true` / `false` | **Tekrar birleştirme.** Aynı başlıklı fırsat tek mesajda toplanır; tekrarlar gruba atılmaz, ilk mesaja `✅ 2 kaynakta paylaşıldı · teyitli fırsat` gibi **tek satırlık** rozet işlenir ([9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj)). Varsayılan `true`. |
-| `dedup_window_hours` | sayı | Aynı başlık kaç saat boyunca "aynı fırsat" sayılsın (1–72, varsayılan 12). |
-| `dedup_scan_limit` | sayı | Açılışta önbelleğe alınacak son ileti sayısı (0–100, varsayılan 30; `0` = tarama yapma). |
+| `dedup_enabled` | `true` / `false` | **Tekrar birleştirme.** Normalize ürün sorgusu aynı olan fırsatlar tek mesajda toplanır; tekrarlar gruba atılmaz, ilk mesaja `✅ 2 kaynakta paylaşıldı · teyitli fırsat` gibi **tek satırlık** rozet işlenir ([9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj)). Varsayılan `true`. |
+| `dedup_window_hours` | sayı | Normalize ürün sorgusu kaç saat boyunca "aynı fırsat" sayılsın (1–72, varsayılan 12). |
+| `dedup_scan_limit` | sayı | Açılışta önbelleğe alınacak son ileti sayısı (0–100, varsayılan 100; `0` = tarama yapma). |
 | `control_chat` | sayı / `"me"` | Eski kontrol sohbeti; `private_control: true` iken yalnızca Kayıtlı Mesajlar yedeği aktiftir. |
 | `private_control` | `true` / `false` | Komutları bildirim botunun özel sohbetinden al; grup komutlarını kapat. Bu depoda `true`; alan yoksa eski davranış. `NOTIFY_BOT_TOKEN` gerekir. |
 | `dm_enabled` | `true` / `false` | Hesap sahibine kişisel fırsat kopyaları. Başlangıçta `false`. |
@@ -371,6 +376,7 @@ Kaynak mesajlarını hedef gruba iletir.
 /ayar, /ekle, /çıkar — kelime ve kaynak listelerini yönetir.
 /kaydet, /iptal — taslağı kaydet / iptal et.
 /analiz — Geçmiş başlıklarını tarar; en çok geçen kelimeleri istatistik olarak verir.
+/kaynaktest — Kaynaklardan son mesajı okuyarak erişimi sınar.
 /status, /source, /test, /id, /restart, /help — durum ve araçlar.
 ```
 
@@ -381,6 +387,7 @@ Kaynak mesajlarını hedef gruba iletir.
 | `/status` (`/durum`) | Çalışma süresi, kaynak sayısı, sayaçlar, son eşleşme ve hedef |
 | `/test` (`/deneme`) | Hedefe deneme iletisi gönderir |
 | `/source` (`/sources`, `/kaynak`, `/kaynaklar`) | İzlenen ve çözülemeyen kaynakları listeler |
+| `/kaynaktest` (`/testkaynak`, `/testkaynaklar`) | Her kaynakta son mesajı okuyarak erişimi test eder; isteğe bağlı sıra, kullanıcı adı veya ID ile tek kaynağı test eder |
 | `/id` | Sohbet ve kullanıcı ID'lerini gösterir |
 | `/restart` (`/yenile`, `/yeniden`) | Yeni Actions çalışması başlatır |
 | `/analiz` (`/kelimeanalizi`) | Geçmiş mesajların **başlığını** tarar; en çok geçen 25 kelimeyi ve en çok geçen 25 ilk kelimeyi verir |
@@ -422,6 +429,7 @@ seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir. Türkçe `I`
 | `/status`, `/durum` | Çalışma süresi, kaynak sayısı, sayaçlar, son eşleşme, hedef ve iki filtrenin açık/kapalı durumu |
 | `/test`, `/deneme` | Hedefe deneme iletisi gönderir; bildirim botu da denenir |
 | `/source`, `/sources`, `/kaynak`, `/kaynaklar` | İzlenen kaynakları ve çözülemeyenleri listeler |
+| `/kaynaktest`, `/testkaynak`, `/testkaynaklar` | Tüm kaynaklardan son mesajı okuyarak erişimi test eder; sıra, `@kullanıcıadı` veya ID ile tek kaynak seçilebilir |
 | `/id` | Bu sohbetin ve senin kullanıcı ID'ni gösterir (config için hazır satırlar) |
 | `/restart`, `/yenile`, `/yeniden` | Yeni GitHub Actions çalışması başlatır (`GH_PAT` gerekir) |
 | `/analiz`, `/kelimeanalizi` | Geçmiş mesajların başlığını tarar; en çok geçen 25 kelime + 25 ilk kelime |
@@ -438,8 +446,24 @@ seçilene kadar taslakta kalır. `/restart` için `GH_PAT` gerekir. Türkçe `I`
 grubun komut menüsüne doğrudan yapıştırabilirsin):
 
 ```text
-/status, /durum, /test, /deneme, /source, /sources, /kaynak, /kaynaklar, /id, /restart, /yenile, /yeniden, /analiz, /kelimeanalizi, /open, /close, /ayar, /ayarlar, /ekle, /çıkar, /cikar, /kaydet, /iptal, /help, /yardim, /yardım
+/status, /durum, /test, /deneme, /source, /sources, /kaynak, /kaynaklar, /kaynaktest, /testkaynak, /testkaynaklar, /id, /restart, /yenile, /yeniden, /analiz, /kelimeanalizi, /open, /close, /ayar, /ayarlar, /ekle, /çıkar, /cikar, /kaydet, /iptal, /help, /yardim, /yardım
 ```
+
+#### Kaynak mesaj erişimini test etme
+
+- `/kaynaktest` çözülmüş **tüm** kaynaklardan yalnızca en yeni mesajı okuyup erişim
+  sonucunu, üyelik uyarısını, ham metin alanının birebir bütünlüğünü (uzunluk/hash),
+  entity/link/medya bilgisini, yerel compose kuru denemesini ve bu çalışmada canlı
+  alınan mesaj sayısını verir. Tek kaynak seçildiğinde ham mesajdan kısa bir örnek de
+  gösterilir. `/kaynaktest 3`, `/kaynaktest @kanal` veya
+  `/kaynaktest -100...` ile tek kaynak da seçilebilir. Çözülemeyen kaynaklar rapora
+  ayrıca girer; bir kaynağın hatası diğer testleri durdurmaz.
+- Bu bir duman (smoke) testidir: geçmişten bir mesaj okunması hesabın **şu anki erişimini**
+  doğrular; kanala sahte mesaj atmaz. Bildirimler, kullanıcı hesabı üye olduğu ve takipçi
+  çalıştığı sırada gelen yeni Telegram event'lerinden alınır. Kaynakta o çalışmada yeni
+  mesaj yoksa canlı sayaç `0` kalması normaldir.
+- Takipçi kapalıyken veya Actions yeniden başlarken oluşan mesajlar otomatik olarak
+  sonradan iletilmez. `/analiz` geçmişi ayrıca okur ama geriye dönük bildirim göndermez.
 
 ---
 
@@ -501,15 +525,16 @@ atlanır; onay ekranında `⚠️` satırıyla kaç kaydın neden atlandığı y
 ━━━━━━━━━━━━━━━━━━━━
 1. 🔎  Dahili kelimeler  ·  3 kayıt
 2. 🚫  Harici kelimeler  ·  2 kayıt
-3. 📣  Grup isimleri     ·  16 kayıt
+3. 📣  Grup isimleri     ·  23 kayıt
 
 Seçmek için 1, 2 veya 3 yaz.
 Vazgeçmek için /iptal.
 ```
 
 Grup/kanal eklerken `@kullaniciadi` veya `-1001234567890` biçiminde ID kullan. Bot
-yeni kaynağı doğrulamaya çalışır; çözülemeyen kaynak taslağa alınmaz. Bot hesabı kaynakta
-üye değilse kaydetme yanıtındaki uyarıyı kontrol et.
+yeni kaynağı doğrulamaya çalışır; çözülemeyen kaynak taslağa alınmaz. **Kaydettikten sonra
+`/kaynaktest @kullaniciadi`** (veya sadece `/kaynaktest` ile tüm kaynaklar) yazarak
+hesabın kanaldan son mesajı okuyabildiğini ve üyelik durumunu kontrol et.
 
 ### Çıkarma
 
@@ -584,20 +609,31 @@ Takipçi **kendi Telegram hesabınla** gönderir; Telegram kendi gönderdiğin m
 bildirim üretmez. Bu yüzden fırsat gruba düşse bile telefonuna uyarı gelmez. Çözüm: gruba
 ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığı mesaj üretir.
 
-**Bildirim biçimi:** mesajın içeriği (biçimi, emojileri ve gizli linkleriyle; yalnızca
-belirtilen reklam/işbirliği etiketleri, WhatsApp bağlantıları ve kanal tanıtımı/hashtag
-satırları temizlenir) +
-`🔗 Mesajı Gör: <orijinal mesaj linki>` satırı + **en altta kalın kaynak grup adı**.
-Ürün arama bağlantıları mesaj metnine yazılmadan inline düğme olarak gösterilir:
+**Bildirim biçimi:** önce ürün özeti, ardından temizlenmiş kaynak mesajı, orijinal
+mesaj bağlantısı ve en altta kalın kaynak adı. Sabit sıra şöyledir:
 
 ```text
-Sıcak ÇAY 5 TL
-Kaçırılmayacak fırsat!
+Philips Airfryer XXL 6.2L
+
+Fiyat: 1.299 TL
+
+🔗 Ürün fırsat linki: https://amzn.to/ornek
+
+1.299 TL
+%50 indirim
+🛍️ Philips Airfryer XXL 6.2L
+Fırsata Git
 
 🔗 Mesajı Gör: https://t.me/firsatz/31543
 
 FırsatZ          ← kalın, etiketsiz, linksiz
 ```
+
+Çok kaynaklı teyit rozeti varsa **fiyat satırının hemen altına**, ürün fırsat linkinden
+önce eklenir; mesaj başına taşınmaz. Fiyat bulunamazsa `Fiyat: Belirtilmemiş`, ürün
+başlığı veya mağaza linki ayıklanamazsa ilgili özet satırında açıklayıcı yer tutucu gösterilir.
+Özet yerel metin ayıklamasıyla hazırlanır; ağa gidilmediği için bildirimde ekstra gecikme
+yaratmaz. Arama düğmeleri gövdeye karakter eklemeden inline klavyede kalır.
 
 Bölümler (başlık/fiyat, ürün linki, `Mesajı Gör`, kaynak grup adı) arasında **tam bir
 boş satır** olur; fazlası değil. Reklam/işbirliği etiketi veya WhatsApp bağlantısı
@@ -678,40 +714,55 @@ denenmez; sırayla deneyip ilk başarılı olanı kullanır:
 
 ---
 
-## 8. Gizli bağlantılar
+## 8. Gizli bağlantılar ve fiyat arama düğmeleri
 
 İndirim kanalları ürün linkini çoğu zaman açıkça yazmaz; üç yere gizler:
 
 | Gizleme yolu | Örnek | Bot ne yapar |
 |---|---|---|
-| Metin altına gizlenmiş hyperlink | "**Fırsata Git**" yazısı görünür, link altındadır | Link mesajın içinde tıklanabilir kalır |
-| Inline buton | Yazıda link yok, butondadır | Bot bildirimi URL düğmelerini korur; hesap kopyasında `🔗 ...` olarak yazılır |
-| Link önizlemesi | Metinde link yok, önizleme kartı var | Önizleme hedefi link listesine girer |
+| Metin altına gizlenmiş hyperlink | "**Fırsata Git**" yazısı görünür, link altındadır | Ürün/mağaza linkiyse sabit özette gösterilir; kaynak mesajındaki yazı da tıklanabilir kalır |
+| Inline buton | Yazıda link yok, butondadır | Bot bildirimi URL düğmesini korur; ürün linkiyse sabit özetin `Ürün fırsat linki` satırında da görünür |
+| Link önizlemesi | Metinde link yok, önizleme kartı var | Ürün/mağaza hedefi ürün özetine; diğer hedefler ek link listesine girer |
 
-Bildirim botu, kaynakta aynı hizmete ait bağlantı yoksa **Akakçe'de ara** ve
-**Google Alışveriş** düğmelerini mesaj metninden oluşturduğu arama sorgusuyla ekler;
-ürün türünü sınıflandırmaz. **Market Fiyatı** düğmesi `https://marketfiyati.org.tr/ara?q=<ürün>`
-adresine gider; yani düğme ana sayfaya değil, **doğrudan ürünün arama sonuç sayfasına**
-götürür. Sorgular başlıktan (mesajın ilk satırından) üretilir; **baştaki emoji/sembol
-sorguya girmez** (aksi halde arama boş dönüyordu):
+Bildirim botu, kaynakta aynı arama hizmetine ait bir URL/buton yoksa eksik düğmeleri şu
+sırayla ekler:
 
-| Düğme | Arama sorgusu | Örnek başlık → sorgu |
-|---|---|---|
-| Akakçe'de ara · Google Alışveriş | başlığın tamamı | `🛍️ Urban Care Body Series Duş Jeli 500 Ml` → `Urban Care Body Series Duş Jeli 500 Ml` |
-| Market Fiyatı | başlığın **ilk iki kelimesi** | `🛍️ Urban Care Body Series Duş Jeli 500 Ml` → `Urban Care` |
+1. **Google Alışveriş** — `https://www.google.com/search?udm=28&q=<ürün>&hl=tr&gl=tr`
+2. **Akakçe'de ara** — `https://www.akakce.com/arama/?q=<ürün>`
+3. **Cimri'de ara** — `https://www.cimri.com/arama?sort=price,asc&q=<ürün>`
 
-Market Fiyatı'nda tam ürün adı sonuç döndürmediği için arama yalnızca başlığın ilk iki
-kelimesiyle yapılır (kelime sayısı `MARKET_FIYATI_QUERY_WORDS`). Sorgu çıkarılamazsa
-(metin yoksa veya yalnızca boşluktan oluşuyorsa) ana sayfaya düşer. Düğme yalnızca kaynakta
-zaten Market Fiyatı bağlantısı varsa tekrarlanmaz. Mevcut hizmet URL'si/gizli linki/URL
-butonu varsa o hizmet için yeni düğme eklenmez. Düğmeler inline klavyededir; gövde
-metnini uzatmaz ve 4096/1024 karakter sınırına yeni karakter eklemez. Bu düğmeler
-bildirim botu gerektirir; Telegram kullanıcı hesabı inline klavye gönderemez.
+Cimri arama sonuçlarında gözlenen kalıp `/arama` yolu, `q` sorgu parametresi ve
+`sort=price,asc` fiyat sıralamasıdır. Örnek:
+`https://www.cimri.com/arama?sort=price,asc&q=Arzum+AR5106+Volume+Pro`.
+Sorgudaki Türkçe karakterler ve özel karakterler URL-encode edilir. Araştırma sırasında
+Cimri sayfasının doğrudan açılması HTTP 500 döndürdüğü için sıralama davranışı canlı sayfada
+bağımsız doğrulanamadı; URL kalıbı indekslenmiş Cimri arama sonuçlarıyla destekleniyor.
 
-> Market Fiyatı'nda ürün sayfası `marketfiyati.org.tr/detay/<kod>/<slug>` biçimindedir
-> ve `<kod>` (örn. `00UT`) yalnızca sitenin kendi arama sonucundan geldiği için dışarıdan
-> üretilemez. Bu yüzden düğme `/ara?q=` arama adresine gider; oradan ilgili ürüne tek
-> tıkla ulaşılır. Boşluklar sorguya `%20` olarak yazılır (sitede doğrulanan biçim).
+### Kaynak formatları farklı olsa da sorgu ürün adından üretilir
+
+Kaynakların mesaj düzeni standart değil; başta fiyat, indirim oranı veya başlık bulunabilir.
+Arama sorgusu için bot mesajı satır satır, **yerel ve anlık** olarak temizler:
+
+- Tek başına fiyat/para birimi satırları (`1.299 TL`, `₺7.499`) ve indirim yüzdesi/
+  kampanya satırları (`%50 indirim`, `İndirim oranı %30`) sorgu başlığı sayılmaz.
+- Ürünle aynı satırdaki fiyat ve indirim bilgileri de sorgudan çıkarılır.
+- İlk kullanılabilir ürün adı satırı seçilir; örneğin
+  `1.299 TL` → `%50 indirim` → `🛍️ Philips Airfryer XXL 6.2L` → ürün linki
+  düzeninde üç arama da `Philips Airfryer XXL 6.2L` ile açılır.
+- Baştaki emoji/semboller ve görünür ürün URL'leri sorguya katılmaz. Ürün adı bulunamazsa
+  yapay/boş arama düğmesi eklenmez.
+
+Bu ayıklama **yalnızca arama düğmelerindeki sorguyu** etkiler: gönderilen mesaj gövdesi,
+fiyat, indirim oranı, biçimlendirme ve kaynak linkleri olduğu gibi kalır. Algoritma ağ
+isteği yapmadığı için bildirim yoluna ek gecikme getirmez.
+
+Kaynakta zaten Google Shopping/Akakçe/Cimri linki varsa aynı hizmet için yeni düğme
+çoğaltılmaz. Kaynaktaki özel ürün butonları korunur; tanınan arama butonları da URL'leri
+bozulmadan standart Google → Akakçe → Cimri sırasına alınır. Eski bir kaynaktan gelen
+`marketfiyati.org.tr` linki de normal kaynak linki olarak korunur, fakat artık Market Fiyatı
+arama düğmesi oluşturulmaz. Düğmeler inline klavyededir; mesaj gövdesini uzatmaz ve
+4096/1024 karakter sınırına yeni karakter eklemez. Bu düğmeler bildirim botu gerektirir;
+Telegram kullanıcı hesabı inline klavye gönderemez.
 
 Temizleme gereken iletide `forward` atlanır (özgün mesaj değişmeden iletileceği için);
 kopyalama/yedek zinciri temizlenmiş metin ve entity offset'leriyle çalışır. Böylece
@@ -719,9 +770,11 @@ reklam/işbirliği etiketleri, doğrudan WhatsApp URL'leri ve WhatsApp URL buton
 forward ile geri eklenmez.
 
 Ek olarak her iletinin sonuna `🔗 Mesajı Gör: <t.me linki>` eklenir.
-`link_appendix: "smart"` (varsayılan) gizli hyperlink'leri tekrar yazmaz, yalnızca başka
-türlü taşınamayan linkleri metne ekler. `"all"` hepsini ham URL olarak da yazar;
-`"off"` hiçbirini yazmaz (önerilmez).
+`link_appendix: "smart"` (varsayılan) ürün özetinde zaten gösterilen gizli hyperlink'i
+ikinci kez ek listeye yazmaz; yalnızca başka türlü taşınamayan linkleri ekler. `"all"`
+ürün linki özette olsa bile aynı URL'yi çoğaltmadan diğer gizli linkleri de yazar;
+`"off"` ek bağlantı listesini yazmaz. Ürün linki bulunduğunda sabit üst özetteki
+`Ürün fırsat linki` satırı, bu ek bağlantı ayarından bağımsız olarak korunur.
 
 ---
 
@@ -733,12 +786,19 @@ indirimin "gerçek ve teyitli" olduğunun işaretidir. Bu yüzden tekrar birleş
 açıktır (varsayılan):
 
 - **İlk kopya** her zamanki gibi gönderilir ve başlığı bellekteki listeye yazılır.
-- **Sonraki aynı başlıklı kopyalar gruba ATILMAZ.** Onun yerine ilk mesaja rozet işlenir.
-  Rozet **tek satırdır**: sayı ve "teyitli fırsat" etiketi yeter, kaynak adları tek tek
+- **Sonraki aynı fırsatın kopyaları gruba ATILMAZ.** Onun yerine ilk mesaja rozet işlenir.
+  Rozet başlık ve fiyatı yerinden oynatmaz; fiyat satırının hemen altına, ürün linkinden
+  önce gelir. Rozet **tek satırdır**: sayı ve "teyitli fırsat" etiketi yeter, kaynak adları tek tek
   yazılmaz (kullanıcı isteği: 5 kaynak alt alta yazılınca bildirim karışıyordu):
 
 ```text
+Sıcak ÇAY
+
+Fiyat: 5 TL
+
 🔥 3 kaynakta paylaşıldı! · teyitli fırsat
+
+🔗 Ürün fırsat linki: https://amzn.to/ornek
 
 Sıcak ÇAY 5 TL
 Kaçırılmayacak fırsat!
@@ -752,21 +812,24 @@ Kaçırılmayacak fırsat!
 - Eski sürümün ikinci satırdaki `📌 Kaynaklar: ...` listesi artık yazılmaz; daha önce
   gönderilmiş rozetler okunurken (açılış taraması) o satır yine atlanır, yani geriye
   dönük uyumluluk korunur.
-- Eşleşme **başlığa** (mesajın ilk satırına) göredir; büyük/küçük harf ve boşluk
-  farkları yok sayılır. Başlıksız (salt medya) iletiler birleştirilmez.
+- Eşleşme mesajın ilk satırına değil, fiyat/indirim/CTA satırlarını yerel olarak
+  ayıklayan ürün başlığı sorgusuna göre yapılır. Harf büyüklüğü, noktalama, kelime sırası
+  ve `6.2L` / `6,2 L` gibi sayı biçimi farkları normalize edilir; böylece fiyatı başta
+  yazan kaynakla ürünü başta yazan kaynak eşleşebilir. Başlıksız (salt medya) iletiler
+  birleştirilmez.
 
 **Hız ve limitler:** eşleşme bellekteki listede yapılır; her iletide geçmiş
 taranmaz, yani bildirim gecikmez ve ileti başına ek API çağrısı yapılmaz
 (FloodWait/429 riski yok). Tek tarama açılışta bir kez yapılır: hedeften son
-`dedup_scan_limit` ileti (varsayılan 30, tek API çağrısı) okunup liste ısıtılır;
-böylece yeniden başlama sonrası aynı başlık ikinci kez düşmez. Rozet
+`dedup_scan_limit` ileti (varsayılan 100, tek API çağrısı) okunup liste ısıtılır;
+böylece yeniden başlama sonrası aynı normalize ürün sorgusu ikinci kez düşmez. Rozet
 güncellemesi arka planda yapılır ve aynı sohbetteki düzenleme hız sınırının
 altında kalır. GitHub'a ek istek atılmaz.
 
 **Ayarlar** (`config.json`): `dedup_enabled` (varsayılan `true`),
-`dedup_window_hours` (aynı başlık kaç saat "aynı fırsat" sayılsın, 1–72,
+`dedup_window_hours` (normalize ürün sorgusu kaç saat "aynı fırsat" sayılsın, 1–72,
 varsayılan 12; haftalar sonra aynı ürün yine indirime girerse YENİ fırsat sayılır),
-`dedup_scan_limit` (açılış taraması, 0–100, varsayılan 30; `0` = tarama yapma).
+`dedup_scan_limit` (açılış taraması, 0–100, varsayılan 100; `0` = tarama yapma).
 `/status` birleştirilen tekrar ve rozet sayılarını gösterir.
 
 ---
@@ -866,7 +929,7 @@ Bu repodaki güncel davranış değişiklikleri:
    Ayrıntı: [4. bölüm → Komut temizliği](#komut-temizliği-ekranda-yalnızca-son-mesaj).
 3. **İşbirliği/reklam etiketleri ve WhatsApp linkleri temizlenir; eksik arama hizmetleri
    inline düğme olarak eklenir.** Hashtag'ler ve tam kelimeler hassas sınırlarla eşleşir;
-   arama düğmeleri ileti gövdesini uzatmaz. Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin) ve [8. bölüm](#8-gizli-bağlantılar).
+   arama düğmeleri ileti gövdesini uzatmaz. Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin) ve [8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri).
 4. **Bildirim botu token'ı yalnızca `NOTIFY_BOT_TOKEN` secret'ından okunur.**
    Eski config alanı ve güncel `config.json` değeri kaldırıldı; geçmişteki token'ı iptal et.
 5. **Tekrar rozeti tek satıra indi.** İkinci ve sonraki kopyalarda ilk mesaja işlenen rozet
@@ -878,10 +941,14 @@ Bu repodaki güncel davranış değişiklikleri:
    `📲 WhatsApp grubumuz`, `#amazon #indirimalarmi` gibi satırlar bildirime hiç girmez;
    fiyat/ürün satırları ve içerik taşıyan satırlar korunur (dar kural — veri kaybı yok).
    Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin).
-7. **Market Fiyatı araması başlığın ilk iki kelimesiyle yapılır.** Tam ürün adı sitede sonuç
-   döndürmediği için düğme `.../ara?q=Urban%20Care` gibi kısa sorguya gider; ayrıca tüm
-   arama sorgularından baştaki emoji/sembol atılır (emoji yüzünden sorgular boş dönüyordu).
-   Ayrıntı: [8. bölüm](#8-gizli-bağlantılar).
+7. **Arama düğmeleri artık farklı kaynak formatlarında doğru ürün adını arar.** Fiyat/
+   indirim satırları sorgudan ayıklanır; sıralama Google Alışveriş → Akakçe → Cimri'dir.
+   Cimri araması `/arama?sort=price,asc&q=...` URL'sini kullanır. İşlem yereldir, bildirim
+   gecikmesi eklemez; mesaj metnine dokunmaz.
+8. **Kaynak erişim smoke testi eklendi.** `/kaynaktest` her çözülmüş kanaldan tek son mesaj
+   okuyarak erişimi, üyeliği ve o oturumdaki canlı event sayısını raporlar; tüm arşivi
+   indirmez ve kaynaklara test mesajı göndermez.
+   Ayrıntı: [4. bölüm](#4-telegram-komutları) ve [8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri).
 
 ### 1. PR'ı `main`'e merge et
 
