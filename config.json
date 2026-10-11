@@ -43,7 +43,8 @@
     "casio",
     "oral-b",
     "l'oreal",
-    "urban care"
+    "urban care",
+    "l’oréal"
   ],
   "match_mode": "any",
   "include_enabled": false,
