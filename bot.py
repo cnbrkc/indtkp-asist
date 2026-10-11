@@ -2664,7 +2664,7 @@ COMMAND_DESCRIPTIONS = (
     (COMMAND_FILTER_CLOSE, "Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir."),
     (COMMAND_SOURCES, "İzlenen kaynakları ve çözülemeyenleri listeler."),
     (COMMAND_SOURCE_TEST, "Her kaynağın son ham mesajını ve yerel işlem yolunu denetler; canlı event sayısını raporlar."),
-    (COMMAND_ANALYZE, "Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü."),
+    (COMMAND_ANALYZE, "Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü veya /analiz 1000 tcl 65 (eşleşen ürünleri listeler)."),
     (COMMAND_TEST, "Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir."),
     (COMMAND_ID, "Bulunduğun sohbetin ve kullanıcının kimliğini gösterir."),
     (COMMAND_RESTART, "Yeni takipçi çalışması başlatır; GH_PAT gerekir."),
@@ -3759,6 +3759,7 @@ ANALYSIS_DEFAULT_LIMIT = 300     # kaynak başına taranan mesaj sayısı
 ANALYSIS_MIN_LIMIT = 20
 ANALYSIS_MAX_LIMIT = 2000
 ANALYSIS_TOP = 25                # her listede gösterilen kelime sayısı
+ANALYSIS_QUERY_MAX_LINES = 200   # sorgu listesinde en fazla satır (spam'i önler)
 # `/analiz tümü` yazıldığında kabul edilen kelimeler.
 ANALYSIS_ALL_TOKENS = frozenset({
     "tumu", "tümü", "hepsi", "hepsini", "all", "hersey", "herşey", "filtresiz",
@@ -3796,6 +3797,9 @@ ANALYSIS_USAGE = "\n".join([
     "Kullanım:",
     f"  /analiz            → kaynak başına son {ANALYSIS_DEFAULT_LIMIT} mesaj",
     f"  /analiz 1000       → kaynak başına son 1000 mesaj ({ANALYSIS_MIN_LIMIT}–{ANALYSIS_MAX_LIMIT})",
+    "  /analiz350         → aynısı, bitişik yazılabilir",
+    "  /analiz 1000 tcl 65 → tüm kaynakların son 1000 mesajında 'tcl 65' geçenleri",
+    "                        listeler: ilk 5 kelime - fiyat",
     "  /analiz tümü       → işlevsiz kelimeler ve saf sayılar da sayılsın",
     "  /analiz 500 tümü   → ikisi birlikte",
     "",
@@ -3934,25 +3938,77 @@ def build_analysis_report(
     return "\n".join(lines)
 
 
-def parse_analysis_args(raw: str) -> tuple[int, bool]:
-    """``/analiz [adet] [tümü]`` argümanlarını çöz: (mesaj sayısı, filtre kapalı mı).
+def parse_analysis_request(raw: str) -> tuple[int, bool, str]:
+    """``/analiz [adet] [tümü] [sorgu]`` argümanlarını çöz.
 
-    Tanınmayan bir kelime varsa ``ValueError`` yükseltir.
+    Döner: (mesaj sayısı, filtre kapalı mı, sorgu metni; yoksa "").
+    Mesaj sayısı yalnızca argümanların BAŞINDA olabilir; ilk kelimeden sonra
+    gelen sayılar sorgunun parçasıdır (``/analiz 1000 tcl 65`` → sorgu
+    ``tcl 65``). ``tümü`` nerede geçerse geçsin filtreyi kapatır.
     """
     limit = ANALYSIS_DEFAULT_LIMIT
     keep_everything = False
+    limit_set = False
+    query_words: list[str] = []
     for token in str(raw or "").split():
-        key = normalize(token.strip(",;"))
+        word = token.strip(",;")
+        key = normalize(word)
         if not key:
             continue
         if key in ANALYSIS_ALL_TOKENS:
             keep_everything = True
             continue
-        if key.isdigit():
+        if not query_words and not limit_set and key.isdigit():
             limit = max(ANALYSIS_MIN_LIMIT, min(ANALYSIS_MAX_LIMIT, int(key)))
+            limit_set = True
             continue
-        raise ValueError(token)
+        query_words.append(word)
+    return limit, keep_everything, " ".join(query_words)
+
+
+def parse_analysis_args(raw: str) -> tuple[int, bool]:
+    """``/analiz [adet] [tümü]`` argümanlarını çöz: (mesaj sayısı, filtre kapalı mı).
+
+    Sorgu kelimesi varsa ``ValueError`` yükseltir (sorgulu kullanım için
+    ``parse_analysis_request`` kullanılır).
+    """
+    limit, keep_everything, query = parse_analysis_request(raw)
+    if query:
+        raise ValueError(query)
     return limit, keep_everything
+
+
+def analysis_query_pattern(query: str) -> Any:
+    """Sorguyu Türkçe duyarlı, kelime sınırlı bir desene çevir (``None``: boş)."""
+    words = normalize(query).split()
+    if not words:
+        return None
+    body = r"\s+".join(re.escape(word) for word in words)
+    # Sınır: sorgudan hemen önce/sonra harf veya rakam gelmemeli
+    # ("tcl 65" → "tcl 655" eşleşmez).
+    return re.compile(rf"(?<![^\W_]){body}(?![^\W_])", re.UNICODE)
+
+
+def build_query_lines(texts: Iterable[str], pattern: Any) -> list[str]:
+    """Desenle eşleşen mesajları ``ilk 5 kelime - fiyat`` satırlarına çevir.
+
+    Başlık, ürün başlığı seçicisiyle (``_search_query``) bulunur; fiyat ilk
+    fiyat ifadesidir. Aynı satır birden çok kaynakta varsa bir kez yazılır.
+    """
+    lines: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        if not text or not pattern.search(normalize(text)):
+            continue
+        title = _search_query(text) or message_title(text)
+        first_words = " ".join(title.split()[:5]) or "(başlıksız)"
+        price_match = _SEARCH_PRICE_RE.search(text)
+        price = " ".join(price_match.group().split()) if price_match else "fiyat yok"
+        line = f"{first_words} - {price}"
+        if line not in seen:
+            seen.add(line)
+            lines.append(line)
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -4489,22 +4545,62 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         await apply_filter_toggle(event, action, target)
 
+    async def list_query_matches(event: events.NewMessage.Event, targets: list[Any],
+                                 per_source: int, query: str) -> None:
+        """Tüm kaynakların son ``per_source`` mesajında ``query`` geçenleri listele.
+
+        Tarama, istatistik analiziyle aynı okuma yolunu kullanır (salt okuma;
+        hiçbir mesaj gönderilmez/değiştirilmez). Sonuç satır satır verilir;
+        uzun listeler ``control_reply`` tarafından birden çok mesaja bölünür.
+        """
+        pattern = analysis_query_pattern(query)
+        started = time.time()
+        texts: list[str] = []
+        failures: list[str] = []
+        for item in targets:
+            try:
+                async for message in client.iter_messages(item["id"], limit=per_source):
+                    texts.append(message_text(message))
+            except Exception as exc:  # noqa: BLE001 - tek kaynak taramayı durdurmasın
+                failures.append(f"{item['name']} ({type(exc).__name__})")
+                log.warning("Geçmiş okunamadı (%s): %s: %s", item["name"], type(exc).__name__, exc)
+        lines = build_query_lines(texts, pattern)
+        log.info("Sorgu listesi: '%s' → %d eşleşme (%d mesaj, %d kaynak).",
+                 query, len(lines), len(texts), len(targets))
+        header = [
+            f"🔎 '{query}' içeren mesajlar: {len(lines)} ürün",
+            f"• Kaynak: {len(targets)} grup · kaynak başına son {per_source} mesaj"
+            f" · süre: {humanize(time.time() - started)}",
+        ]
+        if failures:
+            header.append(f"• ⚠️ Okunamayan kaynak: {', '.join(failures)}")
+        if not lines:
+            await control_reply(event, "\n".join(header + ["", "Eşleşen mesaj bulunamadı."]))
+            return
+        shown = lines[:ANALYSIS_QUERY_MAX_LINES]
+        body = header + ["", *shown]
+        if len(lines) > len(shown):
+            body.append(f"… ilk {len(shown)} gösteriliyor; daha az sonuç için sayı/sorguyu daralt.")
+        await control_reply(event, "\n".join(body))
+
     async def analyze_history(event: events.NewMessage.Event, rest: str) -> None:
         """Kaynak geçmişinin başlıklarını tara; kelime istatistiklerini gönder.
 
         Yalnızca mesajın ilk anlamlı satırı (başlık) okunur; her kaynaktan en
         fazla ``per_source`` mesaj alınır. Tek bir kaynak okunamazsa tarama
         durmaz, raporda "okunamayan kaynak" olarak listelenir.
+        Sorgu verilirse (``/analiz 1000 tcl 65``) istatistik yerine eşleşen
+        ürünlerin listesi döner (bkz. ``list_query_matches``).
         """
-        try:
-            per_source, keep_everything = parse_analysis_args(rest)
-        except ValueError as exc:
-            await control_reply(event, f"❌ '{exc}' anlaşılmadı.\n\n{ANALYSIS_USAGE}")
-            return
+        per_source, keep_everything, query = parse_analysis_request(rest)
 
         targets = [item for item in SOURCES if item.get("joined")]
         if not targets:
             await control_reply(event, "ℹ️ Taranacak kaynak yok. Önce /kaynaklar ile listeyi kontrol et.")
+            return
+
+        if query:
+            await list_query_matches(event, targets, per_source, query)
             return
 
         started = time.time()
@@ -5580,6 +5676,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
         # Bekleyen liste düzenleme taslağını yalnızca /kaydet veya /iptal kapatır;
         # /durum gibi başka komutlar taslağı sessizce düşürmez.
         rest = raw[len(raw.split()[0]):].strip()
+        # `/analiz350` → `/analiz 350`: bitişik yazılan mesaj sayısı.
+        shorthand = re.fullmatch(re.escape(COMMAND_ANALYZE) + r"(\d+)", command)
+        if shorthand:
+            rest = f"{shorthand.group(1)} {rest}".strip()
+            command = COMMAND_ANALYZE
         log.info("Komut alındı: %s (chat=%s, sender=%s)", command, event.chat_id, event.sender_id)
 
         # Sabit komutlar önce: alan değerleriyle çakışabilecek komutları çöz.

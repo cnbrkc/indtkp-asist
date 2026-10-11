@@ -2090,11 +2090,26 @@ class AnalyzeCommandTest(unittest.TestCase):
         reply = self._command("/analiz")
         self.assertNotIn("indirim", reply.split("1️⃣")[1], "ilan kalıbı istatistiğe girmemeli")
 
-    def test_unknown_argument_shows_usage(self):
+    def test_unknown_words_become_a_query_with_no_matches(self):
         reply = self._command("/analiz dün")
-        self.assertIn("anlaşılmadı", reply)
-        self.assertIn("Kullanım", reply)
-        self.assertIn("/analiz tümü", reply)
+        self.assertIn("'dün' içeren mesajlar: 0 ürün", reply)
+        self.assertIn("Eşleşen mesaj bulunamadı", reply)
+
+    def test_attached_limit_shorthand_is_honoured(self):
+        reply = self._command("/analiz350")
+        self.assertIn("kaynak başına son 350 mesaj", reply)
+        self.assertIn("BAŞLIK KELİME ANALİZİ", reply)
+
+    def test_query_lists_matching_titles_once_per_line(self):
+        reply = self._command("/analiz 20 bebek bezi")
+        self.assertIn("'bebek bezi' içeren mesajlar: 1 ürün", reply)
+        self.assertIn("Bebek bezi - fiyat yok", reply)
+        self.assertNotIn("Oyuncak", reply)
+
+    def test_query_limit_and_query_are_split_correctly(self):
+        reply = self._command("/analiz 20 tcl 65")
+        self.assertIn("'tcl 65' içeren mesajlar: 0 ürün", reply)
+        self.assertIn("kaynak başına son 20 mesaj", reply)
 
     def test_help_and_menu_mention_analysis(self):
         self.assertIn("/analiz", bot.HELP_TEXT)
