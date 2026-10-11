@@ -73,11 +73,18 @@ class FakeFile:
 
 
 class FakeSent:
-    """Telethon'un gönderilen mesaj nesnesi yerine geçer: yalnızca ID taşır."""
+    """Telethon'un gönderilen mesaj nesnesi yerine geçer: ID, metin ve düzenlemeler."""
 
     def __init__(self, message_id, text=""):
         self.id = message_id
         self.message = text
+        self.edits: list[str] = []
+
+    async def edit(self, text):
+        """İlerleme mesajı düzenlemesi (ör. /analiz taraması) kaydedilir."""
+        self.message = text
+        self.edits.append(text)
+        return self
 
     def __str__(self):
         return str(self.message)
@@ -2110,6 +2117,37 @@ class AnalyzeCommandTest(unittest.TestCase):
         reply = self._command("/analiz 20 tcl 65")
         self.assertIn("'tcl 65' içeren mesajlar: 0 ürün", reply)
         self.assertIn("kaynak başına son 20 mesaj", reply)
+
+    def test_query_scan_shows_progress_and_lists_full_product_name(self):
+        """/analiz <sorgu>: "Analiz başladı" ilerleme mesajı güncellenir ve silinir."""
+        self.client.history = [
+            (self.source_id,
+             "TCL 65 inç Akıllı TV 65C7K 4K QD-Mini LED\n🏷 31.866 TL\n👉 FIRSATA GİT"),
+            (self.source_id, "Oyuncak araba kampanya"),
+        ]
+        event = FakeEvent(GROUP_ID, ADMIN_ID, "/analiz 20 tcl 65")
+        asyncio.run(self.client.handlers[0][1](event))
+        reply = "\n".join(event.replies)
+
+        status = event.sent_replies[0]
+        self.assertIn("Analiz başladı", event.replies[0], "ilk mesaj ilerleme başlığı olmalı")
+        self.assertIn("'tcl 65'", event.replies[0])
+        self.assertTrue(status.edits, "taramada ilerleme mesajı güncellenmeli")
+        self.assertIn("1/1 kaynak", status.edits[-1])
+        self.assertIn("1 eşleşme", status.edits[-1])
+
+        self.assertIn("TCL 65 inç Akıllı TV 65C7K 4K QD-Mini LED - 31.866 TL", reply,
+                      "ürün adı tam ve model kodlu gelmeli")
+        self.assertNotIn("Oyuncak", reply)
+        deleted = [mid for _, ids, _ in self.client.deleted for mid in ids]
+        self.assertIn(status.id, deleted, "rapor gelince ilerleme mesajı silinmeli")
+
+    def test_statistics_scan_starts_with_progress_message(self):
+        event = FakeEvent(GROUP_ID, ADMIN_ID, "/analiz 20")
+        asyncio.run(self.client.handlers[0][1](event))
+        self.assertIn("Analiz başladı", event.replies[0])
+        self.assertIn("son 20 mesaj", event.replies[0])
+        self.assertIn("başlık", event.sent_replies[0].edits[-1])
 
     def test_help_and_menu_mention_analysis(self):
         self.assertIn("/analiz", bot.HELP_TEXT)

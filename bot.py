@@ -2664,7 +2664,8 @@ COMMAND_DESCRIPTIONS = (
     (COMMAND_FILTER_CLOSE, "Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir."),
     (COMMAND_SOURCES, "İzlenen kaynakları ve çözülemeyenleri listeler."),
     (COMMAND_SOURCE_TEST, "Her kaynağın son ham mesajını ve yerel işlem yolunu denetler; canlı event sayısını raporlar."),
-    (COMMAND_ANALYZE, "Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü veya /analiz 1000 tcl 65 (eşleşen ürünleri listeler)."),
+    (COMMAND_ANALYZE, "Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü veya "
+                       "/analiz 1000 tcl 65 (eşleşen ürünleri 'ürün adı - fiyat' olarak listeler)."),
     (COMMAND_TEST, "Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir."),
     (COMMAND_ID, "Bulunduğun sohbetin ve kullanıcının kimliğini gösterir."),
     (COMMAND_RESTART, "Yeni takipçi çalışması başlatır; GH_PAT gerekir."),
@@ -3799,7 +3800,7 @@ ANALYSIS_USAGE = "\n".join([
     f"  /analiz 1000       → kaynak başına son 1000 mesaj ({ANALYSIS_MIN_LIMIT}–{ANALYSIS_MAX_LIMIT})",
     "  /analiz350         → aynısı, bitişik yazılabilir",
     "  /analiz 1000 tcl 65 → tüm kaynakların son 1000 mesajında 'tcl 65' geçenleri",
-    "                        listeler: ilk 5 kelime - fiyat",
+    "                        listeler: ürün adı (tam) - fiyat",
     "  /analiz tümü       → işlevsiz kelimeler ve saf sayılar da sayılsın",
     "  /analiz 500 tümü   → ikisi birlikte",
     "",
@@ -3989,22 +3990,155 @@ def analysis_query_pattern(query: str) -> Any:
     return re.compile(rf"(?<![^\W_]){body}(?![^\W_])", re.UNICODE)
 
 
-def build_query_lines(texts: Iterable[str], pattern: Any) -> list[str]:
-    """Desenle eşleşen mesajları ``ilk 5 kelime - fiyat`` satırlarına çevir.
+# Ürün adı tam gösterilir (kullanıcı isteği: "tam isim alsın, orayı kesti burayı
+# kesti derdi olmaz"); yalnızca aşırı uzun tek satırlar bu sınırda kesilir.
+ANALYSIS_TITLE_LIMIT = 300
+# Bir satırın "fiyat satırı" sayılması için fiyat dışında kalan en fazla kelime.
+# ("🏷 3.558 TL" evet · "Ürün sayfasındaki 100 TL kupon ..." hayır.)
+ANALYSIS_PRICE_LINE_MAX_WORDS = 4
 
-    Başlık, ürün başlığı seçicisiyle (``_search_query``) bulunur; fiyat ilk
-    fiyat ifadesidir. Aynı satır birden çok kaynakta varsa bir kez yazılır.
+
+def tidy_product_title(title: str) -> str:
+    """Ürün adındaki fiyat/ayraç artıklarını toparla (``için . `` → ``için.``)."""
+    cleaned = re.sub(r"\s+", " ", title or "")
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"([,;:])\s*(?=[,;:])", r"\1", cleaned)
+    return cleaned.strip(" \t,;:.|/\\-–—·•")
+
+
+def query_product_title(text: str) -> str:
+    """Sorgu listesi için ürün adı: başlık adayı, tam metniyle (kısaltılmaz).
+
+    "TCL 65 inç Akıllı TV 65C7K 4K QD-Mini LED …" gibi model kodlu uzun
+    başlıklar kesilmez; yalnızca fiyat/noise temizliğinden kalan boşluk ve
+    noktalama artıkları toparlanır.
+    """
+    return tidy_product_title(_search_query(text, limit=ANALYSIS_TITLE_LIMIT)
+                              or message_title(text))
+
+
+# Fiyat satırı sayılan ama ürün fiyatı olmayan satırlar: taksit tutarı, "200 TL
+# üzeri" eşiği, kupon/çekiliş tutarı.
+_ANALYSIS_PRICE_LINE_SKIP_RE = re.compile(
+    r"(?i)\btaksit\w*\b|\büzeri\b|\buzeri\b|\bkupon\w*\b|\bcoupon\b|\bçekiliş\w*\b",
+)
+
+
+def parse_price_value(raw: str) -> float | None:
+    """``31.866 TL`` / ``5.999,90`` / ``99,90`` → sayı (Türkçe yazım)."""
+    digits = "".join(char for char in str(raw or "") if char.isdigit() or char in ".,")
+    if not digits:
+        return None
+    if "," in digits and "." in digits:
+        if digits.rfind(",") > digits.rfind("."):   # 1.299,90
+            digits = digits.replace(".", "").replace(",", ".")
+        else:                                       # 1,299.90
+            digits = digits.replace(",", "")
+    elif "." in digits:
+        tail = digits.rpartition(".")[2]
+        if digits.count(".") > 1 or len(tail) == 3:  # 1.299 / 31.866 → binlik ayraç
+            digits = digits.replace(".", "")
+    elif "," in digits:
+        tail = digits.rpartition(",")[2]
+        if digits.count(",") > 1 or len(tail) == 3:
+            digits = digits.replace(",", "")
+        else:                                       # 99,90 → ondalık
+            digits = digits.replace(",", ".")
+    try:
+        return float(digits)
+    except ValueError:
+        return None
+
+
+def _price_line_extra_words(line: str) -> int:
+    """Fiyatı çıkarınca satırda kalan (sayı olmayan) kelime sayısı."""
+    rest = _SEARCH_PRICE_RE.sub(" ", line or "")
+    return len([token for token in WORD_TOKEN_RE.findall(rest) if not token.isdigit()])
+
+
+def query_price(text: str) -> str:
+    """Mesajdan ürün fiyatını seç.
+
+    Öncelik fiyat satırlarındadır (``🏷 3.558 TL``, ``💰 Fiyat : 225 TL``); bunlar
+    arasından **en düşük** değer alınır, böylece "eski 44.999 TL / yeni 31.866 TL"
+    ikilisinde indirimli fiyat görünür. Taksit tutarı, "200 TL üzeri" eşiği ve
+    kupon/çekiliş tutarı ürün fiyatı sayılmaz. Fiyat satırı yoksa mesajdaki
+    fiyatların en düşüğü, hiç fiyat yoksa ``fiyat yok`` döner.
+    """
+    listed: list[tuple[float, str]] = []
+    plain: list[tuple[float, str]] = []
+    fallback: list[str] = []
+    for line in (text or "").splitlines():
+        skipped = bool(_ANALYSIS_PRICE_LINE_SKIP_RE.search(line))
+        on_price_line = _price_line_extra_words(line) <= ANALYSIS_PRICE_LINE_MAX_WORDS
+        for match in _SEARCH_PRICE_RE.finditer(line):
+            shown = " ".join(match.group().split())
+            value = parse_price_value(match.group())
+            if value is None or skipped:
+                fallback.append(shown)  # taksit/kupon tutarı: yalnızca son çare
+                continue
+            (listed if on_price_line else plain).append((value, shown))
+    if listed:
+        return min(listed, key=lambda item: item[0])[1]
+    if plain:
+        return min(plain, key=lambda item: item[0])[1]
+    return fallback[0] if fallback else "fiyat yok"
+
+
+ANALYSIS_SCAN_START = "🔎 Analiz başladı"
+ANALYSIS_SCAN_RUNNING = "🔎 Geçmiş taranıyor"
+
+
+async def start_analysis_scan(event: Any, targets: Sequence[Any], per_source: int,
+                              *, purpose: str = "", query: str = "") -> Any:
+    """``Analiz başladı`` ilerleme mesajını gönder (gönderilemezse ``None``).
+
+    Mesaj ``update_analysis_scan`` ile kaynak kaynak güncellenir; rapor gelince
+    ``control_reply(..., stale=[...])`` ile silinir, böylece ekranda yalnızca
+    sonuç kalır. Uzun taramalarda kullanıcı çalıştığını bu mesajdan görür.
+    """
+    lines = [f"{ANALYSIS_SCAN_START}: {len(targets)} kaynak × son {per_source} mesaj taranıyor…"]
+    if query:
+        lines.append(f"• Sorgu: '{query}'")
+    if purpose:
+        lines.append(purpose)
+    try:
+        return await event.reply("\n".join(lines))
+    except Exception:  # noqa: BLE001 - yanıt gitmese de tarama sürsün
+        log.debug("Analiz başlangıç yanıtı gönderilemedi.")
+        return None
+
+
+def analysis_status_id(status: Any) -> int:
+    """İlerleme mesajının ID'si (yoksa 0 → silinecek mesaj yok)."""
+    return next(iter(sent_message_ids(status)), 0)
+
+
+async def update_analysis_scan(status: Any, done: int, total: int, detail: str) -> None:
+    """İlerleme mesajını güncelle; düzenleme başarısızsa tarama devam eder."""
+    if status is None:
+        return
+    try:
+        await status.edit(f"{ANALYSIS_SCAN_RUNNING}... {done}/{total} kaynak · {detail}")
+    except Exception:  # noqa: BLE001 - düzenleme başarısızsa tarama sürsün
+        pass
+
+
+def build_query_lines(texts: Iterable[str], pattern: Any) -> list[str]:
+    """Desenle eşleşen mesajları ``ürün adı - fiyat`` satırlarına çevir.
+
+    Ürün adı, ürün başlığı seçicisiyle (``_search_query``) bulunur ve tam
+    gösterilir ("TCL 65 inç Akıllı TV 65C7K …" gibi sonunda model kodu olan
+    başlıklar kırpılmaz). Fiyat ``query_price`` ile seçilir. Aynı satır birden
+    çok kaynakta varsa bir kez yazılır.
     """
     lines: list[str] = []
     seen: set[str] = set()
     for text in texts:
         if not text or not pattern.search(normalize(text)):
             continue
-        title = _search_query(text) or message_title(text)
-        first_words = " ".join(title.split()[:5]) or "(başlıksız)"
-        price_match = _SEARCH_PRICE_RE.search(text)
-        price = " ".join(price_match.group().split()) if price_match else "fiyat yok"
-        line = f"{first_words} - {price}"
+        title = " ".join(query_product_title(text).split()) or "(başlıksız)"
+        line = f"{title} - {query_price(text)}"
         if line not in seen:
             seen.add(line)
             lines.append(line)
@@ -4550,20 +4684,34 @@ async def main(argv: Sequence[str] | None = None) -> int:
         """Tüm kaynakların son ``per_source`` mesajında ``query`` geçenleri listele.
 
         Tarama, istatistik analiziyle aynı okuma yolunu kullanır (salt okuma;
-        hiçbir mesaj gönderilmez/değiştirilmez). Sonuç satır satır verilir;
-        uzun listeler ``control_reply`` tarafından birden çok mesaja bölünür.
+        hiçbir mesaj gönderilmez/değiştirilmez). Tarama boyunca "Analiz
+        başladı" ilerleme mesajı kaynak kaynak güncellenir, rapor gelince
+        silinir. Sonuç satırları ``ürün adı (tam) - fiyat`` biçimindedir; uzun
+        listeler ``control_reply`` tarafından birden çok mesaja bölünür.
         """
         pattern = analysis_query_pattern(query)
         started = time.time()
+        status = await start_analysis_scan(
+            event, targets, per_source,
+            purpose="Bitince eşleşen ürünleri (ürün adı - fiyat) göndereceğim.",
+            query=query,
+        )
+        status_id = analysis_status_id(status)
         texts: list[str] = []
         failures: list[str] = []
-        for item in targets:
+        matches = 0
+        for index, item in enumerate(targets, start=1):
             try:
                 async for message in client.iter_messages(item["id"], limit=per_source):
-                    texts.append(message_text(message))
+                    text = message_text(message)
+                    texts.append(text)
+                    if text and pattern.search(normalize(text)):
+                        matches += 1
             except Exception as exc:  # noqa: BLE001 - tek kaynak taramayı durdurmasın
                 failures.append(f"{item['name']} ({type(exc).__name__})")
                 log.warning("Geçmiş okunamadı (%s): %s: %s", item["name"], type(exc).__name__, exc)
+            await update_analysis_scan(status, index, len(targets),
+                                       f"{matches} eşleşme · sorgu: '{query}'")
         lines = build_query_lines(texts, pattern)
         log.info("Sorgu listesi: '%s' → %d eşleşme (%d mesaj, %d kaynak).",
                  query, len(lines), len(texts), len(targets))
@@ -4575,13 +4723,15 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if failures:
             header.append(f"• ⚠️ Okunamayan kaynak: {', '.join(failures)}")
         if not lines:
-            await control_reply(event, "\n".join(header + ["", "Eşleşen mesaj bulunamadı."]))
+            await control_reply(event, "\n".join(header + ["", "Eşleşen mesaj bulunamadı."]),
+                                stale=[status_id])
             return
         shown = lines[:ANALYSIS_QUERY_MAX_LINES]
         body = header + ["", *shown]
         if len(lines) > len(shown):
             body.append(f"… ilk {len(shown)} gösteriliyor; daha az sonuç için sayı/sorguyu daralt.")
-        await control_reply(event, "\n".join(body))
+        body.append("ℹ️ Satır biçimi: ürün adı (tam) - fiyat · fiyat satırı varsa en düşük fiyat.")
+        await control_reply(event, "\n".join(body), stale=[status_id])
 
     async def analyze_history(event: events.NewMessage.Event, rest: str) -> None:
         """Kaynak geçmişinin başlıklarını tara; kelime istatistiklerini gönder.
@@ -4604,19 +4754,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return
 
         started = time.time()
-        status = None
-        status_id = 0
-        try:
-            # İlerleme mesajı bilinçli olarak temizlik kaydına girmez: rapor
-            # gelince "stale" listesiyle silinir, böylece ekranda yalnızca
-            # istatistik raporu kalır.
-            status = await event.reply(
-                f"🔎 Geçmiş taranıyor: {len(targets)} kaynak × son {per_source} mesaj...\n"
-                "Uzun sürebilir; bitince iki istatistiği göndereceğim."
-            )
-            status_id = next(iter(sent_message_ids(status)), 0)
-        except Exception:  # noqa: BLE001 - yanıt gitmese de tarama sürsün
-            log.debug("Analiz başlangıç yanıtı gönderilemedi.")
+        # İlerleme mesajı bilinçli olarak temizlik kaydına girmez: rapor gelince
+        # "stale" listesiyle silinir, böylece ekranda yalnızca istatistik raporu
+        # kalır. Uzun taramaların çalıştığı bu mesajdan görülür.
+        status = await start_analysis_scan(
+            event, targets, per_source,
+            purpose="Uzun sürebilir; bitince iki istatistiği göndereceğim.",
+        )
+        status_id = analysis_status_id(status)
 
         titles: list[str] = []
         failures: list[str] = []
@@ -4629,13 +4774,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             except Exception as exc:  # noqa: BLE001 - tek kaynak taramayı durdurmasın
                 failures.append(f"{item['name']} ({type(exc).__name__})")
                 log.warning("Geçmiş okunamadı (%s): %s: %s", item["name"], type(exc).__name__, exc)
-            if status is not None:
-                try:
-                    await status.edit(
-                        f"🔎 Geçmiş taranıyor... {index}/{len(targets)} kaynak · {len(titles)} başlık"
-                    )
-                except Exception:  # noqa: BLE001 - düzenleme başarısızsa tarama sürsün
-                    pass
+            await update_analysis_scan(status, index, len(targets), f"{len(titles)} başlık")
 
         analysis = analyze_titles(titles, keep_everything=keep_everything)
         log.info("Kelime analizi: %d başlık, %d tekil, %d kaynak, %s.",

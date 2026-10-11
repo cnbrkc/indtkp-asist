@@ -859,14 +859,63 @@ class WordAnalysisTest(unittest.TestCase):
             "Abc Televizyon 55 inç - 14.500,00 TL",
         ])
 
-    def test_build_query_lines_dedupes_and_limits_title_to_five_words(self):
+    def test_build_query_lines_dedupes_identical_lines(self):
         pattern = bot.analysis_query_pattern("kablo")
         lines = bot.build_query_lines([
             "Çok Uzun Bir Ürün Adı Burada Yer Alıyor Kablo 2 metre 99 TL",
             "Çok Uzun Bir Ürün Adı Burada Yer Alıyor Kablo 2 metre 99 TL",
         ], pattern)
         self.assertEqual(len(lines), 1)
-        self.assertEqual(len(lines[0].split(" - ")[0].split()), 5)
+        # Ürün adı tam gösterilir; yalnızca ilan sözlüğündeki kelimeler temizlenir.
+        self.assertEqual(lines[0],
+                         "Çok Uzun Bir Adı Yer Alıyor Kablo 2 metre - 99 TL")
+
+    def test_build_query_lines_keeps_full_name_with_model_code(self):
+        """Kullanıcı isteği: ürün adı kesilmesin; model kodlu başlık tam gelsin."""
+        pattern = bot.analysis_query_pattern("tcl 65")
+        amazon_title = (
+            "TCL 65 inç Akıllı TV 65C7K 4K QD-Mini LED Renkli Quantum Crystal "
+            "HDR10+ Oyun Google TV, 144Hz Doğal Yenileme Hızı, ONKYO 2.1 Hi-Fi "
+            "Ses Sistemi, Dolby Atmos"
+        )
+        lines = bot.build_query_lines([
+            f"{amazon_title}\n🏷 31.866 TL\n\n👉 FIRSATA GİT",
+        ], pattern)
+        self.assertEqual(lines, [f"{amazon_title} - 31.866 TL"])
+        self.assertIn("65C7K", lines[0], "model kodu satırın içinde kalmalı")
+
+    def test_build_query_lines_prefers_lowest_listed_price(self):
+        """'Eski/yeni' ikilisinde ve taksit/kupon satırlarında doğru fiyat seçilir."""
+        pattern = bot.analysis_query_pattern("tcl 65")
+        cases = {
+            "TCL 65 inç Akıllı TV 65C7K\n❌ Eski fiyat: 44.999 TL\n✅ Yeni fiyat: 31.866 TL":
+                "TCL 65 inç Akıllı TV 65C7K - 31.866 TL",
+            "TCL 65 inç Akıllı TV 65P635\n44.999 TL yerine 31.866 TL":
+                "TCL 65 inç Akıllı TV 65P635 - 31.866 TL",
+            "TCL 65 inç Akıllı TV 65Q650\n6 ay taksit 5.311 TL\nPeşin 31.866 TL":
+                "TCL 65 inç Akıllı TV 65Q650 - 31.866 TL",
+            "TCL 65 inç Akıllı TV 65T8D\n🏷 3.558 TL\n"
+            "Ürün sayfasındaki 100 TL kupon her hesapta çıkmayabilir.":
+                "TCL 65 inç Akıllı TV 65T8D - 3.558 TL",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(bot.build_query_lines([text], pattern), [expected])
+
+    def test_parse_price_value_reads_turkish_writing(self):
+        self.assertEqual(bot.parse_price_value("31.866 TL"), 31866.0)
+        self.assertEqual(bot.parse_price_value("5.999,90"), 5999.9)
+        self.assertEqual(bot.parse_price_value("99,90 TL"), 99.9)
+        self.assertEqual(bot.parse_price_value("₺1.299"), 1299.0)
+        self.assertEqual(bot.parse_price_value("14.500,00 TL"), 14500.0)
+        self.assertIsNone(bot.parse_price_value("TL"))
+
+    def test_query_product_title_tidies_leftover_punctuation(self):
+        title = bot.query_product_title(
+            "TCL 65 inç Akıllı TV 65C7K için 1299 TL indirim . Normal fiyat 1500 TL"
+        )
+        self.assertNotIn(" .", title)
+        self.assertTrue(title.startswith("TCL 65 inç Akıllı TV 65C7K"))
 
     def test_parse_analysis_args(self):
         self.assertEqual(bot.parse_analysis_args(""), (bot.ANALYSIS_DEFAULT_LIMIT, False))
