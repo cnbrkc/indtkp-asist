@@ -423,7 +423,7 @@ seçilene kadar taslakta kalır, kişisel DM kelimeleri ise hemen kaydedilir. `/
 | `/close` | Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir |
 | `/kaynaklar` | İzlenen kaynakları ve çözülemeyenleri listeler |
 | `/kaynaktest` | Her kaynağın son ham mesajını ve yerel işlem yolunu denetler; canlı event sayısını raporlar |
-| `/analiz` | Kaynak geçmişindeki başlıkları analiz eder; örnek: `/analiz 100 tümü`. Sorgu verilirse eşleşen ürünleri listeler (`ilk 5 kelime - fiyat`): `/analiz 1000 tcl 65`; bitişik yazım: `/analiz350` |
+| `/analiz` | Kaynak geçmişindeki başlıkları analiz eder; örnek: `/analiz 100 tümü`. Sorgu verilirse eşleşen ürünleri listeler (`ürün adı - fiyat`): `/analiz 1000 tcl 65`; bitişik yazım: `/analiz350` |
 | `/test` | Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir |
 | `/id` | Bulunduğun sohbetin ve kullanıcının kimliğini gösterir |
 | `/restart` | Yeni takipçi çalışması başlatır; `GH_PAT` gerekir |
@@ -573,6 +573,7 @@ iki istatistik verilir:
 /analiz 1000       → kaynak başına son 1000 mesaj (20–2000 arası)
 /analiz tümü       → işlevsiz kelimeler ve saf sayılar da sayılsın
 /analiz 500 tümü   → ikisi birlikte
+/analiz 1000 tcl 65→ sorgu modu: son 1000 mesajda 'tcl 65' geçen ürünler
 ```
 
 - Yalnızca başlık okunur; açıklama, fiyat ve link satırları sayılmaz.
@@ -584,8 +585,25 @@ iki istatistik verilir:
 - Harici listende olan kelimeler `🚫`, dahili listende olanlar `🔎` ile işaretlenir.
 - Çıkan listeden istemediğin kelimeleri doğrudan harici listeye ekle:
   `/çıkar` → `2` (Harici kelimeler) → `bebek, oyuncak, kitap`.
-- Tarama uzun sürebilir; her kaynak bitince mesaj güncellenir. Okunamayan kaynak
-  olursa tarama durmaz, raporda "Okunamayan kaynak" satırı çıkar.
+- Tarama uzun sürebilir; **"🔎 Analiz başladı"** mesajı gelir ve her kaynak
+  bitince aynı mesaj güncellenir (`12/23 kaynak · 4 eşleşme`). Rapor gelince bu
+  mesaj silinir, ekranda yalnızca sonuç kalır. Okunamayan kaynak olursa tarama
+  durmaz, raporda "Okunamayan kaynak" satırı çıkar.
+
+#### Sorgu modu (`/analiz <adet> <kelime…>`)
+
+- Tüm kaynakların son *adet* mesajında sorgu geçen mesajlar listelenir; her satır
+  `ürün adı - fiyat` biçimindedir ve **ürün adı tam yazılır** (kesilmez), böylece
+  model kodlu başlıklar olduğu gibi görünür:
+  `TCL 65 inç Akıllı TV 65C7K 4K QD-Mini LED … - 31.866 TL`
+- Fiyat, fiyat satırlarındaki (`💰`, `🏷`, `Fiyat:`) **en düşük** değerdir;
+  "eski 44.999 TL / yeni 31.866 TL" gibi ikililerde indirimli fiyat görünür.
+  Taksit tutarı, "200 TL üzeri" eşiği ve kupon tutarı ürün fiyatı sayılmaz.
+- Sayı yalnızca argümanların başında mesaj limiti sayılır; `tcl 65` içindeki 65
+  sorguda kalır. Sorgu kelime sınırlı eşleşir (`tcl 65` ≠ `tcl 655`) ve Türkçe
+  büyük/küçük harf duyarsızdır. Bitişik yazım: `/analiz350`.
+- Aynı satır birden çok kaynakta varsa bir kez yazılır; en fazla 200 satır
+  gösterilir, uzun liste birden çok mesaja bölünür.
 
 
 ---
@@ -1021,8 +1039,11 @@ kahve, şeker, süt → taslakta üçü görünmeli; henüz kaydedilmemeli
 /çıkar      → liste seçimi ve mevcut kayıtlar gösterilmeli
 1, 3        → iki kayıt birden çıkarılmalı
 /iptal      → bekleyen taslak silinmeli; ayar değişmemeli
-/analiz     → iki istatistik (25 kelime + 25 ilk kelime) gelmeli
+/analiz     → "🔎 Analiz başladı" mesajı gelmeli ve kaynak kaynak güncellenmeli
+            → iki istatistik (25 kelime + 25 ilk kelime) gelmeli
             → beğenmediğin kelimeyi /çıkar → 2 ile harici listeye ekle
+/analiz 1000 tcl 65 → her satır `ürün adı (tam) - fiyat` olmalı; model kodu
+            görünmeli ve eski/taksitli fiyat değil indirimli fiyat yazılmalı
 ```
 
 Yanıtta **`✅ repo'ya işlendi`** yazıyorsa kalıcılık çalışıyor demektir: repo'da
@@ -1040,7 +1061,10 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 - [ ] `/open` ve `/close` → menü soruyor mu? Dahili/harici filtre ayrı ayrı kapanıyor mu?
 - [ ] `/ekle` → kategori seç → `a, b, c` gönder → `/kaydet` ile GitHub'a yaz
 - [ ] `/çıkar` → listeyi gösteriyor mu? `1, 3` gibi çoklu çıkarma çalışıyor mu?
-- [ ] `/analiz` → iki istatistik geliyor mu? Kelimeleri harici listeye ekleyebiliyor musun?
+- [ ] `/analiz` → "🔎 Analiz başladı" mesajı ve iki istatistik geliyor mu? Kelimeleri
+      harici listeye ekleyebiliyor musun?
+- [ ] `/analiz 1000 tcl 65` → satırlar `ürün adı (tam) - fiyat` mı? Model kodu (ör.
+      `65C7K`) görünüyor mu; eski/taksitli fiyat yerine indirimli fiyat mı yazıyor?
 - [ ] Bildirim düzeni: başlık en üstte → altında mesaj OLDUĞU GİBİ → `🔗 Mesajı Gör`
       → en altta kaynak grup adı. Tekrarlı paylaşım gelince grup adı satırı kalkıp
       `📌 N kere paylaşıldı: <gruplar>` yazılıyor mu? Cimri düğmesi tam başlıkla arıyor mu?
