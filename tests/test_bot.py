@@ -825,6 +825,49 @@ class WordAnalysisTest(unittest.TestCase):
         self.assertIn("2", everything["words"])
         self.assertEqual(everything["counts"]["filtered"], 0)
 
+    def test_parse_analysis_request_splits_limit_and_query(self):
+        self.assertEqual(bot.parse_analysis_request("1000 tcl 65"),
+                         (1000, False, "tcl 65"))
+        self.assertEqual(bot.parse_analysis_request("tcl 65"),
+                         (bot.ANALYSIS_DEFAULT_LIMIT, False, "tcl 65"))
+        self.assertEqual(bot.parse_analysis_request("tümü 20 tcl 65"),
+                         (20, True, "tcl 65"))
+        self.assertEqual(bot.parse_analysis_request("350"),
+                         (350, False, ""))
+        self.assertEqual(bot.parse_analysis_request(""),
+                         (bot.ANALYSIS_DEFAULT_LIMIT, False, ""))
+
+    def test_analysis_query_pattern_respects_word_boundaries(self):
+        pattern = bot.analysis_query_pattern("TCL 65")
+        self.assertTrue(pattern.search(bot.normalize("Yeni TCL 65 QLED")))
+        self.assertTrue(pattern.search(bot.normalize("tcl   65")))
+        self.assertFalse(pattern.search(bot.normalize("TCL 655 model")))
+        self.assertFalse(pattern.search(bot.normalize("ATCL 65")))
+        self.assertIsNone(bot.analysis_query_pattern("   "))
+
+    def test_build_query_lines_formats_title_and_first_price(self):
+        pattern = bot.analysis_query_pattern("tcl 65")
+        lines = bot.build_query_lines([
+            "Philips Airfryer XXL 6.2L\nTCL 65 QLED TV\n🛍️ Amazon\n💰 1.299 TL",
+            "🔥 %40 indirim\nTCL 655 Model 5.999,90 TL",
+            "Abc Televizyon 55 inç\nTCL 65 ekran\n💸 İndirimli Fiyat: 14.500,00 TL",
+            "Çay 5 TL",
+            "",
+        ], pattern)
+        self.assertEqual(lines, [
+            "Philips Airfryer XXL 6.2L - 1.299 TL",
+            "Abc Televizyon 55 inç - 14.500,00 TL",
+        ])
+
+    def test_build_query_lines_dedupes_and_limits_title_to_five_words(self):
+        pattern = bot.analysis_query_pattern("kablo")
+        lines = bot.build_query_lines([
+            "Çok Uzun Bir Ürün Adı Burada Yer Alıyor Kablo 2 metre 99 TL",
+            "Çok Uzun Bir Ürün Adı Burada Yer Alıyor Kablo 2 metre 99 TL",
+        ], pattern)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(len(lines[0].split(" - ")[0].split()), 5)
+
     def test_parse_analysis_args(self):
         self.assertEqual(bot.parse_analysis_args(""), (bot.ANALYSIS_DEFAULT_LIMIT, False))
         self.assertEqual(bot.parse_analysis_args("1000"), (1000, False))
@@ -1537,6 +1580,37 @@ class MessageSanitizationTest(unittest.TestCase):
         self.assertEqual(
             bot._search_query(make_message("🔥 Sıcak ÇAY 5 TL", media=False)),
             "Sıcak ÇAY",
+        )
+
+    def test_search_query_skips_deal_headline_words_and_picks_product_line(self):
+        """'DÜŞÜŞÜ' gibi fiyat başlıkları ürün adı sayılmaz (ilk satır kör seçilmez)."""
+        message = (
+            "**DÜŞÜŞÜ**\n\n\n\n"
+            "📉 **FİYAT DÜŞÜŞÜ -%29,6**\n\n\n\n"
+            "🛍️ **Restorex Besleyici Bakım Şampuanı 900 Mililitre, 7 Besleyici**\n\n\n\n"
+            "💸 İndirimli Fiyat: **145,00 TL**\n\n"
+            "🔻 Fark: **-%29,6**\n"
+            "❌ Eski Fiyat: ~~206,00 TL~~\n"
+            "🛒 **Amazon: 60 günün en düşük fiyatı**\n"
+            "🏆 **TÜM ZAMANLARIN DİBİ (49 günün)**\n\n"
+            "🔗 [Amazon'da gör](https://www.amazon.com.tr/dp/B0FWR8N18Z?tag=alalal07-21)\n\n"
+            "#Kozmetik@amazonfirsatalarmi"
+        )
+        self.assertEqual(
+            bot._search_query(make_message(message, media=False)),
+            "Restorex Besleyici Bakım Şampuanı 900 Mililitre, 7 Besleyici",
+        )
+
+    def test_search_query_keeps_first_line_when_all_candidates_are_weak(self):
+        """Tüm adaylar zayıfsa eski davranış (ilk aday) korunur."""
+        self.assertEqual(bot._search_query(make_message("Çay\n🛒 Amazon", media=False)), "Çay")
+
+    def test_search_query_prefers_first_multi_word_title_over_store_label(self):
+        self.assertEqual(
+            bot._search_query(make_message(
+                "Abc Deterjan Çamaşır Sodası (Soda Matik) 500 Gr\n🛍️ Amazon", media=False,
+            )),
+            "Abc Deterjan Çamaşır Sodası Soda Matik 500 Gr",
         )
 
     def test_search_query_drops_inline_call_to_action_words(self):

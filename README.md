@@ -423,7 +423,7 @@ seçilene kadar taslakta kalır, kişisel DM kelimeleri ise hemen kaydedilir. `/
 | `/close` | Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir |
 | `/kaynaklar` | İzlenen kaynakları ve çözülemeyenleri listeler |
 | `/kaynaktest` | Her kaynağın son ham mesajını ve yerel işlem yolunu denetler; canlı event sayısını raporlar |
-| `/analiz` | Kaynak geçmişindeki başlıkları analiz eder; örnek: `/analiz 100 tümü` |
+| `/analiz` | Kaynak geçmişindeki başlıkları analiz eder; örnek: `/analiz 100 tümü`. Sorgu verilirse eşleşen ürünleri listeler (`ilk 5 kelime - fiyat`): `/analiz 1000 tcl 65`; bitişik yazım: `/analiz350` |
 | `/test` | Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir |
 | `/id` | Bulunduğun sohbetin ve kullanıcının kimliğini gösterir |
 | `/restart` | Yeni takipçi çalışması başlatır; `GH_PAT` gerekir |
