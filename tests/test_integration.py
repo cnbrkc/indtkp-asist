@@ -167,6 +167,9 @@ class FakeClient:
     async def connect(self):
         return True
 
+    def is_connected(self):
+        return True
+
     async def is_user_authorized(self):
         return True
 

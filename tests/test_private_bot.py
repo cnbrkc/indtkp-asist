@@ -55,10 +55,45 @@ class PrivatePureTests(unittest.TestCase):
         self.assertEqual(private.parse_dm_keywords("TCL, LG, İPHONE, tcl\nLG"), ["tcl", "lg", "iphone"])
         for text in ["TCL televizyon", "LG OLED", "İPHONE 16", "iPhone 16", "IPHONE 16"]:
             self.assertTrue(private.dm_matches(text, ["tcl", "lg", "iphone"]))
-        self.assertFalse(private.dm_matches("bilgi gölge", ["lg"]))
+        # Literal substring semantics also apply to short single-word filters.
+        self.assertTrue(private.dm_matches("bilgi gölge", ["lg"]))
         self.assertFalse(private.dm_matches("TCL", []))
         self.assertTrue(private.dm_matches("55C805 kampanya", ["55c805"]))
         self.assertFalse(private.dm_matches("TCL", ["tcl tv"]))
+
+    def test_dm_phrase_is_contiguous_substring_and_exclusion_wins(self):
+        for text in ["TCL 65T6D", "tcl 65c805 fırsat", "TCL  65T6D", "ＴＣＬ ６５T6D"]:
+            with self.subTest(text=text):
+                self.assertTrue(private.dm_matches(text, ["tcl 65"]))
+                self.assertFalse(private.dm_matches(text, ["tcl 65"], ["tcl 65"]))
+        for text in ["TCL televizyon 65", "65 TCL", "TCL-65", "TCL 55T6D", "TCL65"]:
+            self.assertFalse(private.dm_matches(text, ["tcl 65"]), text)
+        self.assertTrue(private.dm_matches("TCL 65T6D", ["tcl 65"], ["65 TCL"]))
+        self.assertFalse(private.dm_matches("TCL 65T6D", [], ["other"]))
+        self.assertFalse(private.dm_matches("anything", ["", "  ", None]))
+        self.assertTrue(private.dm_matches("İPHONE 18PRO", ["iphone 18"], []))
+        self.assertTrue(private.dm_matches("TCL 65T6D", ["TCL 65"], ["", None]))
+
+    def test_dm_list_staging_limits_normalization_and_exact_removal(self):
+        for field in bot.DM_LIST_FIELDS:
+            config = {field: ["tcl 65", "iphone"]}
+            ok, candidate, values, _ = bot.stage_telegram_list_change(
+                config, field, "add", "TCL  65, IPHONE, ＬＧ ７５",
+            )
+            self.assertTrue(ok)
+            self.assertEqual(values, ["lg 75"])
+            self.assertEqual(candidate[field], ["tcl 65", "iphone", "lg 75"])
+            ok, _, _, _ = bot.stage_telegram_list_change(config, field, "remove", "tcl")
+            self.assertFalse(ok)  # removing an item still requires its full phrase
+            ok, candidate, _, _ = bot.stage_telegram_list_change(config, field, "remove", "TCL 65")
+            self.assertTrue(ok)
+            self.assertEqual(candidate[field], ["iphone"])
+            for raw in ["a" * 101, "ß" * 100, ",".join(f"w{i}" for i in range(51))]:
+                self.assertFalse(bot.stage_telegram_list_change(config, field, "add", raw)[0])
+            full = {field: [f"w{i}" for i in range(100)]}
+            ok, candidate, _, _ = bot.stage_telegram_list_change(full, field, "add", "new")
+            self.assertFalse(ok)
+            self.assertEqual(candidate, full)
 
     def test_keyword_limits(self):
         for value in [", ,", "a" * 101, ",".join(str(i) for i in range(101))]:
@@ -111,7 +146,10 @@ class PrivatePureTests(unittest.TestCase):
 
     def test_config_validates_new_fields(self):
         for extra in [{"dm_keywords": "tcl"}, {"dm_keywords": [1]}, {"dm_keywords": [""]},
-                      {"private_control": "yes"}, {"dm_enabled": "no"}]:
+                      {"private_control": "yes"}, {"dm_enabled": "no"},
+                      {"dm_exclude_keywords": "tcl"}, {"dm_exclude_keywords": [None]},
+                      {"dm_exclude_keywords": [""]}, {"dm_exclude_keywords": ["a" * 101]},
+                      {"dm_exclude_keywords": ["a"] * 101}]:
             config = {"source_chats": ["@firsatz"], "destination": GROUP_ID, **extra}
             with mock.patch.dict(os.environ, BASE_ENV):
                 self.assertTrue(bot.check_environment(config))
@@ -399,8 +437,8 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.poll_on_status = on_status
             private.POLL_STATE.update({"status": self.poll_status,
                                        "bot": {"id": 424242, "username": "takipci_bot"}})
-            if on_status is not None and self.poll_status == "running":
-                await on_status("running", "takipci_bot")
+            if on_status is not None:
+                await on_status(self.poll_status, "takipci_bot")
             await asyncio.Event().wait()
         async def run():
             await scenario()
@@ -604,16 +642,16 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.assertIn("NOTIFY_BOT_TOKEN tanımlı değil", self.replies())
         await self.run_scenario(scenario)
 
-    async def test_startup_note_announces_private_control(self):
+    async def test_startup_is_silent_even_with_legacy_notify_flag(self):
         async def scenario():
-            startup = [message for _, message in self.client.sent]
-            # Grup bildirimi tahmin değil gerçek durumu yazar: poller hazır + bot adı.
-            self.assertTrue(any("Özel komutlar hazır: @takipci_bot" in message
-                                for message in startup), startup)
-            # Yetkili kişiye bot üzerinden açılış mesajı gider (özel bildirim kanalı).
-            dms = [p for m, p in self.api.calls if m == "sendMessage"
-                   and "özel komutlar hazır" in p.get("text", "")]
-            self.assertEqual({p["chat_id"] for p in dms}, {ADMIN_ID, bot.SELF_ID})
+            self.assertEqual(self.client.sent, [])
+            self.assertFalse([p for m, p in self.api.calls if m == "sendMessage"])
+            await self.command("/durum")
+            self.assertIn("Dinleme: AKTİF", self.replies())
+            self.assertEqual(self.client.sent, [])  # /durum does not ping the group
+            with mock.patch.object(self.client, "is_connected", return_value=False):
+                await self.command("/durum")
+            self.assertIn("Dinleme: BAĞLANTI YOK", self.replies())
         await self.run_scenario(scenario, notify_on_start=True)
 
     async def test_startup_note_reports_broken_private_channel(self):
@@ -625,7 +663,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.assertFalse([p for m, p in self.api.calls if m == "sendMessage"])
         await self.run_scenario(scenario, notify_on_start=True)
 
-    async def test_status_callback_warns_group_and_dms_owner(self):
+    async def test_real_private_channel_faults_still_warn_group(self):
         async def scenario():
             before = len(self.client.sent)
             await self.poll_on_status("conflict", "3x 409")
@@ -636,9 +674,8 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.assertIn("409", texts[0])
             self.assertIn("401", texts[1])
             self.assertIn("toparlandı", texts[2])
-            # Grup uyarıları bot DM'inden değil hesaptan gider; DM yalnızca "hazır" içindir.
-            self.assertTrue(all(call[0] != "sendMessage" or "hazır" in call[1].get("text", "")
-                                for call in self.api.calls))
+            # Arıza uyarıları hesaptan gider; rutin açılış DM'i yoktur.
+            self.assertFalse([p for m, p in self.api.calls if m == "sendMessage"])
         await self.run_scenario(scenario, notify_on_start=True)
 
     async def test_disabling_cancels_not_yet_sent_queue_items(self):
@@ -751,6 +788,175 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             await self.command("lg")
             self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], ["tcl"])
         await self.run_scenario(scenario, dm_keywords=["tcl", "lg"])
+
+    async def edit_list(self, action, field, value, *, save=True):
+        await self.command("/ekle" if action == "add" else "/çıkar")
+        await self.command(field)
+        await self.command(value)
+        if save:
+            await self.command("/kaydet")
+
+    async def test_dm_lists_share_staged_menu_and_preserve_existing_settings(self):
+        async def scenario():
+            before = json.loads(Path(self.path).read_text())
+            await self.command("/ekle")
+            self.assertIn("4. 🎯  dmdahil", self.replies())
+            self.assertIn("5. 🔕  dmharic", self.replies())
+            await self.command("4")
+            self.assertIn("01. iphone", self.replies())
+            await self.command("TCL 65; LG 75, tcl 65\nİPHONE")
+            self.assertEqual(json.loads(Path(self.path).read_text()), before)
+            self.assertIn("DEĞİŞİKLİK TASLAĞI", self.replies())
+            await self.command("/dmfiltre")
+            self.assertTrue(bot.PENDING)  # status does not discard the draft
+            await self.command("/kaydet")
+            saved = json.loads(Path(self.path).read_text())
+            self.assertEqual(saved["dm_keywords"], ["iphone", "tcl 65", "lg 75"])
+            self.assertTrue(saved["dm_enabled"])
+            await self.edit_list("add", "5", "TCL 65T6D, yenilenmiş")
+            saved = json.loads(Path(self.path).read_text())
+            self.assertEqual(saved["dm_exclude_keywords"], ["tcl 65t6d", "yenilenmiş"])
+            for field in before.keys() - {"dm_keywords", "dm_enabled"}:
+                self.assertEqual(saved[field], before[field], field)
+            await self.command("/dmfiltre")
+            self.assertIn("DM hariç: tcl 65t6d, yenilenmiş", self.replies())
+        await self.run_scenario(scenario, dm_keywords=["iphone"])
+
+    async def test_model_prefix_matches_as_one_block_for_text_and_media(self):
+        async def scenario():
+            await self.offer("TCL televizyon 65T6D fırsat", media=False)
+            await self.offer("65T6D TCL fırsat", media=False)
+            self.assertFalse(self.api.offers)
+            await self.offer("TCL 65T6D fırsat", media=False)
+            await self.offer("TCL 65C805 fırsat", media=True)
+            self.assertEqual(len(self.api.offers), 2)
+            self.assertEqual(self.api.offers[0][0], "sendMessage")
+            self.assertEqual(self.api.offers[1][0], "copyMessage")
+            self.assertEqual(bot.STATS["forwarded"], 4)
+        await self.run_scenario(scenario, dm_keywords=["tcl 65"], dm_enabled=True)
+
+    async def test_dm_exclusion_wins_without_affecting_group_delivery(self):
+        async def scenario():
+            await self.offer("TCL 65T6D fırsat", media=False)
+            self.assertEqual(bot.STATS["forwarded"], 1)
+            self.assertEqual(self.queues[0].queue.qsize(), 0)
+            self.assertFalse(self.api.offers)
+            await self.offer("TCL 65C805 fırsat", media=False)
+            self.assertEqual(len(self.api.offers), 1)
+            self.assertEqual(bot.STATS["forwarded"], 2)
+        await self.run_scenario(scenario, dm_keywords=["tcl 65"], dm_enabled=True,
+                                dm_exclude_keywords=["tcl 65t6"])
+
+    async def test_new_exclusion_cancels_queued_copy_and_removal_allows_future_copy(self):
+        async def scenario():
+            event = FakeEvent(next(iter(bot.SOURCE_IDS)), 7, "TCL 65T6D fırsat", media=False)
+            await self.client.handlers[1][1](event)
+            self.assertEqual(self.queues[0].queue.qsize(), 1)
+            await self.edit_list("add", "dmharic", "tcl 65t6")
+            await asyncio.wait_for(self.queues[0].queue.join(), 2)
+            self.assertFalse(self.api.offers)
+            self.assertEqual(bot.STATS["forwarded"], 1)
+            await self.edit_list("remove", "dmharic", "1")
+            self.assertEqual(json.loads(Path(self.path).read_text())["dm_exclude_keywords"], [])
+            await self.offer("TCL 65T6D yeni fırsat", media=False)
+            self.assertEqual(len(self.api.offers), 1)
+        await self.run_scenario(scenario, dm_keywords=["tcl 65"], dm_enabled=True)
+
+    async def test_last_include_removal_disables_dm_and_keeps_exclusions(self):
+        async def scenario():
+            await self.edit_list("remove", "dmdahil", "1, LG 75", save=False)
+            self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], ["tcl 65", "lg 75"])
+            await self.command("/kaydet")
+            saved = json.loads(Path(self.path).read_text())
+            self.assertEqual(saved["dm_keywords"], [])
+            self.assertFalse(saved["dm_enabled"])
+            self.assertEqual(saved["dm_exclude_keywords"], ["yenilenmiş"])
+            await self.command("/dmac")
+            self.assertFalse(json.loads(Path(self.path).read_text())["dm_enabled"])
+            await self.offer("TCL 65T6D", media=False)
+            self.assertFalse(self.api.offers)
+        await self.run_scenario(scenario, dm_keywords=["tcl 65", "lg 75"], dm_enabled=True,
+                                dm_exclude_keywords=["yenilenmiş"])
+
+    async def test_exclusion_edits_and_include_removal_do_not_enable_paused_dm(self):
+        async def scenario():
+            await self.edit_list("add", "dmharic", "yenilenmiş")
+            await self.edit_list("remove", "dmharic", "1")
+            await self.edit_list("remove", "dmdahil", "LG")
+            saved = json.loads(Path(self.path).read_text())
+            self.assertFalse(saved["dm_enabled"])
+            self.assertEqual(saved["dm_keywords"], ["tcl"])
+            await self.edit_list("add", "dmdahil", "TCL", save=False)
+            self.assertFalse(json.loads(Path(self.path).read_text())["dm_enabled"])
+            self.assertIn("Eklenecek yeni kayıt yok", self.replies())
+        await self.run_scenario(scenario, dm_keywords=["tcl", "lg"], dm_enabled=False)
+
+    async def test_dm_draft_cancel_save_failure_and_retry(self):
+        async def scenario():
+            before = Path(self.path).read_text()
+            await self.edit_list("add", "dmdahil", "tcl 65", save=False)
+            await self.command("/iptal")
+            self.assertEqual(Path(self.path).read_text(), before)
+            await self.edit_list("add", "dmdahil", "tcl 65", save=False)
+            self.persist_ok = False
+            await self.command("/kaydet")
+            self.assertEqual(Path(self.path).read_text(), before)
+            self.assertTrue(bot.PENDING)
+            await self.offer("TCL 65T6D", media=False)
+            self.assertFalse(self.api.offers)  # failed save rolled back runtime too
+            self.persist_ok = True
+            await self.command("/kaydet")
+            self.assertFalse(bot.PENDING)
+            await self.offer("TCL 65T6D", media=False)
+            self.assertEqual(len(self.api.offers), 1)
+        await self.run_scenario(scenario)
+
+    async def test_exclusion_save_failure_does_not_block_offers(self):
+        async def scenario():
+            await self.edit_list("add", "dmharic", "tcl 65", save=False)
+            self.persist_ok = False
+            await self.command("/kaydet")
+            await self.offer("TCL 65T6D", media=False)
+            self.assertEqual(len(self.api.offers), 1)
+            self.assertNotIn("dm_exclude_keywords", json.loads(Path(self.path).read_text()))
+        await self.run_scenario(scenario, dm_keywords=["tcl 65"], dm_enabled=True)
+
+    async def test_other_admin_and_saved_messages_cannot_edit_dm_lists(self):
+        async def scenario():
+            before = Path(self.path).read_text()
+            for field in ("dmdahil", "dmharic"):
+                await self.command("/ekle", sender=88)
+                await self.command(field, sender=88)
+                self.assertIn("yalnızca hesap sahibinin", self.api.calls[-1][1]["text"])
+                await self.command("/iptal", sender=88)
+                for text in ("/ekle", field):
+                    event = FakeEvent(ADMIN_ID, ADMIN_ID, text)
+                    await self.client.handlers[0][1](event)
+                self.assertIn("yalnızca hesap sahibinin", event.replies[-1])
+                await self.client.handlers[0][1](FakeEvent(ADMIN_ID, ADMIN_ID, "/iptal"))
+            self.assertEqual(Path(self.path).read_text(), before)
+        await self.run_scenario(scenario, admin_user_id=[ADMIN_ID, 88])
+
+    async def test_stale_dm_draft_does_not_overwrite_current_list(self):
+        async def scenario():
+            await self.edit_list("add", "dmharic", "yenilenmiş", save=False)
+            # Simulate a base/list conflict at save time.
+            pending = next(iter(bot.PENDING.values()))
+            pending["base_config"]["dm_exclude_keywords"] = ["old"]
+            await self.command("/kaydet")
+            self.assertIn("başka bir değişiklik", self.replies())
+            self.assertEqual(json.loads(Path(self.path).read_text())["dm_exclude_keywords"], ["tcl"])
+            self.assertFalse(bot.PENDING)
+        await self.run_scenario(scenario, dm_exclude_keywords=["tcl"])
+
+    async def test_auto_restart_dispatches_without_any_telegram_message(self):
+        client = mock.Mock(send_message=mock.AsyncMock())
+        with mock.patch.object(bot.asyncio, "sleep", new_callable=mock.AsyncMock) as sleep, \
+             mock.patch.object(bot, "dispatch_next_run", new_callable=mock.AsyncMock) as dispatch:
+            await bot.auto_restart_scheduler(client, GROUP_ID, "test-pat", 3600)
+        sleep.assert_awaited_once_with(3600)
+        dispatch.assert_awaited_once_with("test-pat")
+        client.send_message.assert_not_awaited()
 
     async def test_master_command_lists_all_canonical_commands(self):
         async def scenario():

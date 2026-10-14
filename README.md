@@ -36,34 +36,41 @@ cevap gelmediyse bot hazır olduktan sonra tekrar `/start` gönder.
 
 ### 2. aşama — kişisel fırsatları istediğin zaman aç
 
-**Başlangıçta kapalıdır:** `dm_enabled: false`, `dm_keywords: []`. İlk aşamayı denedikten
-sonra hesap sahibi botun özel sohbetinde şu diyaloğu başlatabilir:
+Yeni kurulumlarda varsayılan `dm_enabled: false`, `dm_keywords: []` ve
+`dm_exclude_keywords: []` olur. **Mevcut kayıtlı DM kelimeleri korunur.** Hesap sahibi
+botun özel sohbetinde, diğer listelerle aynı ekle/çıkar akışını kullanır:
 
 ```text
-Sen: /dmfiltre
-Bot: Kişisel bildirim KAPALI. Kelimeler: (boş). Gönderim/hata sayaçları...
-Sen: /dmfiltreekle
-Bot: Eklenecek kelimeleri virgülle ayırarak yaz.
-Sen: tcl, lg, iphone
-Bot: Kaydedildi ve anında uygulandı. Grup ayarları değişmedi.
-Sen: /dmfiltrecikar
-Bot: Çıkarılacak kelimeleri virgülle ayırarak yaz.
-Sen: lg
-Bot: Kaydedildi. Kalan kelimeler: tcl, iphone.
+Sen: /ekle
+Bot: 1. Dahili · 2. Harici · 3. Grup · 4. dmdahil · 5. dmharic
+Sen: dmdahil
+Bot: Mevcut liste... Eklenecek kelimeleri gönder.
+Sen: tcl 65, lg 75
+Bot: Değişiklik taslağı... /kaydet veya /iptal
+Sen: /kaydet
+Bot: Kaydedildi ve çalışan ayarlara uygulandı.
+Sen: /ekle
+Sen: dmharic
+Sen: tcl 65t6d
+Sen: /kaydet
 ```
 
-Kısayollar: `/dmfiltreekle tcl, lg, iphone`, `/dmfiltrecikar lg`. Ekleme mevcut
-listeyi **koruyarak** yeni kelimeleri ekler; çıkarma yalnızca yazılan tam kelime/ifadeyi
-çıkarır. Büyük/küçük harf farkı yoktur. Aynı kelime ikinci kez eklenmez. Çıkarılacak
-kelimelerden biri listede yoksa hiçbir kayıt değiştirilmez; yazımı düzeltip yeniden dene.
-Yeni kelime eklemek kişisel bildirimleri açar. Çıkarma, kapalı filtreyi açmaz;
-son kelime çıkarılırsa filtre otomatik kapanır. Zaten mevcut kelimeleri eklemek ayarı
-ve açık/kapalı durumunu değiştirmez.
+Çıkarmak için `/çıkar` → `dmdahil` veya `dmharic` → listedeki numara/tam ifade →
+`/kaydet`. Menüde `4` ve `5` de kullanılabilir. Birden çok kaydı virgül, noktalı virgül
+veya yeni satırla ayır; ifadenin içindeki boşluklar kelimeleri ayrı filtrelere bölmez.
+Ekleme mevcut listeyi korur, tekrarları atlar; çıkarma numara veya listedeki tam değerle
+yapılır. Diğer listelerdeki gibi geçersiz/bulunamayan kayıtlar uyarıda gösterilir,
+geçerli kayıtlar taslağa alınır. Her iki DM listesi en fazla 100 ifade içerir.
 
-Bu işlemler normal grup liste menülerinden farklı olarak **hemen kaydedilir**;
-ayrıca `/kaydet` gerekmez. Değer istenirken `/iptal` vazgeçer. Bekleyen bir ayar taslağı
-varsa yeni ekleme/çıkarma başlatmadan önce onu bitir. `/dmfiltre` yalnızca bilgi verir,
-bekleyen taslağı değiştirmez ve tek başına kelime istemez.
+Değişiklik **`/kaydet` öncesinde aktif değildir**; `/iptal` taslağı siler. Yeni bir
+`dmdahil` kaydı kaydedilince DM açılır; son dahil kaydı çıkarılırsa kapanır. Çıkarma,
+kapalı filtreyi açmaz. `dmharic` düzenlemek DM'in açık/kapalı durumunu değiştirmez.
+`/dmfiltre` dahil/hariç listelerini, açık/kapalı durumunu ve sayaçları salt okunur gösterir.
+
+Eski `/dmfiltreekle` ve `/dmfiltrecikar` yalnızca geriye uyumluluk için çalışmaya devam
+eder (eski, anında kayıt davranışıyla); `/komutlar` ve menülerde artık ayrı komut olarak
+yer almaz. Yeni kullanımda her iki DM listesini de `/ekle` ve `/çıkar` ile yönet.
+
 Ayarlar `config.json`'a ve mevcut GitHub kayıt yöntemiyle depoya yazılır; gönderilen
 kayıt raporunu kontrol et. Yerel dosyaya yazma başarısızsa eski ayar geri yüklenir.
 GitHub'a gönderim başarısızsa yereldeki ayar geçerlidir ama yeni Actions runner'ına
@@ -72,8 +79,8 @@ aktarılmayabilir. **Özel kelimeler gizli değildir; config ve Git geçmişinde
 | Komut | Etki |
 |---|---|
 | `/dmfiltre` | Mevcut kelimeler, açık/kapalı durumu, bu oturumun gönderim/hata/kuyruk sayaçları; salt okunur |
-| `/dmfiltreekle [kelime, ifade]` | Kelime ekler; argüman yoksa eklenecek kelimeleri sorar |
-| `/dmfiltrecikar [kelime, ifade]` | Kelime çıkarır; argüman yoksa çıkarılacak kelimeleri sorar |
+| `/ekle` → `dmdahil` / `dmharic` | Listeye ekleme taslağı; `/kaydet` ile uygulanır |
+| `/çıkar` → `dmdahil` / `dmharic` | Listeden çıkarma taslağı; `/kaydet` ile uygulanır |
 | `/dmkapat` | Listeyi koruyarak özel fırsatları kapatır; henüz gönderilmeyen kuyruk kayıtları da atlanır |
 | `/dmac` | Kayıtlı listeyle tekrar açar; boş listeyi açmaz |
 | `/komutlar` | Her desteklenen komutu ve açıklamasını tek kez listeler |
@@ -84,9 +91,16 @@ her satırda tek canonical komut olacak şekilde üretilir.
 Bu kişisel ayarlar ve alıcı **yalnızca hesabın sahibine** aittir; başka bir admin
 kişisel alıcıyı kendisine çeviremez. Çok kullanıcılı abonelik sistemi değildir.
 
-- Listeden **herhangi biri** eşleşir. Büyük/küçük harf farkı yok; `IPHONE`/`İPHONE`
-  eşleşir. Kelime sınırı kullanılır: `lg`, `bilgi` içindeki harflerden eşleşmez.
-  Tam model kodu/ifade yazılabilir. En fazla 100 kayıt, her biri 100 karakter.
+- **DM dahil** listesinden herhangi bir ifade metinde **blok halinde** geçmelidir.
+  `tcl 65`, `TCL 65T6D` içinde eşleşir; `TCL televizyon 65` veya `65 TCL` eşleşmez.
+  Kelimeler ayrı ayrı aranmaz; kelime sınırı şartı yoktur. Bu yüzden kısa filtreler
+  geniş eşleşebilir (`lg`, `bilgi` içinde de geçer); gerekirse `lg 65` gibi ifade kullan.
+  Büyük/küçük harf, Unicode genişlik ve fazla boşluk farkları yok sayılır;
+  `IPHONE`/`İPHONE` eşleşir. Her ifade en fazla 100 karakterdir.
+- **DM hariç** listesindeki bir ifade aynı blok eşleşmesiyle geçerse özel kopya
+  gönderilmez; dahil eşleşmesine göre önceliklidir. Grup mesajı bundan etkilenmez.
+  Hariç listesi boşsa ek engelleme yapılmaz; dahil listesi boşsa DM gönderilmez.
+  Kuyrukta bekleyen kopyalar gönderilmeden önce güncel dahil/hariç listeleriyle tekrar kontrol edilir.
 - Önce mevcut grup filtresi uygulanır. Hariç tutulan, gruba gönderilemeyen veya
   mevcut tekrar birleştirmesiyle yeni grup mesajı oluşturulmayan fırsata özel kopya
   gönderilmez. Bu aşama **gruba yeni gönderilen fırsatların aynasıdır**; geçmiş tarama,
@@ -110,17 +124,16 @@ kişisel alıcıyı kendisine çeviremez. Çok kullanıcılı abonelik sistemi d
 
 ### Sorun giderme ve geri dönüş
 
-**Önce gruba düşen açılış mesajına bak.** Takipçi artık özel komut kanalını açılış
-bildiriminden *önce* başlatır ve gerçek durumu yazar:
+**Açılış ve otomatik oturum yenileme mesajları artık gönderilmez** (gruba da DM'e de).
+Eski `notify_on_start: true` ayarı da rutin açılış mesajını geri açmaz. Dinlemeyi kontrol
+etmek için botun özel sohbetinde `/durum` yaz: bağlantı/dinleme durumu, kaynak sayısı,
+çalışma süresi ve sayaçlar görünür; gruba deneme mesajı atılmaz. Bağlantı yoksa bunu
+belirtir. Bot tamamen kapalıysa komuta yanıt veremez; Actions/servis logunu kontrol et.
 
-- `✅ Özel komutlar hazır: @botadi özel sohbetine yaz` → kanal çalışıyor; o bota yaz.
-  Aynı anda bot sana özelden de `🟢 Takipçi başladı; özel komutlar hazır` atar (daha önce
-  en az bir kez /start yazdıysan; Telegram botun ilk mesajı atmasına izin vermez).
-- `⚠️ Özel komutlar ÇALIŞMIYOR: ... webhook var / token geçersiz (401) / başka bir süreç
-  kullanıyor (409)` → nedeni yazılıdır, aşağıdaki ilgili maddeye git. Çalışma sırasında
-  bozulursa da aynı uyarı gruba düşer; düzelince `✅ ... toparlandı` gelir.
-- `⏳ Özel komutlar henüz hazır değil` → Telegram'a 10 sn içinde ulaşılamadı; biraz bekleyip
-  Kayıtlı Mesajlar'dan `/test` yaz, `🔎 Özel komut kanalı` bölümü poller durumunu gösterir.
+Gerçek özel komut arızaları (webhook / 401 / kalıcı 409) ve arıza sonrası toparlanma
+uyarıları korunur; bunlar rutin yeniden başlatma bildirimi değildir. Ayrıntılı özel
+komut teşhisi için `/test` kullanılabilir, ancak **bu komut hedef gruba deneme mesajı
+atar** ve alarma neden olabilir; sessiz kontrol için `/durum` tercih et.
 
 Takipçi hazır olmadan önce yazdığın komut işlenmez (eski bir `/restart`'ın tekrar
 oynamaması için) ama artık sessiz kalmaz: son 15 dakika içinde yazılmışsa bot
@@ -259,7 +272,7 @@ Deponun kökündeki [`config.json`](config.json) dosyasını GitHub'dan düzenle
   "control_chat": -5092968106,
   "admin_user_id": 1143378073,
   "auto_restart": true,
-  "notify_on_start": true
+  "notify_on_start": false
 }
 ```
 
@@ -346,10 +359,11 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `control_chat` | sayı / `"me"` | Eski kontrol sohbeti; `private_control: true` iken yalnızca Kayıtlı Mesajlar yedeği aktiftir. |
 | `private_control` | `true` / `false` | Komutları bildirim botunun özel sohbetinden al; grup komutlarını kapat. Bu depoda `true`; alan yoksa eski davranış. `NOTIFY_BOT_TOKEN` gerekir. |
 | `dm_enabled` | `true` / `false` | Hesap sahibine kişisel fırsat kopyaları. Başlangıçta `false`. |
-| `dm_keywords` | metin listesi | Özel kopya filtresi; boş liste eşleşmez. `/dmfiltreekle` / `/dmfiltrecikar` ile anında değiştirilir; grup listesinden bağımsızdır. |
+| `dm_keywords` | metin listesi | DM dahil ifadeleri; boş liste eşleşmez. `/ekle` / `/çıkar` → `dmdahil` → `/kaydet` ile düzenlenir; grup listesinden bağımsızdır. |
+| `dm_exclude_keywords` | metin listesi | DM hariç ifadeleri; varsayılan boş liste. `/ekle` / `/çıkar` → `dmharic` → `/kaydet`; yalnızca özel kopyayı engeller. |
 | `admin_user_id` | sayı / liste | `control_chat` bir grupsa **zorunlu**: komutları yalnızca bu ID'ler çalıştırabilir. |
 | `auto_restart` | `true` / `false` | `GH_PAT` varsa yenileme zincirini açar (bir sonraki açılışta geçerli). |
-| `notify_on_start` | `true` / `false` | Her açılışta hedefe kısa bir "başladım" mesajı gönderir. |
+| `notify_on_start` | `true` / `false` | Eski uyumluluk alanı; artık dikkate alınmaz. Açılış/otomatik yenileme sessizdir; `/durum` ile kontrol et. |
 
 Bildirim botu token'ı config'e yazılmaz; tek kaynağı `NOTIFY_BOT_TOKEN` ortam değişkeni /
 GitHub Actions secret'ıdır ([6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin)).
@@ -381,8 +395,8 @@ Kaynak mesajlarını hedef gruba iletir.
 /durum, /kaynaklar, /test, /id, /restart, /komutlar — durum ve araçlar.
 ```
 
-`/open` ve `/close` anında uygulanır ve kaydedilir; grup listesi düzenlemeleri `/kaydet`
-seçilene kadar taslakta kalır, kişisel DM kelimeleri ise hemen kaydedilir. `/restart` için
+`/open` ve `/close` anında uygulanır ve kaydedilir; tüm liste düzenlemeleri (DM dahil/hariç
+dahil) `/kaydet` seçilene kadar taslakta kalır. `/restart` için
 `GH_PAT` gerekir. Türkçe `I`/`İ` büyük harf yazımları (`/ANALİZ`, `/Iptal` gibi) otomatik eşleşir.
 
 ### Komut temizliği (ekranda yalnızca son mesaj)
@@ -406,34 +420,31 @@ seçilene kadar taslakta kalır, kişisel DM kelimeleri ise hemen kaydedilir. `/
 
 | Komut | Açıklama |
 |---|---|
-| `/komutlar` | Tüm desteklenen komutları ve açıklamalarını listeler |
-| `/start` | Özel sohbet kullanımını açıklar; fırsat hedefini değiştirmez |
-| `/durum` | Takipçinin durumunu, hedefini, sayaçlarını ve filtre durumunu gösterir |
-| `/dmfiltre` | Kişisel kelimeleri, açık/kapalı durumunu ve sayaçlarını gösterir |
-| `/dmfiltreekle` | Kişisel kelime ekler ve filtreyi açar; argümansız sorar, hemen kaydeder |
-| `/dmfiltrecikar` | Kişisel kelime çıkarır; argümansız sorar, hemen kaydeder |
-| `/dmac` | Kayıtlı kişisel filtreyi açar; boş listeyi açmaz |
-| `/dmkapat` | Kelimeleri koruyarak kişisel fırsat gönderimini kapatır |
-| `/ayar` | Grup dahili/harici kelimeleri ve kaynak listesi menüsünü gösterir |
-| `/ekle` | Grup ayarlarında liste seçip kayıt ekleme taslağı başlatır |
-| `/çıkar` | Grup ayarlarında liste seçip kayıt çıkarma taslağı başlatır |
-| `/kaydet` | Bekleyen grup listesi taslağını kaydeder; DM değişiklikleri anında kaydedilir |
-| `/iptal` | Bekleyen ekleme/çıkarma veya filtre seçimini iptal eder |
-| `/open` | Grup filtresini açar; dahili, harici veya ikisi seçilebilir |
-| `/close` | Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir |
-| `/kaynaklar` | İzlenen kaynakları ve çözülemeyenleri listeler |
-| `/kaynaktest` | Her kaynağın son ham mesajını ve yerel işlem yolunu denetler; canlı event sayısını raporlar |
-| `/analiz` | Kaynak geçmişindeki başlıkları analiz eder; örnek: `/analiz 100 tümü`. Sorgu verilirse eşleşen ürünleri listeler (`ürün adı - fiyat`): `/analiz 1000 tcl 65`; bitişik yazım: `/analiz350` |
-| `/test` | Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir |
-| `/id` | Bulunduğun sohbetin ve kullanıcının kimliğini gösterir |
-| `/restart` | Yeni takipçi çalışması başlatır; `GH_PAT` gerekir |
-
+| `/komutlar` | Tüm desteklenen komutları ve açıklamalarını listeler. |
+| `/start` | Özel sohbet kullanımını açıklar; fırsat hedefini değiştirmez. |
+| `/durum` | Takipçinin dinleme durumunu, hedefini, sayaçlarını ve filtre durumunu gösterir. |
+| `/dmfiltre` | DM dahil/hariç listelerini, açık/kapalı durumunu ve sayaçlarını gösterir. |
+| `/dmac` | Kayıtlı kişisel filtreyi açar; boş listeyi açmaz. |
+| `/dmkapat` | Kelimeleri koruyarak kişisel fırsat gönderimini kapatır. |
+| `/ayar` | Dahil, hariç, grup, dmdahil ve dmharic listelerinin menüsünü gösterir. |
+| `/ekle` | Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic). |
+| `/çıkar` | Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic). |
+| `/kaydet` | Bekleyen liste taslağını kaydeder (DM listeleri dahil). |
+| `/iptal` | Bekleyen ekleme/çıkarma veya filtre seçimini iptal eder. |
+| `/open` | Grup filtresini açar; dahili, harici veya ikisi seçilebilir. |
+| `/close` | Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir. |
+| `/kaynaklar` | İzlenen kaynakları ve çözülemeyenleri listeler. |
+| `/kaynaktest` | Her kaynağın son ham mesajını ve yerel işlem yolunu denetler; canlı event sayısını raporlar. |
+| `/analiz` | Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü veya /analiz 1000 tcl 65 (eşleşen ürünleri 'ürün adı - fiyat' olarak listeler). |
+| `/test` | Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir. |
+| `/id` | Bulunduğun sohbetin ve kullanıcının kimliğini gösterir. |
+| `/restart` | Yeni takipçi çalışması başlatır; GH_PAT gerekir. |
 
 **Tamamı virgülle ayrılmış hâli** (BotFather açıklamasına, sabitlenmiş mesaja ya da
 grubun komut menüsüne doğrudan yapıştırabilirsin):
 
 ```text
-/komutlar, /start, /durum, /dmfiltre, /dmfiltreekle, /dmfiltrecikar, /dmac, /dmkapat, /ayar, /ekle, /çıkar, /kaydet, /iptal, /open, /close, /kaynaklar, /kaynaktest, /analiz, /test, /id, /restart
+/komutlar, /start, /durum, /dmfiltre, /dmac, /dmkapat, /ayar, /ekle, /çıkar, /kaydet, /iptal, /open, /close, /kaynaklar, /kaynaktest, /analiz, /test, /id, /restart
 ```
 
 #### Kaynak mesaj erişimini test etme
@@ -456,7 +467,7 @@ grubun komut menüsüne doğrudan yapıştırabilirsin):
 
 ## 5. Ayarları Telegram'dan düzenleme
 
-Telegram akışını bilerek sade tuttuk: sohbetten şu üç liste düzenlenebilir, iki filtre de
+Telegram akışını bilerek sade tuttuk: sohbetten şu beş liste düzenlenebilir, iki grup filtresi de
 `/open` ve `/close` ile bağımsız açılıp kapatılır; diğer teknik ayarlar config/kod üzerinden yönetilir.
 
 | Menüde görünen ad | `config.json` alanı | Ne işe yarar |
@@ -464,6 +475,11 @@ Telegram akışını bilerek sade tuttuk: sohbetten şu üç liste düzenlenebil
 | 🔎 Dahili kelimeler | `include_keywords` | Mesajda aranacak kelimeler |
 | 🚫 Harici kelimeler | `exclude_keywords` | Bunlardan biri geçerse mesajı engeller |
 | 📣 Grup isimleri | `source_chats` | Takip edilecek kanal/grup kullanıcı adı veya ID'si |
+| 🎯 dmdahil | `dm_keywords` | Özel kopyada blok halinde aranan ifadeler |
+| 🔕 dmharic | `dm_exclude_keywords` | Özel kopyayı engelleyen ifadeler |
+
+DM listeleri yalnızca hesap sahibinin botla özel sohbetinden düzenlenir. `/open` ve
+`/close` grup filtrelerine aittir; DM gönderimi `/dmac` / `/dmkapat` ile yönetilir.
 
 #### Filtreler: `/open` ve `/close`
 
@@ -924,7 +940,7 @@ Dosyalar: `bot.py` (tüm mantık), `config.json` (ayarlar), `generate_session.py
 
 ## 14. Bu güncellemeden sonra yapılacaklar
 
-Bu sürüm üç liste düzenlemesini ve iki filtre komutunu sunar: `/ekle` veya `/çıkar` →
+Bu sürüm beş liste düzenlemesini ve iki filtre komutunu sunar: `/ekle` veya `/çıkar` →
 seçim → değer (virgülle birden çok) → `/kaydet` ya da `/iptal`; filtreler için `/open` ve
 `/close`; geçmiş istatistiği için `/analiz`.
 Diğer teknik ayarlar `config.json` üzerinden yönetilir. Ayrıntılar [4. bölümde](#4-telegram-komutları)
@@ -1027,13 +1043,13 @@ başlat. (Bunu yapmazsan mevcut job eski kodla 6 saate kadar devam eder.)
 Kontrol sohbetinde yeni akışı doğrula:
 
 ```text
-/ayar       → üç liste ve filtre kısayolları gösterilmeli
+/ayar       → beş liste ve filtre kısayolları gösterilmeli
 /close      → menü sormalı: 1 dahili · 2 harici · 3 ikisi
 1           → dahili filtre kapanmalı, harici engel sürmeli
 /open dahili→ dahili filtre geri açılmalı (anında kaydeder)
 /close ikisi→ iki filtre de kapanmalı; her mesaj iletilmeli
 /open ikisi → ikisi birden açılmalı
-/ekle       → üç liste seçimi, ardından mevcut liste
+/ekle       → beş liste seçimi, ardından mevcut liste
 kahve, şeker, süt → taslakta üçü görünmeli; henüz kaydedilmemeli
 /kaydet     → config.json yazılmalı ve GitHub sonucu görünmeli
 /çıkar      → liste seçimi ve mevcut kayıtlar gösterilmeli
