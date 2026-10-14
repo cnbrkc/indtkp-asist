@@ -264,7 +264,7 @@ async def poll_private_commands(api, allowed_ids, handler, on_status=None, *,
 
 
 def normalize_keyword(text):
-    return unicodedata.normalize("NFKC", text).casefold().replace("i\u0307", "i")
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().replace("i\u0307", "i").split())
 
 
 def parse_dm_keywords(text):
@@ -300,10 +300,15 @@ def edit_dm_keywords(existing, raw, action):
     raise ValueError("Geçersiz kişisel filtre işlemi.")
 
 
-def dm_matches(text, keywords):
+def dm_matches(text, keywords, excluded=()):
+    """Match contiguous normalized phrases, not independent words; exclusions win."""
     normalized = normalize_keyword(text)
-    return any(re.search(r"(?<!\w)" + re.escape(normalize_keyword(word)) + r"(?!\w)", normalized)
-               for word in keywords if isinstance(word, str) and word.strip())
+
+    def contains_any(words):
+        return any(normalize_keyword(word) in normalized
+                   for word in words if isinstance(word, str) and word.strip())
+
+    return contains_any(keywords) and not contains_any(excluded)
 
 
 def private_copy_request(chat_id, from_chat_id, info):

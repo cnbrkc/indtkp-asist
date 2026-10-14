@@ -43,7 +43,7 @@ from telethon.tl import types
 
 from private_bot import (
     BotAPI, BotAPIError, PrivateControlEvent, PrivateOfferQueue,
-    dm_matches, edit_dm_keywords, poll_health, poll_private_commands,
+    dm_matches, edit_dm_keywords, normalize_keyword, poll_health, poll_private_commands,
     private_copy_request,
 )
 
@@ -451,10 +451,11 @@ def check_environment(config: dict | None = None) -> list[str]:
         problems.append("config.json → private_control true/false olmalı.")
     if not isinstance(config.get("dm_enabled", False), bool):
         problems.append("config.json → dm_enabled true/false olmalı.")
-    dm_words = config.get("dm_keywords", [])
-    if (not isinstance(dm_words, list) or len(dm_words) > 100
-            or any(not isinstance(w, str) or not w.strip() or len(w) > 100 for w in dm_words)):
-        problems.append("config.json → dm_keywords en fazla 100 dolu metinden oluşmalı (her biri ≤100 karakter).")
+    for field in ("dm_keywords", "dm_exclude_keywords"):
+        dm_words = config.get(field, [])
+        if (not isinstance(dm_words, list) or len(dm_words) > 100
+                or any(not isinstance(w, str) or not w.strip() or len(w) > 100 for w in dm_words)):
+            problems.append(f"config.json → {field} en fazla 100 dolu metinden oluşmalı (her biri ≤100 karakter).")
     if config.get("private_control") and not os.getenv("NOTIFY_BOT_TOKEN", "").strip():
         log.warning("Özel komutlar için NOTIFY_BOT_TOKEN gerekli; Kayıtlı Mesajlar yedek kontrol olarak açık.")
 
@@ -2649,16 +2650,14 @@ COMMAND_RESTART = "/restart"
 COMMAND_DESCRIPTIONS = (
     (COMMAND_HELP, "Tüm desteklenen komutları ve açıklamalarını listeler."),
     (COMMAND_START, "Özel sohbet kullanımını açıklar; fırsat hedefini değiştirmez."),
-    (COMMAND_STATUS, "Takipçinin durumunu, hedefini, sayaçlarını ve filtre durumunu gösterir."),
-    (COMMAND_DM_STATUS, "Kişisel kelimeleri, açık/kapalı durumunu ve sayaçlarını gösterir."),
-    (COMMAND_DM_ADD, "Kişisel kelime ekler ve filtreyi açar; argümansız sorar, hemen kaydeder."),
-    (COMMAND_DM_REMOVE, "Kişisel kelime çıkarır; argümansız sorar, hemen kaydeder."),
+    (COMMAND_STATUS, "Takipçinin dinleme durumunu, hedefini, sayaçlarını ve filtre durumunu gösterir."),
+    (COMMAND_DM_STATUS, "DM dahil/hariç listelerini, açık/kapalı durumunu ve sayaçlarını gösterir."),
     (COMMAND_DM_OPEN, "Kayıtlı kişisel filtreyi açar; boş listeyi açmaz."),
     (COMMAND_DM_CLOSE, "Kelimeleri koruyarak kişisel fırsat gönderimini kapatır."),
-    (COMMAND_SETTINGS_MENU, "Grup dahili/harici kelimeleri ve kaynak listesi menüsünü gösterir."),
-    (COMMAND_SETTINGS_ADD, "Grup ayarlarında liste seçip kayıt ekleme taslağı başlatır."),
-    (COMMAND_SETTINGS_REMOVE, "Grup ayarlarında liste seçip kayıt çıkarma taslağı başlatır."),
-    (COMMAND_SETTINGS_SAVE, "Bekleyen grup listesi taslağını kaydeder; DM değişiklikleri anında kaydedilir."),
+    (COMMAND_SETTINGS_MENU, "Dahil, hariç, grup, dmdahil ve dmharic listelerinin menüsünü gösterir."),
+    (COMMAND_SETTINGS_ADD, "Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic)."),
+    (COMMAND_SETTINGS_REMOVE, "Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic)."),
+    (COMMAND_SETTINGS_SAVE, "Bekleyen liste taslağını kaydeder (DM listeleri dahil)."),
     (COMMAND_SETTINGS_REVERT, "Bekleyen ekleme/çıkarma veya filtre seçimini iptal eder."),
     (COMMAND_FILTER_OPEN, "Grup filtresini açar; dahili, harici veya ikisi seçilebilir."),
     (COMMAND_FILTER_CLOSE, "Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir."),
@@ -2673,7 +2672,7 @@ COMMAND_DESCRIPTIONS = (
 HELP_TEXT = "\n".join(f"{command} - {description}" for command, description in COMMAND_DESCRIPTIONS)
 
 
-def build_status_text(config: dict) -> str:
+def build_status_text(config: dict, *, connected: bool = True) -> str:
     last = STATS["last_match"]
     last_line = "henüz eşleşme yok"
     if last:
@@ -2693,8 +2692,15 @@ def build_status_text(config: dict) -> str:
     else:
         filter_line += "\n• 🚫 Harici filtre: KAPALI · engelleme yapılmıyor"
     filter_line += "\n• Değiştirmek için /open ve /close"
+    if not connected:
+        listening = "• Dinleme: BAĞLANTI YOK — Telegram bağlantısı bekleniyor."
+    elif not SOURCE_IDS:
+        listening = "• Dinleme: KAYNAK YOK — kaynak listesini kontrol et."
+    else:
+        listening = "• Dinleme: AKTİF — kaynak mesajları bekleniyor."
     return (
         "✅ Takipçi aktif\n"
+        f"{listening}\n"
         f"• Çalışma süresi: {humanize(time.time() - STARTED_AT)}\n"
         f"• Dinlenen kaynak: {len(SOURCE_IDS)}/{len(config.get('source_chats') or [])}"
         + (f" (çözülemeyen {len(SOURCE_FAILURES)})" if SOURCE_FAILURES else "")
@@ -2739,15 +2745,15 @@ def build_source_text() -> str:
 # Telegram liste düzenleme akışı
 # ---------------------------------------------------------------------------
 #
-# Telegram'da yalnızca üç liste taslak akışıyla düzenlenir; iki filtre ise
+# Telegram'da beş liste taslak akışıyla düzenlenir; iki filtre ise
 # /open ve /close ile bağımsız açılıp kapatılır. Diğer ayarlar config/kod üzerinden.
 
 def build_main_menu_text() -> str:
-    """/ayar çıktısı: Telegram'dan düzenlenebilen üç listeyi açıklar."""
+    """/ayar çıktısı: Telegram'dan düzenlenebilen beş listeyi açıklar."""
     return "\n".join([
         "⚙️  TELEGRAM AYARLARI",
         "━━━━━━━━━━━━━━━━━━━━",
-        "Liste olarak Telegram'dan yalnızca şu üç alan düzenlenebilir:",
+        "Liste olarak Telegram'dan şu beş alan düzenlenebilir:",
         "",
         "➕  /ekle   · Listeye kayıt ekle (virgülle birden çok)",
         "➖  /çıkar  · Listeden kayıt çıkar (virgülle birden çok)",
@@ -2770,6 +2776,9 @@ def build_main_menu_text() -> str:
         "  🔎 Dahili kelimeler",
         "  🚫 Harici kelimeler",
         "  📣 Grup isimleri (kanal/grup kullanıcı adı veya ID)",
+        "  🎯 dmdahil — özel kopyada aranan ifadeler",
+        "  🔕 dmharic — özel kopyayı engelleyen ifadeler",
+        "  DM listeleri yalnızca hesap sahibinin botla özel sohbetinden düzenlenir.",
         "",
         "🧹  Komut temizliği: yeni komutta bir önceki komut ve yanıt silinir;",
         "     bu sohbette ekranda yalnızca son mesaj kalır. Bildirimler silinmez.",
@@ -2779,8 +2788,19 @@ def build_main_menu_text() -> str:
 
 
 # Telegram'dan değiştirilebilen tek ayarlar; her yeni alan buraya bilinçli eklenmeli.
-TELEGRAM_LIST_FIELDS = ("include_keywords", "exclude_keywords", "source_chats")
+DM_LIST_FIELDS = ("dm_keywords", "dm_exclude_keywords")
+TELEGRAM_LIST_FIELDS = ("include_keywords", "exclude_keywords", "source_chats", *DM_LIST_FIELDS)
 TELEGRAM_LIST_META: dict[str, dict[str, str]] = {
+    "dm_keywords": {
+        "title": "dmdahil — DM dahil kelimeler",
+        "icon": "🎯",
+        "description": "Blok halinde geçen ifadeler özel kopya gönderir; eklemek DM'i açar",
+    },
+    "dm_exclude_keywords": {
+        "title": "dmharic — DM hariç kelimeler",
+        "icon": "🔕",
+        "description": "Blok halinde geçen ifadeler yalnızca özel kopyayı engeller",
+    },
     "include_keywords": {
         "title": "Dahili kelimeler",
         "icon": "🔎",
@@ -2798,7 +2818,9 @@ TELEGRAM_LIST_META: dict[str, dict[str, str]] = {
     },
 }
 TELEGRAM_LIST_ALIASES = {
-    "include_keywords": {"dahili", "dahili_kelimeler", "kelime", "kelimeler", "include_keywords"},
+    "dm_keywords": {"dmdahil", "dmdahili", "dm_dahil", "dm_dahili"},
+    "dm_exclude_keywords": {"dmharic", "dmhariç", "dm_haric", "dm_hariç"},
+    "include_keywords": {"dahil", "dahili", "dahili_kelimeler", "kelime", "kelimeler", "include_keywords"},
     "exclude_keywords": {"harici", "harici_kelimeler", "hariç", "haric", "exclude_keywords"},
     "source_chats": {"grup", "gruplar", "grup_isimleri", "kanal", "kanallar", "kaynak", "kaynaklar", "source_chats"},
 }
@@ -2818,7 +2840,7 @@ def telegram_list_items(config: dict, field: str) -> list[Any]:
 
 
 def resolve_telegram_list(text: Any) -> str | None:
-    """Menüdeki 1–3 seçimini veya Türkçe liste adını kurallı alana çevir."""
+    """Menüdeki 1–5 seçimini veya Türkçe liste adını kurallı alana çevir."""
     raw = normalize(str(text or "")).strip().lstrip("/")
     if raw.isdigit():
         index = int(raw)
@@ -2842,13 +2864,15 @@ def build_list_category_prompt(action: str, config: dict) -> str:
         count = len(telegram_list_items(config, field))
         lines.append(f"{index}. {meta['icon']}  {meta['title']}  ·  {count} kayıt")
         lines.append(f"   {meta['description']}")
-    lines += ["", "Seçmek için 1, 2, 3 ya da liste adını yaz.", "Vazgeçmek için /iptal."]
+    lines += ["", "Seçmek için 1, 2, 3, 4, 5 ya da liste adını yaz.", "Vazgeçmek için /iptal."]
     return "\n".join(lines)
 
 
 def telegram_list_item_key(field: str, value: Any) -> str:
     """Kayıt karşılaştırması: Türkçe kelimeler ve ASCII Telegram kullanıcı adları."""
     text = str(value)
+    if field in DM_LIST_FIELDS:
+        return normalize_keyword(text)
     # Telegram kullanıcı adları ASCII ve büyük/küçük harfe duyarsızdır; burada
     # Türkçe I/İ eşlemesi uygulanmamalı (I ile i farklı dönüşür).
     return text.casefold() if field == "source_chats" else normalize(text)
@@ -2932,8 +2956,11 @@ def stage_telegram_list_change(
                     invalid.append(f"{text} ({exc})")
                     continue
             else:
-                value = normalize(text)
+                value = telegram_list_item_key(field, text)
             key = telegram_list_item_key(field, value)
+            if field in DM_LIST_FIELDS and len(key) > LIST_ITEM_MAX_LENGTH:
+                invalid.append(f"{text[:24]}… (normalizasyon sonrası en fazla {LIST_ITEM_MAX_LENGTH} karakter)")
+                continue
             if key in keys:
                 duplicates.append(str(value))
                 continue
@@ -2947,6 +2974,9 @@ def stage_telegram_list_change(
             if invalid:
                 lines.append(f"Geçersiz kayıt: {format_value_preview(invalid)}")
             return False, copy.deepcopy(config), [], "\n".join(lines)
+
+        if field in DM_LIST_FIELDS and len(current) + len(added) > 100:
+            return False, copy.deepcopy(config), [], "DM listesinde en fazla 100 kayıt olabilir; hiçbir kayıt eklenmedi."
 
         if len(added) == 1:
             message = f"{title} listesine eklenecek: {added[0]}"
@@ -3224,7 +3254,8 @@ def build_list_change_confirmation(action: str, field: str, value: Any, config: 
     ])
 
 
-# Command groups are derived from the catalog constants and contain no aliases.
+# Command groups use the catalog constants. The old DM add/remove commands
+# remain unlisted compatibility shortcuts; new list edits use /ekle and /çıkar.
 # Turkish uppercase I/İ is normalized at parse time; it is not a second command.
 CMD_DM_COMMANDS = frozenset({
     COMMAND_DM_STATUS, COMMAND_DM_ADD, COMMAND_DM_REMOVE, COMMAND_DM_OPEN, COMMAND_DM_CLOSE,
@@ -4152,13 +4183,7 @@ def build_query_lines(texts: Iterable[str], pattern: Any) -> list[str]:
 async def auto_restart_scheduler(client: TelegramClient, destination: Any, pat: str, delay_seconds: int) -> None:
     """Actions job bitmeden bir sonraki job'u zincirleme başlatır."""
     await asyncio.sleep(delay_seconds)
-    try:
-        await client.send_message(
-            destination,
-            f"⏳ Takipçi oturumu yenileniyor ({humanize(delay_seconds)} doldu); dinleme birazdan devam edecek.",
-        )
-    except Exception:  # noqa: BLE001
-        log.exception("Yenileme bildirimi gönderilemedi.")
+    log.info("Takipçi oturumu yenileniyor (%s doldu).", humanize(delay_seconds))
     await dispatch_next_run(pat)
 
 
@@ -4220,7 +4245,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
     gh_pat = os.getenv("GH_PAT", "").strip()
     auto_restart = bool(config.get("auto_restart", True))
     restart_minutes = max(1, int(os.getenv("RESTART_AFTER_MINUTES", "330")))
-    notify_on_start = bool(config.get("notify_on_start", True))
 
     # Telegram bağlantısı gerektirmeyen ayarlar (filtre, zincir, bayraklar).
     for note in apply_runtime_config(config):
@@ -4388,7 +4412,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
         # Turning off/changing the filter also cancels queued, unsent copies.
         if not config_flag(store.config.get("dm_enabled"), False):
             return None
-        if not dm_matches(item["match_text"], store.config.get("dm_keywords", [])):
+        if not dm_matches(item["match_text"], store.config.get("dm_keywords", []),
+                          store.config.get("dm_exclude_keywords", [])):
             return None
         info = item.get("bot")
         if not info:
@@ -4415,7 +4440,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if not private_api or not config_flag(store.config.get("dm_enabled"), False):
             return
         text = message_text(sanitize_message(event))
-        if dm_matches(text, store.config.get("dm_keywords", [])):
+        if dm_matches(text, store.config.get("dm_keywords", []),
+                      store.config.get("dm_exclude_keywords", [])):
             private_offers.submit({
                 "destination": DESTINATION_ID, "match_text": text,
                 "bot": info.get("bot"), "account_ids": info.get("account_ids"),
@@ -4427,13 +4453,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
         enabled = config_flag(store.config.get("dm_enabled"), False)
         return (
             f"🎯 Kişisel bildirim: {'AÇIK' if enabled else 'KAPALI'}\n"
-            f"Kelimeler: {', '.join(words) or '(boş)'}\n"
-            "Herhangi biri eşleşirse gruba gönderilen yeni fırsatın özel kopyası gelir.\n"
+            f"DM dahil · Kelimeler: {', '.join(words) or '(boş)'}\n"
+            f"DM hariç: {', '.join(store.config.get('dm_exclude_keywords', [])) or '(boş)'}\n"
+            "Dahil ifadelerden biri blok halinde geçerse özel kopya gelir; hariç eşleşmesi engeller.\n"
             "Grup filtreleri ve tekrar birleştirmesi geçerlidir. Tekrarlı alarm yok.\n"
             f"Bu oturum: gönderilen {private_offers.sent}, hata {private_offers.failed}, "
             f"kuyrukta {private_offers.queue.qsize()}, taşma {private_offers.dropped}\n"
-            "/dmfiltreekle - Kelime ekle\n"
-            "/dmfiltrecikar - Kelime çıkar\n"
+            "/ekle → dmdahil / dmharic → değer → /kaydet\n"
+            "/çıkar → dmdahil / dmharic → numara veya değer → /kaydet\n"
             "/dmac - Aç\n"
             "/dmkapat - Kapat"
         )
@@ -4517,13 +4544,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
         key = pending_key(event)
         if command == COMMAND_DM_STATUS:
             await control_reply(event, dm_status() + (
-                "\n\nBu komut yalnızca bilgi gösterir. Kelime eklemek için /dmfiltreekle, "
-                "çıkarmak için /dmfiltrecikar kullan." if rest else ""
+                "\n\nBu komut yalnızca bilgi gösterir. Kelime eklemek için /ekle → dmdahil/dmharic, "
+                "çıkarmak için /çıkar → dmdahil/dmharic kullan." if rest else ""
             ))
         elif command in {COMMAND_DM_OPEN, COMMAND_DM_CLOSE}:
             enabled = command != COMMAND_DM_CLOSE
             if enabled and not store.config.get("dm_keywords"):
-                await control_reply(event, "Önce /dmfiltreekle ile kelimelerini ekle. Boş liste hiçbir şeyi göndermez.")
+                await control_reply(event, "Önce /ekle → dmdahil ile kelimelerini ekleyip /kaydet. Boş liste hiçbir şeyi göndermez.")
                 return
             await save_dm_setting(event, enabled=enabled)
         else:
@@ -4547,6 +4574,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 return
             await save_dm_setting(event, action=action, raw=rest)
 
+    async def can_edit_list(event, field):
+        if field in DM_LIST_FIELDS and (
+            not isinstance(event, PrivateControlEvent) or event.sender_id != SELF_ID
+        ):
+            await control_reply(event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
+            return False
+        return True
+
     async def save_pending_change(event: events.NewMessage.Event,
                                  key: PendingKey) -> None:
         """Taslağı çakışma kontrolünden geçir, uygula ve sadece şimdi GitHub'a yaz."""
@@ -4567,6 +4602,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 await control_reply(event, "❌ Taslak geçersiz olduğu için iptal edildi. Yeniden /ekle veya /çıkar ile başla.")
                 return
 
+            if not await can_edit_list(event, field):
+                return
             before = store.snapshot()
             if before.get(field) != base.get(field):
                 drop_pending(key)
@@ -4578,6 +4615,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
             candidate = copy.deepcopy(before)
             candidate[field] = copy.deepcopy(draft[field])
+            if field == "dm_keywords":
+                candidate["dm_enabled"] = bool(candidate[field]) and (
+                    pending.get("action") == "add" or config_flag(before.get("dm_enabled"), False)
+                )
             groups = changed_groups(before, candidate)
             store.config = candidate
             notes, fatal = await apply_setting_change(before)
@@ -5062,10 +5103,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
             field = resolve_telegram_list(text)
             if field is None:
                 set_pending(key, **item)
-                await control_reply(event, "❌ Seçimi anlayamadım. 1, 2, 3 yazabilir ya da listedeki adı seçebilirsin.\n\n"
+                await control_reply(event, "❌ Seçimi anlayamadım. 1, 2, 3, 4, 5 yazabilir ya da listedeki adı seçebilirsin.\n\n"
                                     + build_list_category_prompt(str(item.get("action")), store.config))
                 return True
 
+            if not await can_edit_list(event, field):
+                return True
             config = item.get("draft_config") or store.config
             items = telegram_list_items(config, field)
             if item.get("action") == "remove" and not items:
@@ -5082,6 +5125,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if item.get("stage") == "value":
             action = str(item.get("action") or "")
             field = str(item.get("field") or "")
+            if not await can_edit_list(event, field):
+                return True
             draft = item.get("draft_config") or store.config
             ok, candidate, values, message = stage_telegram_list_change(draft, field, action, text)
             if not ok:
@@ -5826,12 +5871,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if command == COMMAND_START:
             await control_reply(event, "👋 Komutlarını artık burada verebilirsin. Fırsatlar aynı hedef gruba gider.\n"
                                 "Grup ayarları: /ayar · Durum: /durum · Tüm komutlar: /komutlar\n"
-                                "Kişisel fırsatlar: /dmfiltre · /dmfiltreekle · /dmfiltrecikar\n"
+                                "Kişisel fırsatlar: /dmfiltre · /ekle /çıkar → dmdahil / dmharic\n"
                                 "Özel sohbet geçmişi silinmez. Kayıtlı Mesajlar yedek kontrol olarak açık.")
         elif command in CMD_DM_COMMANDS:
             await handle_dm_command(event, command, rest)
         elif command == COMMAND_STATUS:
-            text = build_status_text(store.config)
+            text = build_status_text(store.config, connected=client.is_connected())
             if isinstance(event, PrivateControlEvent):
                 text += "\n\n" + dm_status()
             await control_reply(event, text)
@@ -5946,32 +5991,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
         await dedup_after_send(dedup_id, token, ok, info)
 
     async def private_status_changed(status: str, detail: str) -> None:
-        """Özel komut kanalının durumunu sessizce log'a gömmek yerine kullanıcıya ilet.
-
-        * ``running``: hazır → yetkili kişilere özel mesaj (bot ancak daha önce
-          /start yazılmış sohbete yazabilir; 403 ise yalnızca log).
-        * ``webhook`` / ``unauthorized`` / ``conflict``: özel komutlar ÇALIŞMIYOR →
-          hedef gruba hesaptan uyarı; komutlar Kayıtlı Mesajlar'dan işlenmeye devam eder.
-        """
+        """Rutin açılışı sessiz tut; gerçek özel komut arızalarını bildirmeyi sürdür."""
         if status == "running":
-            if not notify_on_start:
-                return
-            text = ("🟢 Takipçi başladı; özel komutlar hazır.\n"
-                    f"Hedef: {DESTINATION_LABEL}\n"
-                    "Durum: /durum · Komutlar: /komutlar · Kişisel fırsatlar: /dmfiltre")
-            for user_id in sorted(ADMIN_IDS | {SELF_ID}):
-                try:
-                    await private_api.call("sendMessage", {"chat_id": user_id, "text": text})
-                except BotAPIError as exc:
-                    if exc.code == 403:
-                        log.warning("Açılış özel mesajı gönderilemedi (403, kullanıcı %s): "
-                                    "önce botun özel sohbetinde /start yazılmalı.", user_id)
-                    else:
-                        log.warning("Açılış özel mesajı gönderilemedi (kullanıcı %s): %s",
-                                    user_id, exc)
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("Açılış özel mesajı gönderilemedi (kullanıcı %s): %s",
-                                user_id, type(exc).__name__)
+            log.info("Özel komutlar hazır: %s", detail)
             return
         if status == "recovered":
             text = "✅ Özel komut kanalı toparlandı; botun özel sohbetinden komut verebilirsin."
@@ -5994,8 +6016,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             log.warning("Özel komut durum uyarısı gruba gönderilemedi: %s", type(exc).__name__)
 
-    # Özel komut poller'ını açılış bildiriminden ÖNCE başlat: bildirimde gerçek
-    # durum ("hazır" / "webhook var" ...) yazılsın, "/start ile başlar" tahmini değil.
+    # Özel komutlar ve fırsat kuyruğu ayrı görevlerde çalışır; açılış mesajı gönderilmez.
     private_tasks = []
     if private_api:
         private_tasks.append(asyncio.create_task(private_offers.run()))
@@ -6005,45 +6026,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 private_status_changed,
             )))
             await asyncio.sleep(0)  # poller görevi ilk adımını atsın
-            for _ in range(40):  # en fazla ~10 sn; sonra neyse o yazılır
+            for _ in range(40):  # poller başlangıcına en fazla ~10 sn tanı
                 if poll_health()["status"] not in {"off", "starting"}:
                     break
                 await asyncio.sleep(0.25)
-
-    def private_control_note() -> str:
-        if not NOTIFY_BOT_TOKEN:
-            return ("\n⚠️ Özel komutlar kapalı: NOTIFY_BOT_TOKEN yok; komutlar Kayıtlı "
-                    "Mesajlar'dan işlenir.")
-        health = poll_health()
-        status = health.get("status")
-        username = (health.get("bot") or {}).get("username")
-        bot_label = f"@{username}" if username else "bildirim botu"
-        if status == "running":
-            return (f"\n✅ Özel komutlar hazır: {bot_label} özel sohbetine yaz "
-                    "(ilk kez ise önce /start).")
-        if status == "webhook":
-            return f"\n⚠️ Özel komutlar ÇALIŞMIYOR: {bot_label} üzerinde webhook var."
-        if status == "unauthorized":
-            return "\n⚠️ Özel komutlar ÇALIŞMIYOR: bot token'ı geçersiz (401)."
-        if status == "conflict":
-            return f"\n⚠️ Özel komutlar ÇALIŞMIYOR: {bot_label} token'ını başka bir süreç de kullanıyor (409)."
-        err = health.get("last_error")
-        return ("\n⏳ Özel komutlar henüz hazır değil"
-                + (f" ({err})" if err else "")
-                + "; /test ile kontrol edebilirsin.")
-
-    if notify_on_start:
-        try:
-            control_note = (private_control_note()
-                            if config_flag(store.config.get("private_control"), False) else "")
-            await client.send_message(
-                DESTINATION,
-                f"🟢 Takipçi başladı: {len(SOURCE_IDS)} kaynak dinleniyor"
-                + (f", {len(SOURCE_FAILURES)} kaynak çözülemedi" if SOURCE_FAILURES else "")
-                + f".\nHedef: {DESTINATION_LABEL}" + control_note,
-            )
-        except Exception:  # noqa: BLE001
-            log.exception("Başlangıç bildirimi gönderilemedi.")
 
     if auto_restart and gh_pat:
         asyncio.create_task(auto_restart_scheduler(client, DESTINATION, gh_pat, max(60, restart_minutes * 60)))

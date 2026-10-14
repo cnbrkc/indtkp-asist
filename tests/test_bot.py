@@ -256,8 +256,7 @@ class StatusTextTest(unittest.TestCase):
         self.assertEqual(len(commands), len(set(commands)))
         self.assertTrue(all(description.strip() for _, description in bot.COMMAND_DESCRIPTIONS))
         self.assertEqual(commands, (
-            "/komutlar", "/start", "/durum", "/dmfiltre", "/dmfiltreekle",
-            "/dmfiltrecikar", "/dmac", "/dmkapat", "/ayar", "/ekle", "/çıkar",
+            "/komutlar", "/start", "/durum", "/dmfiltre", "/dmac", "/dmkapat", "/ayar", "/ekle", "/çıkar",
             "/kaydet", "/iptal", "/open", "/close", "/kaynaklar", "/kaynaktest",
             "/analiz", "/test", "/id", "/restart",
         ))
@@ -267,7 +266,7 @@ class StatusTextTest(unittest.TestCase):
             bot.COMMAND_HELP, bot.COMMAND_START, bot.COMMAND_STATUS,
             bot.COMMAND_TEST, bot.COMMAND_ID, bot.COMMAND_RESTART, bot.COMMAND_SOURCES,
         }
-        routed.update(bot.CMD_DM_COMMANDS)
+        routed.update(bot.CMD_DM_COMMANDS - {bot.COMMAND_DM_ADD, bot.COMMAND_DM_REMOVE})
         routed.update(bot.SETTINGS_COMMANDS)
         routed.update(bot.CMD_FILTER_OPEN)
         routed.update(bot.CMD_FILTER_CLOSE)
@@ -459,19 +458,25 @@ class TelegramListWorkflowTest(unittest.TestCase):
             "match_mode": "any",
         }
 
-    def test_exactly_three_fields_are_telegram_editable(self):
+    def test_exactly_five_fields_are_telegram_editable(self):
         self.assertEqual(bot.TELEGRAM_LIST_FIELDS,
-                         ("include_keywords", "exclude_keywords", "source_chats"))
+                         ("include_keywords", "exclude_keywords", "source_chats",
+                          "dm_keywords", "dm_exclude_keywords"))
 
     def test_category_selection_supports_numbers_and_turkish_labels(self):
-        expected = ["include_keywords", "exclude_keywords", "source_chats"]
+        expected = ["include_keywords", "exclude_keywords", "source_chats",
+                    "dm_keywords", "dm_exclude_keywords"]
         for index, field in enumerate(expected, start=1):
             self.assertEqual(bot.resolve_telegram_list(str(index)), field)
         self.assertEqual(bot.resolve_telegram_list("Dahili kelimeler"), "include_keywords")
         self.assertEqual(bot.resolve_telegram_list("harici kelimeler"), "exclude_keywords")
         self.assertEqual(bot.resolve_telegram_list("grup isimleri"), "source_chats")
         self.assertEqual(bot.resolve_telegram_list("kaynaklar"), "source_chats")
-        self.assertIsNone(bot.resolve_telegram_list("4"))
+        self.assertEqual(bot.resolve_telegram_list("dahil"), "include_keywords")
+        self.assertEqual(bot.resolve_telegram_list("dmdahil"), "dm_keywords")
+        self.assertEqual(bot.resolve_telegram_list("dmharic"), "dm_exclude_keywords")
+        self.assertEqual(bot.resolve_telegram_list("dmhariç"), "dm_exclude_keywords")
+        self.assertIsNone(bot.resolve_telegram_list("6"))
         self.assertIsNone(bot.resolve_telegram_list("hedef"))
 
     def test_category_menu_is_compact_and_shows_current_counts(self):
