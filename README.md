@@ -1088,3 +1088,27 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 - [ ] Komut temizliği: `/durum` yaz → eski komut/yanıt silindi mi? Bildirimler duruyor mu?
 - [ ] `/iptal` taslağı değiştirmeden siliyor mu?
 - [ ] `GH_PAT`: süresi dolmadıysa dokunma; dolmuşsa *Actions: Read and write* ile yenile
+
+## Fiyat filtresi ve yeni bildirim düzeni (dmfiyat · smart_header)
+
+**DM maksimum fiyat (`dmfiyat`)** — kelime filtrelerinden tamamen bağımsız ayrı bir kuraldır.
+- Telegram'da `/ekle` → `dmfiyat` → tutar (örn. `10000`) → `/kaydet`. Bu tutar ve altındaki fiyatlar özel kopya olarak DM'e düşer. `0` yazarsan yalnızca 0 TL / ücretsiz / bedava olanlar düşer.
+- Kapatmak için `/çıkar` → `dmfiyat` → `1` → `/kaydet`.
+- Karar: `kelime kuralı VEYA fiyat kuralı`. Fiyat kuralı DM hariç listesine bakmaz; kelime kuralı fiyata bakmaz. Kelime + fiyat birlikte (VE) kuralı sonraki aşamadır.
+- Fiyat bulunamazsa ya da yalnızca kupon/indirim/taksit/eski fiyat bulunursa DM gönderilmez (yanlış alarm yok).
+- Config anahtarı: `dm_price_max` (`["10000"]`; anahtar yoksa kural kapalı).
+
+**Yeni bildirim düzeni (`smart_header`)** — `config.json` içine `"smart_header": true` eklenince açılır; anahtar yoksa eski düzen aynen sürer.
+
+```
+Ürün başlığı (kalın)
+
+💰 1.299 TL            ← tespit edilen fiyat (bulunamazsa "💰 Fiyat tespit edilemedi")
+
+> orijinal mesaj (alıntı bloğu)
+
+🔗 Mesajı Gör: …
+Grup adı / 📌 N kere paylaşıldı: …
+```
+
+Fiyat ve başlık tespiti `price_filter.py` içindedir: kupon, indirim tutarı, taksit, kargo, "… TL ve üzeri", üstü çizili ve "eski/önceki/normal fiyat" tutarları fiyat sayılmaz; "X TL'den Y TL'ye düştü" için Y alınır.
