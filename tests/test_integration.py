@@ -2021,6 +2021,28 @@ class SingleMessageTest(unittest.TestCase):
         self.assertEqual(len(client.files), 1, "medya kopyası gruba gitmeli")
         self.assertEqual(len(client.deleted), 1)
 
+    def test_fast_notify_sends_bot_first_and_skips_account_copy(self):
+        client = self._run(fast_notify=True)
+        self._send(client)
+        self.assertEqual(len(self.calls) + len(self.media_calls), 1, "bildirim gitmeli")
+        self.assertEqual(client.files, [], "hızlı yolda hesap kopyası atılmamalı")
+        self.assertEqual(client.delivered, [])
+        self.assertEqual(client.deleted, [], "silinecek kopya yok")
+        self.assertEqual(bot.STATS["forwarded"], 1)
+        self.assertEqual(bot.STATS["modes"].get("bot"), 1)
+
+    def test_fast_notify_falls_back_to_account_copy_without_bot(self):
+        client = self._run(fast_notify=True, notify_bot_token=None)
+        self._send(client)
+        self.assertEqual(len(client.delivered), 1, "bot yoksa normal zincir çalışmalı")
+        self.assertEqual(client.deleted, [], "bildirim yoksa kopya silinmemeli")
+
+    def test_default_keeps_account_copy_then_bot_order(self):
+        client = self._run()
+        self._send(client)
+        self.assertEqual(len(client.files), 1, "varsayılan: hesap kopyası önce atılır")
+        self.assertEqual(len(client.deleted), 1)
+
 
 class AnalyzeCommandTest(unittest.TestCase):
     """`/analiz`: geçmiş başlıklarından kelime ve ilk kelime istatistikleri."""
