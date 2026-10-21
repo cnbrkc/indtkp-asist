@@ -462,8 +462,9 @@ def check_environment(config: dict | None = None) -> list[str]:
         price_filter.parse_threshold(item) is None for item in price_items
     ):
         problems.append("config.json → dm_price_max en fazla 1 sayı içermeli (örn. [\"10000\"]).")
-    if not isinstance(config.get("smart_header", False), bool):
-        problems.append("config.json → smart_header true/false olmalı.")
+    for flag in ("smart_header", "fast_notify"):
+        if not isinstance(config.get(flag, False), bool):
+            problems.append(f"config.json → {flag} true/false olmalı.")
     if config.get("private_control") and not os.getenv("NOTIFY_BOT_TOKEN", "").strip():
         log.warning("Özel komutlar için NOTIFY_BOT_TOKEN gerekli; Kayıtlı Mesajlar yedek kontrol olarak açık.")
 
@@ -1811,6 +1812,9 @@ def _entities_within(entities: Sequence[Any] | None, limit: int) -> list[Any]:
 # Yeni bildirim üst bloğu (başlık → fiyat → alıntılanmış orijinal mesaj).
 # config.json → smart_header; anahtar yoksa KAPALI (eski düzen aynen sürer).
 SMART_HEADER = False
+# Hızlı bildirim: bot bildirimi ÖNCE gider; hesap kopyası yalnızca bot başarısız olursa atılır.
+# config.json → fast_notify; anahtar yoksa KAPALI (eski sıra aynen sürer).
+FAST_NOTIFY = False
 PRICE_NOT_FOUND_TEXT = "💰 Fiyat tespit edilemedi"
 
 
@@ -3708,7 +3712,7 @@ async def save_config(store: ConfigStore, note: str = "") -> tuple[bool, str]:
 
 def apply_runtime_config(config: dict) -> list[str]:
     """Global çalışma ayarlarını config'ten yenile (Telegram bağlantısı gerekmez)."""
-    global SMART_HEADER
+    global SMART_HEADER, FAST_NOTIFY
     global FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE, ADMIN_IDS
     global FILTER_INCLUDE_ENABLED, FILTER_EXCLUDE_ENABLED
     global DELIVERY_CHAIN, MAX_MEDIA_MB
@@ -3740,6 +3744,7 @@ def apply_runtime_config(config: dict) -> list[str]:
     SINGLE_MESSAGE = config_flag(config.get("single_message"), True)
     CLEAN_COMMANDS = config_flag(config.get("clean_commands"), True)
     SMART_HEADER = config_flag(config.get("smart_header"), False)
+    FAST_NOTIFY = config_flag(config.get("fast_notify"), False)
     DEDUP_ENABLED = config_flag(config.get("dedup_enabled"), True)
     try:
         DEDUP_WINDOW_SECONDS = max(1, min(72, int(config.get("dedup_window_hours", 12)))) * 3600
@@ -5853,12 +5858,16 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 message_link=message_link, source_name=footer_name,
             )
             entities = bot_api_entities(composed["message"], composed["content"]) + source_name_entity(composed)
+            t_media = time.perf_counter()
             try:
                 data = await client.download_media(event.message, bytes)
             except Exception as exc:  # noqa: BLE001 - medya inmezse bildirim yine gitsin
                 log.warning("Bildirim medyası indirilemedi (%s): %s", type(exc).__name__, exc)
                 data = None
+            t_downloaded = time.perf_counter()
             if data:
+                log.info("⏱ Bildirim medyası: %s, %.1f MB, indirme %.1f sn.",
+                         descriptor["kind"], len(data) / (1024 * 1024), t_downloaded - t_media)
                 send_result = await send_bot_media(
                     NOTIFY_BOT_TOKEN, DESTINATION_ID,
                     kind=descriptor["kind"], filename=descriptor["filename"],
@@ -5867,7 +5876,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 )
                 ok, detail = send_result
                 if ok:
-                    log.info("Bildirim gönderildi (medya: %s, kaynak: %s).", descriptor["kind"], source_name)
+                    log.info("Bildirim gönderildi (medya: %s, kaynak: %s, yükleme %.1f sn).",
+                             descriptor["kind"], source_name, time.perf_counter() - t_downloaded)
                     return True, {
                         "message_id": getattr(send_result, "message_id", None),
                         "kind": "media",
@@ -5912,6 +5922,32 @@ async def main(argv: Sequence[str] | None = None) -> int:
         ``account_text``/``account_entities`` (hesap iletisinin metni/biçimi).
         """
         last_error = "denenmedi"
+        t_begin = time.perf_counter()
+        try:
+            received_lag = max(0.0, time.time() - event.message.date.timestamp())
+        except Exception:  # noqa: BLE001 - tarih yoksa ölçüm atlanır
+            received_lag = -1.0
+        skip_bot = False
+        if FAST_NOTIFY and NOTIFY_BOT_TOKEN and DESTINATION_ID is not None:
+            # Hızlı yol: önce bildirim botu. Başarılıysa hesap kopyası hiç atılmaz
+            # (silinecek bir şey kalmaz); başarısızsa normal zincir aynen çalışır.
+            bot_sent, bot_info = await notify_offer(event, source_name)
+            if bot_sent:
+                STATS["forwarded"] += 1
+                STATS["modes"]["bot"] = STATS["modes"].get("bot", 0) + 1
+                info = {
+                    "mode": "bot", "bot": bot_info, "account_ids": [], "account_deleted": False,
+                    "account_text": None, "account_entities": None,
+                }
+                try:
+                    enqueue_private_offer(event, info)
+                except Exception as exc:
+                    log.warning("Özel kopya kuyruğa alınamadı; grup korunuyor: %s", type(exc).__name__)
+                log.info("⏱ %s | telegram→bot %.1f sn | bildirim (hızlı yol) %.1f sn",
+                         source_name, received_lag, time.perf_counter() - t_begin)
+                return True, "bot", info
+            skip_bot = True
+            log.info("Hızlı bildirim gönderilemedi → normal iletim zincirine dönülüyor (kaynak: %s).", source_name)
         sanitized = sanitize_message(event)
         modes = DELIVERY_CHAIN
         product_title = _search_query(sanitized)
@@ -5942,12 +5978,20 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if mode not in ("forward", "copy"):
                 log.info("Mesaj '%s' yedeğiyle iletildi (kaynak: %s).", mode, source_name)
             account_ids = sent_message_ids(result)
+            t_account = time.perf_counter()
             # Tek mesaj modu: bildirim botu gönderdiyse hesabın attığı kopyayı sil.
-            bot_sent, bot_info = await notify_offer(event, source_name)
+            if skip_bot:
+                bot_sent, bot_info = False, {}
+            else:
+                bot_sent, bot_info = await notify_offer(event, source_name)
+            t_notified = time.perf_counter()
             account_deleted = False
             if bot_sent and SINGLE_MESSAGE:
                 await delete_account_copy(account_ids, source_name)
                 account_deleted = bool(account_ids)
+            log.info("⏱ %s | telegram→bot %.1f sn | hesap kopyası %.1f sn | bildirim %.1f sn | silme %.1f sn | toplam %.1f sn",
+                     source_name, received_lag, t_account - t_begin, t_notified - t_account,
+                     time.perf_counter() - t_notified, time.perf_counter() - t_begin)
             info = {
                 "mode": mode,
                 "bot": bot_info if bot_sent else None,
