@@ -41,6 +41,7 @@ from telethon import TelegramClient, errors, events, utils
 from telethon.sessions import StringSession
 from telethon.tl import types
 
+import price_filter
 from private_bot import (
     BotAPI, BotAPIError, PrivateControlEvent, PrivateOfferQueue,
     dm_matches, edit_dm_keywords, normalize_keyword, poll_health, poll_private_commands,
@@ -456,6 +457,13 @@ def check_environment(config: dict | None = None) -> list[str]:
         if (not isinstance(dm_words, list) or len(dm_words) > 100
                 or any(not isinstance(w, str) or not w.strip() or len(w) > 100 for w in dm_words)):
             problems.append(f"config.json → {field} en fazla 100 dolu metinden oluşmalı (her biri ≤100 karakter).")
+    price_items = config.get("dm_price_max", [])
+    if not isinstance(price_items, list) or len(price_items) > 1 or any(
+        price_filter.parse_threshold(item) is None for item in price_items
+    ):
+        problems.append("config.json → dm_price_max en fazla 1 sayı içermeli (örn. [\"10000\"]).")
+    if not isinstance(config.get("smart_header", False), bool):
+        problems.append("config.json → smart_header true/false olmalı.")
     if config.get("private_control") and not os.getenv("NOTIFY_BOT_TOKEN", "").strip():
         log.warning("Özel komutlar için NOTIFY_BOT_TOKEN gerekli; Kayıtlı Mesajlar yedek kontrol olarak açık.")
 
@@ -1800,6 +1808,45 @@ def _entities_within(entities: Sequence[Any] | None, limit: int) -> list[Any]:
     return kept
 
 
+# Yeni bildirim üst bloğu (başlık → fiyat → alıntılanmış orijinal mesaj).
+# config.json → smart_header; anahtar yoksa KAPALI (eski düzen aynen sürer).
+SMART_HEADER = False
+PRICE_NOT_FOUND_TEXT = "💰 Fiyat tespit edilemedi"
+
+
+def _webpage_hints(obj: Any) -> list[str]:
+    """Mesajdaki link önizlemesinin başlığı (varsa) başlık seçimine ipucu olur."""
+    hints: list[str] = []
+    try:
+        media = getattr(obj, "media", None) or getattr(getattr(obj, "message", None), "media", None)
+        webpage = getattr(media, "webpage", None)
+        for attr in ("title", "description"):
+            value = getattr(webpage, attr, None)
+            if isinstance(value, str) and value.strip():
+                hints.append(value.strip())
+    except Exception:  # noqa: BLE001 - ipucu yoksa sorun değil
+        return []
+    return hints
+
+
+def smart_header_info(obj: Any, cleaned_obj: Any, body: str) -> tuple[str, "price_filter.PriceInfo"]:
+    """Temizlenmiş mesajdan (başlık, fiyat) üret; hata olursa boş döner."""
+    try:
+        entities = entities_for_text(cleaned_obj, body)
+        strike = price_filter.strike_spans_from_entities(body, entities)
+        return price_filter.analyze(body, strike, _webpage_hints(obj))
+    except Exception as exc:  # noqa: BLE001 - başlık/fiyat hatası bildirimi engellemesin
+        log.warning("Başlık/fiyat tespiti başarısız (%s): %s", type(exc).__name__, exc)
+        return "", price_filter.PriceInfo(None, "", "none", "hata")
+
+
+def smart_dedup_title(event: Any) -> str:
+    """Yeni düzende tekrar anahtarı için kullanılan başlık."""
+    cleaned = sanitize_message(event)
+    title, _ = smart_header_info(event, cleaned, message_text(cleaned))
+    return title or _search_query(cleaned)
+
+
 def compose_message(
     obj: Any,
     *,
@@ -1831,6 +1878,16 @@ def compose_message(
     cleaned_obj = sanitize_message(obj)
     source_body = message_text(cleaned_obj)
     product_title = _search_query(cleaned_obj)
+    price_text = ""
+    quote_body = False
+    if SMART_HEADER:
+        smart_title, smart_price = smart_header_info(obj, cleaned_obj, source_body)
+        product_title = smart_title or product_title
+        if smart_price.value is not None and smart_price.confidence in {"high", "medium"}:
+            price_text = f"💰 {smart_price.text}"
+        else:
+            price_text = PRICE_NOT_FOUND_TEXT
+        quote_body = bool(source_body.strip())
 
     body = source_body
     body_entities = entities_for_text(cleaned_obj, source_body)
@@ -1862,6 +1919,7 @@ def compose_message(
     # paylaşımda kaynak adı satırı çoklu paylaşım notuyla değiştirilir.
     segments: list[tuple[str, str]] = [
         ("title", product_title),
+        ("price", price_text),
         ("body", body),
         ("appendix", appendix_text),
         ("source", source_line),
@@ -1934,6 +1992,14 @@ def compose_message(
     if product_title and "title" in offsets:
         content_entities.append(types.MessageEntityBold(
             offset=0, length=utf16_length(product_title),
+        ))
+    if price_text and "price" in offsets:
+        content_entities.append(types.MessageEntityBold(
+            offset=offsets["price"], length=utf16_length(price_text),
+        ))
+    if quote_body and body and "body" in offsets:
+        content_entities.append(types.MessageEntityBlockquote(
+            offset=body_offset, length=utf16_length(body),
         ))
     content_entities.extend(_entities_within(
         shift_telethon_entities(body_entities, body_offset),
@@ -2654,9 +2720,9 @@ COMMAND_DESCRIPTIONS = (
     (COMMAND_DM_STATUS, "DM dahil/hariç listelerini, açık/kapalı durumunu ve sayaçlarını gösterir."),
     (COMMAND_DM_OPEN, "Kayıtlı kişisel filtreyi açar; boş listeyi açmaz."),
     (COMMAND_DM_CLOSE, "Kelimeleri koruyarak kişisel fırsat gönderimini kapatır."),
-    (COMMAND_SETTINGS_MENU, "Dahil, hariç, grup, dmdahil ve dmharic listelerinin menüsünü gösterir."),
-    (COMMAND_SETTINGS_ADD, "Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic)."),
-    (COMMAND_SETTINGS_REMOVE, "Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic)."),
+    (COMMAND_SETTINGS_MENU, "Dahil, hariç, grup, dmdahil, dmharic ve dmfiyat listelerinin menüsünü gösterir."),
+    (COMMAND_SETTINGS_ADD, "Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat)."),
+    (COMMAND_SETTINGS_REMOVE, "Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat)."),
     (COMMAND_SETTINGS_SAVE, "Bekleyen liste taslağını kaydeder (DM listeleri dahil)."),
     (COMMAND_SETTINGS_REVERT, "Bekleyen ekleme/çıkarma veya filtre seçimini iptal eder."),
     (COMMAND_FILTER_OPEN, "Grup filtresini açar; dahili, harici veya ikisi seçilebilir."),
@@ -2753,7 +2819,7 @@ def build_main_menu_text() -> str:
     return "\n".join([
         "⚙️  TELEGRAM AYARLARI",
         "━━━━━━━━━━━━━━━━━━━━",
-        "Liste olarak Telegram'dan şu beş alan düzenlenebilir:",
+        "Liste olarak Telegram'dan şu altı alan düzenlenebilir:",
         "",
         "➕  /ekle   · Listeye kayıt ekle (virgülle birden çok)",
         "➖  /çıkar  · Listeden kayıt çıkar (virgülle birden çok)",
@@ -2778,6 +2844,7 @@ def build_main_menu_text() -> str:
         "  📣 Grup isimleri (kanal/grup kullanıcı adı veya ID)",
         "  🎯 dmdahil — özel kopyada aranan ifadeler",
         "  🔕 dmharic — özel kopyayı engelleyen ifadeler",
+        "  💰 dmfiyat — bu tutar ve altı fiyatlar özel kopya gönderir",
         "  DM listeleri yalnızca hesap sahibinin botla özel sohbetinden düzenlenir.",
         "",
         "🧹  Komut temizliği: yeni komutta bir önceki komut ve yanıt silinir;",
@@ -2789,7 +2856,8 @@ def build_main_menu_text() -> str:
 
 # Telegram'dan değiştirilebilen tek ayarlar; her yeni alan buraya bilinçli eklenmeli.
 DM_LIST_FIELDS = ("dm_keywords", "dm_exclude_keywords")
-TELEGRAM_LIST_FIELDS = ("include_keywords", "exclude_keywords", "source_chats", *DM_LIST_FIELDS)
+DM_PRICE_FIELD = "dm_price_max"   # tek değerli; kelime listelerinden ayrı işlenir
+TELEGRAM_LIST_FIELDS = ("include_keywords", "exclude_keywords", "source_chats", *DM_LIST_FIELDS, DM_PRICE_FIELD)
 TELEGRAM_LIST_META: dict[str, dict[str, str]] = {
     "dm_keywords": {
         "title": "dmdahil — DM dahil kelimeler",
@@ -2800,6 +2868,11 @@ TELEGRAM_LIST_META: dict[str, dict[str, str]] = {
         "title": "dmharic — DM hariç kelimeler",
         "icon": "🔕",
         "description": "Blok halinde geçen ifadeler yalnızca özel kopyayı engeller",
+    },
+    "dm_price_max": {
+        "title": "dmfiyat — DM maksimum fiyat",
+        "icon": "💰",
+        "description": "Bu tutar ve altındaki fiyatlar özel kopya gönderir (kelimelerden bağımsız)",
     },
     "include_keywords": {
         "title": "Dahili kelimeler",
@@ -2820,6 +2893,7 @@ TELEGRAM_LIST_META: dict[str, dict[str, str]] = {
 TELEGRAM_LIST_ALIASES = {
     "dm_keywords": {"dmdahil", "dmdahili", "dm_dahil", "dm_dahili"},
     "dm_exclude_keywords": {"dmharic", "dmhariç", "dm_haric", "dm_hariç"},
+    "dm_price_max": {"dmfiyat", "dm_fiyat", "dmmaxfiyat", "dm_max_fiyat", "dm_price_max", "dmucret", "fiyatfiltresi"},
     "include_keywords": {"dahil", "dahili", "dahili_kelimeler", "kelime", "kelimeler", "include_keywords"},
     "exclude_keywords": {"harici", "harici_kelimeler", "hariç", "haric", "exclude_keywords"},
     "source_chats": {"grup", "gruplar", "grup_isimleri", "kanal", "kanallar", "kaynak", "kaynaklar", "source_chats"},
@@ -2839,8 +2913,31 @@ def telegram_list_items(config: dict, field: str) -> list[Any]:
     return [value]
 
 
+def dm_price_threshold(config: dict) -> float | None:
+    """DM maksimum fiyat eşiği (yoksa/okunamazsa None → kural kapalı)."""
+    items = telegram_list_items(config, "dm_price_max")
+    if not items:
+        return None
+    return price_filter.parse_threshold(items[0])
+
+
+def dm_should_send(config: dict, text: str, strike: Sequence[tuple[int, int]] = ()) -> bool:
+    """Özel kopya kararı: kelime kuralı VEYA fiyat kuralı. İkisi birbirinden bağımsızdır."""
+    if config_flag(config.get("dm_enabled"), False) and dm_matches(
+        text, config.get("dm_keywords", []), config.get("dm_exclude_keywords", []),
+    ):
+        return True
+    threshold = dm_price_threshold(config)
+    if threshold is None:
+        return False
+    hit, info = price_filter.price_matches(text, threshold, strike)
+    if hit:
+        log.info("DM fiyat kuralı eşleşti: %s ≤ %s (%s).", info.text, price_filter.format_price(threshold), info.reason)
+    return hit
+
+
 def resolve_telegram_list(text: Any) -> str | None:
-    """Menüdeki 1–5 seçimini veya Türkçe liste adını kurallı alana çevir."""
+    """Menüdeki 1–6 seçimini veya Türkçe liste adını kurallı alana çevir."""
     raw = normalize(str(text or "")).strip().lstrip("/")
     if raw.isdigit():
         index = int(raw)
@@ -2864,7 +2961,7 @@ def build_list_category_prompt(action: str, config: dict) -> str:
         count = len(telegram_list_items(config, field))
         lines.append(f"{index}. {meta['icon']}  {meta['title']}  ·  {count} kayıt")
         lines.append(f"   {meta['description']}")
-    lines += ["", "Seçmek için 1, 2, 3, 4, 5 ya da liste adını yaz.", "Vazgeçmek için /iptal."]
+    lines += ["", "Seçmek için 1, 2, 3, 4, 5, 6 ya da liste adını yaz.", "Vazgeçmek için /iptal."]
     return "\n".join(lines)
 
 
@@ -2893,6 +2990,14 @@ def build_list_value_prompt(action: str, field: str, config: dict) -> str:
     else:
         lines.append("Mevcut liste boş.")
     lines.append("")
+    if field == "dm_price_max":
+        if action == "add":
+            lines += ["Maksimum fiyatı gönder (TL). Bu tutar ve altındaki fiyatlar DM'e düşer.",
+                      "Örnek: 10000 · 50 · 0   (yeni değer eskisinin yerine geçer)"]
+        else:
+            lines += ["Fiyat eşiğini kaldırmak için 1 yaz."]
+        lines += ["", "Bu adımda ayar henüz kaydedilmez.", "İptal etmek için /iptal."]
+        return "\n".join(lines)
     if action == "add":
         if field == "source_chats":
             lines += ["Eklenecek kanal/grup kullanıcı adlarını veya ID'lerini gönder.",
@@ -2916,6 +3021,35 @@ def format_value_preview(values: Sequence[Any], limit: int = LIST_PREVIEW_MAX) -
     return ", ".join(texts)
 
 
+def stage_price_threshold_change(
+    config: dict, action: str, raw_value: Any,
+) -> tuple[bool, dict, list[Any], str]:
+    """DM maksimum fiyat eşiği: tek değer; ekleme eskisinin yerine geçer, çıkarma kapatır."""
+    title = TELEGRAM_LIST_META["dm_price_max"]["title"]
+    current = telegram_list_items(config, "dm_price_max")
+    candidate = copy.deepcopy(config)
+    if action == "remove":
+        if not current:
+            return False, copy.deepcopy(config), [], "ℹ️ DM fiyat eşiği zaten boş; çıkarılacak kayıt yok."
+        candidate["dm_price_max"] = []
+        return True, candidate, [current[0]], (
+            f"{title} kaldırılacak (şu an: {price_filter.format_price(price_filter.parse_threshold(current[0]) or 0)}). "
+            "Fiyat kuralı kapanır."
+        )
+    values = split_values(raw_value)
+    if len(values) != 1:
+        return False, copy.deepcopy(config), [], "ℹ️ Tek bir tutar gönder. Örnek: 10000"
+    amount = price_filter.parse_threshold(values[0])
+    if amount is None or amount < 0 or amount > 100_000_000:
+        return False, copy.deepcopy(config), [], "❌ Tutarı anlayamadım. Örnek: 10000 veya 50 veya 0"
+    stored = str(int(amount)) if abs(amount - round(amount)) < 0.005 else f"{amount:.2f}"
+    candidate["dm_price_max"] = [stored]
+    note = f"{title}: {price_filter.format_price(amount)} ve altı DM'e düşecek"
+    if current:
+        note += f" (eski: {price_filter.format_price(price_filter.parse_threshold(current[0]) or 0)})"
+    return True, candidate, [stored], note
+
+
 def stage_telegram_list_change(
     config: dict, field: str, action: str, raw_value: Any,
 ) -> tuple[bool, dict, list[Any], str]:
@@ -2929,6 +3063,9 @@ def stage_telegram_list_change(
         return False, copy.deepcopy(config), [], "Bu liste Telegram'dan düzenlenemez."
     if action not in {"add", "remove"}:
         return False, copy.deepcopy(config), [], "Geçersiz liste işlemi."
+
+    if field == "dm_price_max":
+        return stage_price_threshold_change(config, action, raw_value)
 
     current = telegram_list_items(config, field)
     values = split_values(raw_value)
@@ -3571,6 +3708,7 @@ async def save_config(store: ConfigStore, note: str = "") -> tuple[bool, str]:
 
 def apply_runtime_config(config: dict) -> list[str]:
     """Global çalışma ayarlarını config'ten yenile (Telegram bağlantısı gerekmez)."""
+    global SMART_HEADER
     global FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE, ADMIN_IDS
     global FILTER_INCLUDE_ENABLED, FILTER_EXCLUDE_ENABLED
     global DELIVERY_CHAIN, MAX_MEDIA_MB
@@ -3601,6 +3739,7 @@ def apply_runtime_config(config: dict) -> list[str]:
     NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
     SINGLE_MESSAGE = config_flag(config.get("single_message"), True)
     CLEAN_COMMANDS = config_flag(config.get("clean_commands"), True)
+    SMART_HEADER = config_flag(config.get("smart_header"), False)
     DEDUP_ENABLED = config_flag(config.get("dedup_enabled"), True)
     try:
         DEDUP_WINDOW_SECONDS = max(1, min(72, int(config.get("dedup_window_hours", 12)))) * 3600
@@ -4410,10 +4549,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
     async def prepare_private_offer(item):
         # Turning off/changing the filter also cancels queued, unsent copies.
-        if not config_flag(store.config.get("dm_enabled"), False):
-            return None
-        if not dm_matches(item["match_text"], store.config.get("dm_keywords", []),
-                          store.config.get("dm_exclude_keywords", [])):
+        if not dm_should_send(store.config, item["match_text"], item.get("strike") or ()):
             return None
         info = item.get("bot")
         if not info:
@@ -4437,13 +4573,16 @@ async def main(argv: Sequence[str] | None = None) -> int:
     private_offers = PrivateOfferQueue(private_api, prepare_private_offer)
 
     def enqueue_private_offer(event, info):
-        if not private_api or not config_flag(store.config.get("dm_enabled"), False):
+        if not private_api:
             return
-        text = message_text(sanitize_message(event))
-        if dm_matches(text, store.config.get("dm_keywords", []),
-                      store.config.get("dm_exclude_keywords", [])):
+        if not config_flag(store.config.get("dm_enabled"), False) and dm_price_threshold(store.config) is None:
+            return
+        sanitized = sanitize_message(event)
+        text = message_text(sanitized)
+        strike = price_filter.strike_spans_from_entities(text, entities_for_text(sanitized, text))
+        if dm_should_send(store.config, text, strike):
             private_offers.submit({
-                "destination": DESTINATION_ID, "match_text": text,
+                "destination": DESTINATION_ID, "match_text": text, "strike": strike,
                 "bot": info.get("bot"), "account_ids": info.get("account_ids"),
                 "keyboard": build_inline_keyboard(event),
             })
@@ -4455,12 +4594,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
             f"🎯 Kişisel bildirim: {'AÇIK' if enabled else 'KAPALI'}\n"
             f"DM dahil · Kelimeler: {', '.join(words) or '(boş)'}\n"
             f"DM hariç: {', '.join(store.config.get('dm_exclude_keywords', [])) or '(boş)'}\n"
+            f"DM fiyat: {(price_filter.format_price(dm_price_threshold(store.config)) + ' ve altı') if dm_price_threshold(store.config) is not None else 'KAPALI'}"
+            " (kelimelerden bağımsız)\n"
             "Dahil ifadelerden biri blok halinde geçerse özel kopya gelir; hariç eşleşmesi engeller.\n"
             "Grup filtreleri ve tekrar birleştirmesi geçerlidir. Tekrarlı alarm yok.\n"
             f"Bu oturum: gönderilen {private_offers.sent}, hata {private_offers.failed}, "
             f"kuyrukta {private_offers.queue.qsize()}, taşma {private_offers.dropped}\n"
-            "/ekle → dmdahil / dmharic → değer → /kaydet\n"
-            "/çıkar → dmdahil / dmharic → numara veya değer → /kaydet\n"
+            "/ekle → dmdahil / dmharic / dmfiyat → değer → /kaydet\n"
+            "/çıkar → dmdahil / dmharic / dmfiyat → numara veya değer → /kaydet\n"
             "/dmac - Aç\n"
             "/dmkapat - Kapat"
         )
@@ -4575,7 +4716,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await save_dm_setting(event, action=action, raw=rest)
 
     async def can_edit_list(event, field):
-        if field in DM_LIST_FIELDS and (
+        if (field in DM_LIST_FIELDS or field == DM_PRICE_FIELD) and (
             not isinstance(event, PrivateControlEvent) or event.sender_id != SELF_ID
         ):
             await control_reply(event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
@@ -5103,7 +5244,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             field = resolve_telegram_list(text)
             if field is None:
                 set_pending(key, **item)
-                await control_reply(event, "❌ Seçimi anlayamadım. 1, 2, 3, 4, 5 yazabilir ya da listedeki adı seçebilirsin.\n\n"
+                await control_reply(event, "❌ Seçimi anlayamadım. 1, 2, 3, 4, 5, 6 yazabilir ya da listedeki adı seçebilirsin.\n\n"
                                     + build_list_category_prompt(str(item.get("action")), store.config))
                 return True
 
@@ -5609,6 +5750,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 else:
                     continue  # insan sohbeti: kayda alma
                 title = _search_query(base) or message_title(base)
+                if SMART_HEADER:
+                    first_line = next((ln.strip() for ln in base.splitlines() if ln.strip()), "")
+                    if first_line and not first_line.startswith("💰"):
+                        title = first_line   # yeni düzende ilk satır = başlık
                 key = dedup_key(title)
                 if not key:
                     continue
@@ -5974,7 +6119,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         # Tekrar birleştirme: aynı ürün sorgusu pencere içindeyse gruba yeni mesaj
         # ATILMAZ; ilk mesaja rozet işlenir (arka planda, bildirimi bekletmez).
         # Ürün sorgusu aynı temizlenmiş/gönderilecek içerikten ayıklanır.
-        dedup_title = _search_query(sanitize_message(event))
+        dedup_title = smart_dedup_title(event) if SMART_HEADER else _search_query(sanitize_message(event))
         dedup_id = dedup_key(dedup_title) if DEDUP_ENABLED else None
         if not dedup_id:
             await deliver(event, source_name)
