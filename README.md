@@ -1112,3 +1112,9 @@ Grup adı / 📌 N kere paylaşıldı: …
 ```
 
 Fiyat ve başlık tespiti `price_filter.py` içindedir: kupon, indirim tutarı, taksit, kargo, "… TL ve üzeri", üstü çizili ve "eski/önceki/normal fiyat" tutarları fiyat sayılmaz; "X TL'den Y TL'ye düştü" için Y alınır.
+
+## Gecikme: hızlı bildirim (`fast_notify`) ve süre kayıtları
+
+- `config.json` içine `"fast_notify": true` eklenirse bildirim botu **önce** gönderir; hesap kopyası yalnızca bot başarısız olursa atılır (silinecek kopya kalmaz). Anahtar yoksa eski sıra aynen sürer.
+- Her bildirim için logda tek satır süre özeti çıkar: `⏱ kaynak | telegram→bot X sn | hesap kopyası Y sn | bildirim Z sn | silme W sn | toplam T sn`. Medyalı bildirimlerde ayrıca `⏱ Bildirim medyası: … MB, indirme X sn` ve yükleme süresi yazılır.
+- `telegram→bot` yüksekse gecikme Telegram'ın güncellemeyi geç iletmesindendir; `bildirim` yüksekse medya indirme/yüklemedir.
