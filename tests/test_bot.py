@@ -458,14 +458,14 @@ class TelegramListWorkflowTest(unittest.TestCase):
             "match_mode": "any",
         }
 
-    def test_exactly_five_fields_are_telegram_editable(self):
+    def test_exactly_six_fields_are_telegram_editable(self):
         self.assertEqual(bot.TELEGRAM_LIST_FIELDS,
                          ("include_keywords", "exclude_keywords", "source_chats",
-                          "dm_keywords", "dm_exclude_keywords"))
+                          "dm_keywords", "dm_exclude_keywords", "dm_price_max"))
 
     def test_category_selection_supports_numbers_and_turkish_labels(self):
         expected = ["include_keywords", "exclude_keywords", "source_chats",
-                    "dm_keywords", "dm_exclude_keywords"]
+                    "dm_keywords", "dm_exclude_keywords", "dm_price_max"]
         for index, field in enumerate(expected, start=1):
             self.assertEqual(bot.resolve_telegram_list(str(index)), field)
         self.assertEqual(bot.resolve_telegram_list("Dahili kelimeler"), "include_keywords")
@@ -476,7 +476,8 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertEqual(bot.resolve_telegram_list("dmdahil"), "dm_keywords")
         self.assertEqual(bot.resolve_telegram_list("dmharic"), "dm_exclude_keywords")
         self.assertEqual(bot.resolve_telegram_list("dmhariç"), "dm_exclude_keywords")
-        self.assertIsNone(bot.resolve_telegram_list("6"))
+        self.assertEqual(bot.resolve_telegram_list("dmfiyat"), "dm_price_max")
+        self.assertIsNone(bot.resolve_telegram_list("7"))
         self.assertIsNone(bot.resolve_telegram_list("hedef"))
 
     def test_category_menu_is_compact_and_shows_current_counts(self):
