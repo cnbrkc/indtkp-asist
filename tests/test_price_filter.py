@@ -1,6 +1,7 @@
 """Fiyat/başlık tespiti, DM fiyat kuralı ve yeni bildirim düzeni testleri."""
 from __future__ import annotations
 
+import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -53,7 +54,89 @@ CASES = [
 ]
 
 
+REAL_WORLD = [
+    ("🏷️ 3P FIRSAT -%38,3\n\n🛍️ TP-Link RE315 AC1200 Mbps Wi-Fi Güçlendirici - 2 Harici Ante\n\n💸 3P Fiyat: 826,89 TL\n🔻 Fark: -%38,3\n🏪 Amazon (1P) son fiyatı: 1.339,43 TL\n⚠️ 3. taraf satıcı — satıcıyı/kargoyu kontrol edin\n✅ GERÇEK FIRSAT — 30g medyanın %39 altında\n\n🔗 Amazon'da gör\n\n#Elektronik@amazonfirsatalarmi\n\n🔗 https://amazon.com.tr/dp/B08R6JH8DG?tag=alalal07-21",
+     'TP-Link RE315 AC1200 Mbps Wi-F', 826.89),
+    ('🔥 N11’de Altınyıldız Ürünlerinde 1.000/300TL ve 900/200TL İndirim Kuponu Aktif❗️\n\n⬛️ Tailored Slim Fit Gömlek 2 Adet Alımda 300 TL Kuponla 385 TL Civarına Geliyor\n\n🔗Ürüne Git\nhttps://sl.n11.com/n/vyHC0TA\n\n#tanıtım n11',
+     'N11’de Altınyıldız Ürünlerinde', 385),
+    ("🛍️ Bref WC Power Aktiv Çiçek Kokulu 2'li Klozet Temizleme Topları 1 x 2 Adet, Çiçek 2, İkili\n\n💰 Fiyat : 97 TL / 2 adet alımda 48 TL\n\nhttps://www.amazon.com.tr/dp/B0GR1F4GDL?smid=A1UNQM1SR2CHM&th=1&psc=1&tag=indirimalarmi-21",
+     'Bref WC Power Aktiv Çiçek Koku', 97),
+    ('🛍️ NIVEA Cellular Expert Filler Nemlendirici Cilt Serumu 30ml,Kırışıklık Karşıtı,Dolgunlaştırıcı,Saf Hyaluronik Asit,Tüm Cilt Tipleri\n\n💰 Fiyat : 199 TL / 6 adet alımda 179 TL\n\nhttps://www.amazon.com.tr/dp/B0C3RLV1C2?psc=1&tag=indirimalarmi-21',
+     'NIVEA Cellular Expert Filler N', 199),
+    ('🛒 Köyceğiz Yöresel Çifte Kavrulmuş Tahin 600 G Cam Kavanoz Lezzetli ve Doğal Ürün\n\n🎯 512 TL / 2. ürün 1 TL ile 2 adet alımda 256 TL\n\n🛍 https://app.hb.biz/ENGqPJfAO2FJ',
+     'Köyceğiz Yöresel Çifte Kavrulm', 512),
+    ('Apple M5 Çipli 15 İnç Macbook Air Laptop\n\n🏷️ 2.999 TL 🤖\n💬 Ortalama fiyatın %40 altında\n📂 Elektronik\n🛍️ Amazon\n🔗 https://onu.al/x',
+     'Apple M5 Çipli 15 İnç Macbook ', 2999),
+    ('DURU Sıvı Sabun, Hindistan Cevizi Gold, 1.5 Litre\n\n💰 ₺194,95\n\n🔗 FIRSATA GİT!\n\n#İşbirliği',
+     'DURU Sıvı Sabun, Hindistan Cev', 194.95),
+    ('Carrera GO Ferrari 488 GT3 Red Bull AF Corse\n\n🏷️ 917.04 TL\n\n🛒 FIRSATI YAKALA\n\n#işbirliği | 🛍️ Amazon',
+     'Carrera GO Ferrari 488 GT3 Red', 917.04),
+    ('🚨 Nestle Coffee Mate Kahve Beyazlatıcı 625 g Ekonomik Paket\n#Tanıtım\n\n🔻 179,95 TL',
+     'Nestle Coffee Mate Kahve Beyaz', 179.95),
+    ('4.599₺\n\nGrundig VCC 7870 HEPA Filtreli Toz Torbasız Elektrikli Süpürge\n\nhttps://link.amazon/x',
+     'Grundig VCC 7870 HEPA Filtreli', 4599),
+    ('Tefal Juice & Clean Digital Meyve Sıkacağı\n\nSepette 8.829₺\n\nhttps://app.hb.biz/A',
+     'Tefal Juice & Clean Digital Me', 8829),
+    ('Tefal Ingenio Xl Force Titanyum 2x Büyük Set 12 Parça 001 Siyah\n\n7.499 TL\n400 TL tık hızı',
+     'Tefal Ingenio Xl Force Titanyu', 7499),
+    ('🔥 Xiaomi AW300 IP Wi-Fi Güvenlik Kamerası\n\n💰 3.999₺ (Piyasası +5.299₺)\n\n〽️ Son 6 Ayın En Düşüğü',
+     'Xiaomi AW300 IP Wi-Fi Güvenlik', 3999),
+    ('📦 Maisto 531282 Model Araba, 1:24 Jeep Renegade\n\n💰 874,50 TL\n🔻 %65.02 - Son 4 günün en düşük fiyatı\n\n🔎 Google',
+     'Maisto 531282 Model Araba, 1:2', 874.5),
+    ('🛒 Apple iPhone 16 128GB Siyah\n\n🎯 72799 TL / Sepette 750 TL kuponla 72049 TL\n\n🛍️ https://app.hb.biz/x',
+     'Apple iPhone 16 128GB Siyah', 72049),
+    ('🛒 Moonlife Point 2 Kapaklı 2 Çekmeceli Gardrop Beyaz\n\n🎯 3811 TL / Sepette 50 TL kuponla 3761 TL',
+     'Moonlife Point 2 Kapaklı 2 Çek', 3761),
+    ("🛒 Sırma Doğal Zengin Mineralli Maden Suyu 6x1 L\n\n🎯 165 TL / 300 TL'ye 50 TL kupon",
+     'Sırma Doğal Zengin Mineralli M', 165),
+    ('🔥Jack Jones Ürünlerinde 1000/400TL Kupon Var.\n\n✅️Ürün Altından Aktif Ediniz .',
+     'Jack Jones Ürünlerinde 1000/40', None),
+    ('🔥Lacoste Erkek Kol Saati\n\n✅Ürün Altındaki 5000/250TL Kupon İle 6.197TL’ye Düşüyor',
+     'Lacoste Erkek Kol Saati', 6197),
+    ("🔥 SNEAKER500 koduyla n11'de Sneaker Ürünlerinde 3000 TL ve üzeri 500 TL indirim\n\n👉 https://firsatagi.com",
+     "SNEAKER500 koduyla n11'de Snea", None),
+    ("🔥Nacarev 6'lı Hurc Organizer Seti\n\n🔻199TL’ye Düştü - Piyasası 349TL+\n\n➡️ https://x",
+     "Nacarev 6'lı Hurc Organizer Se", 199),
+    ('🔥Vatan Tekstil Erkek Slim Softshell Erkek Mont\n\n✅1.100TL - S/4XL Arası Bedenler',
+     'Vatan Tekstil Erkek Slim Softs', 1100),
+    ('Patisssiss Juva Antep Fıstıklı Krema, 200g\n\n🔻2 ADET ALIMDA 129 TL\n💥PATİSWİSS ÜRÜNÜ',
+     'Patisssiss Juva Antep Fıstıklı', 129),
+    ('Pierre Cardin bej kadın bot\n\nSepette kuponla 1.361 TL ✅\n\nhttps://app.hb.biz/oWs',
+     'Pierre Cardin bej kadın bot', 1361),
+    ('Roborock S9 Akıllı Robot Süpürge Beyaz\n\nAltındaki kuponla 16999 tl\n\nhttps://sl.n',
+     'Roborock S9 Akıllı Robot Süpür', 16999),
+    ('🛍️ iFFALCON 55U75A 55” 4K QLED Google TV\n\nSepette 3.000 TL kupon ile\n\n💰 29.799 TL',
+     'iFFALCON 55U75A 55” 4K QLED Go', 29799),
+    ('🛒 Defacto Giyim Ürünlerinde 1200 TL ve üzerine 250 TL indirim + 4000 TL ve üzerine 1000 TL indirim',
+     'Defacto Giyim Ürünlerinde 1200', None),
+    ('🛒 HelloBaby Basic Denim Görünümlü Tayt Kız Bebek\n\n🎯 128 TL\n\n🛍️ https://app.hb.biz/x',
+     'HelloBaby Basic Denim Görünüml', 128),
+    ('Xiaomi Robot Vacuum S40 Pro 15.000 Pa Robot Süpürge\n\nTık hızı 750 tl kuponla 14799 tl\n\nhttps://x',
+     'Xiaomi Robot Vacuum S40 Pro 15', 14799),
+    ('Philips 5500 Serisi LatteGo Tam Otomatik Espresso Makinesi\n\n💰19.168,20TL\n\n📦 Duru',
+     'Philips 5500 Serisi LatteGo Ta', 19168.2),
+    ('Apple iPad Air 13 inç (M4): Liquid Retina Ekran, 256 GB\n\n💰 Fiyat: 889,00 TL',
+     'Apple iPad Air 13 inç (M4): Li', 889),
+    ('Jacobs Café Espresso Çekirdek Kahve 500 gram x 2 Adet (1 Kg)\n\n💰 Fiyat: 889,00 TL',
+     'Jacobs Café Espresso Çekirdek ', 889),
+    ('🔥 Bi Kutu Oyun Zamanı Gelince Bir Yılım\n\n💰 2 Adet Alımda Adedi 250₺\n\n🛒 https://a',
+     'Bi Kutu Oyun Zamanı Gelince Bi', 250),
+]
+
+
 class ExtractionTests(unittest.TestCase):
+    def test_real_world_samples(self):
+        """Canlı kanallardan gelen gerçek mesaj kalıpları (hata bildirimleri dahil)."""
+        for text, title_prefix, want_price in REAL_WORLD:
+            with self.subTest(text=text[:50]):
+                title, price = pf.analyze(text)
+                self.assertTrue(title.startswith(title_prefix), (title, title_prefix))
+                if want_price is None:
+                    self.assertIsNone(price.value, price)
+                else:
+                    self.assertIsNotNone(price.value)
+                    self.assertAlmostEqual(price.value, want_price, places=2)
+
     def test_title_and_price_cases(self):
         for text, want_title, want_price in CASES:
             with self.subTest(text=text[:50]):
@@ -181,6 +264,41 @@ class SmartHeaderLayoutTests(unittest.TestCase):
                                 reply_markup=None, media=None, entities=[])
         text = bot.compose_message(event, message_link=None, source_name=None)["text"]
         self.assertIn(bot.PRICE_NOT_FOUND_TEXT, text)
+
+
+class SlowReportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_slow_notification_is_reported_once_per_minute(self):
+        sent = []
+
+        class FakeClient:
+            async def send_message(self, target, text):
+                sent.append((target, text))
+
+        old = (bot.SLOW_REPORT_SECONDS, bot._SLOW_REPORT_LAST)
+        self.addCleanup(lambda: (setattr(bot, "SLOW_REPORT_SECONDS", old[0]),
+                                 setattr(bot, "_SLOW_REPORT_LAST", old[1])))
+        bot.SLOW_REPORT_SECONDS, bot._SLOW_REPORT_LAST = 8.0, 0.0
+        bot.maybe_report_slow(FakeClient(), "Grup A", 2.0, [("Bildirim", 12.0)])
+        bot.maybe_report_slow(FakeClient(), "Grup A", 2.0, [("Bildirim", 12.0)])   # dakikada 1 sınırı
+        bot.maybe_report_slow(FakeClient(), "Grup B", 0.1, [("Bildirim", 0.5)])    # hızlı → rapor yok
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], "me")
+        self.assertIn("Yavaş bildirim", sent[0][1])
+        self.assertIn("Telegram → bot: 2.0 sn", sent[0][1])
+
+    async def test_disabled_when_zero(self):
+        old = bot.SLOW_REPORT_SECONDS
+        self.addCleanup(setattr, bot, "SLOW_REPORT_SECONDS", old)
+        bot.SLOW_REPORT_SECONDS = 0
+        sent = []
+        class FakeClient:
+            async def send_message(self, *args):
+                sent.append(args)
+        bot.maybe_report_slow(FakeClient(), "G", 50.0, [("Bildirim", 50.0)])
+        await asyncio.sleep(0)
+        self.assertEqual(sent, [])
 
 
 if __name__ == "__main__":
