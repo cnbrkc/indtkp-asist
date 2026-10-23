@@ -1118,3 +1118,12 @@ Fiyat ve başlık tespiti `price_filter.py` içindedir: kupon, indirim tutarı, 
 - `config.json` içine `"fast_notify": true` eklenirse bildirim botu **önce** gönderir; hesap kopyası yalnızca bot başarısız olursa atılır (silinecek kopya kalmaz). Anahtar yoksa eski sıra aynen sürer.
 - Her bildirim için logda tek satır süre özeti çıkar: `⏱ kaynak | telegram→bot X sn | hesap kopyası Y sn | bildirim Z sn | silme W sn | toplam T sn`. Medyalı bildirimlerde ayrıca `⏱ Bildirim medyası: … MB, indirme X sn` ve yükleme süresi yazılır.
 - `telegram→bot` yüksekse gecikme Telegram'ın güncellemeyi geç iletmesindendir; `bildirim` yüksekse medya indirme/yüklemedir.
+- **Yavaş bildirim raporu:** toplam süre `slow_report_seconds` (varsayılan 8 sn) üstüne çıkarsa bot Kayıtlı Mesajlar'a adım adım süre dökümü yollar (dakikada en fazla 1). `"slow_report_seconds": 0` ile kapanır.
+
+## Hızlı tarama (`fast_poll`) — Telegram'ın geç güncellemesine karşı
+
+Loglar gösterdi ki bazı yoğun kanallarda mesaj, Telegram tarafından hesaba **5–60 sn geç** iletiliyor (`⏱ … telegram→bot` değeri); bizim işleme süremiz ise ~1 sn. Hızlı tarama bunu aşar: tüm kaynaklar birkaç saniyede bir **tek istekle** yoklanır, yeni mesaj bulununca canlı olayla **aynı yoldan** işlenir.
+
+- Varsayılan **açık**. Kapatmak: `"fast_poll": false`. Aralık: `"fast_poll_seconds": 3` (1–30).
+- Aynı mesaj hem canlı olayla hem taramayla gelirse yalnızca bir kez işlenir.
+- Logda `⚡ Hızlı tarama yeni mesajı yakaladı` satırı, Telegram'ın geciktirdiği ve taramanın kurtardığı mesajları gösterir.
