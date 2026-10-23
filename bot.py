@@ -33,6 +33,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -44,6 +45,7 @@ from telethon.sessions import StringSession
 from telethon.tl import functions, types
 
 import price_filter
+from telegram_retry import request_with_retry
 from private_bot import (
     BotAPI, BotAPIError, PrivateControlEvent, PrivateOfferQueue,
     dm_matches, edit_dm_keywords, normalize_keyword, poll_health, poll_private_commands,
@@ -369,6 +371,13 @@ def match_mode_of(config: dict) -> str:
     return canonical_match_mode(config.get("match_mode")) or "any"
 
 
+def exclusion_normalize(text: str | None) -> str:
+    """Brand spelling variants: L’Oréal / L'Oreal / Loreal, without joining words."""
+    text = unicodedata.normalize("NFKD", normalize(text))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return " ".join(re.sub(r"['’‘`ʼ]", "", text).split())
+
+
 def matches(
     text: str | None,
     include: Sequence[str],
@@ -391,7 +400,10 @@ def matches(
     dönük uyumluluk).
     """
     normalized = normalize(text)
-    if exclude_enabled and exclude and any(word in normalized for word in exclude):
+    excluded_text = exclusion_normalize(text)
+    if exclude_enabled and any(
+        (word := exclusion_normalize(term)) and word in excluded_text for term in exclude
+    ):
         return False
     if not include_enabled:
         return True
@@ -715,18 +727,31 @@ async def _bot_api_request_full(
         method="POST",
         headers={"Content-Type": content_type},
     )
+    async def request_once() -> dict[str, Any]:
+        try:
+            with await asyncio.to_thread(urllib.request.urlopen, request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8", "replace") or "{}")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")
+            try:
+                body = json.loads(detail)
+            except ValueError:
+                body = {"description": f"HTTP {exc.code}"}
+            body["error_code"] = exc.code
+            body["ok"] = False
+            return body
+
     try:
-        with await asyncio.to_thread(urllib.request.urlopen, request, timeout=30) as response:
-            body = json.loads(response.read().decode("utf-8", "replace") or "{}")
+        body = await request_with_retry(token, method, request_once)
         if body.get("ok"):
             result = body.get("result")
             return True, f"{what} gönderildi", result if isinstance(result, dict) else None
-        return False, f"Bot API ok=false: {body.get('description')}", None
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:200]
-        log.error("Bildirim bot'u hata verdi: HTTP %s %s", exc.code, detail)
-        return False, f"HTTP {exc.code}: {detail}", None
-    except Exception as exc:  # noqa: BLE001 - bildirim başarısızlığı akışı durdurmaz
+        detail = str(body.get("description", "Bot API ok=false"))
+        if method.startswith("editMessage") and "message is not modified" in detail.lower():
+            return True, "değişiklik yok (zaten güncel)", None
+        log.error("Bildirim bot'u hata verdi: %s %s", body.get("error_code", "?"), detail[:200])
+        return False, f"HTTP {body.get('error_code', '?')}: {detail}", None
+    except Exception as exc:  # noqa: BLE001 - belirsiz ağ hatasını tekrar yollama
         log.warning("Bildirim gönderilemedi: %s", type(exc).__name__)
         return False, f"{type(exc).__name__}", None
 
@@ -1653,7 +1678,7 @@ def _search_query(obj: Any, limit: int = SEARCH_QUERY_LIMIT) -> str:
     best_score = None
     for raw_line in text.splitlines():
         candidate = _search_line_candidate(raw_line)
-        if not candidate:
+        if not candidate or price_filter.is_generic_title(candidate):
             continue
         score = _search_candidate_score(candidate)
         if best_score is None or score > best_score:
@@ -1824,6 +1849,7 @@ FAST_POLL = True
 FAST_POLL_SECONDS = 3.0
 LIVE_SEEN: "collections.OrderedDict[tuple[int, int], float]" = collections.OrderedDict()
 POLL_DISPATCHED: "collections.OrderedDict[tuple[int, int], float]" = collections.OrderedDict()
+SOURCE_IN_FLIGHT: set[tuple[int, int]] = set()
 # Yavaş bildirim raporu: toplam süre bu eşiği (sn) aşarsa Kayıtlı Mesajlar'a döküm gelir. 0 = kapalı.
 SLOW_REPORT_SECONDS = 8.0
 _SLOW_REPORT_LAST = 0.0
@@ -1838,14 +1864,15 @@ def _remember(store_: "collections.OrderedDict[tuple[int, int], float]", chat_id
 
 
 def live_event_should_skip(event: Any) -> bool:
-    """Canlı olay: mesaj hızlı taramayla zaten işlendiyse True. Aksi halde 'canlı görüldü' diye not al.
+    """Atomically claim a source/message pair before the first await.
 
-    Hızlı tarama kendi olaylarını `_fast_poll` işaretiyle yollar; onlar atlanmaz. Taramanın
-    hiç dokunmadığı mesajlarda (ve testlerde) davranış öncekiyle birebir aynıdır."""
+    Both live and polled events use the same registry, including in-flight
+    deliveries. POLL_DISPATCHED only marks scheduled work, not completed work.
+    """
     key = (int(event.chat_id), int(event.id))
-    if getattr(event, "_fast_poll", False):
-        return False
-    if key in POLL_DISPATCHED:
+    if key in LIVE_SEEN or key in SOURCE_IN_FLIGHT:
+        return True
+    if key in POLL_DISPATCHED and not getattr(event, "_fast_poll", False):
         return True
     _remember(LIVE_SEEN, *key)
     return False
@@ -1915,8 +1942,10 @@ def smart_header_info(obj: Any, cleaned_obj: Any, body: str) -> tuple[str, "pric
 def smart_dedup_title(event: Any) -> str:
     """Yeni düzende tekrar anahtarı için kullanılan başlık."""
     cleaned = sanitize_message(event)
-    title, _ = smart_header_info(event, cleaned, message_text(cleaned))
-    return title or _search_query(cleaned)
+    # Display headers may be truncated; dedup must retain model/size suffixes.
+    title = price_filter.extract_title(message_text(cleaned), _webpage_hints(event), limit=MESSAGE_LIMIT)
+    fallback = _search_query(cleaned, limit=MESSAGE_LIMIT)
+    return title or (fallback if not price_filter.is_generic_title(fallback) else "")
 
 
 def compose_message(
@@ -2347,7 +2376,7 @@ DEDUP_RESERVE_TIMEOUT = 60.0
 DEDUP_RESERVE_TTL = 300.0
 
 
-DEDUP_TOKEN_RE = re.compile(r"[^\W\d_]+|\d+", re.UNICODE)
+DEDUP_TOKEN_RE = re.compile(r"[^\W\d_]+|\d+(?:[.,]\d+)*|\+", re.UNICODE)
 
 
 def dedup_key(title: str | None) -> str | None:
@@ -2358,7 +2387,9 @@ def dedup_key(title: str | None) -> str | None:
     ``6.2L``/``6,2 L`` gibi yazım ve kelime sırası farklarını aynı üründe toplar.
     Token tekrarları korunur; benzer ama farklı model numaraları eşleşmez.
     """
-    tokens = DEDUP_TOKEN_RE.findall(normalize(title))
+    if not title or price_filter.is_generic_title(title):
+        return None
+    tokens = [token.replace(",", ".") for token in DEDUP_TOKEN_RE.findall(exclusion_normalize(title))]
     key = " ".join(sorted(tokens))
     return key or None
 
@@ -2672,6 +2703,51 @@ def dedup_footer_name(text: str | None) -> str:
     return last
 
 
+def bot_history_ids_shared(chat_id: int) -> bool:
+    """Only channels/supergroups have a shared MTProto/Bot API ID namespace."""
+    return utils.resolve_id(chat_id)[1] is types.PeerChannel
+
+
+def next_poll_interval(current: float, flood_wait: float) -> float:
+    # Do not immediately return to the rate that Telegram just rejected.
+    return max(current, min(300.0, max(current * 2, flood_wait, 10.0)))
+
+
+def offer_terms(obj: Any) -> tuple[float | None, str]:
+    """Conservative price/condition identity; never compare pack and unit prices blindly."""
+    text = message_text(obj)
+    strike = price_filter.strike_spans_from_entities(text, entities_for_text(obj, text))
+    info = price_filter.extract_price(text, strike)
+    candidates = price_filter.find_candidates(text, strike)
+    conditional = [c.value for c in candidates if c.cls == "cond"]
+    value = info.value if info.confidence in {"high", "medium"} else None
+    if conditional:
+        value = min(conditional + ([value] if value is not None else []))
+    # Different purchase requirements are separate offers, not a price drop.
+    conditions = re.findall(
+        r"\d+\s*(?:adet|ürün|urun)\s*alımda|\d+\s*al\s*[,;]?\s*\d+|"
+        r"(?:kupon|kod)\s*[:=]\s*[\w-]+|(?:ilk alışveriş|prime|abonelik)|"
+        r"(?:birim fiyat|adet fiyatı|/\s*adet)|\d[\d.,]*\s*tl\s*(?:kupon|ve üzeri)",
+        normalize(text),
+    )
+    return value, "|".join(sorted(set(" ".join(c.split()) for c in conditions)))
+
+
+def dedup_offer_key(title: str, offer: tuple[float | None, str]) -> str | None:
+    key = dedup_key(title)
+    if key and offer[1]:
+        return key + "\x1f" + offer[1]
+    return key
+
+
+def better_or_different_offer(old: tuple | None, new: tuple | None) -> bool:
+    if old is None or new is None:
+        return False
+    if old[1] != new[1]:
+        return True
+    return new[0] is not None and (old[0] is None or new[0] < old[0] - 0.01)
+
+
 def new_dedup_entry(title: str, token: Any, source_name: str | None = None,
                     footer_name: str | None = None) -> dict[str, Any]:
     """Gönderim rezervasyonu konmuş yeni önbellek kaydı (``pending=True``).
@@ -2724,7 +2800,8 @@ def prune_dedup_cache(
         entry = cache.get(key) or {}
         age = now - float(entry.get("first_seen", now))
         if entry.get("pending"):
-            if age > DEDUP_RESERVE_TTL:
+            owner = entry.get("owner")
+            if age > DEDUP_RESERVE_TTL and (owner is None or owner.done()):
                 entry["failed"] = True
                 try:
                     entry["ready"].set()
@@ -2749,6 +2826,9 @@ def prune_dedup_cache(
         for key, entry in ordered:
             if overflow <= 0:
                 break
+            owner = entry.get("owner")
+            if owner is not None and not owner.done():
+                continue
             if key in cache:
                 del cache[key]
                 overflow -= 1
@@ -4593,7 +4673,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         await delete_command_messages(chat_id, outdated)
         return sent_ids
 
-    async def delete_account_copy(sent_ids: Sequence[int], source_name: str) -> None:
+    async def delete_account_copy(sent_ids: Sequence[int], source_name: str) -> bool:
         """Bildirim botu gönderdikten sonra hedefteki hesap kopyasını sil.
 
         Böylece grupta her fırsat tek mesaj olarak kalır: botun bildirimi
@@ -4602,16 +4682,17 @@ async def main(argv: Sequence[str] | None = None) -> int:
         uyarı loglanır, ileti yine başarılı sayılır.
         """
         if not sent_ids or DESTINATION_ID is None:
-            return
+            return False
         try:
             await client.delete_messages(DESTINATION, list(sent_ids), revoke=True)
         except Exception as exc:  # noqa: BLE001 - silinemezse mesaj kalsın
             log.warning("Hesap kopyası silinemedi (kaynak=%s): %s: %s",
                         source_name, type(exc).__name__, exc)
-            return
+            return False
         STATS["cleaned"] += 1
         log.info("Hesap kopyası silindi (%d mesaj); grupta bot bildirimi kaldı (kaynak=%s).",
                  len(sent_ids), source_name)
+        return True
 
     async def apply_setting_change(before: dict,
                                    groups: set[str] | None = None) -> tuple[list[str], str | None]:
@@ -4650,6 +4731,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 "entities": bot_api_entities(message, text),
                 "keyboard": item.get("keyboard"),
             }
+            if info["kind"] == "media" and not bot_history_ids_shared(item["destination"]):
+                log.warning("Normal gruptaki hesap medya ID'si Bot API'ye taşınamaz; özel bildirim metin olarak gönderilecek.")
+                info["kind"] = "text"
+                info["message_id"] = None
+                info["text"] = text or "📎 Medyalı fırsat: gruptaki hesap kopyasına bak."
         return private_copy_request(SELF_ID, item["destination"], info)
 
     private_offers = PrivateOfferQueue(private_api, prepare_private_offer)
@@ -5528,14 +5614,30 @@ async def main(argv: Sequence[str] | None = None) -> int:
         "link": send_link_card,
     }
 
+    account_send_lock = asyncio.Lock()
+
+    async def send_account_with_retry(mode: str, event: Any) -> Any:
+        # Account fallback must not silently drop an offer on FloodWait either.
+        # Keep other offer sends behind this wait rather than stampeding Telegram.
+        async with account_send_lock:
+            while True:
+                try:
+                    return await SENDERS[mode](event)
+                except (errors.FloodWaitError, errors.SlowModeWaitError) as exc:
+                    wait = max(1, exc.seconds) + 1
+                    log.warning("Hesap gönderimi hız sınırı (%s): %s sn beklenip aynı fırsat yeniden denenecek.",
+                                mode, wait)
+                    await asyncio.sleep(wait)
+
     # --- Tekrar birleştirme --------------------------------------------------
     # Aynı başlık aynı anda 3-5 kanaldan gelebilir; gönderen rezervasyon koyar,
-    # diğerleri bekleyip tekrara düşer. Rozet güncellemesi arka planda yapılır,
-    # yeni fırsatların bildirimini ASLA bekletmez.
+    # diğerleri bekleyip tekrara düşer. Rozet aynı ürünün kilidiyle birleştirilir;
+    # kayıp hedefte bu olayın kendisi yeni bildirim gönderebilir.
 
     async def dedup_before_send(
         key: str, title: str, source_name: str | None = None,
         footer_name: str | None = None,
+        offer: tuple[float | None, str] | None = None,
     ) -> tuple[str, Any]:
         """Karar ver: ``("send", token)`` yeni gönderim, ``("dup", None)`` tekrar.
 
@@ -5546,38 +5648,50 @@ async def main(argv: Sequence[str] | None = None) -> int:
         bu satır kaldırılıp yerine çoklu paylaşım notu yazılır.
         """
         token: Any = object()
-        steals = 0
         while True:
             async with DEDUP_LOCK:
                 prune_dedup_cache(DEDUP_CACHE, time.time(), DEDUP_WINDOW_SECONDS, DEDUP_MAX_ENTRIES)
                 entry = DEDUP_CACHE.get(key)
-                if entry is None or entry.get("failed"):
-                    DEDUP_CACHE[key] = new_dedup_entry(title, token, source_name, footer_name)
+                if entry is None or entry.get("failed") or (
+                    not entry.get("pending") and better_or_different_offer(entry.get("offer"), offer)
+                ):
+                    entry = new_dedup_entry(title, token, source_name, footer_name)
+                    entry["owner"] = asyncio.current_task()
+                    entry["offer"] = offer
+                    DEDUP_CACHE[key] = entry
                     return "send", token
                 if not entry.get("pending"):
                     entry["count"] += 1
                     entry["last_seen"] = time.time()
                     note_dedup_source(entry, source_name)
-                    asyncio.create_task(dedup_apply_badge(key))
-                    return "dup", None
-                waiter_event = entry["ready"]
+                    waiter_event = None
+                else:
+                    waiter_event = entry["ready"]
+            if waiter_event is None:
+                await dedup_apply_badge(key)
+                # Deleted/wrong-ID messages must not swallow this occurrence.
+                if entry.get("failed"):
+                    continue
+                return "dup", None
             try:
                 await asyncio.wait_for(waiter_event.wait(), timeout=DEDUP_RESERVE_TIMEOUT)
             except TimeoutError:
-                steals += 1
                 async with DEDUP_LOCK:
                     current = DEDUP_CACHE.get(key)
                     if current is entry and current.get("pending"):
+                        owner = current.get("owner")
+                        if owner is not None and not owner.done():
+                            continue  # still sending / waiting for retry_after
                         log.warning("Tekrar rezervasyonu %ss'de bitmedi, devralınıyor (başlık: %.40s).",
                                     int(DEDUP_RESERVE_TIMEOUT), title)
                         current["failed"] = True
                         current["ready"].set()
                         token = object()
                         DEDUP_CACHE[key] = new_dedup_entry(title, token, source_name, footer_name)
+                        DEDUP_CACHE[key]["owner"] = asyncio.current_task()
+                        DEDUP_CACHE[key]["offer"] = offer
                         return "send", token
-                if steals >= 3:
-                    log.warning("Tekrar kilidi çözülemedi, açık gönderiliyor (başlık: %.40s).", title)
-                    return "send", token
+                # State may have changed just as the timeout fired; re-read it.
 
     async def dedup_after_send(
         key: str, token: Any, success: bool, info: dict[str, Any] | None,
@@ -5587,7 +5701,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             entry = DEDUP_CACHE.get(key)
             if entry is None or entry.get("token") is not token:
                 return  # devralınmış ya da budanmış; güncel kayda dokunma
-            if not success:
+            if not success or (NOTIFY_BOT_TOKEN and not (info or {}).get("bot")):
                 entry["failed"] = True
                 entry["ready"].set()
                 if DEDUP_CACHE.get(key) is entry:
@@ -5614,10 +5728,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 # kaydı durur: sonraki kopyalar yine birleştirilir.
                 entry["editable"] = None
             entry["pending"] = False
+            entry.pop("owner", None)
             entry["ready"].set()
 
     async def dedup_apply_badge(key: str) -> None:
-        """Arka planda ilk mesaja rozet işle; hata akışı durdurmaz."""
+        """İlk mesaja rozet işle; geçici hata akışı durdurmaz."""
         try:
             await _dedup_apply_badge(key)
         except Exception as exc:  # noqa: BLE001 - rozet görevi asla çökmemeli
@@ -5631,8 +5746,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
             edit_lock = entry["edit_lock"]
         async with edit_lock:
             async with DEDUP_LOCK:
-                entry = DEDUP_CACHE.get(key)
-                if entry is None or entry.get("pending") or not entry.get("editable"):
+                if DEDUP_CACHE.get(key) is not entry or entry.get("pending") or not entry.get("editable"):
+                    return
+                if entry.get("badge_count") == entry.get("count"):
                     return
                 count = int(entry.get("count", 0))
                 editable = entry["editable"]
@@ -5649,6 +5765,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 return
             if wait > 0:
                 await asyncio.sleep(wait)
+            count = int(entry.get("count", count))
             # Eski not (varsa) çıkarılır; kaynak grup adı satırı KALDIRILIR ve
             # yerine çoklu paylaşım notu yazılıp mesaj kapatılır (kullanıcı
             # isteği: "hangi gruptan geldiğini kaldırıp N kere paylaşıldı şu şu
@@ -5708,23 +5825,16 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     ], key=lambda entity: int(entity.get("offset", 0)))
                     if DESTINATION_ID is None or not isinstance(bot_message_id, int):
                         break
-                    for _ in range(2):
-                        if kind == "media":
-                            ok, detail = await edit_bot_caption(
-                                NOTIFY_BOT_TOKEN, DESTINATION_ID, bot_message_id, new_text,
-                                entities=new_entities, keyboard=keyboard,
-                            )
-                        else:
-                            ok, detail = await edit_bot_text(
-                                NOTIFY_BOT_TOKEN, DESTINATION_ID, bot_message_id, new_text,
-                                entities=new_entities, keyboard=keyboard,
-                            )
-                        if ok:
-                            break
-                        if "retry after" in detail.lower() or "too many requests" in detail.lower():
-                            await asyncio.sleep(2)
-                            continue
-                        break
+                    if kind == "media":
+                        ok, detail = await edit_bot_caption(
+                            NOTIFY_BOT_TOKEN, DESTINATION_ID, bot_message_id, new_text,
+                            entities=new_entities, keyboard=keyboard,
+                        )
+                    else:
+                        ok, detail = await edit_bot_text(
+                            NOTIFY_BOT_TOKEN, DESTINATION_ID, bot_message_id, new_text,
+                            entities=new_entities, keyboard=keyboard,
+                        )
                     if ok:
                         async with DEDUP_LOCK:
                             live = DEDUP_CACHE.get(key)
@@ -5733,8 +5843,15 @@ async def main(argv: Sequence[str] | None = None) -> int:
                                 live["entities_bot"] = new_entities
                                 live["last_edit"] = time.time()
                                 live["edit_fails"] = 0
+                                live["badge_count"] = count
                         STATS["dedup_edits"] += 1
-                        log.info("Rozet güncellendi (%s kaynak, bot iletisi %s).", count, bot_message_id)
+                        log.info("Rozet güncellendi (%s paylaşım, %s farklı kaynak, bot iletisi %s).",
+                                 count, len(entry.get("sources") or []), bot_message_id)
+                        return
+                    if "message to edit not found" in detail.lower() or "message can't be edited" in detail.lower():
+                        entry["failed"] = True
+                        entry["editable"] = None
+                        log.warning("Eski bot iletisi düzenlenemiyor; fırsat yeni bildirim olarak gönderilecek.")
                         return
                     log.info("Rozet bot iletisine işlenemedi (%s); kısa rozet deneniyor.", detail)
                 else:
@@ -5754,8 +5871,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         )
                     except errors.FloodWaitError as exc:
                         log.warning("Rozet FloodWait (%s sn); kısa rozet denenmeden bırakılıyor.", exc.seconds)
-                        await asyncio.sleep(min(exc.seconds, 10))
-                        break
+                        entry["last_edit"] = time.time() + exc.seconds
+                        return
+                    except (errors.MessageIdInvalidError, errors.MessageAuthorRequiredError):
+                        entry["failed"] = True
+                        entry["editable"] = None
+                        return
                     except errors.MessageNotModifiedError:
                         async with DEDUP_LOCK:
                             live = DEDUP_CACHE.get(key)
@@ -5763,6 +5884,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                                 live["text"] = new_text
                                 live["entities_tl"] = new_tl
                                 live["last_edit"] = time.time()
+                                live["badge_count"] = count
                         return
                     except Exception as exc:  # noqa: BLE001 - rozet hatası fırsatı öldürmez
                         log.info("Rozet hesap iletisine işlenemedi (%s: %s); kısa rozet deneniyor.",
@@ -5775,14 +5897,16 @@ async def main(argv: Sequence[str] | None = None) -> int:
                             live["entities_tl"] = new_tl
                             live["last_edit"] = time.time()
                             live["edit_fails"] = 0
+                            live["badge_count"] = count
                     STATS["dedup_edits"] += 1
-                    log.info("Rozet güncellendi (%s kaynak, hesap iletisi %s).", count, account_message_id)
+                    log.info("Rozet güncellendi (%s paylaşım, %s farklı kaynak, hesap iletisi %s).",
+                             count, len(entry.get("sources") or []), account_message_id)
                     return
             # Buraya düşüldüyse rozet işlenemedi; iki üst üste hatada bu
             # başlık için düzenlemeyi bırak (birleştirme sürer).
             async with DEDUP_LOCK:
                 live = DEDUP_CACHE.get(key)
-                if live is not None:
+                if live is entry:
                     live["edit_fails"] = int(live.get("edit_fails", 0)) + 1
                     if live["edit_fails"] >= 2:
                         live["editable"] = None
@@ -5791,7 +5915,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
     async def dedup_preload() -> None:
         """Açılışta hedefin son iletilerini okuyup önbelleği ısıt (tek tarama).
 
-        Yeniden başlamalarda aynı başlığın ikinci kez gruba düşmesini önler.
+        Güvenle eşlenebilen geçmişte yeniden bildirimi önler. Normal gruptaki
+        bot mesajlarının hesap ID'leri Bot API ID'si olarak kullanılamaz.
         İnsan sohbeti ASLA kayda alınmaz: yalnızca hesabın gönderdikleri ve
         bildirim biçimindeki (rozetli/"Mesajı Gör"lü) iletiler işlenir.
         Kayda alınmayan bir ileti en fazla fazladan bir bildirime yol açar;
@@ -5807,6 +5932,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
             log.warning("Tekrar önbelleği ısıtılamadı (%s: %s); boş başlanıyor.",
                         type(exc).__name__, exc)
             return
+        if NOTIFY_BOT_TOKEN and not bot_history_ids_shared(DESTINATION_ID):
+            log.info("Normal grupta geçmişin hesap mesaj ID'leri Bot API ID'si değildir; "
+                     "eski bot mesajları güvenli biçimde atlanacak (yeniden bildirim olabilir).")
         now = time.time()
         added = 0
         for message in reversed(recent):  # eskiden yeniye: ilk kopya kanonik olur
@@ -5826,17 +5954,28 @@ async def main(argv: Sequence[str] | None = None) -> int:
                            for line in text.splitlines())
                 )
                 if sender == SELF_ID:
+                    if NOTIFY_BOT_TOKEN:
+                        continue  # account-only history is NOT a delivered notification
                     editable: str | None = "account"
                 elif looks_like_deal:
+                    if NOTIFY_BOT_TOKEN:
+                        bot_id = NOTIFY_BOT_TOKEN.split(":", 1)[0]
+                        if str(sender) != bot_id:
+                            continue  # another bot/human is not editable by this bot
+                        if not bot_history_ids_shared(DESTINATION_ID):
+                            continue  # basic groups: user and bot ID namespaces differ
                     editable = "bot" if NOTIFY_BOT_TOKEN else None
                 else:
                     continue  # insan sohbeti: kayda alma
                 title = _search_query(base) or message_title(base)
                 if SMART_HEADER:
                     first_line = next((ln.strip() for ln in base.splitlines() if ln.strip()), "")
+                    if first_line.endswith("…"):
+                        continue  # truncated history header is not a safe product identity
                     if first_line and not first_line.startswith("💰"):
                         title = first_line   # yeni düzende ilk satır = başlık
-                key = dedup_key(title)
+                terms = offer_terms(message)
+                key = dedup_offer_key(title, terms)
                 if not key:
                     continue
                 seen_at = now
@@ -5857,7 +5996,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 raw_entities = list(getattr(message, "entities", None) or [])
                 async with DEDUP_LOCK:
                     existing = DEDUP_CACHE.get(key)
-                    if existing is None:
+                    if existing is None or better_or_different_offer(existing.get("offer"), terms):
+                        # A newer/lower-price notification supersedes the old one;
+                        # do not restore the expensive message after a restart.
                         record = new_dedup_entry(title, object())
                         record["pending"] = False
                         record["failed"] = False
@@ -5874,6 +6015,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         record["editable"] = editable
                         record["kind"] = "media" if is_media else "text"
                         record["text"] = text
+                        record["offer"] = terms
                         record["entities_tl"] = raw_entities
                         if editable == "bot":
                             record["bot_message_id"] = message_id
@@ -6047,12 +6189,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             log.info("Mesaj %s gerektiriyor; 'forward' atlanacak (kaynak: %s).", reason, source_name)
         for mode in modes:
             try:
-                result = await SENDERS[mode](event)
-            except errors.FloodWaitError as exc:
-                STATS["failed"] += 1
-                log.warning("FloodWait (%s sn) – %s bekleniyor, mesaj atlandı.", exc.seconds, mode)
-                await asyncio.sleep(min(exc.seconds, 30))
-                return False, f"floodwait:{exc.seconds}", {}
+                result = await send_account_with_retry(mode, event)
             except Exception as exc:  # noqa: BLE001 - bir yol patlarsa sıradakini dene
                 last_error = f"{type(exc).__name__}: {exc}"
                 log.info("İletim yolu '%s' başarısız (%s) → sıradaki deneniyor.", mode, last_error)
@@ -6071,8 +6208,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             t_notified = time.perf_counter()
             account_deleted = False
             if bot_sent and SINGLE_MESSAGE:
-                await delete_account_copy(account_ids, source_name)
-                account_deleted = bool(account_ids)
+                account_deleted = await delete_account_copy(account_ids, source_name)
             log.info("⏱ %s | telegram→bot %.1f sn | hesap kopyası %.1f sn | bildirim %.1f sn | silme %.1f sn | toplam %.1f sn",
                      source_name, received_lag, t_account - t_begin, t_notified - t_account,
                      time.perf_counter() - t_notified, time.perf_counter() - t_begin)
@@ -6098,6 +6234,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
         log.error("Hiçbir iletim yolu çalışmadı (kaynak=%s, mesaj=%s). Son hata: %s",
                   source_name, getattr(event, "id", "?"), last_error)
         return False, last_error, {}
+
+    # Tekrar önbelleğini sıfırla ve hedefin son iletileriyle ısıt: yeniden
+    # başlamalarda yalnızca güvenle eşlenebilen geçmişi kullan (tek tarama).
+    DEDUP_CACHE.clear()
+    LIVE_SEEN.clear()
+    POLL_DISPATCHED.clear()
+    SOURCE_IN_FLIGHT.clear()
+    await dedup_preload()
 
     # Handler'lara `chats=` VERMİYORUZ: Telethon o filtreyi ilk mesajda çözer ve
     # çözümleme hatası tüm update akışını öldürür. Filtreyi burada kendimiz yapıyoruz.
@@ -6233,6 +6377,18 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return  # hedefe kendi gönderdiğimiz mesajı tekrar iletmeyelim
         if live_event_should_skip(event):
             return  # aynı mesaj hızlı taramayla zaten işlendi
+        key = (event.chat_id, event.id)
+        SOURCE_IN_FLIGHT.add(key)
+        try:
+            await process_source_event(event)
+        except BaseException:
+            LIVE_SEEN.pop(key, None)
+            POLL_DISPATCHED.pop(key, None)
+            raise
+        finally:
+            SOURCE_IN_FLIGHT.discard(key)
+
+    async def process_source_event(event: Any) -> None:
         STATS["seen"] += 1
         source_seen = STATS.setdefault("source_seen", {})
         if isinstance(source_seen, dict):
@@ -6251,23 +6407,34 @@ async def main(argv: Sequence[str] | None = None) -> int:
         log.info("Eşleşti: %s / mesaj %s / %.80s", source_name, event.id, text)
 
         # Tekrar birleştirme: aynı ürün sorgusu pencere içindeyse gruba yeni mesaj
-        # ATILMAZ; ilk mesaja rozet işlenir (arka planda, bildirimi bekletmez).
+        # ATILMAZ; ilk mesaja rozet işlenir. Kayıp hedefte yeni bildirim gönderilir.
         # Ürün sorgusu aynı temizlenmiş/gönderilecek içerikten ayıklanır.
         dedup_title = smart_dedup_title(event) if SMART_HEADER else _search_query(sanitize_message(event))
-        dedup_id = dedup_key(dedup_title) if DEDUP_ENABLED else None
+        terms = offer_terms(event) if DEDUP_ENABLED else (None, "")
+        dedup_id = dedup_offer_key(dedup_title, terms) if DEDUP_ENABLED else None
         if not dedup_id:
-            await deliver(event, source_name)
+            ok, _, _ = await deliver(event, source_name)
+            if not ok:
+                LIVE_SEEN.pop((event.chat_id, event.id), None)
+                POLL_DISPATCHED.pop((event.chat_id, event.id), None)
             return
         decision, token = await dedup_before_send(
             dedup_id, dedup_title, source_name,
             footer_name=source_name if SOURCE_FOOTER else None,
+            offer=terms,
         )
         if decision == "dup":
             STATS["deduped"] += 1
             log.info("Tekrar birleştirildi (kaynak=%s): %.60s", source_name, dedup_title)
             return
-        ok, _, info = await deliver(event, source_name)
-        await dedup_after_send(dedup_id, token, ok, info)
+        ok, info = False, None
+        try:
+            ok, _, info = await deliver(event, source_name)
+        finally:
+            await dedup_after_send(dedup_id, token, ok, info)
+            if not ok:
+                LIVE_SEEN.pop((event.chat_id, event.id), None)
+                POLL_DISPATCHED.pop((event.chat_id, event.id), None)
 
     async def private_status_changed(status: str, detail: str) -> None:
         """Rutin açılışı sessiz tut; gerçek özel komut arızalarını bildirmeyi sürdür."""
@@ -6295,11 +6462,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             log.warning("Özel komut durum uyarısı gruba gönderilemedi: %s", type(exc).__name__)
 
+    poll_delivery_tasks: set[asyncio.Task] = set()
+
     async def fast_poll_loop() -> None:
         """Kaynakları tek istekle (getPeerDialogs) yoklar; yeni mesajı canlı olayla aynı yoldan işler."""
         last_seen: dict[int, int] = {}
         input_peers: dict[int, Any] = {}
         failures = 0
+        poll_interval = FAST_POLL_SECONDS
         log.info("⚡ Hızlı tarama açık: kaynaklar %.0f sn'de bir yoklanacak.", FAST_POLL_SECONDS)
 
         async def run_event(event: Any) -> None:
@@ -6310,7 +6480,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         while True:
             try:
-                await asyncio.sleep(FAST_POLL_SECONDS)
+                await asyncio.sleep(max(FAST_POLL_SECONDS, poll_interval))
                 if not FAST_POLL:
                     continue
                 targets: list[tuple[int, Any]] = []
@@ -6325,9 +6495,19 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     targets.append((chat_id, peer))
                 if not targets:
                     continue
+                poll_started = time.monotonic()
                 result = await client(functions.messages.GetPeerDialogsRequest(
                     peers=[types.InputDialogPeer(peer) for _, peer in targets],
                 ))
+                poll_elapsed = time.monotonic() - poll_started
+                # Telethon normally absorbs short FloodWaits internally. A slow
+                # poll must back off too, otherwise our except block never sees
+                # the recurring 3–5 second waits. Do not mutate the client's
+                # global flood policy: account sends/commands share that client.
+                if poll_elapsed >= max(2.0, FAST_POLL_SECONDS):
+                    poll_interval = next_poll_interval(poll_interval, poll_elapsed)
+                    log.info("Hızlı tarama isteği %.1f sn sürdü; yoklama aralığı %.0f sn'ye çıkarıldı.",
+                             poll_elapsed, poll_interval)
                 tops = {utils.get_peer_id(d.peer): int(d.top_message or 0) for d in result.dialogs}
                 for chat_id, peer in targets:
                     top = tops.get(chat_id)
@@ -6339,8 +6519,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         continue
                     if top <= previous:
                         continue
+                    messages = await client.get_messages(peer, min_id=previous, limit=None)
                     last_seen[chat_id] = top
-                    messages = await client.get_messages(peer, min_id=previous, limit=30)
                     for message in reversed(list(messages)):
                         if message.id <= previous or (chat_id, message.id) in LIVE_SEEN:
                             continue
@@ -6352,13 +6532,17 @@ async def main(argv: Sequence[str] | None = None) -> int:
                             event._client = client
                         event._fast_poll = True
                         log.info("⚡ Hızlı tarama yeni mesajı yakaladı (kaynak=%s, mesaj=%s).", chat_id, message.id)
-                        asyncio.create_task(run_event(event))
+                        task = asyncio.create_task(run_event(event))
+                        poll_delivery_tasks.add(task)
+                        task.add_done_callback(poll_delivery_tasks.discard)
                 failures = 0
             except asyncio.CancelledError:
                 raise
             except errors.FloodWaitError as exc:
-                wait = min(int(getattr(exc, "seconds", 5)) + 1, 120)
-                log.warning("Hızlı tarama FloodWait: %s sn bekleniyor.", wait)
+                wait = max(1, int(getattr(exc, "seconds", 5))) + 1
+                poll_interval = next_poll_interval(poll_interval, wait)
+                log.warning("Hızlı tarama FloodWait: %s sn bekleniyor; yeni yoklama aralığı %.0f sn. "
+                            "Canlı mesaj dinleme devam ediyor.", wait, poll_interval)
                 await asyncio.sleep(wait)
             except Exception as exc:  # noqa: BLE001 - geçici hata; canlı olaylar çalışmaya devam eder
                 failures += 1
@@ -6387,13 +6571,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
         log.warning("auto_restart açık ama GH_PAT yok; oturum Actions süresi bitince kapanacak.")
     asyncio.create_task(heartbeat())
 
-    # Tekrar önbelleğini sıfırla ve hedefin son iletileriyle ısıt: yeniden
-    # başlamalarda aynı ürün sorgusu ikinci kez gruba düşmesin (tek tarama).
-    DEDUP_CACHE.clear()
-    LIVE_SEEN.clear()
-    POLL_DISPATCHED.clear()
-    await dedup_preload()
-
     if FAST_POLL:
         private_tasks.append(asyncio.create_task(fast_poll_loop()))
 
@@ -6401,9 +6578,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
     try:
         await client.run_until_disconnected()
     finally:
-        for task in private_tasks:
+        shutdown_tasks = [*private_tasks, *poll_delivery_tasks]
+        for task in shutdown_tasks:
             task.cancel()
-        await asyncio.gather(*private_tasks, return_exceptions=True)
+        await asyncio.gather(*shutdown_tasks, return_exceptions=True)
     return 0
 
 

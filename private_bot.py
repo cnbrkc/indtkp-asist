@@ -12,6 +12,8 @@ import urllib.error
 import urllib.request
 from types import SimpleNamespace
 
+from telegram_retry import request_with_retry
+
 log = logging.getLogger("telegram-filter.private")
 PRIVATE_SUFFIX = "\n\n🎯 SANA ÖZEL"
 
@@ -68,18 +70,15 @@ class BotAPI:
             raise BotAPIError(f"Telegram bağlantı hatası: {type(exc).__name__}") from None
 
     async def call(self, method, payload):
-        for attempt in range(3):
-            body = await asyncio.to_thread(self._request, method, payload)
-            if body.get("ok"):
-                return body.get("result")
-            code = body.get("error_code", "?")
-            if code == 429 and attempt < 2:
-                delay = body.get("parameters", {}).get("retry_after", 1)
-                if isinstance(delay, (int, float)) and 0 <= delay <= 60:
-                    await asyncio.sleep(delay)
-                    continue
-            # Do not echo arbitrary remote text or credentials to logs/users.
-            raise BotAPIError(f"Telegram API {method}: hata {code}", code=code)
+        async def request_once():
+            return await asyncio.to_thread(self._request, method, payload)
+
+        body = await request_with_retry(self.token, method, request_once)
+        if body.get("ok"):
+            return body.get("result")
+        code = body.get("error_code", "?")
+        # Do not echo arbitrary remote text or credentials to logs/users.
+        raise BotAPIError(f"Telegram API {method}: hata {code}", code=code)
 
 
 class PrivateReply:

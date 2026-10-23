@@ -72,6 +72,128 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         self.assertTrue(bot.live_event_should_skip(late_live))
         self.assertFalse(bot.live_event_should_skip(SimpleNamespace(chat_id=chat_id, id=12)))
 
+    def test_flood_wait_is_not_capped_and_poll_interval_backs_off(self):
+        from telethon import errors
+
+        done = asyncio.Event()
+        calls, sleeps = [], []
+        real_sleep = asyncio.sleep
+
+        async def sleep(delay):
+            if delay >= 600:  # heartbeat, unrelated to polling
+                await asyncio.Event().wait()
+            sleeps.append(delay)
+            await real_sleep(0)
+
+        async def get_input_entity(client_self, chat_id):
+            return types.InputPeerChannel(channel_id=1, access_hash=1)
+
+        async def call(client_self, request):
+            calls.append(request)
+            if len(calls) == 1:
+                raise errors.FloodWaitError(request=request, capture=180)
+            done.set()
+            return SimpleNamespace(dialogs=[])
+
+        async def run_until_disconnected(client_self):
+            await asyncio.wait_for(done.wait(), 1)
+
+        config = self._write_config(fast_poll=True, fast_poll_seconds=3)
+        self.addCleanup(os.unlink, config)
+        with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
+             mock.patch.object(ti.FakeClient, "__call__", call, create=True), \
+             mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected), \
+             mock.patch.object(bot.asyncio, "sleep", sleep):
+            self._run_main(config)
+        self.assertEqual(sleeps[:3], [3, 181, 181])
+        self.assertGreaterEqual(len(calls), 2)
+
+    def test_telethon_internal_wait_also_slows_polling(self):
+        done = asyncio.Event()
+        real_sleep = asyncio.sleep
+        sleeps, calls = [], []
+        now = [100.0]
+        clock = mock.Mock(wraps=bot.time)
+        clock.monotonic.side_effect = lambda: now[0]
+
+        async def sleep(delay):
+            if delay >= 600:
+                await asyncio.Event().wait()
+            sleeps.append(delay)
+            await real_sleep(0)
+
+        async def get_input_entity(client_self, chat_id):
+            return types.InputPeerChannel(channel_id=1, access_hash=1)
+
+        async def call(client_self, request):
+            calls.append(request)
+            if len(calls) == 1:
+                now[0] += 4  # Telethon slept internally, no exception escaped
+            else:
+                done.set()
+            return SimpleNamespace(dialogs=[])
+
+        async def run_until_disconnected(client_self):
+            await asyncio.wait_for(done.wait(), 1)
+
+        config = self._write_config(fast_poll=True, fast_poll_seconds=3)
+        self.addCleanup(os.unlink, config)
+        with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
+             mock.patch.object(ti.FakeClient, "__call__", call, create=True), \
+             mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected), \
+             mock.patch.object(bot, "time", clock), \
+             mock.patch.object(bot.asyncio, "sleep", sleep):
+            self._run_main(config)
+        self.assertEqual(sleeps[:2], [3, 10])
+
+    def test_history_failure_retries_cursor_and_delivers_more_than_thirty_messages(self):
+        done = asyncio.Event()
+        real_sleep = asyncio.sleep
+        fetches = []
+        test = self
+
+        async def sleep(delay):
+            if delay >= 600:
+                await asyncio.Event().wait()
+            await real_sleep(0)
+
+        async def get_input_entity(client_self, chat_id):
+            return utils.get_peer(chat_id)
+
+        async def call(client_self, request):
+            test.polls += 1
+            top = 10 if test.polls == 1 else 50
+            chat_id = next(iter(bot.SOURCE_IDS))
+            return SimpleNamespace(dialogs=[SimpleNamespace(peer=utils.get_peer(chat_id), top_message=top)])
+
+        async def get_messages(client_self, peer, min_id=0, limit=30):
+            fetches.append((min_id, limit))
+            if len(fetches) == 1:
+                raise OSError("temporary history fetch failure")
+            done.set()
+            return [test._make_message(peer.channel_id, i, f"çay ürün {i}") for i in range(50, 10, -1)]
+
+        async def run_until_disconnected(client_self):
+            await asyncio.wait_for(done.wait(), 1)
+            # Let the newly scheduled handlers finish before normal shutdown.
+            for _ in range(100):
+                if bot.STATS["forwarded"] == 40:
+                    break
+                await real_sleep(0)
+
+        config = self._write_config(fast_poll=True, fast_poll_seconds=1, dedup_enabled=False)
+        self.addCleanup(os.unlink, config)
+        with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
+             mock.patch.object(ti.FakeClient, "__call__", call, create=True), \
+             mock.patch.object(ti.FakeClient, "get_messages", get_messages, create=True), \
+             mock.patch.object(ti.FakeClient, "_mb_entity_cache", SimpleNamespace(get=lambda *a: None), create=True), \
+             mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected), \
+             mock.patch.object(bot.asyncio, "sleep", sleep):
+            client = self._run_main(config)
+        self.assertEqual(fetches, [(10, None), (10, None)])
+        self.assertEqual(len(client.delivered), 40)
+        self.assertFalse(bot.SOURCE_IN_FLIGHT)
+
     def test_fast_poll_can_be_disabled(self):
         config = self._write_config(fast_poll=False)
         self.addCleanup(os.unlink, config)

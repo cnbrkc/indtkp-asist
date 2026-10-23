@@ -182,10 +182,11 @@ class PrivateAsyncTests(unittest.IsolatedAsyncioTestCase):
         ]), mock.patch.object(private.asyncio, "sleep", new_callable=mock.AsyncMock) as sleep:
             result = await api.call("sendMessage", {})
         self.assertEqual(result, {"message_id": 1})
-        sleep.assert_awaited_once_with(2)
+        sleep.assert_awaited_once()
+        self.assertGreaterEqual(sleep.await_args.args[0], 2)
 
-    async def test_no_retry_on_forbidden_or_excessive_wait(self):
-        for code, seconds in [(403, 1), (429, 1000)]:
+    async def test_no_retry_on_forbidden(self):
+        for code, seconds in [(403, 1)]:
             api = private.BotAPI("secret")
             with mock.patch.object(api, "_request", return_value={
                 "ok": False, "error_code": code, "parameters": {"retry_after": seconds},
@@ -459,6 +460,8 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
         await self.client.handlers[0][1](event)
 
     async def offer(self, text, **kwargs):
+        self.offer_id = max(getattr(self, "offer_id", 0), max((mid for _, mid in bot.LIVE_SEEN), default=0)) + 1
+        kwargs.setdefault("message_id", self.offer_id)
         event = FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text, **kwargs)
         await self.client.handlers[1][1](event)
         await asyncio.wait_for(self.queues[0].queue.join(), 3)
@@ -591,6 +594,23 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
                                    return_value=group_message, create=True):
                 await self.offer("TCL fallback", media=False)
             self.assertEqual(self.api.offers[0][1]["text"], "TCL fallback" + private.PRIVATE_SUFFIX)
+            self.assertFalse(self.client.deleted)
+        await self.run_scenario(scenario, single_message=True)
+
+    async def test_basic_group_account_media_id_is_never_used_for_bot_copy(self):
+        async def scenario():
+            await self.command("/dmfiltreekle tcl")
+            message = FakeMessage(83375, media=True, text="TCL medya fırsatı")
+            with mock.patch.object(bot, "send_bot_ping", new_callable=mock.AsyncMock, return_value=(False, "error")), \
+                 mock.patch.object(bot, "send_bot_media", new_callable=mock.AsyncMock, return_value=(False, "error")), \
+                 mock.patch.object(self.client, "get_messages", new_callable=mock.AsyncMock,
+                                   return_value=message, create=True):
+                await self.offer("TCL medya fırsatı")
+            method, payload = self.api.offers[0]
+            self.assertEqual(method, "sendMessage")
+            self.assertIn("TCL medya fırsatı", payload["text"])
+            self.assertNotIn("message_id", payload)
+            self.assertNotIn("from_chat_id", payload)
             self.assertFalse(self.client.deleted)
         await self.run_scenario(scenario, single_message=True)
 

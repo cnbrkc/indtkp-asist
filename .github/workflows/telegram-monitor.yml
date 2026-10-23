@@ -8,7 +8,9 @@ on:
 
 concurrency:
   group: telegram-monitor
-  cancel-in-progress: true
+  # Cron is a safety net, not a reason to interrupt an active delivery queue.
+  # Explicit /restart and manual dispatch still replace the current runner.
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
   monitor:
