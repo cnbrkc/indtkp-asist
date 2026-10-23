@@ -2725,9 +2725,20 @@ def offer_terms(obj: Any) -> tuple[float | None, str]:
     conditions = re.findall(
         r"\d+\s*(?:adet|ürün|urun)\s*alımda|\d+\s*al\s*[,;]?\s*\d+|"
         r"(?:kupon|kod)\s*[:=]\s*[\w-]+|(?:ilk alışveriş|prime|abonelik)|"
-        r"(?:birim fiyat|adet fiyatı|/\s*adet)|\d[\d.,]*\s*tl\s*(?:kupon|ve üzeri)",
+        r"(?:birim fiyat|adet fiyatı|/\s*adet)|\d[\d.,]*\s*tl[^\S\r\n]*(?:kupon|ve üzeri)",
         normalize(text),
     )
+    # Satıcı/kaynak adı kimlik değildir; açık ürün durumu ise anlamlıdır.
+    # Durum yoksa "sıfır" varsayılmaz. Farklı kaynak ilanlarını eşitleyecek
+    # kanıt taşımayan bu imzada bilinmeyen durum wildcard olarak kullanılmaz.
+    status_text = strip_dedup_badge(text)[1]
+    footer = dedup_footer_name(status_text)
+    if footer:
+        status_text = status_text.rsplit(footer, 1)[0]
+    status = normalize(status_text)
+    if re.search(r"ikinci el|kullanılmış|kullanilmis|yenilenmiş|yenilenmis", status):
+        conditions.append("durum:yenilenmiş" if re.search(r"yenilenmiş|yenilenmis", status)
+                          else "durum:ikinci el yeni gibi" if "yeni gibi" in status else "durum:ikinci el")
     return value, "|".join(sorted(set(" ".join(c.split()) for c in conditions)))
 
 
@@ -2743,7 +2754,15 @@ def better_or_different_offer(old: tuple | None, new: tuple | None) -> bool:
         return False
     if old[1] != new[1]:
         return True
-    return new[0] is not None and (old[0] is None or new[0] < old[0] - 0.01)
+    if new[0] is None:
+        return False
+    if old[0] is None:
+        return True
+    # Yalnız tam TL'ye kırpma/yuvarlama ölçeğindeki farkları tolere et.
+    # Hem 1 TL hem %0,01 üst sınırı: küçük fiyatlı ürünün gerçek düşüşünü yutma.
+    rounded = (float(old[0]).is_integer() or float(new[0]).is_integer())
+    tolerance = min(1.0, min(old[0], new[0]) * 0.0001) if rounded else 0.01
+    return new[0] < old[0] - max(0.01, tolerance)
 
 
 def new_dedup_entry(title: str, token: Any, source_name: str | None = None,

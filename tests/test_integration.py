@@ -2619,3 +2619,121 @@ class DedupBotBadgeTest(unittest.TestCase):
         self.assertEqual(text_blocks[1], "Çay fırsatı", "mesaj aynen korunur")
         self.assertTrue(text.endswith("📌 3 kere paylaşıldı: firsatz"), text)
         self.assertNotIn("2 kere paylaşıldı", text, "eski not yeni notla değiştirilir")
+
+
+class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
+    """Gerçek on_new_message/rezervasyon/rozet yolu; model benzerliği kullanılmaz."""
+    TITLE = 'Next YE-55GFSG8-4K 55" 140 Ekran UHD 4K Google TV'
+
+    def setUp(self):
+        reset_state()
+        FakeClient.default_history = []
+        self.addCleanup(reset_state)
+        self.addCleanup(setattr, FakeClient, 'default_history', [])
+
+    def start(self, history=(), **config):
+        FakeClient.default_history = list(history)
+        path = self._write_config(source_chats=['@firsatz'], include_keywords=[], smart_header=True, **config)
+        self.addCleanup(os.unlink, path)
+        return self._run_main(path)
+
+    def dispatch(self, client, offers):
+        async def run():
+            with mock.patch.object(bot, 'DEDUP_EDIT_MIN_INTERVAL', 0):
+                for source_id, message_id, text, polled in offers:
+                    event = FakeEvent(source_id, 7, text, message_id=message_id, media=False)
+                    event._fast_poll = polled
+                    await client.handlers[1][1](event)
+                    await asyncio.sleep(0.02)
+        asyncio.run(run())
+
+    def test_four_rounded_shares_merge_across_sources_and_poll_live(self):
+        client = self.start(fast_notify=True)
+        first = next(iter(bot.SOURCE_IDS))
+        second, third = -1001111111112, -1001111111113
+        names = ['Fırsatlar (Sadece Paylaşım)', 'FırsatZ - İndirim Kanalı', 'Amazon Depo - İkinci El Fırsatlar']
+        bot.SOURCE_IDS.update([second, third])
+        bot.SOURCES[:] = [{'id': first, 'name': names[0]}, {'id': second, 'name': names[1]}, {'id': third, 'name': names[2]}]
+        self.dispatch(client, [
+            (first, 101, self.TITLE + '\nFiyat: 13.485,92 TL', True),
+            (second, 102, self.TITLE + '\nFiyat: 13.485,92 TL\nSatıcı: Amazon', False),
+            (third, 103, self.TITLE + '\nFiyat: 13.485 TL\nSatıcı: Amazon Depo', True),
+            (second, 104, self.TITLE + '\nFiyat: 13.485 TL', False),
+            # Aynı kaynak mesajının canlı olayla tekrar gelmesi paylaşım sayılmaz.
+            (first, 101, self.TITLE + '\nFiyat: 13.485,92 TL', False),
+        ])
+        self.assertEqual(len(client.delivered), 1)
+        self.assertEqual(bot.STATS['deduped'], 3)
+        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertEqual(entry['count'], 4)
+        self.assertEqual(set(entry['sources']), set(names))
+        self.assertIn('4 kere paylaşıldı', client.edited[-1][2])
+        for name in names:
+            self.assertIn(name, client.edited[-1][2])
+
+    def test_restart_history_and_rounded_live_copy_share_entry(self):
+        from_text = self.TITLE + '\n\n💰 13.485,92 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz'
+        old = (GROUP_ID, from_text, ADMIN_ID, None, None, [], 777)
+        client = self.start([old])
+        source = next(iter(bot.SOURCE_IDS))
+        self.dispatch(client, [(source, 105, self.TITLE + '\nFiyat: 13.485 TL', False)])
+        self.assertEqual(len(client.delivered), 0)
+        self.assertEqual(bot.STATS['deduped'], 1)
+        self.assertEqual(client.edited[-1][1], 777)
+
+    def test_explicit_used_condition_kept_separate_without_listing_evidence(self):
+        client = self.start()
+        source = next(iter(bot.SOURCE_IDS))
+        self.dispatch(client, [(source, 1, self.TITLE + '\nFiyat: 13.485 TL', False),
+                               (source, 2, self.TITLE + '\nFiyat: 13.485 TL\nÜrün durumu: İkinci el yeni gibi', True)])
+        self.assertEqual(len(client.delivered), 2)
+        self.assertEqual(bot.STATS['deduped'], 0)
+
+    def test_different_model_and_real_price_drop_are_not_suppressed(self):
+        client = self.start()
+        source = next(iter(bot.SOURCE_IDS))
+        self.dispatch(client, [(source, 1, self.TITLE + '\nFiyat: 13.485 TL', False),
+                               (source, 2, self.TITLE.replace('55GFSG8', '55GFSG9') + '\nFiyat: 13.485 TL', True),
+                               (source, 3, self.TITLE + '\nFiyat: 13.400 TL', False)])
+        self.assertEqual(len(client.delivered), 3)
+        self.assertEqual(bot.STATS['deduped'], 0)
+
+    def test_requested_rounding_drop_in_live_and_history(self):
+        for preload in [False, True]:
+            with self.subTest(preload=preload):
+                reset_state()
+                old_text = self.TITLE + '\n\n💰 13.485,92 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz'
+                history = [(GROUP_ID, old_text, ADMIN_ID, None, None, [], 777)] if preload else []
+                client = self.start(history)
+                source = next(iter(bot.SOURCE_IDS))
+                offers = [] if preload else [(source, 1, self.TITLE + '\nFiyat: 13.485,92 TL', True)]
+                offers += [(source, 2, self.TITLE + '\nFiyat: 13.485 TL', False),
+                           (source, 3, self.TITLE + '\nFiyat: 13.484 TL', True)]
+                self.dispatch(client, offers)
+                self.assertEqual(len(client.delivered), 1 if preload else 2)
+                self.assertEqual(bot.STATS['deduped'], 1)
+                self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['offer'][0], 13484)
+
+    def test_same_state_merges_but_explicit_conflict_and_variant_do_not(self):
+        client = self.start()
+        source = next(iter(bot.SOURCE_IDS))
+        self.dispatch(client, [
+            (source, 1, self.TITLE + '\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi\nSatıcı: Mağaza A', True),
+            (source, 2, self.TITLE + '\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi\nSatıcı: Mağaza B', False),
+            (source, 3, self.TITLE + '\nFiyat: 13.485 TL\nÜrün durumu: Yenilenmiş', False),
+            (source, 4, self.TITLE + ' Siyah\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi', True),
+        ])
+        self.assertEqual(len(client.delivered), 3)
+        self.assertEqual(bot.STATS['deduped'], 1)
+
+    def test_same_source_identity_is_not_recounted_when_state_is_missing(self):
+        # Kesin kaynak kimliği, yalnız başlık/fiyattan daha güçlü kanıttır.
+        client = self.start()
+        source = next(iter(bot.SOURCE_IDS))
+        self.dispatch(client, [
+            (source, 11, self.TITLE + '\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi', True),
+            (source, 11, self.TITLE + '\nFiyat: 13.485 TL', False),
+        ])
+        self.assertEqual(len(client.delivered), 1)
+        self.assertEqual(bot.STATS['seen'], 1)
+        self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['count'], 1)
