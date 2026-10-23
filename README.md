@@ -847,13 +847,19 @@ Kaçırılmayacak fırsat!
   yazan kaynakla ürünü başta yazan kaynak eşleşebilir. Başlıksız (salt medya) iletiler
   birleştirilmez.
 
-**Hız ve limitler:** eşleşme bellekteki listede yapılır; her iletide geçmiş
-taranmaz, yani bildirim gecikmez ve ileti başına ek API çağrısı yapılmaz
-(FloodWait/429 riski yok). Tek tarama açılışta bir kez yapılır: hedeften son
-`dedup_scan_limit` ileti (varsayılan 100, tek API çağrısı) okunup liste ısıtılır;
-böylece yeniden başlama sonrası aynı normalize ürün sorgusu ikinci kez düşmez. Not
-güncellemesi arka planda yapılır ve aynı sohbetteki düzenleme hız sınırının
-altında kalır. GitHub'a ek istek atılmaz.
+**Hız ve limitler:** eşleşme bellekte yapılır; her iletide geçmiş taranmaz.
+Rozet düzenlemeleri API isteğidir ve Telegram hız sınırlarına tabidir. Eşzamanlı
+rozet işleri birleştirilir; `429` gelirse Telegram'ın `retry_after` süresi beklenir.
+Bot API gönderimleri, düzenlemeleri ve özel yanıtlar aynı bekleme kapısını paylaşır.
+Uzun `getUpdates` isteği bu kapıyı kilitlemez. GitHub'a ek istek atılmaz.
+
+Açılışta hedeften son `dedup_scan_limit` ileti (varsayılan 100) okunur; **12 saatlik
+pencere, 12 saatin tamamının geçmişten yüklendiği anlamına gelmez.** Süpergruplarda
+kendi botumuzun mesaj ID'leri kullanılabilir. **Normal gruplarda** kullanıcı hesabının
+MTProto mesaj ID'si ile Bot API mesaj ID'si aynı değildir; eski bot mesajları bu yüzden
+önbelleğe alınmaz. Yeniden açılış sonrası tekrar bildirim olabilir; yanlış bir ID'ye
+rozet yazıp yeni fırsatı susturmaktan güvenlidir. Bot bildirimleri açıkken yalnızca
+hesabın gönderdiği eski kopyalar da başarılı bildirim sayılmaz.
 
 **Ayarlar** (`config.json`): `dedup_enabled` (varsayılan `true`),
 `dedup_window_hours` (normalize ürün sorgusu kaç saat "aynı fırsat" sayılsın, 1–72,
@@ -1125,5 +1131,62 @@ Fiyat ve başlık tespiti `price_filter.py` içindedir: kupon, indirim tutarı, 
 Loglar gösterdi ki bazı yoğun kanallarda mesaj, Telegram tarafından hesaba **5–60 sn geç** iletiliyor (`⏱ … telegram→bot` değeri); bizim işleme süremiz ise ~1 sn. Hızlı tarama bunu aşar: tüm kaynaklar birkaç saniyede bir **tek istekle** yoklanır, yeni mesaj bulununca canlı olayla **aynı yoldan** işlenir.
 
 - Varsayılan **açık**. Kapatmak: `"fast_poll": false`. Aralık: `"fast_poll_seconds": 3` (1–30).
-- Aynı mesaj hem canlı olayla hem taramayla gelirse yalnızca bir kez işlenir.
+- Aynı kaynak/mesaj ID'si canlı olaydan, taramadan veya taramadan tekrar gelirse tek kez işlenir; devam eden gönderim de bu korumaya dahildir.
+- `FloodWait` süresi kısaltılmaz. Hata ya da Telethon'un kısa beklemeleri nedeniyle yavaşlayan yoklama sonrası tarama aralığı kademeli artırılır (en fazla 300 sn); canlı dinleme devam eder.
+- Geçmiş sorgusu başarısızsa tarama imleci ilerletilmez; bir turda 30'dan fazla yeni mesaj olması kalanları düşürmez.
 - Logda `⚡ Hızlı tarama yeni mesajı yakaladı` satırı, Telegram'ın geciktirdiği ve taramanın kurtardığı mesajları gösterir.
+
+
+## Bildirim güvenilirliği — 23 Ekim 2026 düzeltmeleri
+
+- **429 medya hatası değildir.** Açık bir `429` reddinde aynı Bot API isteği,
+  belirtilen süre beklendikten sonra yeniden denenir; sırf hız sınırı nedeniyle
+  medya → metin → yalnız hesap kopyası zincirine düşülmez. Gönderim devam ederken
+  başka kaynak aynı ürünün rezervasyonunu devralmaz. Eşzamanlı bir istek bekleme
+  süresini uzatırsa yeni süre de dikkate alınır.
+- **Hesap tarafındaki FloodWait:** hesap gönderimi de süre kısaltılmadan aynı
+  fırsatla yeniden denenir; bekleme sırasında diğer hesap gönderimleri sırada kalır.
+- **Hesap kopyası ≠ bot bildirimi.** Bot gönderimi başka bir nedenle başarısızsa
+  hesap yedeği kullanılabilir, fakat bu kayıt sonraki kaynaklardan gelecek bot
+  bildiriminin önünü kapatmaz. Bağlantı zaman aşımı gibi sonucu belirsiz HTTP
+  istekleri retry katmanında otomatik tekrarlanmaz. Mevcut yedek zinciri çalışabilir;
+  Telegram ilk isteği kabul etmişse çift ileti olasılığı tamamen ortadan kalkmaz.
+- **Güvenilir ürün kimliği:** `3 adet alımda`, `30g medyan`, stok/durum ve
+  “bildirimlerinizi açın” gibi genel satırlar birleştirme anahtarı olamaz.
+  Uzun başlığın model/hacim son eki dedup için kesilmez. Apostrof/aksan farkları
+  normalize edilir; belirsiz varyantlar yaklaşık benzerlikle birleştirilmez.
+  Ondalık sayılar bütün tutulur: `6,2 L` ile `2,6 L`, `S8` ile `S8+` farklıdır.
+- **Fiyat ve koşullar:** güvenilir şekilde tespit edilen fiyat düşerse veya
+  tanınan alım/kupon koşulu değişirse yeni bildirim gider. Bu metinsel bir
+  ayrıştırıcıdır; mağazada kupon uygulanmasını doğrulamaz veya bilinmeyen
+  paket/birim fiyatlarını birbirine çevirmeye çalışmaz. Farklı alım koşulları ayrı
+  kayıtlarda tutulur; A/B/A sırasıyla gelen teklifler gereksiz yeni bildirim üretmez.
+  Güvenli geçmiş yüklemesinde daha düşük fiyatlı bildirim tercih edilir.
+- **Kayıp hedef mesaj:** `message to edit not found` durumunda kısa rozetle
+  tekrar denemek yerine mevcut fırsat için yeni bildirim gönderilir.
+  `message is not modified` başarıdır, hata olarak loglanmaz.
+- **Harici filtre:** `L'Oréal`, `L’Oreal`, `Loreal` yazımları aynı engel ifadesiyle
+  yakalanır. Bir mesajda “kedi maması” ifadesi geçmiyorsa bu ifade tek başına tüm
+  kedi ürünlerini anlamsal olarak engellemez.
+
+**Yeniden başlatma sınırı:** önceki workflow'da `cancel-in-progress: true` olduğu
+için zamanlanmış yeni çalışma da çalışan süreci kesebiliyordu. Artık cron mevcut
+çalışmayı iptal etmez; sıraya girer. Yalnızca açık `/restart` / manuel
+`workflow_dispatch` yeni çalışmayla mevcut süreci değiştirebilir. Tek concurrency
+grubu korunur, iki takipçi aynı anda açılmaz. Logdaki “canceled” tek başına
+uygulama çökmesi değildir.
+Bekleyen gönderimler ve olay kimlikleri bellektedir; ani Actions iptali sırasında
+kalıcı kuyruk veya otomatik geçmiş telafisi garantisi yoktur. Bu değişiklikler
+çalışma devam ederkenki hataları düzeltir; kesintisiz teslimat garantisi vermez.
+`Got difference` senkronizasyonu ve medya için DC değişimi de tek başına kayıp
+bildirim kanıtı değildir.
+
+**Özel medya yedeği:** botun kendi gönderdiği medyanın Bot API ID'siyle özel kopya
+alınmaya devam edilir. Ancak normal grupta yalnızca kullanıcı hesabı medyayı
+kaydetmişse hesabın mesaj ID'si `copyMessage` için kullanılmaz; başlık/açıklama ve
+bağlantılarla metin bildirimi gönderilir. Bu yedekte medyanın kendisi DM'ye taşınmaz.
+Hesap kopyası silinemediğinde de silinmiş gibi işaretlenmez.
+
+Regresyonları çalıştırmak için: `python -m unittest discover -s tests -v`.
+Testler gerçek Telegram gönderimi yapmadan HTTP 429, OnuAl medya bildirimi,
+geçmiş ID alanları, fiyat düşüşü, eşzamanlı olaylar ve iptal senaryolarını sınar.

@@ -772,7 +772,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(len(self.command_log), 2)
 
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 303, "iPhone kampanyası")))
-        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 304, "Sıcak çay")))
+        asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 304, "Sıcak çay", message_id=2)))
         self.assertEqual(bot.STATS["matched"], 1)
         self.assertEqual(len(self.client.delivered), 1)
 
@@ -2199,6 +2199,8 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         reset_state()
 
     def _send(self, text, settle=0.05, **kwargs):
+        self._event_id = getattr(self, "_event_id", 0) + 1
+        kwargs.setdefault("message_id", self._event_id)
         async def _run():
             await self.client.handlers[1][1](FakeEvent(self.source_id, 7, text, **kwargs))
             await asyncio.sleep(settle)  # rozet görevi aynı döngüde bitsin
@@ -2299,7 +2301,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
 
         async def _run():
             for _ in range(2):
-                await client.handlers[1][1](FakeEvent(source_id, 7, "Sıcak ÇAY 5 TL"))
+                await client.handlers[1][1](FakeEvent(source_id, 7, "Sıcak ÇAY 5 TL", message_id=_ + 1))
                 await asyncio.sleep(0.05)
         asyncio.run(_run())
         self.assertEqual(len(client.delivered), 1)
@@ -2331,7 +2333,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
 
         async def _run():
             for _ in range(2):
-                await client.handlers[1][1](FakeEvent(source_id, 7, None, media=False))
+                await client.handlers[1][1](FakeEvent(source_id, 7, None, message_id=_ + 1, media=False))
                 await asyncio.sleep(0.01)
         asyncio.run(_run())
         self.assertEqual(len(client.delivered), 2)
@@ -2346,7 +2348,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
 
         async def _run():
             for _ in range(2):
-                await client.handlers[1][1](FakeEvent(source_id, 7, "Sıcak ÇAY 5 TL"))
+                await client.handlers[1][1](FakeEvent(source_id, 7, "Sıcak ÇAY 5 TL", message_id=_ + 1))
                 await asyncio.sleep(0.01)
         asyncio.run(_run())
         self.assertEqual(len(client.delivered), 2)
@@ -2359,7 +2361,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
             handler = self.client.handlers[1][1]
             await asyncio.gather(
                 handler(FakeEvent(self.source_id, 7, "Aynı ÇAY")),
-                handler(FakeEvent(self.source_id, 8, "Aynı ÇAY")),
+                handler(FakeEvent(self.source_id, 8, "Aynı ÇAY", message_id=2)),
             )
             await asyncio.sleep(0.05)
         asyncio.run(_burst())
@@ -2555,6 +2557,8 @@ class DedupBotBadgeTest(unittest.TestCase):
         return created[0]
 
     def _send(self, client, text, settle=0.05, **kwargs):
+        self._event_id = getattr(self, "_event_id", 0) + 1
+        kwargs.setdefault("message_id", self._event_id)
         async def _run():
             await client.handlers[1][1](FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text, **kwargs))
             await asyncio.sleep(settle)

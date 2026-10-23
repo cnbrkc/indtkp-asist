@@ -473,7 +473,37 @@ def _segments(line: str) -> list[str]:
     return [part for part in parts if part.strip()]
 
 
+_GENERIC_TITLE_RE = re.compile(
+    r"^(?:durum\s*:|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
+    r"(?:anlık|anlik) indirim|bildirimlerinizi|\d+\s+adet kaldı|"
+    r"(?:amazon|n11|trendyol|hepsiburada)\s+indirim kuponu\s*$)",
+    re.IGNORECASE,
+)
+_CONDITION_WORDS = frozenset(
+    "tekli alımda alimda alımı alimi alım alim adet tane al alana birine ine "
+    "ikincisi ikinci ürün urun ile ve tek fiyatına fiyatina geliyor civarına civarina".split()
+)
+
+
+def is_generic_title(text: str) -> bool:
+    """Reject standalone conditions/statistics/CTA, not product pack sizes.
+
+    Numeric tokens previously earned model/quantity bonuses, allowing e.g.
+    '3 adet alımda' to outrank a long real product name. Such a fragment is
+    unsafe as a dedup identity even when it is the only available text.
+    """
+    plain = norm(_remove_noise(text)).strip(" ()[]{}.,:;!-")
+    if not plain or plain in STORES or _GENERIC_TITLE_RE.search(plain):
+        return True
+    if "bildirimlerinizi aç" in plain or "bildirimlerinizi ac" in plain:
+        return True
+    words = re.findall(r"[^\W\d_]+", PRICE_RE.sub(" ", plain))
+    return not words or all(w in _CONDITION_WORDS or w in DEAL_WORDS or w in STORES for w in words)
+
+
 def _is_noise(text: str) -> bool:
+    if is_generic_title(text):
+        return True
     tokens = [norm(re.sub(r"^[^\w]+|[^\w]+$", "", word)) for word in text.split()]
     tokens = [tok for tok in tokens if tok]
     if not tokens or not re.search(r"[^\W\d_]", text):
@@ -541,7 +571,7 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
         best: tuple[float, str] | None = None
         for piece in pieces:
             cleaned = _trim_edges(_remove_noise(piece))
-            if _is_noise(cleaned):
+            if is_generic_title(piece) or _is_noise(cleaned):
                 continue
             score = _score_line(raw, cleaned, position, hint_tokens, bool(_PRODUCT_EMOJI_RE.match(raw)))
             if best is None or score > best[0]:
