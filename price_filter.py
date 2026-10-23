@@ -192,6 +192,9 @@ class Candidate:
     strong: bool
     line: int
     start: int
+    end: int = 0
+    role: str = ""
+    reason: str = ""
 
 
 @dataclass
@@ -224,7 +227,7 @@ def _stem_in(token: str, stems: Sequence[str]) -> bool:
 def _classify(line: str, start: int, end: int, abs_start: int, strike: Sequence[tuple[int, int]],
               suffix: str = "") -> tuple[str, bool]:
     """Tutarın türünü belirle. ``end`` para biriminin bittiği yerdir; ``suffix`` 'ye/'den gibi ektir."""
-    after_raw = suffix + line[end:]
+    after_raw = line[end:]  # end zaten para biriminin sonu; ek kaynak metinde mevcut
     before_raw = line[:start]
     after_clean = after_raw.strip()
     before_tokens = _tokens(before_raw)[-3:]
@@ -245,7 +248,7 @@ def _classify(line: str, start: int, end: int, abs_start: int, strike: Sequence[
 
     connector = bool(re.match(r"^\s*[+&,;|/\-–]", after_raw))   # "6.499 TL + kargo bedava"
     after_tokens = _tokens(after_raw)[:2]
-    if not connector and after_tokens:
+    if not connector and after_tokens and not re.match(r"^\s*[🚚🚛]", after_raw):
         if _stem_in(after_tokens[0], _AFTER_NEG):
             return "other", False
         if len(after_tokens) > 1 and after_tokens[0] in {"ve", "ya", "veya"} \
@@ -293,7 +296,7 @@ def find_candidates(text: str, strike: Sequence[tuple[int, int]] = ()) -> list[C
             core_end = match.end("cur") if match.group("cur") else match.end("a1")
             cls, strong = _classify(line, match.start(), core_end, offset + match.start(), strike,
                                     suffix=match.group("suf") or "")
-            candidates.append(Candidate(value, match.group().strip(), cls, strong, index, match.start()))
+            candidates.append(Candidate(value, match.group().strip(), cls, strong, index, match.start(), core_end))
             seen_spans.append(match.span())
         for regex in (LABELED_RE, EMOJI_LINE_RE):
             match = regex.search(line)
@@ -305,25 +308,77 @@ def find_candidates(text: str, strike: Sequence[tuple[int, int]] = ()) -> list[C
             if value is None or value > 10_000_000:
                 continue
             cls, _ = _classify(line, match.start("a"), match.end("a"), offset + match.start("a"), strike)
-            candidates.append(Candidate(value, match.group().strip(), cls, True, index, match.start("a")))
+            candidates.append(Candidate(value, match.group().strip(), cls, True, index, match.start("a"), match.end("a")))
         offset += len(line) + 1
+    _relate_candidates(text, candidates)
     return candidates
+
+
+def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
+    """Yerel filtreleri koruyarak aynı teklifin tutarlarını ilişkilendir.
+
+    cls eski tüketiciler (özellikle dedup) için korunur; role/reason metin
+    dökmeden testlerde ve teşhiste kullanılabilir. Sayısal indirim hesaplamayız.
+    """
+    lines = text.split("\n")
+    for c in candidates:
+        line = lines[c.line]
+        before, after = norm(line[:c.start]), norm(line[c.end:])
+        c.role = {"price": "normal", "cond": "conditional", "old": "old",
+                  "history": "history", "other": "unrelated"}[c.cls]
+        # Üstü çizili ve eski/geçmiş tutarlar asla yeniden terfi ettirilmez.
+        if c.cls in {"old", "history"}:
+            c.reason = c.role
+            continue
+        if re.match(r"^[’'](?:ye|ya|e|a)\s+\d[\d.,]*\s*(?:tl|₺|try)\s*(?:kupon|indirim)", after):
+            c.cls, c.role = "other", "threshold"
+        elif re.match(r"^(?:ve\s+)?(?:üzeri|uzeri|üstü|ustu|alışveriş|harcama)", after):
+            c.cls, c.role = "other", "threshold"
+        elif re.match(r"^(?:kupon|indirim|kod)", after) or re.search(r"(?:kupon|indirim)\s*[:=]?\s*$", before):
+            c.cls, c.role = "other", "discount_amount"
+        elif c.cls in {"price", "cond"}:
+            # Slash/parenthesis yeni alternatifin sınırıdır; önceki kupon
+            # açıklamasının sonraki fiyatlara sızmasına izin verme.
+            clause = re.split(r"[/|(]", before)[-1]
+            multi = re.search(r"\d+\s*adet\s*al[ıi]m(?:da|larda)\s*(?:(?:(?:adet|birim|tane)\s*baş[ıi]|tanesi)\s*)?$", clause)
+            unit = re.search(r"(?:(?:adet|birim|tane)\s*(?:baş[ıi]|fiyat[ıi])|tanesi)\s*[:=]?\s*$", clause)
+            total = re.search(r"(?:toplam|toplamda)\s*[:=]?\s*$", clause) or re.match(r"^(?:toplam|toplamda)\b", after)
+            if total and re.search(r"\d+\s*adet", clause):
+                c.cls, c.role = "cond", "multi_total"
+            elif multi or unit:
+                c.cls, c.role = "cond", "multi_unit" if multi else "unit"
+                c.strong = bool(unit)  # açık tanesi/adet başı; yalın alımda kalıbından farklı
+            elif re.search(r"kupon(?:la|uyla)|kupon ile|koduyla|kodla", clause):
+                c.role = "product_coupon" if re.search(r"ürün alt", clause) else "basket_coupon" if "sepette" in clause else "discounted"
+                c.strong = True
+            elif re.search(r"(?:yeni|net|nihai|indirimli|sepette)\s*[:=]?\s*$", clause):
+                c.role = "discounted"
+        c.reason = c.role
 
 
 def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInfo:
     """Mesajdaki ürün fiyatını seç. ``confidence`` 'low' ise filtre kullanmaz."""
     cands = find_candidates(text, strike)
-    prices = [c for c in cands if c.cls == "price"]
-    if prices:
-        strong = [c for c in prices if c.strong]
-        pool = strong or prices
-        best = min(pool, key=lambda c: (c.value, c.line, c.start))
-        return PriceInfo(best.value, best.shown, "high" if strong else "medium",
-                         "etiketli/bağlamlı fiyat" if strong else "fiyat")
+    finals = [c for c in cands if c.role in {"discounted", "product_coupon", "basket_coupon"}]
+    normal = [c for c in cands if c.cls == "price" and c not in finals]
+    units = [c for c in cands if c.role in {"multi_unit", "unit"}]
+    # Önce açık nihai fiyat; çoklu alım sadece bu teklife daha avantajlı bir
+    # alternatifse seçilebilir. Eşik/kupon tutarları bu havuza hiç giremez.
+    pool = finals or [c for c in normal if c.strong] or normal
+    if pool or units:
+        values = {c.value for c in pool}
+        best = pool[0] if pool else units[0]
+        ambiguous = len(values) > 1 or (not pool and bool(units) and not best.strong)
+        for c in units:
+            if c.value < best.value:
+                best = c
+        # İlişkisiz farklı fiyatlarda min() ile güvenli fiyat uydurma.
+        confidence = "low" if ambiguous else "medium" if best.cls == "cond" or not best.strong else "high"
+        return PriceInfo(best.value, best.shown, confidence, best.reason)
     conds = [c for c in cands if c.cls == "cond"]
     if conds:
-        best = min(conds, key=lambda c: (c.value, c.line, c.start))
-        return PriceInfo(best.value, best.shown, "medium", "çoklu alım fiyatı")
+        best = conds[0]
+        return PriceInfo(best.value, best.shown, "low", best.reason)
     if not cands:
         for line in (text or "").split("\n"):
             if _FREE_RE.search(line) and not _FREE_BLOCK_RE.search(line):

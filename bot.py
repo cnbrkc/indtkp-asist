@@ -2718,11 +2718,9 @@ def offer_terms(obj: Any) -> tuple[float | None, str]:
     text = message_text(obj)
     strike = price_filter.strike_spans_from_entities(text, entities_for_text(obj, text))
     info = price_filter.extract_price(text, strike)
-    candidates = price_filter.find_candidates(text, strike)
-    conditional = [c.value for c in candidates if c.cls == "cond"]
+    # Ayrıştırıcının güven/rol kararını adaylardan yeniden fiyat türeterek aşma.
+    # Özellikle belirsiz birim/toplam ve low sonuçlar fiyat düşüşü değildir.
     value = info.value if info.confidence in {"high", "medium"} else None
-    if conditional:
-        value = min(conditional + ([value] if value is not None else []))
     # Different purchase requirements are separate offers, not a price drop.
     conditions = re.findall(
         r"\d+\s*(?:adet|ürün|urun)\s*alımda|\d+\s*al\s*[,;]?\s*\d+|"
