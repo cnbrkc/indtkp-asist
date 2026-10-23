@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
+import contextvars
 import base64
 import copy
 import hashlib
@@ -39,7 +41,7 @@ from typing import Any
 
 from telethon import TelegramClient, errors, events, utils
 from telethon.sessions import StringSession
-from telethon.tl import types
+from telethon.tl import functions, types
 
 import price_filter
 from private_bot import (
@@ -462,7 +464,7 @@ def check_environment(config: dict | None = None) -> list[str]:
         price_filter.parse_threshold(item) is None for item in price_items
     ):
         problems.append("config.json → dm_price_max en fazla 1 sayı içermeli (örn. [\"10000\"]).")
-    for flag in ("smart_header", "fast_notify"):
+    for flag in ("smart_header", "fast_notify", "fast_poll"):
         if not isinstance(config.get(flag, False), bool):
             problems.append(f"config.json → {flag} true/false olmalı.")
     if config.get("private_control") and not os.getenv("NOTIFY_BOT_TOKEN", "").strip():
@@ -1815,7 +1817,73 @@ SMART_HEADER = False
 # Hızlı bildirim: bot bildirimi ÖNCE gider; hesap kopyası yalnızca bot başarısız olursa atılır.
 # config.json → fast_notify; anahtar yoksa KAPALI (eski sıra aynen sürer).
 FAST_NOTIFY = False
+# Hızlı tarama: Telegram bazı yoğun kanalların güncellemelerini geç (10-60 sn) iletiyor.
+# Bu görev kaynakları birkaç saniyede bir tek istekle yoklar, yeni mesajı hemen işler.
+# config.json → fast_poll (varsayılan AÇIK; kapatmak için false), fast_poll_seconds (varsayılan 3).
+FAST_POLL = True
+FAST_POLL_SECONDS = 3.0
+LIVE_SEEN: "collections.OrderedDict[tuple[int, int], float]" = collections.OrderedDict()
+POLL_DISPATCHED: "collections.OrderedDict[tuple[int, int], float]" = collections.OrderedDict()
+# Yavaş bildirim raporu: toplam süre bu eşiği (sn) aşarsa Kayıtlı Mesajlar'a döküm gelir. 0 = kapalı.
+SLOW_REPORT_SECONDS = 8.0
+_SLOW_REPORT_LAST = 0.0
+MEDIA_TIMING: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar("media_timing", default=None)
 PRICE_NOT_FOUND_TEXT = "💰 Fiyat tespit edilemedi"
+
+
+def _remember(store_: "collections.OrderedDict[tuple[int, int], float]", chat_id: Any, message_id: Any) -> None:
+    store_[(int(chat_id), int(message_id))] = time.time()
+    while len(store_) > 5000:
+        store_.popitem(last=False)
+
+
+def live_event_should_skip(event: Any) -> bool:
+    """Canlı olay: mesaj hızlı taramayla zaten işlendiyse True. Aksi halde 'canlı görüldü' diye not al.
+
+    Hızlı tarama kendi olaylarını `_fast_poll` işaretiyle yollar; onlar atlanmaz. Taramanın
+    hiç dokunmadığı mesajlarda (ve testlerde) davranış öncekiyle birebir aynıdır."""
+    key = (int(event.chat_id), int(event.id))
+    if getattr(event, "_fast_poll", False):
+        return False
+    if key in POLL_DISPATCHED:
+        return True
+    _remember(LIVE_SEEN, *key)
+    return False
+
+
+def maybe_report_slow(tg_client: Any, source_name: str, lag: float, steps: list[tuple[str, float]]) -> None:
+    """Toplam süre eşiği aşarsa Kayıtlı Mesajlar'a süre dökümü gönder (arka planda; en fazla dakikada 1)."""
+    global _SLOW_REPORT_LAST
+    processing = sum(seconds for _, seconds in steps)
+    total = processing + max(lag, 0.0)
+    if SLOW_REPORT_SECONDS <= 0 or total < SLOW_REPORT_SECONDS:
+        return
+    now = time.time()
+    if now - _SLOW_REPORT_LAST < 60:
+        return
+    _SLOW_REPORT_LAST = now
+    lines = [f"⏱ Yavaş bildirim ({total:.0f} sn) — {source_name}"]
+    if lag >= 0:
+        lines.append(f"• Telegram → bot: {lag:.1f} sn")
+    lines += [f"• {name}: {seconds:.1f} sn" for name, seconds in steps]
+    media = MEDIA_TIMING.get()
+    if media:
+        lines.append(
+            f"• Medya: {media.get('kind')}, {media.get('mb', 0):.1f} MB, "
+            f"indirme {media.get('download', 0):.1f} sn, yükleme {media.get('upload', 0):.1f} sn"
+        )
+    text = "\n".join(lines)
+
+    async def _send() -> None:
+        try:
+            await tg_client.send_message("me", text)
+        except Exception as exc:  # noqa: BLE001 - rapor gönderilemese de akış sürsün
+            log.warning("Yavaş bildirim raporu gönderilemedi: %s", type(exc).__name__)
+
+    try:
+        asyncio.get_running_loop().create_task(_send())
+    except RuntimeError:
+        pass
 
 
 def _webpage_hints(obj: Any) -> list[str]:
@@ -3712,7 +3780,7 @@ async def save_config(store: ConfigStore, note: str = "") -> tuple[bool, str]:
 
 def apply_runtime_config(config: dict) -> list[str]:
     """Global çalışma ayarlarını config'ten yenile (Telegram bağlantısı gerekmez)."""
-    global SMART_HEADER, FAST_NOTIFY
+    global SMART_HEADER, FAST_NOTIFY, SLOW_REPORT_SECONDS, FAST_POLL, FAST_POLL_SECONDS
     global FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE, ADMIN_IDS
     global FILTER_INCLUDE_ENABLED, FILTER_EXCLUDE_ENABLED
     global DELIVERY_CHAIN, MAX_MEDIA_MB
@@ -3745,6 +3813,15 @@ def apply_runtime_config(config: dict) -> list[str]:
     CLEAN_COMMANDS = config_flag(config.get("clean_commands"), True)
     SMART_HEADER = config_flag(config.get("smart_header"), False)
     FAST_NOTIFY = config_flag(config.get("fast_notify"), False)
+    FAST_POLL = config_flag(config.get("fast_poll"), True)
+    try:
+        FAST_POLL_SECONDS = min(30.0, max(1.0, float(config.get("fast_poll_seconds", 3))))
+    except (TypeError, ValueError):
+        FAST_POLL_SECONDS = 3.0
+    try:
+        SLOW_REPORT_SECONDS = max(0.0, float(config.get("slow_report_seconds", 8)))
+    except (TypeError, ValueError):
+        SLOW_REPORT_SECONDS = 8.0
     DEDUP_ENABLED = config_flag(config.get("dedup_enabled"), True)
     try:
         DEDUP_WINDOW_SECONDS = max(1, min(72, int(config.get("dedup_window_hours", 12)))) * 3600
@@ -5868,6 +5945,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if data:
                 log.info("⏱ Bildirim medyası: %s, %.1f MB, indirme %.1f sn.",
                          descriptor["kind"], len(data) / (1024 * 1024), t_downloaded - t_media)
+                MEDIA_TIMING.set({"kind": descriptor["kind"], "mb": len(data) / (1024 * 1024),
+                                  "download": t_downloaded - t_media, "upload": 0.0})
                 send_result = await send_bot_media(
                     NOTIFY_BOT_TOKEN, DESTINATION_ID,
                     kind=descriptor["kind"], filename=descriptor["filename"],
@@ -5876,8 +5955,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 )
                 ok, detail = send_result
                 if ok:
+                    upload_seconds = time.perf_counter() - t_downloaded
                     log.info("Bildirim gönderildi (medya: %s, kaynak: %s, yükleme %.1f sn).",
-                             descriptor["kind"], source_name, time.perf_counter() - t_downloaded)
+                             descriptor["kind"], source_name, upload_seconds)
+                    timing = MEDIA_TIMING.get()
+                    if timing:
+                        timing["upload"] = upload_seconds
                     return True, {
                         "message_id": getattr(send_result, "message_id", None),
                         "kind": "media",
@@ -5945,6 +6028,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     log.warning("Özel kopya kuyruğa alınamadı; grup korunuyor: %s", type(exc).__name__)
                 log.info("⏱ %s | telegram→bot %.1f sn | bildirim (hızlı yol) %.1f sn",
                          source_name, received_lag, time.perf_counter() - t_begin)
+                maybe_report_slow(client, source_name, received_lag, [("Bildirim (hızlı yol)", time.perf_counter() - t_begin)])
                 return True, "bot", info
             skip_bot = True
             log.info("Hızlı bildirim gönderilemedi → normal iletim zincirine dönülüyor (kaynak: %s).", source_name)
@@ -5992,6 +6076,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
             log.info("⏱ %s | telegram→bot %.1f sn | hesap kopyası %.1f sn | bildirim %.1f sn | silme %.1f sn | toplam %.1f sn",
                      source_name, received_lag, t_account - t_begin, t_notified - t_account,
                      time.perf_counter() - t_notified, time.perf_counter() - t_begin)
+            maybe_report_slow(client, source_name, received_lag, [
+                ("Hesap kopyası", t_account - t_begin), ("Bildirim", t_notified - t_account),
+                ("Silme", time.perf_counter() - t_notified),
+            ])
             info = {
                 "mode": mode,
                 "bot": bot_info if bot_sent else None,
@@ -6143,6 +6231,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return
         if DESTINATION_ID is not None and event.chat_id == DESTINATION_ID:
             return  # hedefe kendi gönderdiğimiz mesajı tekrar iletmeyelim
+        if live_event_should_skip(event):
+            return  # aynı mesaj hızlı taramayla zaten işlendi
         STATS["seen"] += 1
         source_seen = STATS.setdefault("source_seen", {})
         if isinstance(source_seen, dict):
@@ -6205,6 +6295,77 @@ async def main(argv: Sequence[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             log.warning("Özel komut durum uyarısı gruba gönderilemedi: %s", type(exc).__name__)
 
+    async def fast_poll_loop() -> None:
+        """Kaynakları tek istekle (getPeerDialogs) yoklar; yeni mesajı canlı olayla aynı yoldan işler."""
+        last_seen: dict[int, int] = {}
+        input_peers: dict[int, Any] = {}
+        failures = 0
+        log.info("⚡ Hızlı tarama açık: kaynaklar %.0f sn'de bir yoklanacak.", FAST_POLL_SECONDS)
+
+        async def run_event(event: Any) -> None:
+            try:
+                await on_new_message(event)
+            except Exception as exc:  # noqa: BLE001 - tek mesaj hatası taramayı durdurmasın
+                log.warning("Hızlı tarama mesajı işlenemedi (%s): %s", type(exc).__name__, exc)
+
+        while True:
+            try:
+                await asyncio.sleep(FAST_POLL_SECONDS)
+                if not FAST_POLL:
+                    continue
+                targets: list[tuple[int, Any]] = []
+                for chat_id in sorted(SOURCE_IDS - CONTROL_IDS):
+                    peer = input_peers.get(chat_id)
+                    if peer is None:
+                        try:
+                            peer = await client.get_input_entity(chat_id)
+                        except Exception:  # noqa: BLE001 - çözülemeyen kaynak atlanır
+                            continue
+                        input_peers[chat_id] = peer
+                    targets.append((chat_id, peer))
+                if not targets:
+                    continue
+                result = await client(functions.messages.GetPeerDialogsRequest(
+                    peers=[types.InputDialogPeer(peer) for _, peer in targets],
+                ))
+                tops = {utils.get_peer_id(d.peer): int(d.top_message or 0) for d in result.dialogs}
+                for chat_id, peer in targets:
+                    top = tops.get(chat_id)
+                    if top is None:
+                        continue
+                    previous = last_seen.get(chat_id)
+                    if previous is None:        # ilk turda yalnızca başlangıç noktasını al
+                        last_seen[chat_id] = top
+                        continue
+                    if top <= previous:
+                        continue
+                    last_seen[chat_id] = top
+                    messages = await client.get_messages(peer, min_id=previous, limit=30)
+                    for message in reversed(list(messages)):
+                        if message.id <= previous or (chat_id, message.id) in LIVE_SEEN:
+                            continue
+                        _remember(POLL_DISPATCHED, chat_id, message.id)
+                        event = events.NewMessage.Event(message)
+                        try:
+                            event._set_client(client)
+                        except Exception:  # noqa: BLE001 - varlık önbelleği yoksa istemci yine de bağlansın
+                            event._client = client
+                        event._fast_poll = True
+                        log.info("⚡ Hızlı tarama yeni mesajı yakaladı (kaynak=%s, mesaj=%s).", chat_id, message.id)
+                        asyncio.create_task(run_event(event))
+                failures = 0
+            except asyncio.CancelledError:
+                raise
+            except errors.FloodWaitError as exc:
+                wait = min(int(getattr(exc, "seconds", 5)) + 1, 120)
+                log.warning("Hızlı tarama FloodWait: %s sn bekleniyor.", wait)
+                await asyncio.sleep(wait)
+            except Exception as exc:  # noqa: BLE001 - geçici hata; canlı olaylar çalışmaya devam eder
+                failures += 1
+                if failures in {1, 5, 20}:
+                    log.warning("Hızlı tarama hatası (%s): %s", type(exc).__name__, exc)
+                await asyncio.sleep(min(30, 2 * failures))
+
     # Özel komutlar ve fırsat kuyruğu ayrı görevlerde çalışır; açılış mesajı gönderilmez.
     private_tasks = []
     if private_api:
@@ -6229,7 +6390,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
     # Tekrar önbelleğini sıfırla ve hedefin son iletileriyle ısıt: yeniden
     # başlamalarda aynı ürün sorgusu ikinci kez gruba düşmesin (tek tarama).
     DEDUP_CACHE.clear()
+    LIVE_SEEN.clear()
+    POLL_DISPATCHED.clear()
     await dedup_preload()
+
+    if FAST_POLL:
+        private_tasks.append(asyncio.create_task(fast_poll_loop()))
 
     log.info("Dinleniyor... (kaynak=%d, kontrol=%s, hedef=%s)", len(SOURCE_IDS), sorted(CONTROL_IDS), DESTINATION_LABEL)
     try:
