@@ -143,7 +143,7 @@ _AFTER_NEG = (
     "üzeri", "uzeri", "üstü", "ustu", "alışveriş", "alisveris", "kazan", "tasarruf", "fark",
     "kargo", "bonus", "promosyon", "limit", "ödül", "odul", "değerinde", "degerinde", "değer",
     "düştü", "dustu", "düşüş", "dusus", "ucuz", "avantaj", "indirimle", "aylık", "aylik",
-    "teslimat", "gönderim", "gonderim", "harcama", "sepet",
+    "teslimat", "gönderim", "gonderim", "harcama", "sepet", "tık", "tik",
 )
 _AFTER_OLD = ("yerine", "idi", "iken", "vardı", "vardi", "olan", "olarak satılıyordu", "liste")
 _BEFORE_NEG = (
@@ -155,13 +155,16 @@ _BEFORE_NEG = (
 _BEFORE_OLD = ("eski", "önceki", "onceki", "liste", "piyasa", "normal", "etiket", "tavsiye", "ortalama")
 _BEFORE_HISTORY = ("düşük", "dusuk", "geçmiş", "gecmis", "rekor")
 _POS_LAST = frozenset(
-    "ile ise olarak net sadece yalnızca yalnizca son güncel guncel şimdi simdi yeni nihai toplam "
+    "ile ise olarak net sadece yalnızca yalnizca son güncel guncel şimdi simdi yeni nihai toplam kuponla koduyla kodla kuponuyla "
     "sepette fiyat fiyatı fiyati ödenecek odenecek ödeme odeme".split()
 )
 _HARD_NEG_BEFORE = frozenset("taksit kargo iade puan limit hediye cashback teslimat".split())
 _STRONG_BEFORE = frozenset(
     "fiyat fiyatı fiyati price sepette yeni güncel guncel şimdi simdi net son nihai".split()
 )
+_THRESHOLD_DATIVE_RE = re.compile(
+    r"^[’']\s?(?:ye|ya|e|a)\s+\d[\d.,]*\s*(?:tl|₺)?\s*(?:kupon|indirim|iade|hediye)", re.IGNORECASE
+)                                                           # "300 TL'ye 50 TL kupon" → 300 eşiktir
 _DATIVE_RE = re.compile(r"^[’']\s?(?:ye|ya|e|a)\b", re.IGNORECASE)
 _ABLATIVE_RE = re.compile(r"^[’']\s?(?:den|dan|ten|tan)\b", re.IGNORECASE)
 _MONTHLY_RE = re.compile(r"^\s*(?:/\s*ay|[x×]\s*\d|\+\s*kdv)", re.IGNORECASE)
@@ -171,7 +174,13 @@ _FREE_BLOCK_RE = re.compile(
     r"ilk\s+ay|değişim|degisim|nakliye|hızlı|hizli|prime",
     re.IGNORECASE,
 )
-_PRICE_EMOJI_RE = re.compile(r"[💰🏷💵💸🔥✅💲]")
+_COUPON_SLASH_RE = re.compile(r"\d[\d.,]*\s*/\s*$")          # "1.000/300TL" → eşik/indirim yazımı
+_COND_BEFORE_RE = re.compile(
+    r"(?:\d+\s*adet(?:\s*al[ıi]m\w*)?|al[ıi]mda|al[ıi]mlarda|\d+\.\s*ürün\w*|ikinci\s+ürün\w*|"
+    r"\d+\s*al\s*\d+\s*öde)\s*$"
+)                                                           # "2 adet alımda 48 TL", "2. ürün 1 TL"
+_FIRST_PARTY_RE = re.compile(r"\b1p\b")                    # Amazon (1P) son fiyatı → eski/başka fiyat
+_PRICE_EMOJI_RE = re.compile(r"[💰🏷💵💸🔥✅💲🎯🔻💳]")
 _HISTORY_HINT_RE = re.compile(r"\bgün|\bay\b|geçmiş|gecmis|ortalama|haftan|ayın|ayin|yılın|yilin|son \d+")
 
 
@@ -223,6 +232,8 @@ def _classify(line: str, start: int, end: int, abs_start: int, strike: Sequence[
     if any(a <= abs_start < b for a, b in strike):
         return "old", False
 
+    if _THRESHOLD_DATIVE_RE.match(norm(after_clean)):
+        return "other", False
     if _DATIVE_RE.match(after_clean):
         return "price", True                           # "1.199 TL'ye düştü"
     if _ABLATIVE_RE.match(after_clean):
@@ -245,6 +256,12 @@ def _classify(line: str, start: int, end: int, abs_start: int, strike: Sequence[
 
     last = before_tokens[-1] if before_tokens else ""
     near = before_tokens[-2:]
+    if _COUPON_SLASH_RE.search(before_raw):
+        return "other", False
+    if _FIRST_PARTY_RE.search(norm(before_raw[-30:])):
+        return "old", False
+    if _COND_BEFORE_RE.search(norm(before_raw[-40:])):
+        return "cond", False
     if any(_stem_in(tok, _BEFORE_OLD) for tok in near):
         return "old", False
     if any(_stem_in(tok, _BEFORE_HISTORY) for tok in before_tokens) and _HISTORY_HINT_RE.search(norm(line)):
@@ -303,6 +320,10 @@ def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInf
         best = min(pool, key=lambda c: (c.value, c.line, c.start))
         return PriceInfo(best.value, best.shown, "high" if strong else "medium",
                          "etiketli/bağlamlı fiyat" if strong else "fiyat")
+    conds = [c for c in cands if c.cls == "cond"]
+    if conds:
+        best = min(conds, key=lambda c: (c.value, c.line, c.start))
+        return PriceInfo(best.value, best.shown, "medium", "çoklu alım fiyatı")
     if not cands:
         for line in (text or "").split("\n"):
             if _FREE_RE.search(line) and not _FREE_BLOCK_RE.search(line):
@@ -343,7 +364,7 @@ _TITLE_LABELS = frozenset({"ürün", "ürün adı", "ürün ismi", "başlık", "
 _META_WORDS_RE = re.compile(
     r"kupon|\bkod\b|kodu|taksit|kargo|satıcı|satici|stok|geçerli|gecerli|tarihine kadar|"
     r"fiyat geçmişi|fiyat gecmisi|en düşük|en dusuk|ortalama|yorum|puan|değerlendirme|"
-    r"link|tıkla|tikla|sepette|iade|teslimat|ilk \d+|adet ile sınırlı|ödeme|odeme|mağaza|magaza",
+    r"(?<![\w-])link(?![\w-])|tıkla|tikla|sepette|iade|teslimat|ilk \d+|adet ile sınırlı|ödeme|odeme|mağaza|magaza|medyan|gerçek fırsat|gercek firsat|taraf satıcı|taraf satici|fiyat\w*\s*:|fark\s*:|son fiyat|kontrol edin",
     re.IGNORECASE,
 )
 
@@ -356,7 +377,8 @@ DEAL_WORDS = frozenset(
     "kacirmayin bugün bugun şimdi simdi sadece yalnızca yalnizca tl try ₺ ve ile bu da de den "
     "dan ye ya için icin sepette sepet link tıkla tikla incele git gör gor "
     "ilk adet geçerli gecerli kadar fiyatına fiyatina fiyatıyla fiyatiyla indi düşürdü dusurdu "
-    "uyarı uyari dikkat önemli onemli duyuru haber güncel guncel yenilendi".split()
+    "uyarı uyari dikkat önemli onemli duyuru haber güncel guncel yenilendi 3p alımda alimda tanıtım tanitim "
+    "işbirliği isbirligi reklam medyanın medyanin".split()
 )
 STORES = frozenset(
     "amazon hepsiburada trendyol n11 mediamarkt teknosa vatan çiçeksepeti ciceksepeti a101 bim şok "
@@ -369,13 +391,14 @@ _UNIT_RE = re.compile(
     r"'?lu|'?lü|hz|mp|ghz|rpm|bar|litre|metre|m|watt|volt|v|mbps|ssd|ram)\b|\d+\"",
     re.IGNORECASE,
 )
+_PRICE_LEAD_RE = re.compile(r"^\s*[\U0001F4B0\U0001F3F7\U0001F4B8\U0001F3AF\U0001F53B\U0001F4B3\u2705]")   # 💰 🏷 💸 🎯 🔻 💳 ✅ → fiyat satırı
+_PRODUCT_EMOJI_RE = re.compile(r"^\s*[\U0001F6CD\U0001F6D2\U0001F4E6\U0001F48E]")   # 🛍 🛒 📦 💎 → ürün satırı
 _MODEL_RE = re.compile(r"\b(?=[A-Za-z0-9\-/]*[A-Za-z])(?=[A-Za-z0-9\-/]*\d)[A-Za-z0-9\-/]{3,}\b")
 
 
 def _remove_noise(line: str) -> str:
     line = _URL_RE.sub(" ", line)
     line = _MENTION_RE.sub(" ", line)
-    line = PRICE_RE.sub(" ", line)
     line = _PERCENT_RE.sub(" ", line)
     line = _SYMBOL_RE.sub(" ", line)
     line = _LABEL_PREFIX_RE.sub("", line)
@@ -398,22 +421,51 @@ def _strip_tags(text: str) -> str:
             return text
 
 
+_EDGE_JUNK = "!?.,:;|-–—•/ "
+
+
+def _strip_edge_price(line: str) -> str:
+    """Satırın en başındaki/sonundaki fiyatı sil; ortadaki (ör. kupon "1.000/300TL") kalsın."""
+    text = line.rstrip()
+    matches = list(PRICE_RE.finditer(text))
+    if matches:
+        last = matches[-1]
+        if last.end() >= len(text.rstrip(_EDGE_JUNK)) and not text[:last.start()].rstrip().endswith("/"):
+            text = text[:last.start()]
+    matches = list(PRICE_RE.finditer(text))
+    if matches:
+        first = matches[0]
+        if first.start() <= len(text) - len(text.lstrip(_EDGE_JUNK)):
+            text = text[first.end():]
+    return text.strip()
+
+
 def _trim_edges(line: str) -> str:
-    """Baş/sondaki fırsat sözcüklerini ve ayraçları temizle (ürün adı ortada kalır)."""
+    """Baş/sondaki fırsat sözcüklerini, kenar fiyatını ve ayraçları temizle (ürün adı ortada kalır)."""
     line = _strip_tags(line)
-    words = line.split()
 
     def bare(word: str) -> str:
         return norm(re.sub(r"^[^\w]+|[^\w]+$", "", word))
 
-    while words and (bare(words[0]) in DEAL_WORDS or not bare(words[0])):
-        words.pop(0)
-    while words and (bare(words[-1]) in DEAL_WORDS or bare(words[-1]) in STORES or not bare(words[-1])):
-        words.pop()
-    text = " ".join(words)
-    text = _LEAD_TRIM_RE.sub("", text)
-    text = _TRAIL_TRIM_RE.sub("", text)
-    return text.strip()
+    words = line.split()
+    changed = True
+    while changed and words:
+        changed = False
+        current = " ".join(words)
+        stripped = _strip_edge_price(current)          # önce kenar fiyatı ("… 5.399 TL"), sonra sözcükler
+        if stripped != current:
+            words, changed = stripped.split(), True
+            continue
+        if bare(words[0]) in DEAL_WORDS or not bare(words[0]):
+            words.pop(0)
+            changed = True
+        elif bare(words[-1]) in DEAL_WORDS or bare(words[-1]) in STORES or not bare(words[-1]):
+            words.pop()
+            changed = True
+    line = " ".join(words)
+    line = _LEAD_TRIM_RE.sub("", line)
+    line = _TRAIL_TRIM_RE.sub("", line)
+    return line.strip()
 
 
 def _segments(line: str) -> list[str]:
@@ -429,7 +481,7 @@ def _is_noise(text: str) -> bool:
     return all(tok in DEAL_WORDS or tok in STORES for tok in tokens)
 
 
-def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str]) -> float:
+def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str], lead_product: bool = False) -> float:
     words = cleaned.split()
     count = len(words)
     if count == 0:
@@ -447,11 +499,18 @@ def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str]) ->
         score += 1
     if len(cleaned) > 170:
         score -= 3
-    label = _META_LABEL_RE.match(raw)
+    plain = _SYMBOL_RE.sub("", raw).strip()
+    label = _META_LABEL_RE.match(plain)
     if label and norm(label.group(1)) not in _TITLE_LABELS and len(label.group(1).split()) <= 2:
         score -= 3
-    if _META_WORDS_RE.search(norm(raw)):
+    if _META_WORDS_RE.search(norm(plain)):
         score -= 3
+    if lead_product:
+        score += 4
+    elif _PRICE_LEAD_RE.match(raw):
+        score -= 3                       # "💰 2 adet alımda 250₺" gibi fiyat satırı başlık olmasın
+    elif count <= 4 and PRICE_RE.search(raw):
+        score -= 3                       # "✅1.100TL - S/4XL Arası Bedenler" gibi kısa fiyat satırı
     if cleaned.isupper() and count <= 3:
         score -= 2
     if sum(ch.isdigit() for ch in cleaned) > len(cleaned) * 0.5:
@@ -484,7 +543,7 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
             cleaned = _trim_edges(_remove_noise(piece))
             if _is_noise(cleaned):
                 continue
-            score = _score_line(raw, cleaned, position, hint_tokens)
+            score = _score_line(raw, cleaned, position, hint_tokens, bool(_PRODUCT_EMOJI_RE.match(raw)))
             if best is None or score > best[0]:
                 best = (score, cleaned)
         if best is not None:
