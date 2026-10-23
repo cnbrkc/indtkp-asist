@@ -62,10 +62,12 @@ def strike_spans_from_entities(text: str, entities: Iterable[Any] | None) -> lis
 _CUR = r"(?:TL|₺|TRY|YTL)"
 _NUM = r"\d{1,3}(?:[.\u00a0\u202f,]\d{3})+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?"
 _LETTER = "A-Za-zÇĞİÖŞÜçğıöşü"
+# Bozuk sayının başını fiyat sayma (1..299 / 1,2,3); tek son noktalama serbest.
+_AMOUNT_END = r"(?!\d|[.,][\d.,])"
 
 PRICE_RE = re.compile(
     rf"(?<![\w.,])(?:"
-    rf"(?P<pre>{_CUR})\s*(?P<a1>{_NUM})(?![\d])"
+    rf"(?P<pre>{_CUR})\s*(?P<a1>{_NUM}){_AMOUNT_END}"
     rf"|(?P<a2>{_NUM})\s*(?P<bin>bin\s*)?(?P<cur>{_CUR}|lira)(?![{_LETTER}])(?P<suf>[’'][^\W\d_]+)?"
     rf")",
     re.IGNORECASE,
@@ -73,7 +75,7 @@ PRICE_RE = re.compile(
 
 # "Fiyat: 1299", "💰 1.299" gibi para birimi yazılmayan etiketli tutarlar
 LABELED_RE = re.compile(
-    rf"(?:fiyat\w*|price|sepette|net)\s*[:=\-–]?\s*(?P<a>{_NUM})(?![\d.,]*\s*"
+    rf"(?:fiyat\w*|price|sepette|net)\s*[:=\-–]?\s*(?P<a>{_NUM}){_AMOUNT_END}(?![\d.,]*\s*"
     rf"(?:%|gb|tb|mb|mah|w\b|inç|inch|cm|mm|ml|lt\b|l\b|kg|gr\b|g\b|adet|hz|mp|ay\b|gün|saat))",
     re.IGNORECASE,
 )
@@ -336,6 +338,19 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
             c.cls, c.role = "other", "threshold"
         elif re.match(r"^(?:kupon|indirim|kod)", after) or re.search(r"(?:kupon|indirim)\s*[:=]?\s*$", before):
             c.cls, c.role = "other", "discount_amount"
+        elif re.match(r"^seçili\s+ürün.*satın\s+aldığınızda", after):
+            c.cls, c.role = "other", "threshold"
+        elif re.search(r"\bkampanya\s*:\s*$", before) and re.match(r"^\(\s*\d+\s*adet\s*\)", after):
+            # Etiketli kampanya + sonda miktar, birim fiyat kanıtı değildir.
+            c.cls, c.role = "cond", "campaign_quantity"
+        elif re.search(r"(?:\b1\s+adet|\badedi|\btanesi|(?:adet|birim|tane)\s*(?:baş[ıi]|fiyat[ıi]))\s*[:=]?\s*$", before) and c.cls in {"price", "cond", "other"}:
+            # Yakındaki kupon sözcüğü açık birim fiyatı gölgeleyebilir.
+            # Kupon tutarı/eskiler yukarıda elenir; kargo/taksit terfi etmez.
+            unit_prefix = re.sub(r"(?:\b1\s+adet|\badedi|\btanesi|(?:adet|birim|tane)\s*(?:baş[ıi]|fiyat[ıi]))\s*[:=]?\s*$", "", before)
+            if not re.search(r"(?:kargo|taksit|teslimat)\s*[:=]?\s*$", unit_prefix):
+                c.cls, c.role, c.strong = "cond", "multi_unit" if re.search(r"\d+\s*adet\s*al[ıi]m(?:da|larda)\s*", before) else "unit", True
+        elif re.search(r"\d+\s+al\s+\d+\s+öde(?:\s+ile)?(?:\s+toplam)?\s*$", before) and c.cls in {"price", "cond"}:
+            c.cls, c.role, c.strong = "cond", "multi_total" if before.endswith("toplam") or re.match(r"^toplam\b", after) else "multi_unit", False
         elif c.cls in {"price", "cond"}:
             # Slash/parenthesis yeni alternatifin sınırıdır; önceki kupon
             # açıklamasının sonraki fiyatlara sızmasına izin verme.
@@ -529,7 +544,7 @@ def _segments(line: str) -> list[str]:
 
 
 _GENERIC_TITLE_RE = re.compile(
-    r"^(?:durum\s*:|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
+    r"^(?:durum\s*:|takip\s+kuponu\b|kampanya(?:lar)?\s*(?::|\d)|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
     r"(?:anlık|anlik) indirim|bildirimlerinizi|\d+\s+adet kaldı|"
     r"(?:amazon|n11|trendyol|hepsiburada)\s+indirim kuponu\s*$)",
     re.IGNORECASE,
