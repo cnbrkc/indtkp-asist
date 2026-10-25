@@ -19,7 +19,11 @@ class IncompletePriceTests(unittest.TestCase):
         self.assertFalse(bot.dm_should_send({'dm_price_max': ['99999']}, text))
         self.assertIsNone(bot.offer_terms(event)[0])
         with patch.object(bot, 'SMART_HEADER', True):
-            self.assertIn(bot.PRICE_NOT_FOUND_TEXT, bot.compose_message(event)['text'])
+            header = bot.compose_message(event)['header']
+        # Güvenilir fiyat yok: üst satırda uzun uyarı değil yalnızca ❓.
+        self.assertEqual(header.split(bot.HEADER_SEPARATOR)[0], '❓')
+        self.assertNotIn('Fiyat tespit', header)
+        self.assertNotIn('💰', header)
 
     def test_malformed_number_prefix_is_not_a_price(self):
         for text in ['Fiyat: 1..299 TL', 'Fiyat: 1,2,3 TL', '₺1..299',
@@ -142,7 +146,7 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
                 self.assertEqual(entry['offer'], original_offer)
                 self.assertEqual(entry['count'], 2)
                 self.assertIn('Diğer Kaynak', entry['sources'])
-                self.assertIn('💰 200 TL', entry['text'])
+                self.assertIn('200₺ - Deneme Pamuk Havlu', entry['text'])
                 self.assertIn('Satıcı: Mağaza A', entry['text'])
                 self.assertNotIn('Satıcı: Mağaza B', entry['text'])
                 # Birleştirme gövdeyi sentezlemez; yalnız rozet/source bloğu değişir.
@@ -248,7 +252,7 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
                 await self.send(self.event(low, 2))
                 entry = next(iter(bot.DEDUP_CACHE.values()))
                 self.assertEqual(entry['offer'], offer)
-                self.assertIn('💰 300 TL', entry['text'])
+                self.assertIn('300₺ - Deneme Pamuk Havlu', entry['text'])
                 self.assertNotIn('Eski fiyat: 100 TL', entry['text'])
         asyncio.run(run())
         self.assertEqual(len(self.client.delivered), 1)

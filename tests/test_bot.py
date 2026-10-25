@@ -2188,10 +2188,14 @@ class ComposeMessageTest(unittest.TestCase):
             message_link="https://t.me/firsatz/1",
         )
         self.assertLessEqual(len(composed["text"]), 200)
+        # Telegram sınırı UTF-16 birimiyle sayılır; "🔗" iki birimdir. Kırpma bu
+        # birimi esas alır, böylece kalıp sınırın TAM doluyor, aşmıyor.
+        self.assertLessEqual(bot.utf16_length(composed["text"]), 200)
         self.assertTrue(composed["text"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/1"))
         self.assertEqual(
-            len(composed["body"]),
-            200 - len("Çay Makinesi") - 2 - len("\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"),
+            bot.utf16_length(composed["body"]),
+            200 - bot.utf16_length("Çay Makinesi") - 2
+            - bot.utf16_length("\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"),
         )
         self.assertNotIn("Fırsatı Gönderen", composed["text"])
 
