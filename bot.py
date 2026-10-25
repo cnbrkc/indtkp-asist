@@ -1937,27 +1937,50 @@ def build_header_line(price_text: str, title: str) -> str:
     return price or name
 
 
+def utf16_budget(text: str, units: int) -> str:
+    """Metni en fazla ``units`` UTF-16 kod birimi olacak şekilde baştan keser.
+
+    Telegram uzunlukları UTF-16 birimiyle sayar; ``𝐆𝐔𝐂𝐂𝐈`` gibi süslü yazı ve
+    astral emoji bir Python karakteri ama İKİ UTF-16 birimidir. Karakter sayısıyla
+    kesmek bu yüzden sınırı aşabiliyordu (bkz. ``fit_header_line``). Kesim kod
+    noktası sınırında kalır; yarım karakter üretilmez.
+    """
+    if units <= 0 or not text:
+        return ""
+    used = 0
+    kept = []
+    for char in text:
+        cost = 2 if ord(char) > 0xFFFF else 1
+        if used + cost > units:
+            break
+        kept.append(char)
+        used += cost
+    return "".join(kept)
+
+
 def fit_header_line(price_text: str, title: str, room: int) -> str:
-    """Üst satırı ``room`` karaktere sığdır: fiyat korunur, adın sonu kırpılır.
+    """Üst satırı ``room`` UTF-16 birimine sığdır: fiyat korunur, adın kuyruğu düşer.
 
     Kapasite yetmiyorsa önce ürün adının kuyruğu "…" ile düşer; ad için hiç yer
     kalmamışsa yalnızca fiyat yazılır (fiyat, bildirimin kesilen yerinde solda
     durduğu için her koşulda en değerli parçadır). Hiç sığmıyorsa boş döner.
-    Başlık ayıklayıcısı emoji/sembol bırakmadığı için burada karakter sayısı
-    Telegram'ın UTF-16 birimiyle birebir aynıdır.
+    Uzunluk Telegram birimiyle (UTF-16) ölçülür: ürün adı astral karakter
+    içeriyorsa (süslü font marka adı, emoji) karakter sayısıyla ölçmek sınırı
+    aşırıp gönderilen metni ``message is too long`` hatasına düşürebiliyordu.
     """
     price = (price_text or "").strip()
     name = " ".join((title or "").split())
     full = build_header_line(price, name)
-    if room <= 0 or len(full) <= room:
+    if room <= 0 or utf16_length(full) <= room:
         return full if room > 0 else ""
     if not name:
-        return price if len(price) <= room else ""
+        return price if utf16_length(price) <= room else ""
     prefix = f"{price}{HEADER_SEPARATOR}" if price else ""
-    if room - len(prefix) < 8:
+    if room - utf16_length(prefix) < 8:
         # Ad için ayrılacak yer yok: en azından fiyat görünsün.
-        return price if len(price) <= room else ""
-    return f"{prefix}{name[: room - len(prefix) - 1].rstrip()}…"
+        return price if utf16_length(price) <= room else ""
+    tail = utf16_budget(name, room - utf16_length(prefix) - 1).rstrip()
+    return f"{prefix}{tail}…"
 
 
 def split_header_line(line: str | None) -> tuple[str, str]:
@@ -2205,22 +2228,27 @@ def compose_message(
     # "Mesajı Gör" düşer; üst satır (gerekirse kırpılarak) ve gövde en sona
     # kadar korunur. (Gövde uzun olduğu için bu parçaların düşmesi yanlış
     # olurdu; gövde kırpılır.)
-    if len(_other_than_body()) >= limit and appendix_text:
+    # "Sığmıyor" ölçütleri UTF-16 ile: gövde astral karakter (emoji, süslü font)
+    # içerirken karakter sayısı limiti büyük gösterip gönderilen metni Telegram
+    # sınırının taşmasına bırakıyordu.
+    if utf16_length(_other_than_body()) >= limit and appendix_text:
         segments = [(kind, "" if kind == "appendix" else value) for kind, value in segments]
         appendix_text = ""
-    if len(_other_than_body()) >= limit and name:
+    if utf16_length(_other_than_body()) >= limit and name:
         segments = [(kind, "" if kind == "name" else value) for kind, value in segments]
         name = None
-    if len(_other_than_body()) >= limit and source_line:
+    if utf16_length(_other_than_body()) >= limit and source_line:
         segments = [(kind, "" if kind == "source" else value) for kind, value in segments]
         source_line = ""
-    if header_text and len(_other_than_body()) >= limit:
+    if header_text and utf16_length(_other_than_body()) >= limit:
         # Üst satır hâlâ sığmıyor: kalan sabit parçalara göre kırp. Fiyat
         # solda kaldığı için korunur, ürün adının kuyruğu "…" ile düşer;
         # hiç yer yoksa satır tümüyle atılır.
         rest = _join([part for part in segments
                       if part[0] not in ("body", "header") and part[1]])
-        room = limit - len(rest) - (len(sep) if rest else 0) - len(sep)
+        # Oda da UTF-16 ile hesaplanır: alt bloklardaki "🔗" gibi astral
+        # karakterler yüzünden karakter saymak odayı büyük gösterirdi.
+        room = limit - utf16_length(rest) - (utf16_length(sep) if rest else 0) - utf16_length(sep)
         header_text = fit_header_line(price_text, product_title, room) if room >= 16 else ""
         price_text, product_title = split_header_line(header_text) if header_text else ("", "")
         segments = [(kind, header_text if kind == "header" else value)
@@ -2229,10 +2257,11 @@ def compose_message(
     # Gövde için kalan yer: diğer parçalar (varsa) korunur, gövde kırpılır.
     others_text = _other_than_body()
     current_body = next((value for kind, value in segments if kind == "body"), "")
-    gap = len(sep) if (current_body and others_text) else 0
-    body_room = max(0, limit - len(others_text) - gap)
-    if len(current_body) > body_room:
-        current_body = current_body[: max(0, body_room - 1)].rstrip() + "…" if body_room else ""
+    gap = utf16_length(sep) if (current_body and others_text) else 0
+    body_room = max(0, limit - utf16_length(others_text) - gap)
+    if utf16_length(current_body) > body_room:
+        current_body = (utf16_budget(current_body, max(0, body_room - 1)).rstrip() + "…"
+                        if body_room else "")
     body = current_body
     segments = [(kind, body if kind == "body" else value) for kind, value in segments]
 
@@ -5456,7 +5485,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 )
                 layout_ok = bool(dry_run["text"] or media or links)
                 if dry_run["header"]:
-                    # Basit düzen: üst satır (fiyat — ürün adı) en üstte,
+                    # Basit düzen: üst satır ("56₺ - ürün adı") en üstte,
                     # mesajın aslı hemen altında.
                     layout_ok = (
                         layout_ok

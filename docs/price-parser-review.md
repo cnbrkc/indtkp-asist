@@ -126,5 +126,58 @@ Bref/Nivea/Köyceğiz tam bağlamları, birim teklif okumasını destekliyor; hi
 Karşı örnek testleri bilinen hata sınıflarını sınırlar; başka hiçbir mesajda
 hata olmayacağını kanıtlayamaz. Önceki kalan riskler geçerlidir.
 
-591 test yerel üretim fonksiyonlarını çalıştırır; canlı Telegram gönderimi veya
+684 test yerel üretim fonksiyonlarını çalıştırır; canlı Telegram gönderimi veya
 canlı DM kuyruğu uçtan uca ağ testi yapılmadı. PR açılmadı; kullanıcı onayı beklenir.
+
+## Son denetim: bildirim üst satırı (sıfır fiyat, UTF-16 sınırları, sunum yalıtımı)
+
+Kullanıcının dört risk başlığı `main` ile diferansiyel ölçümle denetlendi.
+
+1. **Sıfır/geçersiz fiyat.** Politika değiştirilmedi: `Fiyat: 0 TL` → high/0.0,
+   `ücretsiz|bedava` → medium/0.0 (`_FREE_RE`), yani sıfır GÖSTERİLEN bir fiyattır
+   ve `main`de `💰 0 TL` idi; yeni üst satırda `0₺`. `kargo bedava`/`deneme`
+   `_FREE_BLOCK_RE` ile fiyat sayılmaz → `❓`. Negatif fiyat üretilemiyor (testteki dokuz
+   negatif/ters biçimde de ayrıştırıcı işareti düşürüyor, `value < 0` hiç görülmedi), boş/`₺`/`TL`/`1.2.99 TL`/`12,29,90 TL`/kupon/`%50`/low → `❓`.
+   `0₺`, `0,50₺`, `12,50₺`, `1.234.567,89₺` gibi her `format_price` biçimi
+   `is_header_price`dan geçer; bölünme/arama/sayı geri-dönüşümü turu-geri doğrulandı.
+2. **Uzun adlar ve sınırlar.** `extract_title` emoji/sembolleri düşürüyor AMA süslü
+   font astral harfleri (`𝐆𝐔𝐂𝐂𝐈`, `𝕏`) düşürmüyor: karakter sayısı UTF-16
+   biriminden küçük kalıyor. Karakterle ölçen `fit_header_line` + gövde kırpması bu
+   yüzden odayı aşabiliyordu; ölçüm UTF-16 birimine çevrildi (`utf16_budget`).
+   Ölçülen etki (astral yoğun, karakterce yasal kaynak ileti): mesaj yolu
+   `main` 4161 birim → **4096 aşıyordu**, yeni 3895; medya caption yolu
+   `main` 1622 birim → **1024 aşıyordu (598 fazla)**, yeni 1000. Gövde kırpması
+   artık kalıbı TAM dolduruyor (≤2 birim pay), gereksiz içerik atmıyor;
+   kırpma sonrası tüm entity'ler gönderilen metnin içinde kalıyor ve kalınlık
+   ilk satırı (üst satırı) kapsıyor.
+3. **Sunum yalıtımı.** Üst satırla seçilen fiyat aynı kaynaktan geliyor
+   (`smart_header_info`), `parse_threshold("12.299,90₺") == 12299.9`; gövde,
+   kampanya/koşul satırları, link bloğu ve kaynak adı bayt bayt `main` ile aynı
+   (37 gerçek mesajda `body/appendix/source_line/title` farkı 0). low/none tutar
+   üst satıra çıkmıyor; `❓` hiçbir tüketicide fiyat sayılmıyor.
+4. **Eski/yeni ayrımı.** `PRICE_LINE_PREFIX`/`LEGACY_HEADER_SEPARATOR` yalnız
+   `split_header_line`ın okuma yolunda geçiyor (yazma yolunda hiçbir kullanım yok);
+   `is_price_line` kaynak/eski-düzen tanımaya ayrılmış. Ayraç, `₺` veya fiyat
+   benzeri sayı içeren adlar (`Samsung 2024 - Yeni Sezon`, `Beko X - No Frost 56 cm`)
+   bölünmüyor; `build(split(x)) == x`.
+
+`send_bot_ping`/`send_bot_media`/`edit_bot_text`/`edit_bot_caption` içindeki son
+savunma dilimleri (`text[:MESSAGE_LIMIT]`, `caption[:CAPTION_LIMIT]`) karakter
+sayar ve `str[:N]` dilimi birim sınırını garanti ETMEZ (ölçüldü: 4096 karakterlik
+astral bir dilim 7680 birim). Çağrı yollarının tamamı denetlendi: dört Bot API
+çağrısı ve üç hesap göndericisi (`send_copy`, `send_media`, `send_text_only`,
+`send_link_card`) ile `/kaynaktest` kurusu, compose'un UTF-16 garantisiyle
+dilime HİÇ ulaşmıyor (`text[:limit] == text`, entity aralıkları gönderilen metnin
+içinde) — bu `SendBoundaryTests` ile kilitlendi; tek compose-dışı çağrı (`/test`
+deneme bildirimi) sabit kısa metindir ve entity taşımıyor. `str[:N]` kod noktası
+kestiği için karakter bozulması/tek başına surrogate üretmesi de mümkün değil.
+Kod bu yüzden değiştirilmedi.
+
+Bilinen, bu değişiklikten bağımsız kalan davranış: çoklu fiyat/`sepete özel`
+kalıplarında low kararı `❓` üretir (gövdede sayı görünmeye devam eder) ve
+rozet düzenleme yolundaki sığma kontrolü (`len(new_text) > limit`) karakterle
+ölçer — orada taşma durumu düzenlemenin reddedilip kısa rozete düşmesiyle
+sonuçlanır, bildirim kaybı üretmez (önbellekteki `text` gönderilenle uyumlu
+kalır); ayrı bir iş olarak ele alınabilir. Yönetici yanıtı bölücüsü
+`chunk_text(limit=3500)` da karakter sayar; durum/komut çıktılarında 1750+
+astral karakter gerekirdi (bildirim yollarıyla ilgisi yok).

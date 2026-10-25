@@ -1066,7 +1066,13 @@ Bu repodaki güncel davranış değişiklikleri:
     de tutar/para birimi/ayraç/`❓` düşürülür (`split_header_line`,
     `header_search_title`, `_price_search_url`). Fiyatın kendisi ve güven kuralları
     (high/medium) değiştirilmedi; düşük güvenli tutar üst satıra taşınmaz. Dar
-    kalıplarda fiyat korunur, adın kuyruğu `…` ile kırpılır. `smart_header`
+    kalıplarda fiyat korunur, adın kuyruğu `…` ile kırpılır — kalıp/uzunluk
+    ölçümü Telegram gibi **UTF-16 kod birimiyle** yapılır (`𝐆𝐔𝐂𝐂𝐈`, `🔥` bir
+    karakter ama iki birimdir; karakterle sayan kırpma sınırı aşırıyordu).
+    Sıfır bir hata değildir: `Fiyat: 0 TL` yüksek, `ücretsiz/bedava` orta
+    güvenlidir ve üst satırda `0₺` olur; `kargo bedava`/`deneme` fiyat sayılmaz
+    (`❓`). Boş/bozuk tutarlar (`₺`, `1.2.99 TL`, kupon, `%50`) da `❓` bırakır.
+    `smart_header`
     kapalıysa düzen değişmeden kalır (yalnız başlık). Ayrıntı:
     [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin),
     [8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri) ve
@@ -1173,7 +1179,11 @@ Grup adı / 📌 N kere paylaşıldı: …
   kaynak mesajdan ayıklanan fiyatsız adla kurulur; gönderilmiş bildirim okunurken de
   üst satır `split_header_line` ile fiyat ve ad diye ayrılır, aramaya ad gider.
 - Üst satır sığmazsa (medya açıklaması gibi dar kalıplar) fiyat korunur, ürün adının
-  kuyruğu `…` ile kırpılır.
+  kuyruğu `…` ile kırpılır. Bu sığdırma ve gövde kırpması UTF-16 birimiyle ölçer;
+  emoji/süslü font ağırlıklı iletilerde gönderilen metin 4096/1024 sınırını aşmaz.
+- Üst satır salt görünümdür: `12.299₺` yazısı `12299.9` sayısıyla birebir aynı
+  anlamsal fiyatı taşır (karşılaştırma, arama, dedup ve DM eşiği sayıyı kullanır;
+  `format_price`ın `TL` yazısı diğer yollarda aynen durur).
 - **Geçmiş biçimler (yalnız okuma):** bir önceki sürüm `Ürün başlığı` + alt satırda
   `💰 1.299 TL`, en eski sabit düzen gövdede `💰Fiyat: …` üretiyordu. Bunlar yeni
   çıktının parçası değildir; açılış taraması bu iletileri de aynı fırsat anahtarına

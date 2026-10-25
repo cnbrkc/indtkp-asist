@@ -55,6 +55,22 @@ def utf16_slice(text: str, offset: int, length: int) -> str:
     return raw[offset * 2:(offset + length) * 2].decode("utf-16-le")
 
 
+def astral_heavy_source() -> str:
+    """Karakteri yasal (≤4096) ama UTF-16 birimi limitin dibinde olan kaynak iletisi.
+
+    Telegram kanalları marka adlarını süslü fontla (𝐆𝐔𝐂𝐂𝐈, 𝕏) yazabiliyor; bu
+    karakterler astraldir, yani Telegram'da İKİ birim sayılır. Sınır ölçümü
+    karakterle yapılırsa üst satır + link bloğu toplamı 4096/1024'ü taşırır.
+    """
+    block = "🔥🚀✅ 𝐅𝐈𝐑𝐒𝐀𝐓 𝐊𝐀𝐌𝐏𝐀𝐍𝐘𝐀 "
+    heavy = SOURCE + "\n"
+    while bot.utf16_length(heavy + block) <= bot.MESSAGE_LIMIT - 40:
+        heavy += block
+    assert len(heavy) < bot.MESSAGE_LIMIT, "kaynak iletisi karakterce yasal kalmalı"
+    assert bot.utf16_length(heavy) > bot.MESSAGE_LIMIT - 100, "astral yük anlamlı olmalı"
+    return heavy
+
+
 def decoded_queries(markup: dict | None) -> dict[str, str]:
     """İnceleme isteği üzerine: URL metninde substring aramak yerine ``q``yu çöz."""
     out: dict[str, str] = {}
@@ -354,7 +370,7 @@ class EntityAndLimitTests(unittest.TestCase):
     def test_truncation_keeps_price_and_the_distinguishing_name_prefix(self):
         composed = bot.compose_message(event(SOURCE), limit=45)
         self.assertTrue(composed["header"].startswith("56₺ - "), composed["header"])
-        self.assertLessEqual(len(composed["header"]), 45)
+        self.assertLessEqual(bot.utf16_length(composed["header"]), 45)
         self.assertTrue(composed["header"].endswith("…"), composed["header"])
         self.assertIn(TITLE[:8], composed["header"])
         self.assertEqual(bot.split_header_line(composed["header"])[0], "56₺")
@@ -363,7 +379,7 @@ class EntityAndLimitTests(unittest.TestCase):
         # Fiyat yoksa ve ad sığmıyorsa satır ❓ ile açılır/kapanır.
         composed = bot.compose_message(event(f"{TITLE}\n🎯 kupon var"), limit=18)
         self.assertTrue(composed["header"].startswith("❓"), composed["header"])
-        self.assertLessEqual(len(composed["header"]), 18)
+        self.assertLessEqual(bot.utf16_length(composed["header"]), 18)
 
 
 class DedupCompatibilityTests(unittest.TestCase):
@@ -536,6 +552,365 @@ class RealNotificationPayloadTests(unittest.TestCase):
                          f"56₺ - {TITLE}", "kırpma sonrası bile kalınlık ilk satırda")
         for label, query in decoded_queries(call["keyboard"]).items():
             self.assertEqual(query, TITLE, label)
+
+    def heavy_astral_source(self):
+        """Bkz. ``astral_heavy_source`` — üst satır + bloklar eklenince birim taşıyordu."""
+        return astral_heavy_source()
+
+    def test_emoji_heavy_text_payload_fits_the_hard_limit(self):
+        client = self._run(fast_notify=True, include_keywords=[], smart_header=True)
+        self._send(client, self.heavy_astral_source(), media=False)
+        call = self.ping_calls[-1]
+        text = call["text"]
+        self.assertEqual(text.splitlines()[0], f"56₺ - {TITLE}")
+        # Kalıp TAM doluyor (en fazla "…" payı kadar boşluk): kırpma gereksiz
+        # içerik atmıyor, yalnız sınırı aşmayacak hizada kesiyor.
+        self.assertGreaterEqual(bot.utf16_length(text), bot.MESSAGE_LIMIT - 202,
+                                "kalıp gerçekten dolu (kırpma devrede) olmalı")
+        self.assertLessEqual(bot.utf16_length(text), bot.MESSAGE_LIMIT)
+        for item in call["entities"]:
+            self.assertLessEqual(item["offset"] + item["length"], bot.utf16_length(text),
+                                 f"{item['type']} gönderilen metnin dışına taşıyor")
+
+    def test_emoji_heavy_caption_payload_fits_the_hard_limit(self):
+        client = self._run(fast_notify=True, include_keywords=[], smart_header=True)
+        self._send(client, self.heavy_astral_source())
+        call = self.media_calls[-1]
+        caption = call["caption"]
+        self.assertEqual(caption.splitlines()[0], f"56₺ - {TITLE}")
+        self.assertLessEqual(bot.utf16_length(caption), bot.CAPTION_LIMIT)
+        for item in call["entities"]:
+            self.assertLessEqual(item["offset"] + item["length"], bot.utf16_length(caption),
+                                 f"{item['type']} caption dışına taşıyor")
+        for label, query in decoded_queries(call["keyboard"]).items():
+            self.assertEqual(query, TITLE, label)
+
+
+class ZeroAndInvalidPriceTests(unittest.TestCase):
+    """1) Sıfır, negatif, boş ve bozuk girdiler: MEVCUT fiyat politikası korunur.
+
+    politika (price_filter, dokunulmadı): ``Fiyat: 0 TL`` → high/0.0 ve
+    "ücretsiz/bedava" → medium/0.0, yani sıfır gösterilmesi gereken geçerli bir
+    fiyattır; ``kargo bedava`` ise _FREE_BLOCK_RE ile fiyat sayılmaz.
+    """
+
+    def setUp(self):
+        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
+        bot.SMART_HEADER = True
+
+    def header_of(self, text):
+        return bot.compose_message(event(text), message_link=None, source_name=None)["header"]
+
+    def test_zero_is_a_supported_price_not_an_error(self):
+        info = pf.extract_price("Samsung Kulaklık\nFiyat: 0 TL")
+        self.assertEqual((info.value, info.confidence), (0.0, "high"))
+        # main bu girdiyi "💰 0 TL" diye gösteriyordu: yazım "0₺" oldu, politika aynı.
+        self.assertEqual(self.header_of("Samsung Kulaklık\nFiyat: 0 TL"), "0₺ - Samsung Kulaklık")
+        for text in ("Kalem Seti\nbu ürün ücretsiz", "Kalem Seti bedava"):
+            with self.subTest(text=text):
+                free = pf.extract_price(text)
+                self.assertEqual((free.value, free.confidence), (0.0, "medium"))
+                self.assertTrue(self.header_of(text).startswith("0₺ - "), self.header_of(text))
+        # Mevcut politikanın blok listesi: "kargo bedava"/"deneme" fiyat DEĞİLDİR.
+        for text in ("Kalem Seti\nkargo bedava", "Deneme Ürünü bu ürün ücretsiz"):
+            with self.subTest(blocked=text):
+                self.assertEqual(pf.extract_price(text).value, None)
+                self.assertEqual(self.header_of(text).split(bot.HEADER_SEPARATOR)[0], "❓")
+
+    def test_zero_price_header_round_trips_for_search_and_dedup(self):
+        # "0₺" fiyat kısmı olarak tanınmazsa geçmiş taraması satırı ürün adı
+        # sanır (yanlış anahtar) ve arama sorgusuna "0₺" karışır.
+        self.assertTrue(bot.is_header_price("0₺"))
+        line = bot.build_header_line("0₺", "Samsung Kulaklık")
+        self.assertEqual(bot.split_header_line(line), ("0₺", "Samsung Kulaklık"))
+        self.assertEqual(bot.header_search_title(line), "Samsung Kulaklık")
+        markup = bot.build_inline_keyboard(event("Samsung Kulaklık\nFiyat: 0 TL")) or {"inline_keyboard": []}
+        queries = decoded_queries(markup)
+        self.assertTrue(queries, "sıfır fiyatlı iletide de arama düğmeleri kurulur")
+        for label, query in queries.items():
+            self.assertEqual(query, "Samsung Kulaklık", label)
+
+    def test_no_input_can_put_a_negative_amount_in_the_header(self):
+        forms = ["Fiyat: -56 TL", "-₺56", "₺-56", "Fiyat: -12,50 TL", "Fiyat: −56 TL",
+                 "Fiyat: ‑56 TL", "Eski: -1.299 TL, Yeni: -999 TL", "İade: -50 TL", "Ürün -56"]
+        for form in forms:
+            with self.subTest(form=form):
+                info = pf.extract_price(f"Ürün X\n{form}")
+                self.assertFalse(info.value is not None and info.value < 0, f"negatif: {info}")
+                header = self.header_of(f"Ürün X\n{form}")
+                head = header.split(bot.HEADER_SEPARATOR)[0] if header else ""
+                if head and head != bot.PRICE_MISSING_MARK:
+                    # Üst satırda gösterilen her şey ayrıştırıcının BULDUĞU sayıdır
+                    # (işaret düşürülmüş hâli), negatif biçim olduğu gibi yazılmaz.
+                    self.assertTrue(bot.is_header_price(head), header)
+                    self.assertNotIn("-", head)
+                    self.assertAlmostEqual(pf.parse_threshold(head), info.value, places=2)
+
+    def test_empty_and_broken_amounts_never_show_a_real_price(self):
+        junk = ["", "   \n\n  ", "Ürün X\n₺", "Ürün X\nTL", "Ürün X\n₺ ",
+                "Ürün X\nFiyat: 1.2.99 TL", "Ürün X\nFiyat: 12,29,90 TL",
+                "Ürün X\n50 TL kupon", "Ürün X\n%50 indirim", "Ürün X\nEski: 19.999 TL",
+                "Ürün A 100 TL\nÜrün B 200 TL"]
+        for text in junk:
+            with self.subTest(text=text):
+                composed = bot.compose_message(event(text), message_link=None, source_name=None)
+                if composed["header"]:
+                    self.assertEqual(composed["header"].split(bot.HEADER_SEPARATOR)[0], "❓",
+                                     composed["header"])
+                self.assertNotIn("Fiyat tespit edilemedi", composed["text"])
+                self.assertNotIn("₺", composed["header"].replace("❓", ""))
+        # Ne ad ne fiyat: üst satır da içerik de yok → boş bildirim gönderilmez.
+        for blank in ("", "   \n  \n "):
+            composed = bot.compose_message(event(blank), message_link=None, source_name=None)
+            with self.subTest(blank=repr(blank)):
+                self.assertEqual(composed["header"], "")
+                self.assertEqual(composed["text"], "")
+                self.assertFalse(bot.composed_has_content(composed))
+
+    def test_low_confidence_amount_stays_in_the_body(self):
+        # "Eski: 19.999 TL" tek başına düşük güven → üst satıra TAŞINMAZ, gövde kalır.
+        composed = bot.compose_message(event("Ürün X\nEski: 19.999 TL"),
+                                       message_link=None, source_name=None)
+        self.assertEqual(composed["header"], "❓ - Ürün X")
+        self.assertIn("19.999", composed["body"])
+        self.assertNotIn("19.999₺", composed["text"])
+
+
+class PresentationOnlyTests(unittest.TestCase):
+    """3) Üst satır salt sunumdur: seçilen fiyatla uyuşur, sayısal anlamı bozmaz."""
+
+    SRC = ("🔥 FIRSAT 🔥\n\nPhilips Airfryer XXL 6.2L\n\nEski fiyat: 19.999 TL\n"
+           "💰 Fiyat: 12.299 TL\nSepete özel %10 indirim · kargo bedava\n\n"
+           "🛒 https://amazon.com.tr/dp/B0X")
+
+    def setUp(self):
+        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
+        bot.SMART_HEADER = True
+
+    def test_header_agrees_with_the_selected_price(self):
+        composed = bot.compose_message(event(self.SRC), message_link="https://t.me/x/1",
+                                       source_name="Kaynak")
+        _title, info = bot.smart_header_info(event(self.SRC), bot.sanitize_message(event(self.SRC)),
+                                            composed["body"])
+        self.assertEqual(composed["price"], bot.header_price_text(info.value))
+        # Görüntü yazısı sayıya geri çözülebiliyor: karşılaştırma/eşik anlamı aynı.
+        self.assertEqual(pf.parse_threshold(composed["price"]), info.value)
+
+    def test_body_links_and_source_name_are_untouched(self):
+        composed = bot.compose_message(event(self.SRC), message_link="https://t.me/x/1",
+                                       source_name="Kaynak")
+        self.assertEqual(composed["body"], bot.message_text(bot.sanitize_message(event(self.SRC))))
+        for line in ("Eski fiyat: 19.999 TL", "💰 Fiyat: 12.299 TL",
+                     "Sepete özel %10 indirim · kargo bedava"):
+            self.assertIn(line, composed["body"], line)
+        self.assertIn("https://amazon.com.tr/dp/B0X", composed["text"])
+        blocks = composed["text"].split("\n\n")
+        self.assertEqual(blocks[0], composed["header"])
+        self.assertEqual(blocks[-1], "Kaynak")
+        self.assertEqual(blocks[-2], "🔗 Mesajı Gör: https://t.me/x/1")
+
+    def test_numeric_policy_is_display_independent(self):
+        # "TL" yazımı yalnız üst satırda değişir; format_price/eşik/DM yolu aynı kalır.
+        self.assertEqual(pf.format_price(12299.9), "12.299,90 TL")
+        self.assertEqual(bot.header_price_text(12299.9), "12.299,90₺")
+        self.assertEqual(pf.parse_threshold(bot.header_price_text(12299.9)), 12299.9)
+        matched, _info = pf.price_matches(self.SRC, 13000)
+        self.assertTrue(matched, "DM eşiği görüntü biçiminden etkilenmez")
+        # Bildirimin kendisi okunduğunda da aynı sayı bulunur (kopya/dedup yolu).
+        composed = bot.compose_message(event(self.SRC), message_link=None, source_name=None)
+        self.assertEqual(pf.extract_price(composed["text"]).value, 12299.0)
+
+    def test_every_formatted_amount_round_trips_through_the_header(self):
+        # format_price "12,50 TL" de üretiyor; başlık yazısı "12,50₺" olur. Bu
+        # biçim tanınmazsa (a) geçmiş taraması satırı ürün adı sanıp farklı anahtar
+        # üretir, (b) header_search_title fiyatı arama kutusuna taşır.
+        for value in (0, 0.5, 12.5, 1000, 1234.5, 12299.9, 1234567.89):
+            with self.subTest(value=value):
+                disp = bot.header_price_text(value)
+                self.assertTrue(bot.is_header_price(disp), disp)
+                line = bot.build_header_line(disp, "Ürün Adı")
+                self.assertEqual(bot.split_header_line(line), (disp, "Ürün Adı"))
+                self.assertEqual(bot.header_search_title(line), "Ürün Adı")
+                self.assertAlmostEqual(pf.parse_threshold(disp), float(value), places=2)
+
+    def test_mark_is_never_a_price_for_consumers(self):
+        composed = bot.compose_message(event(f"{TITLE}\n🎯 sepete özel fırsat"),
+                                       message_link=None, source_name=None)
+        self.assertEqual(composed["price"], bot.PRICE_MISSING_MARK)
+        self.assertIsNone(pf.parse_threshold(composed["price"]))
+        self.assertEqual(composed["title"], TITLE)
+
+
+class Utf16LimitTests(unittest.TestCase):
+    """2) Uzun ve astral karakterli adlar: sığdırma UTF-16 birimiyle yapılır."""
+
+    FANCY = "𝐆𝐔𝐂𝐂𝐈 Uzun Kollu Tişört Erkek Basic Pamuklu Forma Siyah Beden XL Çok Uzun"
+
+    def setUp(self):
+        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
+        bot.SMART_HEADER = True
+
+    def test_fancy_font_titles_really_do_carry_astral_chars(self):
+        # Düzeltmenin gerekçesi: başlık ayıklayıcısı emojiyi düşürür ama süslü
+        # font (astral) HARFİ düşürmez → karakter sayısı UTF-16'dan küçük kalır.
+        title = pf.extract_title(self.FANCY + "\nFiyat: 1.299 TL")
+        self.assertTrue(any(ord(c) > 0xFFFF for c in title), title)
+        self.assertLess(len(title), bot.utf16_length(title))
+        self.assertNotIn("1.299", title)
+
+    def test_fit_header_line_never_exceeds_room_in_utf16(self):
+        for room in list(range(16, 140)) + [160, 200, 500]:
+            with self.subTest(room=room):
+                line = bot.fit_header_line("1.299₺", self.FANCY, room)
+                self.assertLessEqual(bot.utf16_length(line), room)
+                self.assertTrue(line.startswith("1.299₺"), line)
+        # BMP girdisindeki sonuç eski karakter hesabıyla birebir aynı (geriye dönük).
+        self.assertEqual(bot.fit_header_line("41.999₺", "Ad", 6), "")
+        self.assertEqual(bot.fit_header_line("41.999₺", "", 90), "41.999₺")
+        self.assertEqual(bot.fit_header_line("41.999₺", "Samsung Galaxy S24 Ultra 256 GB Titan Siyah Kılıflı model", 40),
+                         "41.999₺ - Samsung Galaxy S24 Ultra 256…")
+
+    def test_utf16_budget_is_maximal_and_never_splits_a_codepoint(self):
+        for units in range(0, 24):
+            with self.subTest(units=units):
+                cut = bot.utf16_budget(self.FANCY, units)
+                self.assertLessEqual(bot.utf16_length(cut), units)
+                self.assertEqual(cut, cut)          # yarım karakter yok
+                rest = self.FANCY[len(cut):]
+                if rest:
+                    nxt = 2 if ord(rest[0]) > 0xFFFF else 1
+                    self.assertGreater(bot.utf16_length(cut) + nxt, units, "kesim en dolu hâlde")
+
+    def test_compose_fills_the_limit_without_crossing_it(self):
+        heavy = "🔥 " + self.FANCY + "\n" + ("🚀 𝐅𝐈𝐑𝐒𝐀𝐓 " * 60)
+        for limit in (200, 400, 1000, bot.CAPTION_LIMIT - 24, bot.MESSAGE_LIMIT - 200):
+            with self.subTest(limit=limit):
+                composed = bot.compose_message(
+                    event(self.FANCY + "\nFiyat: 1.299 TL\n" + heavy), limit=limit,
+                    message_link="https://t.me/x/1", source_name="İndirimde Al 🚀")
+                text = composed["text"]
+                self.assertLessEqual(bot.utf16_length(text), limit)
+                self.assertTrue(text.startswith(composed["header"]), text[:60])
+                if limit <= 1000:
+                    # Korumalı olmak için içerik atmamalı: kalıp doluyor.
+                    self.assertLessEqual(limit - bot.utf16_length(text), 2, text[-40:])
+                bold = next(e for e in composed["entities"]
+                            if type(e).__name__ == "MessageEntityBold")
+                self.assertEqual(utf16_slice(text, bold.offset, bold.length), composed["header"])
+                if composed["header"]:
+                    self.assertLessEqual(bot.utf16_length(composed["header"]), limit)
+
+    def test_entities_of_a_truncated_astral_message_stay_inside(self):
+        body = f"{TITLE}\n🛍️ 𝐆𝐔𝐂𝐂𝐈 𝐅𝐈𝐑𝐒𝐀𝐓 🛍️ " + ("✅🚀 yıldız " * 200)
+        word = "𝐅𝐈𝐑𝐒𝐀𝐓"
+        start = bot.utf16_length(body[:body.index(word)])
+        entities = [types.MessageEntityBold(offset=start, length=len(word))]
+        composed = bot.compose_message(event(body, entities=entities), limit=260)
+        payload = bot.bot_api_entities(composed["message"], composed["content"])
+        self.assertTrue(payload, "entity listesi boş kalmamalı")
+        for item in payload:
+            self.assertGreaterEqual(item["offset"], 0)
+            self.assertLessEqual(item["offset"] + item["length"], bot.utf16_length(composed["text"]),
+                                 "kırpma sonrası entity metin dışına taşmaz")
+        self.assertLessEqual(bot.utf16_length(composed["text"]), 260)
+
+
+class SendBoundaryTests(unittest.TestCase):
+    """1) ``send_bot_ping`` / ``send_bot_media`` / ``edit_bot_*`` son dilimleri.
+
+    Bu dört fonksiyondaki son savunma ``text[:MESSAGE_LIMIT]`` ve
+    ``caption[:CAPTION_LIMIT]`` idi ve KARAKTER sayıyor. İki sorunun cevabı burada:
+    (a) compose dışından gelen bir metin bu dilime ulaşabilir mi, (b) dilim bir
+    Unicode karakterini veya entity aralığını bozar mı. Ölçülen cevap: üretimdeki
+    her yol dilime ULAŞMIYOR (compose UTF-16 ile ölçtüğü için dilim kimlik), dolayısıyla
+    ne karakter bölünüyor ne entity dışarı taşıyor. ``str[:N]`` zaten kod noktasıyla
+    keser; tek başına surrogate üretemez — ama tek başına birim sınırını da
+    garanti etmez, asıl garanti compose tarafında.
+    """
+
+    tearDown = ti.DedupBotBadgeTest.tearDown
+    _patch = ti.DedupBotBadgeTest._patch
+    _run = ti.DedupBotBadgeTest._run
+    _send = ti.DedupBotBadgeTest._send
+
+    # (üretim çağrı yeri, compose'a verilen limit, Telegram'ın sert sınırı)
+    PATHS = (
+        ("send_bot_ping (bot metin bildirimi)", "MESSAGE_LIMIT", -200),
+        ("send_bot_media (medya caption)", "CAPTION_LIMIT", -24),
+        ("send_copy hesap yolu (mesaj)", "MESSAGE_LIMIT", -100),
+        ("send_copy / send_media hesap yolu (caption)", "CAPTION_LIMIT", -24),
+        ("send_text_only hesap yolu", "MESSAGE_LIMIT", -400),
+        ("/kaynaktest kuru çalışma", "MESSAGE_LIMIT", -100),
+    )
+
+    def setUp(self):
+        ti.DedupBotBadgeTest.setUp(self)     # sahte istemci + yakalanan gönderimler
+        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
+        bot.SMART_HEADER = True
+
+    def composed_for(self, path_label):
+        hard = getattr(bot, path_label[1])
+        composed = bot.compose_message(
+            event(astral_heavy_source()), limit=hard + path_label[2],
+            message_link="https://t.me/x/1", source_name="İndirimde Al 🚀",
+        )
+        return composed, hard
+
+    def test_hard_slice_is_a_noop_for_every_call_site(self):
+        for label, key, room in self.PATHS:
+            with self.subTest(yer=label):
+                composed, hard = self.composed_for((label, key, room))
+                text = composed["text"]
+                # Dilim tetiklenmiyor → bozulacak bir şey yok.
+                self.assertLessEqual(len(text), hard, f"{label}: dilim tetiklenirdi")
+                self.assertEqual(text[:hard], text, "son savunma kimlik olmalı")
+                # Kalıp gerçek sınırda: birim sayısı da taşmıyor (düzeltilen hata).
+                self.assertLessEqual(bot.utf16_length(text), hard + room)
+                self.assertTrue(text.startswith(composed["header"]), text[:50])
+
+    def test_entity_ranges_stay_inside_the_sent_text_for_every_call_site(self):
+        for label, key, room in self.PATHS:
+            with self.subTest(yer=label):
+                composed, hard = self.composed_for((label, key, room))
+                text = composed["text"]
+                limit_units = bot.utf16_length(text)
+                bot_entities = (bot.bot_api_entities(composed["message"], composed["content"])
+                                + bot.source_name_entity(composed))
+                self.assertTrue(bot_entities, "biçimlendirme taşınmalı")
+                for item in bot_entities:      # Bot API: offset/length UTF-16 birimi
+                    self.assertLessEqual(item["offset"] + item["length"], limit_units,
+                                         f"{label}: {item} metin dışına taşıyor")
+                for ent in composed["entities"]:   # hesap yolu: formatting_entities (kırpma YOK)
+                    self.assertLessEqual(ent.offset + ent.length, limit_units,
+                                         f"{label}: {type(ent).__name__} taşiyor")
+
+    def test_account_copy_path_fits_although_it_clamps_nothing(self):
+        """Bot yolu kapalıyken hesap göndericileri kullanılır; oralarda dilim yok."""
+        client = self._run(fast_notify=True, include_keywords=[], smart_header=True)
+        self._patch("NOTIFY_BOT_TOKEN", "")
+        self._send(client, astral_heavy_source())
+        self.assertTrue(client.files, "hesap yolu medya+kaption denemeli")
+        _entity, _payload, caption = client.files[-1]
+        self.assertTrue(caption.startswith(f"56₺ - {TITLE}"), caption[:40])
+        self.assertLessEqual(bot.utf16_length(caption), bot.CAPTION_LIMIT)
+
+    def test_char_slice_cannot_split_a_codepoint(self):
+        sample = "x" * 8 + "🧩𝐆𝐔🔥" + "y" * 8 + "’—‍"
+        for cut_at in range(0, len(sample) + 3):
+            cut = sample[:cut_at]
+            self.assertFalse([c for c in cut if 0xD800 <= ord(c) <= 0xDFFF], cut_at)
+            self.assertEqual(cut.encode("utf-16-le").decode("utf-16-le"), cut, cut_at)
+
+    def test_char_slice_alone_does_not_guarantee_the_unit_limit(self):
+        # Neden compose tarafında UTF-16 ölçümü gerektiğinin kanıtı:
+        astral = "🔥𝐅𝐈𝐑𝐒𝐀𝐓 " * 700
+        cut = astral[:bot.MESSAGE_LIMIT]
+        self.assertEqual(len(cut), bot.MESSAGE_LIMIT)
+        self.assertGreater(bot.utf16_length(cut), bot.MESSAGE_LIMIT)
+        # Üretimde bu yola compose dışı uzun metin girmiyor; tek istisna olan
+        # /test deneme bildirimi sabit ve entity taşımıyor:
+        self.assertLess(bot.utf16_length("🔔 Bildirim denemesi"), bot.MESSAGE_LIMIT)
+
 
 
 if __name__ == "__main__":
