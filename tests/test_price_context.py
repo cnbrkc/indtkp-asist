@@ -123,11 +123,11 @@ class OfferContextTests(unittest.TestCase):
             result = bot.compose_message(event, message_link='https://t.me/c/1/2', source_name='Kaynak')
         output = result['text']
         self.assertIn(text, output)
-        # Fiyat en başta, ayraçtan sonra ürün adı geliyor (tek satır).
-        self.assertTrue(output.startswith('💰 99 TL — Chakra Waved Pamuk El Havlusu 30x40 Cm Bej'), output)
-        self.assertEqual(result['price'], '💰 99 TL')
+        # Fiyat en başta (56₺ biçimi), " - " ayracından sonra ürün adı (tek satır).
+        self.assertTrue(output.startswith('99₺ - Chakra Waved Pamuk El Havlusu 30x40 Cm Bej'), output)
+        self.assertEqual(result['price'], '99₺')
         self.assertEqual(result['title'], 'Chakra Waved Pamuk El Havlusu 30x40 Cm Bej')
-        self.assertNotIn('💰 ?', output)
+        self.assertNotIn('❓', result['header'])
         self.assertTrue(output.endswith('Kaynak'))
         self.assertEqual(event.message.message, text)
 
@@ -166,15 +166,15 @@ class OfferContextTests(unittest.TestCase):
                 output = composed['text']
                 header = composed['header']
                 if reliable:
-                    # Güvenilir fiyat üst satırın EN BAŞINA yazılır.
-                    self.assertEqual(header, bot.build_header_line('💰 ' + pf.format_price(value), composed['title']))
-                    self.assertNotIn('💰 ?', output)
+                    # Güvenilir fiyat üst satırın EN BAŞINA yazılır ("1.299₺ - Ad").
+                    self.assertEqual(header, bot.build_header_line(bot.header_price_text(value), composed['title']))
+                    self.assertNotIn('❓', header)
                 else:
-                    # Güven yok: üst satırda yalnızca soru işareti, uzun uyarı yok.
-                    self.assertTrue(header.startswith('💰 ?'), header)
+                    # Güven yok: üst satırda yalnızca ❓, uzun uyarı yok.
+                    self.assertEqual(header.split(bot.HEADER_SEPARATOR)[0], '❓')
                     self.assertNotIn('Fiyat tespit', output)
                     # Kaynak gövdedeki tutarlar silinmez; üretilmiş fiyat başlığı olmamalı.
-                    self.assertNotIn('💰 ' + pf.format_price(value or 0) + ' — ', output)
+                    self.assertNotIn(bot.header_price_text(value or 0) + bot.HEADER_SEPARATOR, output)
                 self.assertEqual(bot.offer_terms(event)[0], value if reliable else None)
                 for threshold in [1000, (value - 1) if value else 0]:
                     cfg = {'dm_enabled': False, 'dm_keywords': [], 'dm_price_max': [str(threshold)]}
@@ -190,7 +190,7 @@ class OfferContextTests(unittest.TestCase):
         event = SimpleNamespace(message=text, raw_text=text, entities=[types.MessageEntityStrike(offset=start, length=6)], media=None)
         with patch.object(bot, 'SMART_HEADER', True):
             struck_header = bot.compose_message(event)['header']
-        self.assertTrue(struck_header.startswith('💰 ?'), struck_header)
+        self.assertEqual(struck_header.split(bot.HEADER_SEPARATOR)[0], '❓')
         cleaned = bot.sanitize_message(event)
         body = bot.message_text(cleaned)
         strike = pf.strike_spans_from_entities(body, bot.entities_for_text(cleaned, body))
@@ -222,13 +222,13 @@ class OfferContextTests(unittest.TestCase):
             with self.subTest(title=title), patch.object(bot, 'SMART_HEADER', True):
                 composed = bot.compose_message(event)
                 output = composed['text']
-                # Üst satır: fiyat — ürün adı (tek satır, fiyat en başta).
+                # Üst satır: "fiyat - ürün adı" (tek satır, fiyat en başta).
                 self.assertEqual(
                     composed['header'],
-                    bot.build_header_line('💰 ' + pf.format_price(expected), composed['title']),
+                    bot.build_header_line(bot.header_price_text(expected), composed['title']),
                 )
                 self.assertTrue(output.startswith(composed['header'] + '\n\n'), output)
-                self.assertNotIn('💰 ?', output)
+                self.assertNotIn('❓', composed['header'])
                 self.assertEqual(bot.offer_terms(event)[0], expected)
                 cleaned = bot.sanitize_message(event)
                 body = bot.message_text(cleaned)

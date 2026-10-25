@@ -245,16 +245,16 @@ class SmartHeaderLayoutTests(unittest.TestCase):
         self.assertTrue(text.startswith("Samsung Galaxy S24 256 GB\n\n🔥 FIRSAT"))
 
     def test_smart_layout_order(self):
-        """Üst satır TEK satırdır: fiyat önce, ayraç, sonra ürün adı."""
+        """Üst satır TEK satırdır: fiyat önce, " - " ayracı, sonra ürün adı."""
         bot.SMART_HEADER = True
         composed = bot.compose_message(self.event(), message_link="https://t.me/c/1/2", source_name="Grup")
         text = composed["text"]
-        self.assertTrue(text.startswith("💰 41.999 TL — Samsung Galaxy S24 256 GB\n\n🔥 FIRSAT"), text)
-        self.assertEqual(composed["header"], "💰 41.999 TL — Samsung Galaxy S24 256 GB")
+        self.assertTrue(text.startswith("41.999₺ - Samsung Galaxy S24 256 GB\n\n🔥 FIRSAT"), text)
+        self.assertEqual(composed["header"], "41.999₺ - Samsung Galaxy S24 256 GB")
         # Fiyat ile ad aynı satırda; altında boş satırla orijinal mesaj gelir.
         self.assertEqual(text.splitlines()[0], composed["header"])
-        self.assertNotIn("\n\n💰 ", text, "ayrı fiyat bloğu kalmadı")
-        self.assertLess(text.index("💰"), text.index("Eski:"))
+        self.assertNotIn("\n\n41.999₺", text, "ayrı fiyat bloğu kalmadı")
+        self.assertLess(text.index("41.999₺"), text.index("Eski:"))
         self.assertLess(text.index("500 TL kupon"), text.index("🔗 Mesajı Gör"))
         self.assertTrue(text.endswith("Grup"))
         kinds = [type(e).__name__ for e in composed["entities"]]
@@ -267,13 +267,13 @@ class SmartHeaderLayoutTests(unittest.TestCase):
         self.assertEqual(bolded, composed["header"], "kalın olan şey üst satırın tamamı")
 
     def test_price_not_found_is_visible(self):
-        """Fiyat bulunamayınca uzun uyarı değil, yalnızca soru işareti yazılır."""
+        """Fiyat bulunamayınca uzun uyarı değil, yalnızca ❓ yazılır."""
         bot.SMART_HEADER = True
         event = SimpleNamespace(message="Güzel bir ürün var", raw_text="Güzel bir ürün var",
                                 reply_markup=None, media=None, entities=[])
         composed = bot.compose_message(event, message_link=None, source_name=None)
-        self.assertEqual(composed["header"], "💰 ? — Güzel bir ürün var")
-        self.assertIn("💰 ?", composed["text"])
+        self.assertEqual(composed["header"], "❓ - Güzel bir ürün var")
+        self.assertIn("❓", composed["text"])
         self.assertNotIn("Fiyat tespit", composed["text"])
         self.assertNotIn("bulunamadı", composed["text"])
 
@@ -285,12 +285,12 @@ class SmartHeaderLayoutTests(unittest.TestCase):
                                 raw_text=title + "\nFiyat: 41.999 TL",
                                 reply_markup=None, media=None, entities=[])
         header = bot.compose_message(event, limit=45)["header"]
-        self.assertTrue(header.startswith("💰 41.999 TL — "), header)
+        self.assertTrue(header.startswith("41.999₺ - "), header)
         self.assertLessEqual(len(header), 45)
         self.assertTrue(header.endswith("…"), header)
         self.assertIn(title[:10], header, "adın başı (görülebilecek kısmı) korunur")
-        self.assertEqual(bot.fit_header_line("💰 41.999 TL", "", 90), "💰 41.999 TL")
-        self.assertEqual(bot.fit_header_line("💰 41.999 TL", "Ad", 10), "", "fiyat da sığmıyor")
+        self.assertEqual(bot.fit_header_line("41.999₺", "", 90), "41.999₺")
+        self.assertEqual(bot.fit_header_line("41.999₺", "Ad", 6), "", "fiyat da sığmıyor")
 
 
 class SlowReportTests(unittest.IsolatedAsyncioTestCase):

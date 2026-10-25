@@ -77,10 +77,12 @@ Son çalıştırma: 591 test OK (bağlam grubu 12, mevcut fiyat grubu 20,
 
 - `compose_message -> smart_header_info -> analyze -> extract_price`:
   yalnız medium/high üretilmiş fiyat başlığına dönüşür. low/none için
-  PRICE_MISSING_MARK (`?`) yazılır; "Fiyat tespit edilemedi" uyarısı kaldırıldı.
+  PRICE_MISSING_MARK (`❓`) yazılır; "Fiyat tespit edilemedi" uyarısı kaldırıldı.
   Fiyat, ürün adıyla birlikte TEK üst satıra yazılır
-  (`💰 1.299 TL — Ürün adı`); bu satır yalnızca görünen metindir ve arama
-  sorgularına/dedup anahtarına taşınmaz. Gövde orijinal tutarlarıyla
+  (`56₺ - Ürün adı`; `format_price`ın "56 TL" çıktısı yalnız görüntüleme için
+  `header_price_text` ile `₺` biçimine çevrilir — ayrıştırıcıya dokunulmadı),
+  ad da fiyat da yoksa üst satır kurulmaz. Bu satır yalnızca görünen metindir ve
+  arama sorgularına/dedup anahtarına taşınmaz. Gövde orijinal tutarlarıyla
   korunur; gövdede bir tutarın bulunması, ayrıştırıcının bunu fiyat olarak
   onayladığı anlamına gelmez.
   Teslimat, geçmiş bildirimin yeniden düzenlenmesi ve kuru çalışma bu ortak

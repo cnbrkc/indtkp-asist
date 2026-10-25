@@ -41,13 +41,14 @@ class NewPricePatterns(unittest.TestCase):
                     output = composed['text']
                     first_line = output.splitlines()[0]
                     if reliable:
-                        # Fiyat en başta, ayraçla ürün adına bağlanır.
+                        # Fiyat en başta, " - " ayracıyla ürün adına bağlanır; emoji yok.
                         self.assertEqual(
                             first_line,
-                            bot.build_header_line('💰 ' + pf.format_price(value), composed['title']),
+                            bot.build_header_line(bot.header_price_text(value), composed['title']),
                         )
+                        self.assertNotIn('💰', first_line)
                     else:
-                        self.assertTrue(first_line.startswith('💰 ?'), first_line)
+                        self.assertTrue(first_line.startswith('❓'), first_line)
                         self.assertNotIn('Fiyat tespit', first_line)
                     # Üst satıra yazılan fiyat arama sorgusuna karışmaz:
                     # Google/Akakçe/Cimri salt fiyatsız ürün adını arar.
@@ -59,6 +60,8 @@ class NewPricePatterns(unittest.TestCase):
                         query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get('q', [''])[0]
                         self.assertEqual(query, expected_query, url)
                         self.assertNotIn('💰', query)
+                        self.assertNotIn('₺', query)
+                        self.assertNotIn('❓', query)
                         if reliable:
                             self.assertNotIn(pf.format_price(value), query)
                     self.assertEqual(bot.offer_terms(event)[0], value if reliable else None)
