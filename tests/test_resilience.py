@@ -19,7 +19,10 @@ class IncompletePriceTests(unittest.TestCase):
         self.assertFalse(bot.dm_should_send({'dm_price_max': ['99999']}, text))
         self.assertIsNone(bot.offer_terms(event)[0])
         with patch.object(bot, 'SMART_HEADER', True):
-            self.assertIn(bot.PRICE_NOT_FOUND_TEXT, bot.compose_message(event)['text'])
+            header = bot.compose_message(event)['header']
+        # Güvenilir fiyat yok: üst satırda uzun uyarı değil yalnızca soru işareti.
+        self.assertTrue(header.startswith('💰 ?'), header)
+        self.assertNotIn('Fiyat tespit', header)
 
     def test_malformed_number_prefix_is_not_a_price(self):
         for text in ['Fiyat: 1..299 TL', 'Fiyat: 1,2,3 TL', '₺1..299',

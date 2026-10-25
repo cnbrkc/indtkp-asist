@@ -633,13 +633,17 @@ ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığ
 **Bildirim biçimi (basit düzen):** mesajlar üzerinde oynama yapılmaz; kaynak mesaj
 **olduğu gibi** iletilir. Düzen sabittir (kullanıcı isteği):
 
-1. **Ürün başlığı** en üstte (kalın; kaynak mesajdaki ilk ürün adı satırından ayıklanır).
+1. **Üst satır** en üstte (kalın) — `smart_header` açıksa **önce fiyat, sonra ayraç,
+   sonra ürün adı** tek satırda: `💰 1.299 TL — Philips Airfryer XXL 6.2L`.
+   `smart_header` kapalıysa yalnızca ürün başlığı yazılır (eski hâli).
+   Fiyatın başta durması, telefonun bildiriminde kesilen metinde **fiyat + ürün
+   adının ilk kelimelerinin** birlikte görünmesini sağlar.
 2. Altına **orijinal mesaj** — satırları, fiyatı, linkleri ve emojileriyle aynen.
 3. Altına `🔗 Mesajı Gör: <t.me linki>` — orijinal mesajın adresi.
 4. En alta **kaynak grup adı** (kalın; etiket ve link yok).
 
 ```text
-Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici Banyo ve Duş Jeli 500ml x 4 Adet
+💰 225 TL — Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici Banyo ve Duş Jeli 500ml x 4 Adet
 
 🛍️ Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici Banyo ve Duş Jeli 500ml x 4 Adet
 
@@ -657,8 +661,12 @@ Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici Banyo ve Du
 Tekrarlı paylaşımda (bkz. 9. bölüm) **hangi gruptan geldiği satırı kaldırılır** ve
 yerine çoklu paylaşım notu yazılır: `📌 3 kere paylaşıldı: FırsatZ, İndirimde Al, OnuAl`.
 
-- Ürün başlığı bulunamayan mesajlarda (kupon/duyuru gibi) başlık satırı olmaz;
-  mesaj ve alt satırlar aynen iletilir.
+- Ürün başlığı bulunamayan mesajlarda (kupon/duyuru gibi) üst satır yalnızca fiyatı
+  taşır; başlık da fiyat da bulunamazsa üst satır olmaz, mesaj ve alt satırlar aynen
+  iletilir.
+- Üst satıra yazılan fiyat **yalnızca görünen metindir**: Google Alışveriş, Akakçe ve
+  Cimri arama sorguları ile tekrar (dedup) anahtarı, kaynak mesajdan ayıklanan
+  **fiyatsız** üründen kurulur (`split_header_line` / `header_search_title`).
 - Başlık, fiyat veya link kaynak mesajdan **silinmez**: gövde her zaman orijinal
   metnin kendisidir. Fiyat/indirim satırlarının ayıklanması yalnızca başlık
   ayıklayıcısında ve arama düğmelerinin sorgusunda kullanılır.
@@ -780,6 +788,11 @@ Arama sorgusu için bot mesajı satır satır, **yerel ve anlık** olarak temizl
   düzeninde üç arama da `Philips Airfryer XXL 6.2L` ile açılır.
 - Baştaki emoji/semboller ve görünür ürün URL'leri sorguya katılmaz. Ürün adı bulunamazsa
   yapay/boş arama düğmesi eklenmez.
+- Bildirim üst satırındaki `💰 fiyat — ` ön eki **asla sorguya girmez**: arama
+  kaynak mesajdan üretilir; ayrıca `_price_search_url` tek nokta sigortası olarak
+  kendisine üst satır verirse fiyatı ve ayracı düşürür (`header_search_title`),
+  geriye salt ürün adı kalır. Böylece fiyatı üste almak Google/Akakçe/Cimri
+  aramalarını bozmaz.
 
 Bu ayıklama **yalnızca arama düğmelerindeki sorguyu** etkiler: gönderilen mesaj gövdesi,
 fiyat, indirim oranı, biçimlendirme ve kaynak linkleri olduğu gibi kalır. Algoritma ağ
@@ -846,6 +859,11 @@ Kaçırılmayacak fırsat!
   ve `6.2L` / `6,2 L` gibi sayı biçimi farkları normalize edilir; böylece fiyatı başta
   yazan kaynakla ürünü başta yazan kaynak eşleşebilir. Başlıksız (salt medya) iletiler
   birleştirilmez.
+- Üst satır artık `💰 fiyat — ürün adı` taşırken de açılış taraması aynı anahtarı
+  bulur: gönderilmiş bildirimin ilk satırı `split_header_line` ile ayrıştırılır,
+  anahtar **fiyatsız** addan üretilir (canlı yoldaki `smart_dedup_title` ile birebir
+  aynı imza). Eski iki düzen (başlık üstte + ayrı fiyat satırı, `💰Fiyat: …` satırı)
+  de tanınmaya devam eder; restart sonrası tekrarlar yine tek mesajda birleşir.
 
 **Hız ve limitler:** eşleşme bellekte yapılır; her iletide geçmiş taranmaz.
 Rozet düzenlemeleri API isteğidir ve Telegram hız sınırlarına tabidir. Eşzamanlı
@@ -1024,6 +1042,19 @@ Bu repodaki güncel davranış değişiklikleri:
     sorguyla çalıştığı görüldü (7 ve 10. maddedeki kısaltma kaldırıldı).
     Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin) ve
     [9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj).
+13. **Fiyat, ürün adıyla birlikte üst satıra taşındı: `💰 1.299 TL — Ürün adı`**
+    (`smart_header` açıkken). Eskiden 1. satır başlık, 2. satır fiyat idi; şimdi
+    tek satırda **fiyat en başta**, sonra ayraç, sonra ad gelir — kesilen telefon
+    bildiriminde fiyat ve adın ilk kelimeleri birlikte görünür. Fiyat bulunamazsa
+    "💰 Fiyat tespit edilemedi" yazısı yerine yalnızca **`?`** konur
+    (`💰 ? — Ürün adı`). Aramalar bu değişiklikten **etkilenmez**: Google Alışveriş,
+    Akakçe ve Cimri sorguları ile dedup anahtarı kaynak mesajdan ayıklanan fiyatsız
+    addan kurulur; gönderilmiş bildirimin üst satırı okunurken de fiyat/ayraç
+    düşürülür (`split_header_line`, `header_search_title`). Dar kalıplarda fiyat
+    korunur, adın kuyruğu `…` ile kırpılır. `smart_header` kapalıysa düzen
+    değişmeden kalır (yalnız başlık). Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin),
+    [8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri) ve
+    [9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj).
 
 ### 1. PR'ı `main`'e merge et
 
@@ -1107,15 +1138,22 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 **Yeni bildirim düzeni (`smart_header`)** — `config.json` içine `"smart_header": true` eklenince açılır; anahtar yoksa eski düzen aynen sürer.
 
 ```
-Ürün başlığı (kalın)
-
-💰 1.299 TL            ← tespit edilen fiyat (bulunamazsa "💰 Fiyat tespit edilemedi")
+💰 1.299 TL — Ürün başlığı (kalın, TEK satır: fiyat önce, ayraç, sonra ad)
 
 > orijinal mesaj (alıntı bloğu)
 
 🔗 Mesajı Gör: …
 Grup adı / 📌 N kere paylaşıldı: …
 ```
+
+- Fiyat güvenle bulunamazsa satır `💰 ? — Ürün başlığı` olur; uzun bir "fiyat bulunamadı"
+  uyarısı yazılmaz (kullanıcı isteği).
+- Fiyatı üst satıra taşımak aramaları **bozmaz**: `💰 1.299 TL — ` ön eki yalnızca görüntü
+  içindir. Google Alışveriş / Akakçe / Cimri sorguları ve tekrar (dedup) anahtarı,
+  kaynak mesajdan ayıklanan fiyatsız adla kurulur; gönderilmiş bildirim okunurken de
+  üst satır `split_header_line` ile fiyat ve ad diye ayrılır, aramaya ad gider.
+- Üst satır sığmazsa (medya açıklaması gibi dar kalıplar) fiyat korunur, ürün adının
+  kuyruğu `…` ile kırpılır.
 
 Fiyat ve başlık tespiti `price_filter.py` içindedir: kupon, indirim tutarı, taksit, kargo, "… TL ve üzeri", üstü çizili ve "eski/önceki/normal fiyat" tutarları fiyat sayılmaz; "X TL'den Y TL'ye düştü" için Y alınır.
 

@@ -1697,7 +1697,9 @@ def is_price_line(line: str | None) -> bool:
 
     Yalnızca geriye dönük tanıma için tutulur: eski bildirimlerdeki
     ``💰Fiyat: …`` satırları ve rozet konumları bu sayede okunabilir kalır.
-    Yeni bildirimlerde fiyat satırı üretilmez; mesaj olduğu gibi iletilir.
+    Yeni bildirimlerde ayrı bir fiyat satırı yoktur; fiyat, ürün adıyla birlikte
+    üst satıra yazılır (bkz. ``build_header_line``) ve mesajın gövdesi olduğu gibi
+    iletilir.
     """
     content = _LEADING_NOISE_RE.sub("", (line or "").strip())
     return content.startswith(PRICE_LINE_LABEL)
@@ -1755,8 +1757,13 @@ def _cimri_search_query(query: str) -> str:
 
 
 def _price_search_url(service: str, query: str) -> str:
-    """Ürün arama adresini kur (query başlık ayıklayıcısından gelir)."""
-    query = " ".join((query or "").split())
+    """Ürün arama adresini kur (query başlık ayıklayıcısından gelir).
+
+    ``header_search_title`` çağrısının tek nedeni bildirim ÜST SATIRININ
+    (``💰 1.299 TL — Ad``) arama sorgusuna karışmasını imkânsız kılmaktır:
+    fiyat ve ayraç burada her koşulda düşer, servise salt ürün adı gider.
+    """
+    query = header_search_title(query)
     if service == "akakce":
         return "https://www.akakce.com/arama/?" + urllib.parse.urlencode({"q": query})
     if service == "google_shopping":
@@ -1804,7 +1811,7 @@ def build_inline_keyboard(obj: Any) -> dict | None:
         for link in extract_links(message)
         if (service := _price_search_service(link["url"], link.get("label") or ""))
     }
-    query = _search_query(message)
+    query = header_search_title(_search_query(message))
     available_slots = max(0, MAX_INLINE_KEYBOARD_BUTTONS - existing_button_count)
     generated = 0
     search_row: list[dict[str, str]] = []
@@ -1836,7 +1843,7 @@ def _entities_within(entities: Sequence[Any] | None, limit: int) -> list[Any]:
     return kept
 
 
-# Yeni bildirim üst bloğu (başlık → fiyat → alıntılanmış orijinal mesaj).
+# Yeni bildirim üst bloğu (TEK ÜST SATIR: fiyat — ürün adı → alıntılanmış orijinal mesaj).
 # config.json → smart_header; anahtar yoksa KAPALI (eski düzen aynen sürer).
 SMART_HEADER = False
 # Hızlı bildirim: bot bildirimi ÖNCE gider; hesap kopyası yalnızca bot başarısız olursa atılır.
@@ -1854,7 +1861,94 @@ SOURCE_IN_FLIGHT: set[tuple[int, int]] = set()
 SLOW_REPORT_SECONDS = 8.0
 _SLOW_REPORT_LAST = 0.0
 MEDIA_TIMING: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar("media_timing", default=None)
-PRICE_NOT_FOUND_TEXT = "💰 Fiyat tespit edilemedi"
+# --- Bildirim üst satırı (kullanıcı isteği: fiyat EN BAŞTA) ------------------
+# Eskiden: 1. satır ürün başlığı, 2. satır fiyat (boş satırla ayrılıyordu).
+# Şimdi: TEK satır — önce fiyat, sonra ayraç, sonra ürün adı:
+#     💰 1.299 TL — Philips Airfryer XXL 6.2L Siyah
+# Böylece telefon bildirimi kesildiğinde bile fiyat ve ürün adının ilk
+# kelimeleri birlikte görünür. Fiyat, başlığın AYNI satırına yazılır; arama
+# sorguları (Google/Akakçe/Cimri) ve tekrar (dedup) anahtarı bundan ETKİLENMEZ,
+# çünkü fiyat yalnızca üst satıra eklenir ve ayraçtan geriye kalan ad kullanılır
+# (bkz. ``split_header_line`` ve ``_price_search_url``).
+PRICE_LINE_PREFIX = "💰"
+HEADER_SEPARATOR = " — "
+# Fiyat güvenle bulunamadığında uzun bir uyarı yazmak yerine (kullanıcı isteği:
+# "fiyat bulunamadı diyor, artık sadece soru işareti koysun") yalnızca bu işaret
+# konur: ``💰 ? — Ürün adı``. Eski bildirimlerdeki tek başına
+# "💰 Fiyat tespit edilemedi" satırı da ``split_header_line`` sayesinde bugün
+# "fiyat var, ad yok" diye tanınır; tekrar önbelleği eski bildirimlerden de
+# doğru anahtarı çıkarır.
+PRICE_MISSING_MARK = "?"
+
+
+def build_header_line(price_text: str, title: str) -> str:
+    """Üst satırı kur: ``<fiyat> — <ürün adı>``.
+
+    Fiyat başta, sonra ayraç, sonra ürün adı. Parçalardan biri yoksa satır ona
+    göre kısalır (yalnız fiyat ya da yalnız başlık); ikisi de yoksa boş döner.
+    """
+    price = (price_text or "").strip()
+    name = " ".join((title or "").split())
+    if price and name:
+        return f"{price}{HEADER_SEPARATOR}{name}"
+    return price or name
+
+
+def fit_header_line(price_text: str, title: str, room: int) -> str:
+    """Üst satırı ``room`` karaktere sığdır: fiyat korunur, adın sonu kırpılır.
+
+    Kapasite yetmiyorsa önce ürün adının kuyruğu "…" ile düşer; ad için hiç yer
+    kalmamışsa yalnızca fiyat yazılır (fiyat, bildirimin kesilen yerinde
+    solda durduğu için her koşulda en değerli parçadır). Hiç sığmıyorsa boş.
+    """
+    price = (price_text or "").strip()
+    name = " ".join((title or "").split())
+    full = build_header_line(price, name)
+    if room <= 0 or len(full) <= room:
+        return full if room > 0 else ""
+    if not name:
+        return price if len(price) <= room else ""
+    prefix = f"{price}{HEADER_SEPARATOR}" if price else ""
+    if room - len(prefix) < 8:
+        # Ad için ayrılacak yer yok: en azından fiyat görünsün.
+        return price if len(price) <= room else ""
+    return f"{prefix}{name[: room - len(prefix) - 1].rstrip()}…"
+
+
+def split_header_line(line: str | None) -> tuple[str, str]:
+    """Üst satırı ``(fiyat, ürün adı)`` diye ayır; ayracı olmayan satır başlıktır.
+
+    Bildirim üst satırı tek satırlık bir metin olduğu için buraya giren her
+    satır tek satır kabul edilir. Ürün adında "—" bulunabilir; fiyatın ayırt
+    edilmesi için satırın ``💰`` ile başlaması şarttır, böylece normal bir
+    başlık satırı yanlışlıkla bölünmez.
+    """
+    text = " ".join((line or "").split())
+    if not text:
+        return "", ""
+    head, separator, tail = text.partition(HEADER_SEPARATOR)
+    head = head.strip()
+    if not head.startswith(PRICE_LINE_PREFIX):
+        return "", text
+    if separator and tail.strip():
+        return head, tail.strip()
+    return head, ""
+
+
+def header_search_title(text: str | None) -> str:
+    """Metin bildirim üst satırıysa fiyatını düşür, arama için salt adı bırak.
+
+    Arama sorguları normalde kaynak mesajdan (``_search_query``) ayıklanır ve
+    fiyat zaten içeride değildir. Bu fonksiyon, üst satırın bir yere yanlışlıkla
+    olduğu gibi taşınmasına karşı tek noktadaki sigortadır: ``💰 1.299 TL — Ad``
+    gelir, ``Ad`` çıkar; fiyat/indirim tutarı arama kutusuna girmez. Ayraçsız
+    salt fiyat satırı (``💰 1.299 TL``) aranacak bir ad taşımaz, boş döner.
+    """
+    text = " ".join((text or "").split())
+    if not text:
+        return ""
+    price, title = split_header_line(text)
+    return title if price else text
 
 
 def _remember(store_: "collections.OrderedDict[tuple[int, int], float]", chat_id: Any, message_id: Any) -> None:
@@ -1940,7 +2034,12 @@ def smart_header_info(obj: Any, cleaned_obj: Any, body: str) -> tuple[str, "pric
 
 
 def smart_dedup_title(event: Any) -> str:
-    """Yeni düzende tekrar anahtarı için kullanılan başlık."""
+    """Yeni düzende tekrar anahtarı için kullanılan başlık (FİYATSIZ).
+
+    Kaynak mesajdan ayıklanır; bildirim üst satırına yazılan fiyat buraya
+    giremez, çünkü üst satır yalnızca çıktı metnidir. Böylece "fiyat — ad"
+    düzenine geçmek tekrar (dedup) anahtarlarını değiştirmez.
+    """
     cleaned = sanitize_message(event)
     # Display headers may be truncated; dedup must retain model/size suffixes.
     title = price_filter.extract_title(message_text(cleaned), _webpage_hints(event), limit=MESSAGE_LIMIT)
@@ -1959,17 +2058,26 @@ def compose_message(
 ) -> dict[str, Any]:
     """Basit bildirim düzenini kur (kullanıcı isteği):
 
-    1. en üstte ürün başlığı (kalın),
+    1. en üstte TEK SATIR üst başlık (kalın) — ``smart_header`` açıksa önce
+       fiyat, sonra ayraç, sonra ürün adı (``💰 1.299 TL — Ürün adı``); kapalıysa
+       yalnız ürün adı. Fiyatın başta olması, bildirimin kesilen ön izlemesinde
+       fiyat ile ürün adının ilk kelimelerinin birlikte görülmesini sağlar,
     2. altında kaynak mesaj **olduğu gibi** (yalnızca güvenlik temizliği
        uygulanır: reklam/işbirliği etiketleri, WhatsApp linkleri, kanal
        tanıtımı ve salt hashtag satırları),
     3. ``🔗 <etiket>: <t.me linki>`` — orijinal mesajın adresi,
     4. en altta kaynak grup adı (kalın; etiket ve link yok).
 
+    Üst satır YALNIZCA görünen metindir: arama sorguları (Google Alışveriş,
+    Akakçe, Cimri) ve tekrar (dedup) anahtarı kaynak mesajdan ayıklanan
+    fiyatsız ad üzerinden kurulur; başlığa eklenen fiyat hiçbir aramaya
+    taşınmaz (bkz. ``split_header_line`` / ``header_search_title``).
+
     Tekrarlı paylaşımlarda kaynak grup adı satırı kaldırılır ve yerine
     çoklu paylaşım notu yazılır (``📌 N kere paylaşıldı: <gruplar>``;
     bkz. ``_dedup_apply_badge``). Ürün başlığı bulunamayan mesajlarda
-    başlık satırı olmaz; gövde ve alt satırlar aynen iletilir.
+    üst satır yalnızca fiyatı taşır; başlık da bulunamadıysa üst satır olmaz,
+    gövde ve alt satırlar aynen iletilir.
 
     Kaynak mesaj nesnesine hiçbir zaman dokunulmaz; yalnızca kopya yeniden
     kurulur. ``body`` orijinal mesajı, ``content`` en alt blok (kaynak adı)
@@ -1985,10 +2093,12 @@ def compose_message(
         smart_title, smart_price = smart_header_info(obj, cleaned_obj, source_body)
         product_title = smart_title or product_title
         if smart_price.value is not None and smart_price.confidence in {"high", "medium"}:
-            price_text = f"💰 {smart_price.text}"
+            price_text = f"{PRICE_LINE_PREFIX} {smart_price.text}"
         else:
-            price_text = PRICE_NOT_FOUND_TEXT
+            # Fiyat bulunamadı: uzun uyarı yerine yalnızca soru işareti.
+            price_text = f"{PRICE_LINE_PREFIX} {PRICE_MISSING_MARK}"
         quote_body = bool(source_body.strip())
+    header_text = build_header_line(price_text, product_title)
 
     body = source_body
     body_entities = entities_for_text(cleaned_obj, source_body)
@@ -2015,12 +2125,13 @@ def compose_message(
     name = (source_name or "").strip() or None
     sep = "\n\n"
 
-    # Blok sırası (kullanıcı isteği): başlık → mesaj olduğu gibi → taşınamayan
-    # gizli linkler → "Mesajı Gör" → en altta kaynak grup adı. Tekrarlı
+    # Blok sırası (kullanıcı isteği): ÜST SATIR (fiyat — ürün adı) → mesaj olduğu
+    # gibi → taşınamayan gizli linkler → "Mesajı Gör" → en altta kaynak grup adı.
+    # Fiyat, ürün adıyla AYNI satırda ve en baştadır; böylece kesilen bildirim
+    # ön izlemesinde fiyat ile adın ilk kelimeleri birlikte okunur. Tekrarlı
     # paylaşımda kaynak adı satırı çoklu paylaşım notuyla değiştirilir.
     segments: list[tuple[str, str]] = [
-        ("title", product_title),
-        ("price", price_text),
+        ("header", header_text),
         ("body", body),
         ("appendix", appendix_text),
         ("source", source_line),
@@ -2034,9 +2145,9 @@ def compose_message(
         return _join([part for part in segments if part[0] != "body" and part[1]])
 
     # GÖVDE hariç parçalar sığmıyorsa sırasıyla ek link listesi, kaynak adı ve
-    # "Mesajı Gör" düşer; başlık (gerekirse kırpılarak) ve gövde en sona kadar
-    # korunur. (Gövde uzun olduğu için bu parçaların düşmesi yanlış olurdu;
-    # gövde kırpılır.)
+    # "Mesajı Gör" düşer; üst satır (gerekirse kırpılarak) ve gövde en sona
+    # kadar korunur. (Gövde uzun olduğu için bu parçaların düşmesi yanlış
+    # olurdu; gövde kırpılır.)
     if len(_other_than_body()) >= limit and appendix_text:
         segments = [(kind, "" if kind == "appendix" else value) for kind, value in segments]
         appendix_text = ""
@@ -2046,19 +2157,17 @@ def compose_message(
     if len(_other_than_body()) >= limit and source_line:
         segments = [(kind, "" if kind == "source" else value) for kind, value in segments]
         source_line = ""
-    if product_title and len(_other_than_body()) >= limit:
-        # Başlık hâlâ sığmıyor: kalan sabit parçalara göre kırp; hiç yer
-        # yoksa tümüyle düşer.
+    if header_text and len(_other_than_body()) >= limit:
+        # Üst satır hâlâ sığmıyor: kalan sabit parçalara göre kırp. Fiyat
+        # solda kaldığı için korunur, ürün adının kuyruğu "…" ile düşer;
+        # hiç yer yoksa satır tümüyle atılır.
         rest = _join([part for part in segments
-                      if part[0] not in ("body", "title") and part[1]])
+                      if part[0] not in ("body", "header") and part[1]])
         room = limit - len(rest) - (len(sep) if rest else 0) - len(sep)
-        if room < 16:
-            segments = [(kind, "" if kind == "title" else value) for kind, value in segments]
-            product_title = ""
-        elif len(product_title) > room:
-            product_title = product_title[: max(0, room - 1)].rstrip() + "…"
-            segments = [(kind, product_title if kind == "title" else value)
-                        for kind, value in segments]
+        header_text = fit_header_line(price_text, product_title, room) if room >= 16 else ""
+        price_text, product_title = split_header_line(header_text) if header_text else ("", "")
+        segments = [(kind, header_text if kind == "header" else value)
+                    for kind, value in segments]
 
     # Gövde için kalan yer: diğer parçalar (varsa) korunur, gövde kırpılır.
     others_text = _other_than_body()
@@ -2090,13 +2199,10 @@ def compose_message(
     body_offset = offsets.get("body", 0)
 
     content_entities: list[Any] = []
-    if product_title and "title" in offsets:
+    if header_text and "header" in offsets:
+        # Üst satır bütünüyle kalındır: fiyat ve ürün adı aynı ağırlıkta okunur.
         content_entities.append(types.MessageEntityBold(
-            offset=0, length=utf16_length(product_title),
-        ))
-    if price_text and "price" in offsets:
-        content_entities.append(types.MessageEntityBold(
-            offset=offsets["price"], length=utf16_length(price_text),
+            offset=offsets["header"], length=utf16_length(header_text),
         ))
     if quote_body and body and "body" in offsets:
         content_entities.append(types.MessageEntityBlockquote(
@@ -2126,6 +2232,10 @@ def compose_message(
         "source_name": name,
         "source_name_offset": name_offset,
         "source_name_length": utf16_length(name) if (name_offset >= 0 and name) else 0,
+        # ``title``/``product_title`` her zaman FİYATSIZ üründür; üst satır
+        # ("header") fiyatı da taşır ama arama ve dedup bundan yararlanmaz.
+        "header": header_text,
+        "price": price_text,
         "product_title": product_title or None,
         "title": product_title,
         "body_offset": body_offset,
@@ -2218,7 +2328,7 @@ def composed_has_content(composed: dict[str, Any]) -> bool:
     """
     return any(
         str(composed.get(key) or "").strip()
-        for key in ("title", "body", "appendix")
+        for key in ("header", "title", "body", "appendix")
     )
 
 
@@ -5288,11 +5398,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     source_name=name if SOURCE_FOOTER else None,
                 )
                 layout_ok = bool(dry_run["text"] or media or links)
-                if product_title:
-                    # Basit düzen: başlık en üstte, mesajın aslı hemen altında.
+                if dry_run["header"]:
+                    # Basit düzen: üst satır (fiyat — ürün adı) en üstte,
+                    # mesajın aslı hemen altında.
                     layout_ok = (
                         layout_ok
-                        and dry_run["content"].startswith(product_title + "\n\n")
+                        and dry_run["content"].startswith(dry_run["header"] + "\n\n")
                         and dry_run["body"] == message_text(sanitize_message(latest))
                     )
                 can_use = (
@@ -5319,9 +5430,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     f"   Ham: {raw_status} · {len(raw_text)} karakter · sha256 {digest}"
                     f" · entity {valid_entities}/{len(entities)} · link {len(links)} · medya {media_label}"
                 )
+                layout_note = f" · başlık {product_title or 'bulunamadı'}"
+                if SMART_HEADER:
+                    # Üst satır = "💰 fiyat — ürün adı"; `başlık` fiyatsız hâlidir
+                    # ve Google/Akakçe/Cimri aramaları ile dedup o değeri kullanır.
+                    layout_note += f" · üst satır {(dry_run['header'] or 'yok')[:70]}"
                 lines.append(
                     "   Kuru kullanım: " + ("✅ kullanılabilir" if can_use else "⚠️ kontrol gerekli")
-                    + f" · başlık {product_title or 'bulunamadı'}"
+                    + layout_note
                 )
                 if show_full_excerpt and raw_text:
                     excerpt_limit = 800
@@ -5989,8 +6105,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     first_line = next((ln.strip() for ln in base.splitlines() if ln.strip()), "")
                     if first_line.endswith("…"):
                         continue  # truncated history header is not a safe product identity
-                    if first_line and not first_line.startswith("💰"):
-                        title = first_line   # yeni düzende ilk satır = başlık
+                    history_price, history_title = split_header_line(first_line)
+                    if history_price:
+                        # Üst satır "💰 fiyat — ürün adı": anahtar FİYATSIZ addan
+                        # üretilir (canlı yoldaki smart_dedup_title ile aynı imza).
+                        title = history_title or title
+                    elif first_line:
+                        title = first_line   # başlığın tek başına üstte olduğu düzen
                 terms = offer_terms(message)
                 key = dedup_offer_key(title, terms)
                 if not key:
@@ -6061,11 +6182,17 @@ async def main(argv: Sequence[str] | None = None) -> int:
     ) -> tuple[bool, dict[str, Any]]:
         """Bildirim botuyla fırsatın kopyasını at; (gönderildi_mi, bilgi) döner.
 
-        Tasarım (basit düzen): en üstte ürün başlığı → altında mesaj OLDUĞU
-        GİBİ → gizli link ekleri (varsa) → "🔗 Mesajı Gör: <t.me linki>" →
-        en altta kaynak grup adı (etiketsiz, linksiz, yalnızca kalın).
+        Tasarım (basit düzen): en üstte ÜST SATIR — ``smart_header`` açıksa
+        ``💰 fiyat — ürün adı`` (fiyat en başta), kapalıysa ürün başlığı →
+        altında mesaj OLDUĞU GİBİ → gizli link ekleri (varsa) →
+        "🔗 Mesajı Gör: <t.me linki>" → en altta kaynak grup adı
+        (etiketsiz, linksiz, yalnızca kalın).
         Tekrarlı paylaşımlarda kaynak grup adı satırı kaldırılır ve yerine
         çoklu paylaşım notu yazılır (bkz. ``_dedup_apply_badge``).
+
+        Arama düğmeleri (Google Alışveriş / Akakçe / Cimri) kaynak mesajdan
+        ayıklanan FİYATSIZ adla kurulur; üst satıra yazılan fiyat arama
+        sorgusuna taşınmaz.
 
         Dönen ilk değer, tek mesaj modunda hesap kopyasının silinip
         silinmeyeceğini belirler (bkz. delete_account_copy). İkinci değer,

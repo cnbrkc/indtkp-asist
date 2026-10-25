@@ -1,5 +1,6 @@
 """Yeni kanal kalıpları: fiyat rolleri dedup'tan bağımsız sınanır."""
 import unittest
+import urllib.parse
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -36,11 +37,30 @@ class NewPricePatterns(unittest.TestCase):
                     event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
                     reliable = confidence in {'high', 'medium'}
                     with patch.object(bot, 'SMART_HEADER', True):
-                        output = bot.compose_message(event)['text']
+                        composed = bot.compose_message(event)
+                    output = composed['text']
+                    first_line = output.splitlines()[0]
                     if reliable:
-                        self.assertIn('\n\n💰 ' + pf.format_price(value) + '\n\n', output)
+                        # Fiyat en başta, ayraçla ürün adına bağlanır.
+                        self.assertEqual(
+                            first_line,
+                            bot.build_header_line('💰 ' + pf.format_price(value), composed['title']),
+                        )
                     else:
-                        self.assertIn(bot.PRICE_NOT_FOUND_TEXT, output)
+                        self.assertTrue(first_line.startswith('💰 ?'), first_line)
+                        self.assertNotIn('Fiyat tespit', first_line)
+                    # Üst satıra yazılan fiyat arama sorgusuna karışmaz:
+                    # Google/Akakçe/Cimri salt fiyatsız ürün adını arar.
+                    markup = bot.build_inline_keyboard(event) or {'inline_keyboard': []}
+                    search_urls = [button['url'] for row in markup['inline_keyboard'] for button in row]
+                    self.assertEqual(len(search_urls), 3, search_urls)
+                    expected_query = bot._search_query(event)
+                    for url in search_urls:
+                        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get('q', [''])[0]
+                        self.assertEqual(query, expected_query, url)
+                        self.assertNotIn('💰', query)
+                        if reliable:
+                            self.assertNotIn(pf.format_price(value), query)
                     self.assertEqual(bot.offer_terms(event)[0], value if reliable else None)
                     for threshold, hit in [(value, reliable), (value - 1, False)]:
                         self.assertEqual(pf.price_matches(text, threshold)[0], hit)
