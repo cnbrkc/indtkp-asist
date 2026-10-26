@@ -123,9 +123,9 @@ class OfferContextTests(unittest.TestCase):
             result = bot.compose_message(event, message_link='https://t.me/c/1/2', source_name='Kaynak')
         output = result['text']
         self.assertIn(text, output)
-        # Fiyat en başta (56₺ biçimi), " - " ayracından sonra ürün adı (tek satır).
-        self.assertTrue(output.startswith('99₺ - Chakra Waved Pamuk El Havlusu 30x40 Cm Bej'), output)
-        self.assertEqual(result['price'], '99₺')
+        # Fiyat en başta (₺99 biçimi), " — " ayracından sonra ürün adı (tek satır).
+        self.assertTrue(output.startswith('₺99 — Chakra Waved Pamuk El Havlusu 30x40 Cm Bej'), output)
+        self.assertEqual(result['price'], '₺99')
         self.assertEqual(result['title'], 'Chakra Waved Pamuk El Havlusu 30x40 Cm Bej')
         self.assertNotIn('❓', result['header'])
         self.assertTrue(output.endswith('Kaynak'))

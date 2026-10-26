@@ -1,9 +1,9 @@
-"""Bildirim üst satırı: ``56₺ - Ürün Adı`` / ``❓ - Ürün Adı`` tasarımı.
+"""Bildirim üst satırı: ``₺56 — Ürün Adı`` / ``❓ — Ürün Adı`` tasarımı.
 
 Kullanıcı isteğinin kesin biçimi:
 
-    56₺ - Penti Kız Çocuk Basic Colorful 4lü Patik Çorap
-    ❓ - Penti Kız Çocuk Basic Colorful 4lü Patik Çorap     ← fiyat bulunamayınca
+    ₺56 — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap
+    ❓ — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap     ← fiyat bulunamayınca
 
 Yani: fiyatın önünde 💰 YOK, ``56 TL`` değil ``56₺``, ayraç ``-`` (em-dash
 değil), fiyat yokken tek başına ``❓``. İlk satır fiyat + adı birlikte taşır;
@@ -91,19 +91,19 @@ class HeaderDesignTests(unittest.TestCase):
     def test_exact_requested_line(self):
         composed = bot.compose_message(event(), message_link="https://t.me/firsatz/1",
                                        source_name="FırsatZ")
-        self.assertEqual(composed["header"], f"56₺ - {TITLE}")
-        self.assertEqual(composed["text"].splitlines()[0], f"56₺ - {TITLE}")
-        self.assertEqual(composed["price"], "56₺")
+        self.assertEqual(composed["header"], f"₺56 — {TITLE}")
+        self.assertEqual(composed["text"].splitlines()[0], f"₺56 — {TITLE}")
+        self.assertEqual(composed["price"], "₺56")
         self.assertEqual(composed["title"], TITLE)
-        # 💰 öneki yok, "TL" yazımı yok, em-dash yok.
+        # 💰 öneki yok, "TL" yazımı yok; ₺ tutarın ÖNÜNDE, ayraç uzun tire.
         self.assertNotIn("💰", composed["header"])
         self.assertNotIn("TL", composed["header"])
-        self.assertNotIn("—", composed["header"])
+        self.assertTrue(composed["header"].startswith("₺56 — "), composed["header"])
 
     def test_missing_price_is_only_the_mark(self):
         text = f"{TITLE}\n\n🎯 Sepete özel indirim başladı, linkte"
         composed = bot.compose_message(event(text))
-        self.assertEqual(composed["header"], f"❓ - {TITLE}")
+        self.assertEqual(composed["header"], f"❓ — {TITLE}")
         self.assertEqual(composed["price"], "❓")
         self.assertNotIn("Fiyat tespit edilemedi", composed["text"])
         self.assertNotIn("bulunamadı", composed["text"])
@@ -120,16 +120,37 @@ class HeaderDesignTests(unittest.TestCase):
 
     def test_price_number_formats_reach_the_header(self):
         for source, expected in [
-            ("Philips Airfryer XXL 6.2L\nFiyat: 12.299 TL", "12.299₺"),
-            ("Philips Airfryer XXL 6.2L\nFiyat: 12.299,90 TL", "12.299,90₺"),
-            ("Philips Airfryer XXL 6.2L\nFiyat: 56 TL", "56₺"),
-            ("Philips Airfryer XXL 6.2L\nFiyat: 56₺", "56₺"),
-            ("Philips Airfryer XXL 6.2L\nFiyat: ₺56", "56₺"),
+            ("Philips Airfryer XXL 6.2L\nFiyat: 12.299 TL", "₺12.299"),
+            ("Philips Airfryer XXL 6.2L\nFiyat: 12.299,90 TL", "₺12.299"),
+            ("Philips Airfryer XXL 6.2L\nFiyat: 56 TL", "₺56"),
+            ("Philips Airfryer XXL 6.2L\nFiyat: 56₺", "₺56"),
+            ("Philips Airfryer XXL 6.2L\nFiyat: ₺56", "₺56"),
         ]:
             with self.subTest(source=source):
                 composed = bot.compose_message(event(source))
-                self.assertTrue(composed["header"].startswith(expected + " - "), composed["header"])
+                self.assertTrue(composed["header"].startswith(expected + " — "), composed["header"])
                 self.assertEqual(composed["price"], expected)
+
+    def test_header_drops_kurus_without_rounding(self):
+        """Kullanıcı örnekleri: kuruş atılır, yuvarlanmaz; tam sayı değişmez."""
+        for source_price, expected_line in [
+            ("199,70 TL", "₺199 — Çay"),
+            ("199,90 TL", "₺199 — Çay"),
+            ("1.999,70 TL", "₺1.999 — Çay"),
+            ("12.299,99 TL", "₺12.299 — Çay"),
+            ("12.299 TL", "₺12.299 — Çay"),
+            ("199 TL", "₺199 — Çay"),
+            ("1.234.567,89 TL", "₺1.234.567 — Çay"),
+        ]:
+            with self.subTest(source_price=source_price):
+                composed = bot.compose_message(event(f"Çay\nFiyat: {source_price}"))
+                self.assertEqual(composed["header"], expected_line)
+                self.assertTrue(composed["header"].startswith("₺"))
+                self.assertNotIn(",", composed["header"], "kuruş gösterilmez")
+        # Bilinmeyen fiyat: ₺ yazılmaz, yalnızca ❓ (mevcut davranış).
+        composed = bot.compose_message(event("Çay\nFiyat belli değil"))
+        self.assertTrue(composed["header"].startswith("❓ — "), composed["header"])
+        self.assertNotIn("₺", composed["header"])
 
     def test_low_confidence_price_is_never_carried_up(self):
         # Ayrıştırıcı güven kararına dokunulmadı: low/none → başlıkta ❓.
@@ -176,7 +197,7 @@ class HeaderDesignTests(unittest.TestCase):
 
     def test_price_only_header_without_title(self):
         composed = bot.compose_message(event("Fiyat: 1.299 TL\n\n#firsat #amazon"))
-        self.assertEqual(composed["header"], "1.299₺")
+        self.assertEqual(composed["header"], "₺1.299")
         self.assertIsNone(composed["product_title"])
         self.assertTrue(bot.composed_has_content(composed), "salt fiyatlı üst satır içeriktir")
 
@@ -185,16 +206,24 @@ class HeaderHelperTests(unittest.TestCase):
     """2a) Merkezi sabitler ve yardımcılar."""
 
     def test_central_constants(self):
-        self.assertEqual(bot.HEADER_SEPARATOR, " - ")
+        self.assertEqual(bot.HEADER_SEPARATOR, " — ")
+        self.assertEqual(bot.PREV_HEADER_SEPARATOR, " - ")
         self.assertEqual(bot.PRICE_CURRENCY_MARK, "₺")
         self.assertEqual(bot.PRICE_MISSING_MARK, "❓")
 
     def test_header_price_text(self):
-        self.assertEqual(bot.header_price_text(56), "56₺")
-        self.assertEqual(bot.header_price_text(12299), "12.299₺")
-        self.assertEqual(bot.header_price_text(12299.9), "12.299,90₺")
-        self.assertEqual(bot.header_price_text(0), "0₺")
+        self.assertEqual(bot.header_price_text(56), "₺56")
+        self.assertEqual(bot.header_price_text(12299), "₺12.299")
+        self.assertEqual(bot.header_price_text(0), "₺0")
         self.assertEqual(bot.header_price_text(None), "❓")
+        # Kuruş YUVARLANMADAN atılır (kullanıcı isteği); binlik ayracı korunur.
+        for value, expected in [(199.70, "₺199"), (199.90, "₺199"), (199.99, "₺199"),
+                                (1999.70, "₺1.999"), (12299.99, "₺12.299"),
+                                (12299.90, "₺12.299"), (56.99, "₺56")]:
+            with self.subTest(value=value):
+                self.assertEqual(bot.header_price_text(value), expected)
+        # Gerçek değer ayrı kalır: çıkarım ve format_price kuruşu korur.
+        self.assertEqual(pf.format_price(12299.9), "12.299,90 TL")
         # Ayrıştırıcı ve gövde yazımı ("TL") değişmedi:
         self.assertEqual(pf.format_price(56), "56 TL")
 
@@ -209,10 +238,10 @@ class HeaderHelperTests(unittest.TestCase):
 
     def test_split_roundtrip_and_no_mis_split(self):
         lines = [
-            f"56₺ - {TITLE}",
-            f"❓ - {TITLE}",
-            "19.999₺ - Beko B3RFS280DXF - No Frost 56 cm Buzdolabı",
-            "12.299,90₺ - Xiaomi Redmi — Pro 256GB",
+            f"₺56 — {TITLE}",
+            f"❓ — {TITLE}",
+            "₺19.999 — Beko B3RFS280DXF - No Frost 56 cm Buzdolabı",
+            "₺12.299 — Xiaomi Redmi — Pro 256GB",
         ]
         for line in lines:
             with self.subTest(line=line):
@@ -221,6 +250,16 @@ class HeaderHelperTests(unittest.TestCase):
                 self.assertNotIn("₺", title)
                 self.assertNotIn("❓", title)
                 self.assertEqual(bot.build_header_line(price, title), line)
+        # Önceki sürümün satırları (``56₺ - Ad``) da doğru bölünür (yalnız okuma).
+        for line, expected in [
+            (f"56₺ - {TITLE}", ("56₺", TITLE)),
+            ("19.999₺ - Beko B3RFS280DXF - No Frost 56 cm Buzdolabı",
+             ("19.999₺", "Beko B3RFS280DXF - No Frost 56 cm Buzdolabı")),
+            ("12.299,90₺ - Xiaomi Redmi — Pro 256GB",
+             ("12.299,90₺", "Xiaomi Redmi — Pro 256GB")),
+        ]:
+            with self.subTest(line=line):
+                self.assertEqual(bot.split_header_line(line), expected)
 
     def test_titles_are_not_split_when_head_is_not_a_price(self):
         for line in [TITLE, "Samsung 2024 - Yeni Sezon Kablo", "Fiat Linea - 2015",
@@ -238,14 +277,15 @@ class HeaderHelperTests(unittest.TestCase):
         self.assertEqual(bot.split_header_line("Philips Airfryer XXL"), ("", "Philips Airfryer XXL"))
 
     def test_fit_and_search_helpers(self):
-        self.assertEqual(bot.fit_header_line("56₺", "", 90), "56₺")
-        fitted = bot.fit_header_line("56₺", "A" * 80, 30)
-        self.assertTrue(fitted.startswith("56₺ - " + "A" * 20), fitted)
+        self.assertEqual(bot.fit_header_line("₺56", "", 90), "₺56")
+        fitted = bot.fit_header_line("₺56", "A" * 80, 30)
+        self.assertTrue(fitted.startswith("₺56 — " + "A" * 20), fitted)
         self.assertLessEqual(len(fitted), 30)
-        self.assertEqual(bot.fit_header_line("56₺", "A" * 80, 0), "")
-        self.assertEqual(bot.header_search_title("56₺ - Penti Patik"), "Penti Patik")
-        self.assertEqual(bot.header_search_title("❓ - Penti Patik"), "Penti Patik")
-        self.assertEqual(bot.header_search_title("56₺"), "")      # aranacak ad yok
+        self.assertEqual(bot.fit_header_line("₺56", "A" * 80, 0), "")
+        self.assertEqual(bot.header_search_title("₺56 — Penti Patik"), "Penti Patik")
+        self.assertEqual(bot.header_search_title("56₺ - Penti Patik"), "Penti Patik")  # eski satır da okunur
+        self.assertEqual(bot.header_search_title("❓ — Penti Patik"), "Penti Patik")
+        self.assertEqual(bot.header_search_title("₺56"), "")      # aranacak ad yok
         self.assertEqual(bot.header_search_title("❓"), "")        # yalnız işaret
         self.assertEqual(bot.header_search_title(TITLE), TITLE)
         self.assertEqual(bot.header_search_title(""), "")
@@ -264,7 +304,7 @@ class SearchChainTests(unittest.TestCase):
         for label, query in queries.items():
             with self.subTest(service=label):
                 self.assertEqual(query, TITLE)
-                for leak in ("56", "₺", "TL", "❓", "💰", "%28", " - "):
+                for leak in ("56", "₺", "TL", "❓", "💰", "%28", " - ", " — "):
                     self.assertNotIn(leak, query)
 
     def test_query_identical_before_and_after_the_header_change(self):
@@ -287,7 +327,7 @@ class SearchChainTests(unittest.TestCase):
         # Kablolama hatası senaryosu: bildirim metni arama zincirine girse bile
         # fiyat/para birimi/ayraç/❓ sorguya taşınmaz.
         header = bot.compose_message(event())["header"]
-        self.assertIn("56₺", header)
+        self.assertIn("₺56", header)
         expected = bot._search_query(event())
         for service, _ in bot.PRICE_SEARCH_BUTTONS:
             with self.subTest(service=service):
@@ -369,11 +409,11 @@ class EntityAndLimitTests(unittest.TestCase):
 
     def test_truncation_keeps_price_and_the_distinguishing_name_prefix(self):
         composed = bot.compose_message(event(SOURCE), limit=45)
-        self.assertTrue(composed["header"].startswith("56₺ - "), composed["header"])
+        self.assertTrue(composed["header"].startswith("₺56 — "), composed["header"])
         self.assertLessEqual(bot.utf16_length(composed["header"]), 45)
         self.assertTrue(composed["header"].endswith("…"), composed["header"])
         self.assertIn(TITLE[:8], composed["header"])
-        self.assertEqual(bot.split_header_line(composed["header"])[0], "56₺")
+        self.assertEqual(bot.split_header_line(composed["header"])[0], "₺56")
 
     def test_only_mark_when_nothing_fits(self):
         # Fiyat yoksa ve ad sığmıyorsa satır ❓ ile açılır/kapanır.
@@ -440,7 +480,7 @@ class NotificationHistoryFlowTests(MainHarness, unittest.TestCase):
         offer = f"{TITLE}\nFiyat: 56₺"
         self.dispatch(client, [(source, 101, offer, False)])
         delivered = self.delivered_text(client)
-        self.assertTrue(delivered.startswith(f"56₺ - {TITLE}"), delivered)
+        self.assertTrue(delivered.startswith(f"₺56 — {TITLE}"), delivered)
 
         reset_state()
         restarted = self.start([(GROUP_ID, delivered, ADMIN_ID, None, None, [], 777)])
@@ -515,11 +555,11 @@ class RealNotificationPayloadTests(unittest.TestCase):
         self.assertEqual(len(self.ping_calls), 1, self.ping_calls)
         call = self.ping_calls[0]
         text = call["text"]
-        self.assertEqual(text.splitlines()[0], f"56₺ - {TITLE}")
+        self.assertEqual(text.splitlines()[0], f"₺56 — {TITLE}")
         self.assertNotIn("💰", text.splitlines()[0])
         bold = [item for item in call["entities"] if item["type"] == "bold"]
         self.assertEqual(utf16_slice(text, bold[0]["offset"], bold[0]["length"]),
-                         f"56₺ - {TITLE}", "kalınlık tam olarak üst satırı kapsar")
+                         f"₺56 — {TITLE}", "kalınlık tam olarak üst satırı kapsar")
         queries = decoded_queries(call["keyboard"])
         for label in ("Google Alışveriş", "Akakçe'de ara", "Cimri'de ara"):
             self.assertEqual(queries[label], TITLE, label)
@@ -529,10 +569,10 @@ class RealNotificationPayloadTests(unittest.TestCase):
         client = self._run(fast_notify=True, include_keywords=[], smart_header=True)
         self._send(client, f"{TITLE}\n🎯 Sepete özel indirim başladı", media=False)
         call = self.ping_calls[-1]
-        self.assertEqual(call["text"].splitlines()[0], f"❓ - {TITLE}")
+        self.assertEqual(call["text"].splitlines()[0], f"❓ — {TITLE}")
         bold = [item for item in call["entities"] if item["type"] == "bold"]
         self.assertEqual(utf16_slice(call["text"], bold[0]["offset"], bold[0]["length"]),
-                         f"❓ - {TITLE}")
+                         f"❓ — {TITLE}")
         self.assertNotIn("Fiyat tespit edilemedi", call["text"])
         for label, query in decoded_queries(call["keyboard"]).items():
             self.assertNotIn("❓", query, label)
@@ -545,11 +585,11 @@ class RealNotificationPayloadTests(unittest.TestCase):
         self.assertTrue(self.media_calls, "medya bildirimi denenmeli")
         call = self.media_calls[-1]
         caption = call["caption"]
-        self.assertTrue(caption.startswith(f"56₺ - {TITLE}"), caption[:60])
+        self.assertTrue(caption.startswith(f"₺56 — {TITLE}"), caption[:60])
         self.assertLessEqual(bot.utf16_length(caption), bot.CAPTION_LIMIT)
         bold = [item for item in call["entities"] if item["type"] == "bold"]
         self.assertEqual(utf16_slice(caption, bold[0]["offset"], bold[0]["length"]),
-                         f"56₺ - {TITLE}", "kırpma sonrası bile kalınlık ilk satırda")
+                         f"₺56 — {TITLE}", "kırpma sonrası bile kalınlık ilk satırda")
         for label, query in decoded_queries(call["keyboard"]).items():
             self.assertEqual(query, TITLE, label)
 
@@ -562,7 +602,7 @@ class RealNotificationPayloadTests(unittest.TestCase):
         self._send(client, self.heavy_astral_source(), media=False)
         call = self.ping_calls[-1]
         text = call["text"]
-        self.assertEqual(text.splitlines()[0], f"56₺ - {TITLE}")
+        self.assertEqual(text.splitlines()[0], f"₺56 — {TITLE}")
         # Kalıp TAM doluyor (en fazla "…" payı kadar boşluk): kırpma gereksiz
         # içerik atmıyor, yalnız sınırı aşmayacak hizada kesiyor.
         self.assertGreaterEqual(bot.utf16_length(text), bot.MESSAGE_LIMIT - 202,
@@ -577,7 +617,7 @@ class RealNotificationPayloadTests(unittest.TestCase):
         self._send(client, self.heavy_astral_source())
         call = self.media_calls[-1]
         caption = call["caption"]
-        self.assertEqual(caption.splitlines()[0], f"56₺ - {TITLE}")
+        self.assertEqual(caption.splitlines()[0], f"₺56 — {TITLE}")
         self.assertLessEqual(bot.utf16_length(caption), bot.CAPTION_LIMIT)
         for item in call["entities"]:
             self.assertLessEqual(item["offset"] + item["length"], bot.utf16_length(caption),
@@ -604,13 +644,13 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
     def test_zero_is_a_supported_price_not_an_error(self):
         info = pf.extract_price("Samsung Kulaklık\nFiyat: 0 TL")
         self.assertEqual((info.value, info.confidence), (0.0, "high"))
-        # main bu girdiyi "💰 0 TL" diye gösteriyordu: yazım "0₺" oldu, politika aynı.
-        self.assertEqual(self.header_of("Samsung Kulaklık\nFiyat: 0 TL"), "0₺ - Samsung Kulaklık")
+        # main bu girdiyi "💰 0 TL" diye gösteriyordu: yazım "₺0" oldu, politika aynı.
+        self.assertEqual(self.header_of("Samsung Kulaklık\nFiyat: 0 TL"), "₺0 — Samsung Kulaklık")
         for text in ("Kalem Seti\nbu ürün ücretsiz", "Kalem Seti bedava"):
             with self.subTest(text=text):
                 free = pf.extract_price(text)
                 self.assertEqual((free.value, free.confidence), (0.0, "medium"))
-                self.assertTrue(self.header_of(text).startswith("0₺ - "), self.header_of(text))
+                self.assertTrue(self.header_of(text).startswith("₺0 — "), self.header_of(text))
         # Mevcut politikanın blok listesi: "kargo bedava"/"deneme" fiyat DEĞİLDİR.
         for text in ("Kalem Seti\nkargo bedava", "Deneme Ürünü bu ürün ücretsiz"):
             with self.subTest(blocked=text):
@@ -618,11 +658,12 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
                 self.assertEqual(self.header_of(text).split(bot.HEADER_SEPARATOR)[0], "❓")
 
     def test_zero_price_header_round_trips_for_search_and_dedup(self):
-        # "0₺" fiyat kısmı olarak tanınmazsa geçmiş taraması satırı ürün adı
-        # sanır (yanlış anahtar) ve arama sorgusuna "0₺" karışır.
-        self.assertTrue(bot.is_header_price("0₺"))
-        line = bot.build_header_line("0₺", "Samsung Kulaklık")
-        self.assertEqual(bot.split_header_line(line), ("0₺", "Samsung Kulaklık"))
+        # "₺0" fiyat kısmı olarak tanınmazsa geçmiş taraması satırı ürün adı
+        # sanır (yanlış anahtar) ve arama sorgusuna "₺0" karışır.
+        self.assertTrue(bot.is_header_price("₺0"))
+        self.assertTrue(bot.is_header_price("0₺"), "eski yazım da okunur")
+        line = bot.build_header_line("₺0", "Samsung Kulaklık")
+        self.assertEqual(bot.split_header_line(line), ("₺0", "Samsung Kulaklık"))
         self.assertEqual(bot.header_search_title(line), "Samsung Kulaklık")
         markup = bot.build_inline_keyboard(event("Samsung Kulaklık\nFiyat: 0 TL")) or {"inline_keyboard": []}
         queries = decoded_queries(markup)
@@ -641,10 +682,11 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
                 head = header.split(bot.HEADER_SEPARATOR)[0] if header else ""
                 if head and head != bot.PRICE_MISSING_MARK:
                     # Üst satırda gösterilen her şey ayrıştırıcının BULDUĞU sayıdır
-                    # (işaret düşürülmüş hâli), negatif biçim olduğu gibi yazılmaz.
+                    # (işaret düşürülmüş, kuruşu atılmış hâli); negatif biçim
+                    # olduğu gibi yazılmaz. Gerçek değer info.value'da kalır.
                     self.assertTrue(bot.is_header_price(head), header)
                     self.assertNotIn("-", head)
-                    self.assertAlmostEqual(pf.parse_threshold(head), info.value, places=2)
+                    self.assertEqual(pf.parse_threshold(head), int(info.value))
 
     def test_empty_and_broken_amounts_never_show_a_real_price(self):
         junk = ["", "   \n\n  ", "Ürün X\n₺", "Ürün X\nTL", "Ürün X\n₺ ",
@@ -671,7 +713,7 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
         # "Eski: 19.999 TL" tek başına düşük güven → üst satıra TAŞINMAZ, gövde kalır.
         composed = bot.compose_message(event("Ürün X\nEski: 19.999 TL"),
                                        message_link=None, source_name=None)
-        self.assertEqual(composed["header"], "❓ - Ürün X")
+        self.assertEqual(composed["header"], "❓ — Ürün X")
         self.assertIn("19.999", composed["body"])
         self.assertNotIn("19.999₺", composed["text"])
 
@@ -710,10 +752,13 @@ class PresentationOnlyTests(unittest.TestCase):
         self.assertEqual(blocks[-2], "🔗 Mesajı Gör: https://t.me/x/1")
 
     def test_numeric_policy_is_display_independent(self):
-        # "TL" yazımı yalnız üst satırda değişir; format_price/eşik/DM yolu aynı kalır.
+        # Gösterim yalnız üst satırda değişir; format_price/eşik/DM yolu aynı kalır.
         self.assertEqual(pf.format_price(12299.9), "12.299,90 TL")
-        self.assertEqual(bot.header_price_text(12299.9), "12.299,90₺")
-        self.assertEqual(pf.parse_threshold(bot.header_price_text(12299.9)), 12299.9)
+        self.assertEqual(bot.header_price_text(12299.9), "₺12.299")
+        # Ekrandaki fiyat kuruşsuzdur ama GERÇEK değer ayrı yaşar: çıkarım
+        # 12299.9 döndürür, dedup/DM karşılaştırmaları bu değerle yapılır.
+        self.assertEqual(pf.extract_price("Ürün\nFiyat: 12.299,90 TL").value, 12299.9)
+        self.assertEqual(pf.parse_threshold(bot.header_price_text(12299.9)), 12299)
         matched, _info = pf.price_matches(self.SRC, 13000)
         self.assertTrue(matched, "DM eşiği görüntü biçiminden etkilenmez")
         # Bildirimin kendisi okunduğunda da aynı sayı bulunur (kopya/dedup yolu).
@@ -721,9 +766,11 @@ class PresentationOnlyTests(unittest.TestCase):
         self.assertEqual(pf.extract_price(composed["text"]).value, 12299.0)
 
     def test_every_formatted_amount_round_trips_through_the_header(self):
-        # format_price "12,50 TL" de üretiyor; başlık yazısı "12,50₺" olur. Bu
-        # biçim tanınmazsa (a) geçmiş taraması satırı ürün adı sanıp farklı anahtar
-        # üretir, (b) header_search_title fiyatı arama kutusuna taşır.
+        # Başlık yazısı "₺12.299" biçimindedir (kuruş atılmış). Bu biçim
+        # tanınmazsa (a) geçmiş taraması satırı ürün adı sanıp farklı anahtar
+        # üretir, (b) header_search_title fiyatı arama kutusuna taşır. Yazının
+        # sayıya geri çözümü kuruşsuz tam kısmı verir; gerçek değer gösterimden
+        # değil, mesajın kendisinden okunur (ayrıştırıcı değişmedi).
         for value in (0, 0.5, 12.5, 1000, 1234.5, 12299.9, 1234567.89):
             with self.subTest(value=value):
                 disp = bot.header_price_text(value)
@@ -731,7 +778,7 @@ class PresentationOnlyTests(unittest.TestCase):
                 line = bot.build_header_line(disp, "Ürün Adı")
                 self.assertEqual(bot.split_header_line(line), (disp, "Ürün Adı"))
                 self.assertEqual(bot.header_search_title(line), "Ürün Adı")
-                self.assertAlmostEqual(pf.parse_threshold(disp), float(value), places=2)
+                self.assertEqual(pf.parse_threshold(disp), int(float(value)))
 
     def test_mark_is_never_a_price_for_consumers(self):
         composed = bot.compose_message(event(f"{TITLE}\n🎯 sepete özel fırsat"),
@@ -761,14 +808,14 @@ class Utf16LimitTests(unittest.TestCase):
     def test_fit_header_line_never_exceeds_room_in_utf16(self):
         for room in list(range(16, 140)) + [160, 200, 500]:
             with self.subTest(room=room):
-                line = bot.fit_header_line("1.299₺", self.FANCY, room)
+                line = bot.fit_header_line("₺1.299", self.FANCY, room)
                 self.assertLessEqual(bot.utf16_length(line), room)
-                self.assertTrue(line.startswith("1.299₺"), line)
+                self.assertTrue(line.startswith("₺1.299"), line)
         # BMP girdisindeki sonuç eski karakter hesabıyla birebir aynı (geriye dönük).
-        self.assertEqual(bot.fit_header_line("41.999₺", "Ad", 6), "")
-        self.assertEqual(bot.fit_header_line("41.999₺", "", 90), "41.999₺")
-        self.assertEqual(bot.fit_header_line("41.999₺", "Samsung Galaxy S24 Ultra 256 GB Titan Siyah Kılıflı model", 40),
-                         "41.999₺ - Samsung Galaxy S24 Ultra 256…")
+        self.assertEqual(bot.fit_header_line("₺41.999", "Ad", 6), "")
+        self.assertEqual(bot.fit_header_line("₺41.999", "", 90), "₺41.999")
+        self.assertEqual(bot.fit_header_line("₺41.999", "Samsung Galaxy S24 Ultra 256 GB Titan Siyah Kılıflı model", 40),
+                         "₺41.999 — Samsung Galaxy S24 Ultra 256…")
 
     def test_utf16_budget_is_maximal_and_never_splits_a_codepoint(self):
         for units in range(0, 24):
@@ -891,7 +938,7 @@ class SendBoundaryTests(unittest.TestCase):
         self._send(client, astral_heavy_source())
         self.assertTrue(client.files, "hesap yolu medya+kaption denemeli")
         _entity, _payload, caption = client.files[-1]
-        self.assertTrue(caption.startswith(f"56₺ - {TITLE}"), caption[:40])
+        self.assertTrue(caption.startswith(f"₺56 — {TITLE}"), caption[:40])
         self.assertLessEqual(bot.utf16_length(caption), bot.CAPTION_LIMIT)
 
     def test_char_slice_cannot_split_a_codepoint(self):

@@ -146,7 +146,7 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
                 self.assertEqual(entry['offer'], original_offer)
                 self.assertEqual(entry['count'], 2)
                 self.assertIn('Diğer Kaynak', entry['sources'])
-                self.assertIn('200₺ - Deneme Pamuk Havlu', entry['text'])
+                self.assertIn('₺200 — Deneme Pamuk Havlu', entry['text'])
                 self.assertIn('Satıcı: Mağaza A', entry['text'])
                 self.assertNotIn('Satıcı: Mağaza B', entry['text'])
                 # Birleştirme gövdeyi sentezlemez; yalnız rozet/source bloğu değişir.
@@ -252,7 +252,7 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
                 await self.send(self.event(low, 2))
                 entry = next(iter(bot.DEDUP_CACHE.values()))
                 self.assertEqual(entry['offer'], offer)
-                self.assertIn('300₺ - Deneme Pamuk Havlu', entry['text'])
+                self.assertIn('₺300 — Deneme Pamuk Havlu', entry['text'])
                 self.assertNotIn('Eski fiyat: 100 TL', entry['text'])
         asyncio.run(run())
         self.assertEqual(len(self.client.delivered), 1)

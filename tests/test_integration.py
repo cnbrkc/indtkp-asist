@@ -1341,6 +1341,20 @@ class NotificationTest(unittest.TestCase):
                          "gizli link ek listede bir kez yazılır")
         self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", text)
 
+    def test_bot_notification_keeps_quote_product_link_without_separate_line(self):
+        """Bot bildirimi: alıntıdaki ürün linki bir kez kalır, ayrı link satırı çıkmaz."""
+        client = self._run({"notify_bot_token": "123:ABC", "notify_media": False})
+        text = "çay 5 TL\n\n🛒 https://amzn.to/urun"
+        self._send(client, text, media=False)
+        self.assertEqual(len(self.calls), 1)
+        delivered = self.calls[0]["text"]
+        self.assertIn(text, delivered, "orijinal alıntı aynen korunur")
+        self.assertEqual(delivered.count("https://amzn.to/urun"), 1,
+                         "ürün linki yalnızca alıntının içinde kalır")
+        self.assertNotIn("\n\n🔗 https://amzn.to/urun", delivered)
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", delivered)
+        self.assertTrue(delivered.endswith("firsatz"), delivered)
+
     def test_button_links_become_inline_keyboard(self):
         client = self._run({"notify_bot_token": "123:ABC", "notify_media": False})
         markup = FakeMarkup([FakeRow([FakeButton("Fırsata Git", inner_url="https://amzn.to/btn")])])
@@ -2605,6 +2619,20 @@ class DedupBotBadgeTest(unittest.TestCase):
                          "not, grup adının yerine geçer")
         self.assertNotIn("\n\nfirsatz", call["text"], "grup adı satırı kaldırılır")
 
+    def test_duplicate_badge_keeps_single_quote_link_and_message_link(self):
+        """Rozet düzenlemesinde de ürün linki tek kalır; tekrar bilgisi korunur."""
+        client = self._run()
+        text = "Çay fırsatı 5 TL https://amzn.to/urun"
+        self._send(client, text, media=False)
+        self._send(client, text, media=False)
+        self.assertEqual(len(self.ping_calls), 1, "tekrar yeni bildirim atmamalı")
+        self.assertEqual(len(self.edit_text_calls), 1)
+        edited = self.edit_text_calls[0]["text"]
+        self.assertEqual(edited.count("https://amzn.to/urun"), 1,
+                         "ayrı ürün linki satırı rozette de belirmez")
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", edited)
+        self.assertTrue(edited.endswith("📌 2 kere paylaşıldı: firsatz"), edited)
+
     def test_third_copy_updates_bot_badge(self):
         client = self._run()
         self._send(client, "Çay fırsatı", media=False)
@@ -2713,6 +2741,26 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
                 self.assertEqual(len(client.delivered), 1 if preload else 2)
                 self.assertEqual(bot.STATS['deduped'], 1)
                 self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['offer'][0], 13484)
+
+    def test_kurus_only_price_merges_live_and_in_preload(self):
+        # P1: 10.000 TL altında, aynı tam TL içindeki kuruş farkı canlı yolda
+        # da geçmişten yüklenen (preload) kayıtta da yeni bildirim üretmez;
+        # tam TL düşüşü (1299 -> 1298) yeni bildirim olmayı sürdürür. Saklanan
+        # teklif fiyatı gerçek değerdir, karşılaştırma değeri saklanmaz.
+        for preload in [False, True]:
+            with self.subTest(preload=preload):
+                reset_state()
+                old_text = self.TITLE + '\n\n💰 1.299,90 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz'
+                history = [(GROUP_ID, old_text, ADMIN_ID, None, None, [], 777)] if preload else []
+                client = self.start(history)
+                source = next(iter(bot.SOURCE_IDS))
+                offers = [] if preload else [(source, 1, self.TITLE + '\nFiyat: 1.299,90 TL', True)]
+                offers += [(source, 2, self.TITLE + '\nFiyat: 1.299 TL', False),
+                           (source, 3, self.TITLE + '\nFiyat: 1.298 TL', True)]
+                self.dispatch(client, offers)
+                self.assertEqual(len(client.delivered), 1 if preload else 2)
+                self.assertEqual(bot.STATS['deduped'], 1)
+                self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['offer'][0], 1298)
 
     def test_same_state_merges_but_explicit_conflict_and_variant_do_not(self):
         client = self.start()

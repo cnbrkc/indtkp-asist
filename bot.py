@@ -23,6 +23,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -45,7 +46,7 @@ from telethon.sessions import StringSession
 from telethon.tl import functions, types
 
 import price_filter
-from telegram_retry import request_with_retry
+from telegram_retry import gate_stats, request_with_retry
 from private_bot import (
     BotAPI, BotAPIError, PrivateControlEvent, PrivateOfferQueue,
     dm_matches, edit_dm_keywords, normalize_keyword, poll_health, poll_private_commands,
@@ -146,10 +147,13 @@ LINK_KIND_GROUPS = {
     "all": ("entity", "button", "webpage"),
     "off": (),
 }
-# Bildirim botunda butonlar gerçek inline buton olarak gider; orada yalnızca
-# önizleme linki metne yazılır.
+# Bildirim botunda ürün linki ayrı bir satır olarak TEKRAR yazılmaz: bağlantı
+# orijinal mesaj alıntısının içinde zaten taşınır (görünür URL, tıklanabilir
+# gizli link veya gerçek inline buton); önizlemedeki hedefe de bildirimdeki
+# "🔗 Mesajı Gör" üzerinden ulaşılır. Aynı linki iki kez göstermek gereksiz
+# (kullanıcı isteği). "all" modu bilinçli tercihtir: tüm linkleri listeler.
 BOT_LINK_KIND_GROUPS = {
-    "smart": ("webpage",),
+    "smart": (),
     "all": ("entity", "button", "webpage"),
     "off": (),
 }
@@ -1698,7 +1702,7 @@ def is_price_line(line: str | None) -> bool:
     Yalnızca geriye dönük tanıma için tutulur: eski bildirimlerdeki
     ``💰Fiyat: …`` satırları ve rozet konumları bu sayede okunabilir kalır.
     Yeni bildirimlerde ayrı bir fiyat satırı yoktur; fiyat, ürün adıyla birlikte
-    üst satıra emojisiz yazılır (``56₺ - Ürün adı``; bkz. ``build_header_line``)
+    üst satıra emojisiz yazılır (``₺56 — Ürün adı``; bkz. ``build_header_line``)
     ve mesajın gövdesi olduğu gibi iletilir.
     """
     content = _LEADING_NOISE_RE.sub("", (line or "").strip())
@@ -1760,7 +1764,7 @@ def _price_search_url(service: str, query: str) -> str:
     """Ürün arama adresini kur (query başlık ayıklayıcısından gelir).
 
     ``header_search_title`` çağrısının tek nedeni bildirim ÜST SATIRININ
-    (``56₺ - Ad``, ``❓ - Ad``) arama sorgusuna karışmasını imkânsız
+    (``₺56 — Ad``, ``❓ — Ad``) arama sorgusuna karışmasını imkânsız
     kılmaktır: tutar, para birimi, ayraç ve ``❓`` burada her koşulda düşer,
     servise salt ürün adı gider.
     """
@@ -1844,7 +1848,7 @@ def _entities_within(entities: Sequence[Any] | None, limit: int) -> list[Any]:
     return kept
 
 
-# Yeni bildirim üst bloğu (TEK ÜST SATIR: "56₺ - ürün adı" ya da "❓ - ürün adı";
+# Yeni bildirim üst bloğu (TEK ÜST SATIR: "₺56 — ürün adı" ya da "❓ — ürün adı";
 # alıntılanmış orijinal mesajın üstünde).
 # config.json → smart_header; anahtar yoksa KAPALI (eski düzen aynen sürer).
 SMART_HEADER = False
@@ -1856,6 +1860,19 @@ FAST_NOTIFY = False
 # config.json → fast_poll (varsayılan AÇIK; kapatmak için false), fast_poll_seconds (varsayılan 3).
 FAST_POLL = True
 FAST_POLL_SECONDS = 3.0
+# P6: açılışta her kaynak için geriye dönük tarama sınırları. Kesinti
+# sırasında gelen mesajlar yalnızca bu pencere içinde yakalanır; daha eski
+# mesajlar topluca yeniden bildirilmez. Kalıcı imleç tutulmaz.
+FAST_POLL_BACKFILL_LIMIT = 100       # kaynak başına en fazla mesaj (sayı)
+FAST_POLL_BACKFILL_MAX_AGE = 900.0   # ve en fazla bu kadar saniye eski
+# P0 ölçümleme: hızlı taramanın anlık durumu (/durum ve kalp atışında görünür).
+# Yalnızca sayaç/aralık bilgisi tutar; davranış değişmez.
+POLL_TELEMETRY: dict[str, float] = {
+    "interval": FAST_POLL_SECONDS,   # o an kullanılan yoklama aralığı (sn)
+    "last_elapsed": 0.0,             # son GetPeerDialogs isteğinin süresi (sn)
+    "flood_count": 0,                # bu oturumdaki tarama FloodWait sayısı
+    "last_flood_wait": 0.0,          # son tarama FloodWait beklemesi (sn)
+}
 LIVE_SEEN: "collections.OrderedDict[tuple[int, int], float]" = collections.OrderedDict()
 POLL_DISPATCHED: "collections.OrderedDict[tuple[int, int], float]" = collections.OrderedDict()
 SOURCE_IN_FLIGHT: set[tuple[int, int]] = set()
@@ -1863,19 +1880,27 @@ SOURCE_IN_FLIGHT: set[tuple[int, int]] = set()
 SLOW_REPORT_SECONDS = 8.0
 _SLOW_REPORT_LAST = 0.0
 MEDIA_TIMING: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar("media_timing", default=None)
+# P5: tek bir deliver() çağrısı içinde indirilen medyanın bildirime taşınması;
+# (chat_id, message_id) -> bytes. deliver() bitince bağlam sıfırlanır, kalıcı
+# önbellek değildir; eşzamanlı teslimler birbirinin bağlamını görmez.
+MEDIA_DOWNLOAD_CACHE: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
+    "media_download_cache", default=None)
 # --- Bildirim üst satırı (kullanıcı isteği: fiyat EN BAŞTA, emojisiz) --------
 # Tasarım (tek satır, kalın):
-#     56₺ - Penti Kız Çocuk Basic Colorful 4lü Patik Çorap
+#     ₺56 — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap
 # Fiyat güvenle bulunamayınca:
-#     ❓ - Penti Kız Çocuk Basic Colorful 4lü Patik Çorap
+#     ❓ — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap
 # Eskiden 1. satır ürün başlığı, 2. satır fiyat (boş satırla ayrı) idi; şimdi
 # fiyat ile ad AYNI satırda ve fiyat solda, böylece kesilen telefon
 # bildiriminde fiyat + adın ilk kelimeleri birlikte okunur.
 # Üst satır YALNIZCA görünen metindir: arama sorguları (Google Alışveriş,
 # Akakçe, Cimri) ve tekrar (dedup) anahtarı daima fiyatsız addan kurulur
 # (bkz. ``is_header_price``, ``split_header_line``, ``header_search_title``).
-HEADER_SEPARATOR = " - "
-# Fiyat yazımı: tutar + tek para birimi işareti, boşluksuz (``56₺``).
+HEADER_SEPARATOR = " — "
+# Önceki sürümün üst satır ayracı (``56₺ - Ad``); yalnızca geriye dönük
+# okumada (geçmiş taraması/rozet) kabul edilir, yeni bildirimde üretilmez.
+PREV_HEADER_SEPARATOR = " - "
+# Fiyat yazımı: para birimi işareti + kuruşsuz tutar, boşluksuz (``₺56``).
 # Gövdedeki orijinal metne dokunulmaz; bu yazım yalnızca üst satırdadır.
 PRICE_CURRENCY_MARK = "₺"
 # Fiyat bulunamadığında uzun uyarı yazmak yerine yalnızca bu işaret konur
@@ -1911,17 +1936,19 @@ def is_header_price(text: str) -> bool:
 
 
 def header_price_text(value: float | None) -> str:
-    """Üst satır fiyat yazısı: ``56₺``, ``12.299₺``, ``12.299,90₺``; yoksa ``❓``.
+    """Üst satır fiyat yazısı: ``₺56``, ``₺12.299``; yoksa ``❓``.
 
-    Ayrıştırıcıya/`format_price`a dokunulmaz (gövde, DM ve raporlar "TL" yazımıyla
-    devam eder); yalnızca görüntüleme için sondaki " TL" işaretle değiştirilir.
+    Yalnızca GÖSTERİM biçimlendirilir (kullanıcı isteği): kuruş, yuvarlanmadan
+    atılır (``199,90`` → ``₺199``; ``12.299,99`` → ``₺12.299``) ve tutar binlik
+    ayraçlarıyla yazılır. Gerçek fiyat değerine dokunulmaz: ayrıştırıcı,
+    `format_price` (gövde/DM/raporlar "TL" yazımıyla devam eder), fiyat düşüşü
+    ve dedup karşılaştırmaları kuruşlu gerçek değerle çalışmayı sürdürür.
     """
-    if value is None:
+    if value is None or not math.isfinite(value):
         return PRICE_MISSING_MARK
-    text = price_filter.format_price(value)
-    if text.endswith(" TL"):
-        text = text[: -len(" TL")]
-    return f"{text}{PRICE_CURRENCY_MARK}" or PRICE_MISSING_MARK
+    whole = math.trunc(value)  # kuruşu at; asla yuvarlama
+    text = f"{whole:,}".replace(",", ".")
+    return f"{PRICE_CURRENCY_MARK}{text}"
 
 
 def build_header_line(price_text: str, title: str) -> str:
@@ -1998,7 +2025,10 @@ def split_header_line(line: str | None) -> tuple[str, str]:
         return "", ""
     legacy = text.startswith(PRICE_LINE_PREFIX)
     body = text[len(PRICE_LINE_PREFIX):].strip() if legacy else text
-    separators = (HEADER_SEPARATOR, LEGACY_HEADER_SEPARATOR) if legacy else (HEADER_SEPARATOR,)
+    # Güncel ayraç + önceki sürümlerin ayraçları: geçmişteki bildirimler
+    # (``56₺ - Ad``, ``💰 12.299 TL — Ad``) de doğru bölünmeye devam eder.
+    separators = tuple(dict.fromkeys(
+        (HEADER_SEPARATOR, LEGACY_HEADER_SEPARATOR, PREV_HEADER_SEPARATOR)))
     for separator in separators:
         head, found, tail = body.partition(separator)
         head = head.strip()
@@ -2012,7 +2042,7 @@ def header_search_title(text: str | None) -> str:
 
     Arama sorguları normalde kaynak mesajdan (``_search_query``) ayıklanır ve
     fiyat zaten içeride değildir. Bu fonksiyon, üst satırın bir yere yanlışlıkla
-    olduğu gibi taşınmasına karşı tek noktadaki sigortadır: ``56₺ - Ad`` gelir,
+    olduğu gibi taşınmasına karşı tek noktadaki sigortadır: ``₺56 — Ad`` gelir,
     ``Ad`` çıkar; tutar, para birimi, ayraç ve ``❓`` arama kutusuna girmez.
     Ayraçsız salt fiyat/``❓`` satırı aranacak bir ad taşımaz, boş döner.
     """
@@ -2131,9 +2161,9 @@ def compose_message(
     """Basit bildirim düzenini kur (kullanıcı isteği):
 
     1. en üstte TEK SATIR üst başlık (kalın) — ``smart_header`` açıksa önce
-       fiyat, sonra ``-``, sonra ürün adı (``56₺ - Penti Kız Çocuk ...``);
+       fiyat, sonra ``—``, sonra ürün adı (``₺56 — Penti Kız Çocuk ...``);
        fiyat güvenle bulunamadığında fiyat yerine ``❓`` yazılır
-       (``❓ - Penti Kız Çocuk ...``). Kapalıysa yalnız ürün adı gelir.
+       (``❓ — Penti Kız Çocuk ...``). Kapalıysa yalnız ürün adı gelir.
        Fiyatın başta olması, bildirimin kesilen ön izlemesinde fiyat ile ürün
        adının ilk kelimelerinin birlikte görülmesini sağlar,
     2. altında kaynak mesaj **olduğu gibi** (yalnızca güvenlik temizliği
@@ -2206,7 +2236,7 @@ def compose_message(
 
     # Blok sırası (kullanıcı isteği): ÜST SATIR (fiyat - ürün adı) → mesaj olduğu
     # gibi → taşınamayan gizli linkler → "Mesajı Gör" → en altta kaynak grup adı.
-    # Fiyat, ürün adıyla AYNI satırda ve en baştadır (``56₺ - Ad``); böylece
+    # Fiyat, ürün adıyla AYNI satırda ve en baştadır (``₺56 — Ad``); böylece
     # kesilen bildirim ön izlemesinde fiyat ile adın ilk kelimeleri birlikte
     # okunur. Tekrarlı paylaşımda kaynak adı satırı çoklu paylaşım notuyla
     # değiştirilir.
@@ -2563,9 +2593,12 @@ DEDUP_BADGE_LEGACY_RE = re.compile(
 # Çok daha eski sürüm rozeti ikinci satırda kaynak adlarını listelerdi
 # ("📌 Kaynaklar: ..."); açılış taramasında o satırı atlamak için korunur.
 DEDUP_SOURCES_PREFIX = "📌"
-# Aynı sohbete Bot API ~1/sn sınırı uygular; not güncellemeleri
-# bunun altında kalmak için mesaj başına bu kadar aralık bırakır.
-DEDUP_EDIT_MIN_INTERVAL = 1.2
+# Aynı sohbete Bot API ~1/sn sınırı uygular; not güncellemeleri bunun
+# altında kalmak için mesaj başına bu kadar aralık bırakır. Aralık içinde
+# gelen tekrarlar tek düzenlemede birleşir (düzenleme kilidi altında sayaç
+# yeniden okunur); bekleme Bot API kilidi alınmadan yapılır, bu yüzden yeni
+# bildirimler rozet beklemesinin arkasında kilitlenmez.
+DEDUP_EDIT_MIN_INTERVAL = 5.0
 # Rezervasyon koyup bitirmeyen göndereni bekleme süresi (sonrası devralma).
 DEDUP_RESERVE_TIMEOUT = 60.0
 # Yarım kalmış rezervasyonun önbellekten atılma süresi (temizlik).
@@ -2909,6 +2942,18 @@ def next_poll_interval(current: float, flood_wait: float) -> float:
     return max(current, min(300.0, max(current * 2, flood_wait, 10.0)))
 
 
+def recover_poll_interval(current: float, base: float) -> float:
+    """Başarılı (ve hızlı) bir yoklamadan sonra aralığı kademeli gevşet.
+
+    Her başarılı yoklama aralığı yarıya indirir (taban ``base``). Yoklamanın
+    kendisi geçerli aralıkla beklediği için istek hızı bir anda artmaz;
+    300 sn'den 3 sn'ye dönüş bile art arda başarılı yoklamalar gerektirir.
+    """
+    if current <= base:
+        return current
+    return max(base, current / 2)
+
+
 def offer_terms(obj: Any) -> tuple[float | None, str]:
     """Conservative price/condition identity; never compare pack and unit prices blindly."""
     text = message_text(obj)
@@ -2945,6 +2990,71 @@ def dedup_offer_key(title: str, offer: tuple[float | None, str]) -> str | None:
     return key
 
 
+# Dedup bağlantı kimliğinden çıkarılan alanlar: kaynak (t.me) linkleri ve
+# bildirim botunun ürettiği arama düğmeleri (Google/Akakçe/Cimri) ürün
+# bağlantısı değildir. Yalnızca evrensel takip parametreleri (utm_*) kimliği
+# değiştirmez; sku/varyant/kupon taşıyabilecek diğer tüm parametreler
+# korunur — farklı çıkarsa çelişki sayılır (fail-open).
+_LINK_IDENTITY_EXCLUDED_HOSTS = {"t.me", "telegram.me", "wa.me", "www.wa.me"}
+_LINK_SEARCH_HOSTS = ("google.", "akakce.com", "cimri.com")
+
+
+def product_link_keys(obj: Any) -> frozenset[str]:
+    """Ürün bağlantılarının normalize kimlik kümesi (yalnızca dedup için).
+
+    Dönüş; gösterime, arama sorgularına ve mesaj içeriğine girmez. Aynı ürün
+    farklı mağaza bağlantısıyla gelebilir: bu küme tek başına kimlik
+    değildir, ``dedup_before_send`` içinde yalnızca *çelişki* kanıtı olarak
+    kullanılır (iki tarafın da bağlantısı var ve hiçbiri örtüşmüyorsa
+    bastırma yapılmaz — fırsatı kaybetmektense fazladan bildirim).
+    """
+    keys: set[str] = set()
+    for item in extract_links(obj):
+        try:
+            parsed = urllib.parse.urlsplit(item["url"])
+        except ValueError:
+            continue
+        host = (parsed.hostname or "").lower()
+        if not host or host in _LINK_IDENTITY_EXCLUDED_HOSTS:
+            continue
+        if any(host.startswith(prefix) or host.endswith("." + prefix.rstrip("."))
+               for prefix in _LINK_SEARCH_HOSTS):
+            continue
+        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        kept = sorted(
+            (name, value) for name, value in query
+            if not name.lower().startswith("utm_")
+        )
+        normalized = host + (parsed.path or "").rstrip("/")
+        if kept:
+            normalized += "?" + urllib.parse.urlencode(kept)
+        keys.add(normalized)
+    return frozenset(keys)
+
+
+def _link_conflict(entry_links: Any, links: Any) -> bool:
+    """İki tarafın da ürün bağlantısı var ve hiçbiri örtüşmüyor mu?"""
+    old = set(entry_links or ())
+    new = set(links or ())
+    return bool(old and new and old.isdisjoint(new))
+
+
+def _dedup_whole_tl(value: Any) -> int | None:
+    """Yalnızca dedup karşılaştırmasında kullanılan tam-TL değeri.
+
+    Gerçek fiyatın kendisi değildir: hiçbir yere saklanmaz, formatlanmaz ve
+    gösterime/DM eşiklerine girmez. ``None``, negatif ya da sonlu olmayan
+    girdiler asla 0'a çevrilmez; bilinmeyen fiyat bilinmeyen kalır (``None``).
+    Fiyatlar negatif olamadığı için ``int()`` kesmesi taban (floor) ile aynıdır.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        return None
+    return int(number)
+
+
 def better_or_different_offer(old: tuple | None, new: tuple | None) -> bool:
     if old is None or new is None:
         return False
@@ -2954,6 +3064,14 @@ def better_or_different_offer(old: tuple | None, new: tuple | None) -> bool:
         return False
     if old[0] is None:
         return True
+    # Kuruş farkı tek başına yeni fırsat değildir: aynı tam TL içindeki
+    # fiyatlar (örn. 1.299,90 ↔ 1.299) karşılaştırmada aynı kabul edilir.
+    # Gerçek fiyatlar (old[0]/new[0]) aynen saklanır ve gösterilir; burada
+    # yalnızca geçici tam-TL karşılaştırma değeri türetilir.
+    old_whole = _dedup_whole_tl(old[0])
+    new_whole = _dedup_whole_tl(new[0])
+    if old_whole is not None and new_whole is not None and old_whole == new_whole:
+        return False
     # Yalnız tam TL'ye kırpma/yuvarlama ölçeğindeki farkları tolere et.
     # Hem 1 TL hem %0,01 üst sınırı: küçük fiyatlı ürünün gerçek düşüşünü yutma.
     rounded = (float(old[0]).is_integer() or float(new[0]).is_integer())
@@ -2962,7 +3080,8 @@ def better_or_different_offer(old: tuple | None, new: tuple | None) -> bool:
 
 
 def new_dedup_entry(title: str, token: Any, source_name: str | None = None,
-                    footer_name: str | None = None) -> dict[str, Any]:
+                    footer_name: str | None = None,
+                    links: Any = None, preload: bool = False) -> dict[str, Any]:
     """Gönderim rezervasyonu konmuş yeni önbellek kaydı (``pending=True``).
 
     ``sources`` ilk kopyayı paylaşan grupları tutar; çoklu paylaşım notu
@@ -2976,6 +3095,8 @@ def new_dedup_entry(title: str, token: Any, source_name: str | None = None,
     name = (source_name or "").strip()
     return {
         "title": title,
+        "links": set(links or ()),  # ilk kopyanın ürün bağlantı kimliği
+        "preload": bool(preload),   # kayıt açılış taramasından mı geldi?
         "sources": [name] if name else [],
         "footer_name": (footer_name or "").strip(),
         "count": 1,
@@ -3103,6 +3224,25 @@ COMMAND_DESCRIPTIONS = (
 HELP_TEXT = "\n".join(f"{command} - {description}" for command, description in COMMAND_DESCRIPTIONS)
 
 
+def _bot_api_stats_line() -> str:
+    """P0 ölçümleme özeti: Bot API 429 sayaçları (token/içerik yazılmaz)."""
+    if not NOTIFY_BOT_TOKEN:
+        return "• Bot API hız sınırı: token yok (ölçüm kapalı)"
+    stats = gate_stats(NOTIFY_BOT_TOKEN)
+    line = (
+        f"• Bot API hız sınırı: 429={stats['rate_limit_count']}"
+        f" · retry bekleme {stats['retry_wait_seconds']:.1f} sn"
+        f" · kilit bekleme {stats['lock_wait_seconds']:.1f} sn"
+        f" · soğuma bekleme {stats['cooldown_wait_seconds']:.1f} sn"
+    )
+    by_method = stats.get("rate_limits_by_method") or {}
+    if by_method:
+        line += " · metot: " + ", ".join(
+            f"{name}×{count}" for name, count in sorted(by_method.items())
+        )
+    return line
+
+
 def build_status_text(config: dict, *, connected: bool = True) -> str:
     last = STATS["last_match"]
     last_line = "henüz eşleşme yok"
@@ -3160,6 +3300,16 @@ def build_status_text(config: dict, *, connected: bool = True) -> str:
             f" · rozet {STATS.get('dedup_edits', 0)} · izlenen {len(DEDUP_CACHE)} başlık"
             if DEDUP_ENABLED else "• Tekrar birleştirme: kapalı"
         )
+        + "\n"
+        + (
+            f"• Hızlı tarama: açık · aralık {POLL_TELEMETRY['interval']:.0f} sn"
+            f" · son yoklama {POLL_TELEMETRY['last_elapsed']:.1f} sn"
+            f" · FloodWait {int(POLL_TELEMETRY['flood_count'])}"
+            + (f" (son {POLL_TELEMETRY['last_flood_wait']:.0f} sn)" if POLL_TELEMETRY["flood_count"] else "")
+            if FAST_POLL else "• Hızlı tarama: kapalı"
+        )
+        + "\n"
+        + _bot_api_stats_line()
     )
 
 
@@ -4706,8 +4856,14 @@ async def heartbeat() -> None:
     while True:
         await asyncio.sleep(1800)
         log.info(
-            "Kalp atışı: %s çalışıyor | görülen=%d eşleşen=%d iletilen=%d",
+            "Kalp atışı: %s çalışıyor | görülen=%d eşleşen=%d iletilen=%d"
+            " | tarama aralığı=%.0f sn (son yoklama %.1f sn, FloodWait=%d)"
+            " | Bot API 429=%d (retry bekleme %.1f sn, kilit bekleme %.1f sn)",
             humanize(time.time() - STARTED_AT), STATS["seen"], STATS["matched"], STATS["forwarded"],
+            POLL_TELEMETRY["interval"], POLL_TELEMETRY["last_elapsed"], int(POLL_TELEMETRY["flood_count"]),
+            gate_stats(NOTIFY_BOT_TOKEN)["rate_limit_count"],
+            gate_stats(NOTIFY_BOT_TOKEN)["retry_wait_seconds"],
+            gate_stats(NOTIFY_BOT_TOKEN)["lock_wait_seconds"],
         )
 
 
@@ -4782,8 +4938,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
     log.info("Bağlanıldı: %s (id=%s)", display_name(me), me.id)
 
     if LINK_APPENDIX_MODE == "smart":
-        log.info("Bağlantı ekleri: akıllı mod — gizli hyperlink'ler mesajda tıklanabilir kalır, "
-                 "yalnızca buton/önizleme linkleri metne yazılır.")
+        log.info("Bağlantı ekleri: akıllı mod — gizli hyperlink'ler mesajda tıklanabilir kalır; "
+                 "hesap kopyasında yalnızca buton/önizleme linkleri metne yazılır, bot "
+                 "bildiriminde ürün linki ayrı satır olarak tekrarlanmaz.")
     elif LINK_APPENDIX_MODE == "all":
         log.info("Bağlantı ekleri: tüm gizli linkler iletinin sonuna yazılacak.")
     if MESSAGE_LINK_LINE:
@@ -5485,7 +5642,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 )
                 layout_ok = bool(dry_run["text"] or media or links)
                 if dry_run["header"]:
-                    # Basit düzen: üst satır ("56₺ - ürün adı") en üstte,
+                    # Basit düzen: üst satır ("₺56 — ürün adı") en üstte,
                     # mesajın aslı hemen altında.
                     layout_ok = (
                         layout_ok
@@ -5770,6 +5927,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
         data = await client.download_media(message, bytes)
         if not data:
             raise ValueError("medya indirilemedi")
+        # Aynı teslim içinde bildirim botu da aynı medyayı kullanacaksa
+        # ikinci kez indirilmesin (bkz. notify_offer).
+        _media_cache = MEDIA_DOWNLOAD_CACHE.get()
+        if _media_cache is not None:
+            try:
+                _media_cache[(int(event.chat_id), int(event.id))] = data
+            except (TypeError, ValueError):
+                pass
         source_record = source_of(event)
         footer_name = (source_record or {}).get("name") if SOURCE_FOOTER else None
         composed = compose_message(
@@ -5857,6 +6022,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         key: str, title: str, source_name: str | None = None,
         footer_name: str | None = None,
         offer: tuple[float | None, str] | None = None,
+        links: Any = None,
     ) -> tuple[str, Any]:
         """Karar ver: ``("send", token)`` yeni gönderim, ``("dup", None)`` tekrar.
 
@@ -5871,10 +6037,22 @@ async def main(argv: Sequence[str] | None = None) -> int:
             async with DEDUP_LOCK:
                 prune_dedup_cache(DEDUP_CACHE, time.time(), DEDUP_WINDOW_SECONDS, DEDUP_MAX_ENTRIES)
                 entry = DEDUP_CACHE.get(key)
+                # Bağlantı çelişkisi: iki tarafın da ürün bağlantısı var ve
+                # hiçbiri örtüşmüyorsa aynı ürün olduğu kanıtlanamaz; bastırma
+                # (fail-open: yeni bildirim). Preload kaydında canlı bağlantı
+                # hiç doğrulanamıyorsa da bastırma yok: belirsiz geçmiş kaydı
+                # gerçek fırsatı yutamaz.
+                unverified_preload = (
+                    entry is not None and entry.get("preload") and links
+                    and not (set(entry.get("links") or ()) & set(links))
+                )
                 if entry is None or entry.get("failed") or (
-                    not entry.get("pending") and better_or_different_offer(entry.get("offer"), offer)
+                    not entry.get("pending")
+                    and (better_or_different_offer(entry.get("offer"), offer)
+                         or _link_conflict(entry.get("links"), links)
+                         or unverified_preload)
                 ):
-                    entry = new_dedup_entry(title, token, source_name, footer_name)
+                    entry = new_dedup_entry(title, token, source_name, footer_name, links=links)
                     entry["owner"] = asyncio.current_task()
                     entry["offer"] = offer
                     DEDUP_CACHE[key] = entry
@@ -5906,7 +6084,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         current["failed"] = True
                         current["ready"].set()
                         token = object()
-                        DEDUP_CACHE[key] = new_dedup_entry(title, token, source_name, footer_name)
+                        DEDUP_CACHE[key] = new_dedup_entry(title, token, source_name, footer_name, links=links)
                         DEDUP_CACHE[key]["owner"] = asyncio.current_task()
                         DEDUP_CACHE[key]["offer"] = offer
                         return "send", token
@@ -6152,8 +6330,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         type(exc).__name__, exc)
             return
         if NOTIFY_BOT_TOKEN and not bot_history_ids_shared(DESTINATION_ID):
-            log.info("Normal grupta geçmişin hesap mesaj ID'leri Bot API ID'si değildir; "
-                     "eski bot mesajları güvenli biçimde atlanacak (yeniden bildirim olabilir).")
+            # Temel grupta MTProto ve Bot API mesaj ID uzayları ayrıdır: eski
+            # bot iletisi düzenlenemez ama kimliği (başlık+fiyat/koşul) yine de
+            # güvenle kayda alınabilir. Kayıt editable=None olur; böylece
+            # restart sonrası aynı fırsat yeniden bildirilmez, yanlış ID ile
+            # düzenleme de denenmez. (P4)
+            log.info("Normal grupta eski bot mesajları düzenlenemez; "
+                     "yalnızca tekrar bastırma için kayda alınacak.")
         now = time.time()
         added = 0
         for message in reversed(recent):  # eskiden yeniye: ilk kopya kanonik olur
@@ -6181,9 +6364,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         bot_id = NOTIFY_BOT_TOKEN.split(":", 1)[0]
                         if str(sender) != bot_id:
                             continue  # another bot/human is not editable by this bot
-                        if not bot_history_ids_shared(DESTINATION_ID):
-                            continue  # basic groups: user and bot ID namespaces differ
-                    editable = "bot" if NOTIFY_BOT_TOKEN else None
+                        # Temel grupta ID uzayları ayrı: kayıt bastırma amaçlı
+                        # tutulur (editable=None), bot ID'si düzenleme için
+                        # KESİNLİKLE kullanılmaz.
+                        editable = "bot" if bot_history_ids_shared(DESTINATION_ID) else None
+                    else:
+                        editable = None
                 else:
                     continue  # insan sohbeti: kayda alma
                 title = _search_query(base) or message_title(base)
@@ -6227,7 +6413,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     if existing is None or better_or_different_offer(existing.get("offer"), terms):
                         # A newer/lower-price notification supersedes the old one;
                         # do not restore the expensive message after a restart.
-                        record = new_dedup_entry(title, object())
+                        record = new_dedup_entry(
+                            title, object(), links=product_link_keys(message), preload=True)
                         record["pending"] = False
                         record["failed"] = False
                         record["ready"].set()
@@ -6273,7 +6460,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         """Bildirim botuyla fırsatın kopyasını at; (gönderildi_mi, bilgi) döner.
 
         Tasarım (basit düzen): en üstte ÜST SATIR — ``smart_header`` açıksa
-        ``56₺ - ürün adı`` (fiyat en başta; fiyat yoksa ``❓ - ürün adı``),
+        ``₺56 — ürün adı`` (fiyat en başta; fiyat yoksa ``❓ — ürün adı``),
         kapalıysa ürün başlığı →
         altında mesaj OLDUĞU GİBİ → gizli link ekleri (varsa) →
         "🔗 Mesajı Gör: <t.me linki>" → en altta kaynak grup adı
@@ -6313,11 +6500,21 @@ async def main(argv: Sequence[str] | None = None) -> int:
             )
             entities = bot_api_entities(composed["message"], composed["content"]) + source_name_entity(composed)
             t_media = time.perf_counter()
-            try:
-                data = await client.download_media(event.message, bytes)
-            except Exception as exc:  # noqa: BLE001 - medya inmezse bildirim yine gitsin
-                log.warning("Bildirim medyası indirilemedi (%s): %s", type(exc).__name__, exc)
-                data = None
+            # Yedek zincirde (send_media) aynı teslim içinde indirildiyse
+            # yeniden indirme; önbellek yalnızca bu deliver() bağlamında yaşar.
+            data = None
+            _media_cache = MEDIA_DOWNLOAD_CACHE.get()
+            if _media_cache is not None:
+                try:
+                    data = _media_cache.get((int(event.chat_id), int(event.id)))
+                except (TypeError, ValueError):
+                    data = None
+            if data is None:
+                try:
+                    data = await client.download_media(event.message, bytes)
+                except Exception as exc:  # noqa: BLE001 - medya inmezse bildirim yine gitsin
+                    log.warning("Bildirim medyası indirilemedi (%s): %s", type(exc).__name__, exc)
+                    data = None
             t_downloaded = time.perf_counter()
             if data:
                 log.info("⏱ Bildirim medyası: %s, %.1f MB, indirme %.1f sn.",
@@ -6382,6 +6579,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
         ``account_text``/``account_entities`` (hesap iletisinin metni/biçimi).
         """
         last_error = "denenmedi"
+        # P5: bu teslim boyunca geçerli medya aktarım bağlamı (kalıcı değil).
+        MEDIA_DOWNLOAD_CACHE.set({})
         t_begin = time.perf_counter()
         try:
             received_lag = max(0.0, time.time() - event.message.date.timestamp())
@@ -6657,6 +6856,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             dedup_id, dedup_title, source_name,
             footer_name=source_name if SOURCE_FOOTER else None,
             offer=terms,
+            links=product_link_keys(event) if DEDUP_ENABLED else None,
         )
         if decision == "dup":
             STATS["deduped"] += 1
@@ -6705,6 +6905,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         input_peers: dict[int, Any] = {}
         failures = 0
         poll_interval = FAST_POLL_SECONDS
+        POLL_TELEMETRY["interval"] = poll_interval
         log.info("⚡ Hızlı tarama açık: kaynaklar %.0f sn'de bir yoklanacak.", FAST_POLL_SECONDS)
 
         async def run_event(event: Any) -> None:
@@ -6739,8 +6940,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 # poll must back off too, otherwise our except block never sees
                 # the recurring 3–5 second waits. Do not mutate the client's
                 # global flood policy: account sends/commands share that client.
+                POLL_TELEMETRY["last_elapsed"] = poll_elapsed
                 if poll_elapsed >= max(2.0, FAST_POLL_SECONDS):
                     poll_interval = next_poll_interval(poll_interval, poll_elapsed)
+                    POLL_TELEMETRY["interval"] = poll_interval
                     log.info("Hızlı tarama isteği %.1f sn sürdü; yoklama aralığı %.0f sn'ye çıkarıldı.",
                              poll_elapsed, poll_interval)
                 tops = {utils.get_peer_id(d.peer): int(d.top_message or 0) for d in result.dialogs}
@@ -6749,16 +6952,33 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     if top is None:
                         continue
                     previous = last_seen.get(chat_id)
-                    if previous is None:        # ilk turda yalnızca başlangıç noktasını al
-                        last_seen[chat_id] = top
-                        continue
+                    is_backfill = previous is None
+                    if is_backfill:
+                        # İlk tur: yalnızca sınırlı geriye tarama (P6). Kesinti
+                        # penceresindeki mesajlar yakalanır; daha eskisi için
+                        # sayı + yaş sınırı toplu yeniden bildirimi engeller.
+                        # Çekme başarısız olursa last_seen yazılmaz, seneye
+                        # aynı tabandan yeniden denenir.
+                        previous = max(0, top - FAST_POLL_BACKFILL_LIMIT)
                     if top <= previous:
+                        if is_backfill:
+                            last_seen[chat_id] = top
                         continue
                     messages = await client.get_messages(peer, min_id=previous, limit=None)
                     last_seen[chat_id] = top
                     for message in reversed(list(messages)):
                         if message.id <= previous or (chat_id, message.id) in LIVE_SEEN:
                             continue
+                        if is_backfill:
+                            # Yaş sınırı: açılışta eski mesajları topluca
+                            # yeniden bildirme. Tarihi okunamayan mesaj
+                            # geriye taramada temkinli biçimde atlanır.
+                            try:
+                                age = time.time() - message.date.timestamp()
+                            except Exception:  # noqa: BLE001 - tarih yoksa atla
+                                continue
+                            if age > FAST_POLL_BACKFILL_MAX_AGE:
+                                continue
                         _remember(POLL_DISPATCHED, chat_id, message.id)
                         event = events.NewMessage.Event(message)
                         try:
@@ -6767,17 +6987,37 @@ async def main(argv: Sequence[str] | None = None) -> int:
                             event._client = client
                         event._fast_poll = True
                         log.info("⚡ Hızlı tarama yeni mesajı yakaladı (kaynak=%s, mesaj=%s).", chat_id, message.id)
-                        task = asyncio.create_task(run_event(event))
-                        poll_delivery_tasks.add(task)
-                        task.add_done_callback(poll_delivery_tasks.discard)
+                        if is_backfill:
+                            # Açılış yükü kontrolü: geriye tarama mesajları
+                            # sınırsız eşzamanlı teslim görevine dönüşmez,
+                            # sırayla işlenir. Canlı olaylar Telethon'un
+                            # kendi görevlerinde koştuğu için bu sıralama
+                            # canlı fırsatları arkaya atmaz; yalnızca
+                            # tarama döngüsünün kendisi bekler.
+                            await run_event(event)
+                        else:
+                            task = asyncio.create_task(run_event(event))
+                            poll_delivery_tasks.add(task)
+                            task.add_done_callback(poll_delivery_tasks.discard)
+                # Yalnızca hızlı ve başarılı yoklamalar aralığı gevşetir;
+                # yavaş (Telethon'un içte beklediği) yoklamalar gevşetmez.
+                if poll_elapsed < max(2.0, FAST_POLL_SECONDS):
+                    recovered = recover_poll_interval(poll_interval, FAST_POLL_SECONDS)
+                    if recovered != poll_interval:
+                        poll_interval = recovered
+                        POLL_TELEMETRY["interval"] = poll_interval
                 failures = 0
             except asyncio.CancelledError:
                 raise
             except errors.FloodWaitError as exc:
                 wait = max(1, int(getattr(exc, "seconds", 5))) + 1
                 poll_interval = next_poll_interval(poll_interval, wait)
+                POLL_TELEMETRY["interval"] = poll_interval
+                POLL_TELEMETRY["flood_count"] += 1
+                POLL_TELEMETRY["last_flood_wait"] = float(wait)
                 log.warning("Hızlı tarama FloodWait: %s sn bekleniyor; yeni yoklama aralığı %.0f sn. "
-                            "Canlı mesaj dinleme devam ediyor.", wait, poll_interval)
+                            "Canlı mesaj dinleme devam ediyor. [bu oturumda tarama FloodWait=%d]",
+                            wait, poll_interval, int(POLL_TELEMETRY["flood_count"]))
                 await asyncio.sleep(wait)
             except Exception as exc:  # noqa: BLE001 - geçici hata; canlı olaylar çalışmaya devam eder
                 failures += 1

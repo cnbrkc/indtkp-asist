@@ -633,11 +633,11 @@ ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığ
 **Bildirim biçimi (basit düzen):** mesajlar üzerinde oynama yapılmaz; kaynak mesaj
 **olduğu gibi** iletilir. Düzen sabittir (kullanıcı isteği):
 
-1. **Üst satır** en üstte (kalın) — `smart_header` açıksa **önce fiyat, sonra ` - `,
-   sonra ürün adı** tek satırda: `56₺ - Penti Kız Çocuk Basic Colorful 4lü Patik Çorap`.
-   Fiyatın önünde emoji **yok**, yazım `56 TL` değil **`56₺`**, ayraç düz tire `-`
-   (em-dash değil). Fiyat güvenle bulunamazsa fiyat yerine yalnızca **`❓`** gelir:
-   `❓ - Penti Kız Çocuk Basic Colorful 4lü Patik Çorap`. `smart_header` kapalıysa
+1. **Üst satır** en üstte (kalın) — `smart_header` açıksa **önce fiyat, sonra ` — `,
+   sonra ürün adı** tek satırda: `₺56 — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap`.
+   Fiyatın önünde emoji **yok**, yazım `56 TL` değil **`₺56`** (kuruş gösterilmez;
+   `199,90` → `₺199`, yuvarlama yapılmaz). Fiyat güvenle bulunamazsa fiyat yerine
+   yalnızca **`❓`** gelir: `❓ — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap`. `smart_header` kapalıysa
    üst satırda yalnızca ürün başlığı yazılır (eski hâli). Fiyatın başta durması,
    telefonun bildiriminde kesilen metinde **fiyat + ürün adının ilk kelimelerinin**
    birlikte görünmesini sağlar.
@@ -646,7 +646,7 @@ ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığ
 4. En alta **kaynak grup adı** (kalın; etiket ve link yok).
 
 ```text
-225₺ - Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici Banyo ve Duş Jeli 500ml x 4 Adet
+₺225 — Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici Banyo ve Duş Jeli 500ml x 4 Adet
 
 🛍️ Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici Banyo ve Duş Jeli 500ml x 4 Adet
 
@@ -665,7 +665,7 @@ Tekrarlı paylaşımda (bkz. 9. bölüm) **hangi gruptan geldiği satırı kald�
 yerine çoklu paylaşım notu yazılır: `📌 3 kere paylaşıldı: FırsatZ, İndirimde Al, OnuAl`.
 
 - Ürün başlığı bulunamayan mesajlarda (kupon/duyuru gibi) üst satır yalnızca fiyatı
-  (`56₺`) ya da fiyat yoksa yalnızca `❓` taşır; **ikisi de bulunamazsa üst satır hiç
+  (`₺56`) ya da fiyat yoksa yalnızca `❓` taşır; **ikisi de bulunamazsa üst satır hiç
   kurulmaz**, mesaj ve alt satırlar aynen iletilir.
 - Üst satıra yazılan fiyat **yalnızca görünen metindir**: Google Alışveriş, Akakçe ve
   Cimri arama sorguları ile tekrar (dedup) anahtarı, kaynak mesajdan ayıklanan
@@ -792,7 +792,7 @@ Arama sorgusu için bot mesajı satır satır, **yerel ve anlık** olarak temizl
   düzeninde üç arama da `Philips Airfryer XXL 6.2L` ile açılır.
 - Baştaki emoji/semboller ve görünür ürün URL'leri sorguya katılmaz. Ürün adı bulunamazsa
   yapay/boş arama düğmesi eklenmez.
-- Bildirim üst satırındaki `56₺ - ` (veya `❓ - `) ön eki **asla sorguya girmez**:
+- Bildirim üst satırındaki `₺56 — ` (veya `❓ — `) ön eki **asla sorguya girmez**:
   arama kaynak mesajdan üretilir; ayrıca `_price_search_url` tek nokta sigortası
   olarak kendisine üst satır verilirerse tutarı, para birimini, ayracı ve `❓`
   işaretini düşürür (`header_search_title`), geriye salt ürün adı kalır. Ayraç
@@ -819,9 +819,12 @@ forward ile geri eklenmez.
 
 Orijinal mesajın altına `🔗 Mesajı Gör: <t.me linki>`, en alta kaynak grup adı eklenir.
 Gövdede tıklanabilir kalan gizli hyperlink'ler ek listeye yazılmaz.
-`link_appendix: "smart"` (varsayılan) yalnızca başka türlü taşınamayan linkleri
-(buton ve önizleme linkleri) orijinal mesajın altına ekler; `"all"` gizli
-hyperlink'leri de yazar; `"off"` ek bağlantı listesi yazmaz.
+`link_appendix: "smart"` (varsayılan) hesap kopyasında yalnızca başka türlü
+taşınamayan linkleri (buton ve önizleme linkleri) orijinal mesajın altına ekler.
+Bot bildiriminde ürün linki ayrı bir satır olarak tekrar yazılmaz; bağlantı
+orijinal mesaj alıntısının içinde kalır, önizlemedeki hedefe de `🔗 Mesajı Gör`
+üzerinden ulaşılır. `"all"` gizli hyperlink'leri de yazar; `"off"` ek bağlantı
+listesi yazmaz.
 
 ---
 
@@ -1160,9 +1163,9 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 **Yeni bildirim düzeni (`smart_header`)** — `config.json` içine `"smart_header": true` eklenince açılır; anahtar yoksa eski düzen aynen sürer.
 
 ```
-56₺ - Ürün başlığı        ← kalın, TEK satır: fiyat önce, " - " ayracı, sonra ad
-❓ - Ürün başlığı          ← fiyat güvenle bulunamadığında
-1.299,90₺ - Ürün başlığı  ← ondalıklı tutar da ₺ ile yazılır
+₺56 — Ürün başlığı        ← kalın, TEK satır: fiyat önce, " — " ayracı, sonra ad
+❓ — Ürün başlığı          ← fiyat güvenle bulunamadığında
+₺1.299 — Ürün başlığı     ← kuruş atılır (1.299,90 → ₺1.299), yuvarlanmaz
 
 > orijinal mesaj (alıntı bloğu)
 
@@ -1170,20 +1173,22 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 Grup adı / 📌 N kere paylaşıldı: …
 ```
 
-- Fiyat yazısı `price_filter.format_price`ın "… TL" çıktısından **yalnızca görüntüleme
-  için** türetilir (`header_price_text`): gövde, DM eşiği, `offer_terms` ve fiyat
-  karşılaştırmaları "TL" yazımıyla ve aynı güven kurallıyla çalışmaya devam eder.
+- Fiyat yazısı **yalnızca görüntüleme için** `header_price_text` ile üretilir:
+  tutarın kuruşu yuvarlanmadan atılır ve `₺` tutarın önüne yazılır. Gövde, DM eşiği,
+  `offer_terms` ve fiyat karşılaştırmaları gerçek (kuruşlu) değerle ve "TL"
+  yazımıyla çalışmaya devam eder (`price_filter.format_price` değişmedi).
   Low/none güvenli tutar üst satıra **taşınmaz**; o durumda satır `❓` ile açılır.
-- Fiyatı üst satıra taşımak aramaları **bozmaz**: `56₺ - ` / `❓ - ` ön eki yalnızca
+- Fiyatı üst satıra taşımak aramaları **bozmaz**: `₺56 — ` / `❓ — ` ön eki yalnızca
   görüntüdür. Google Alışveriş / Akakçe / Cimri sorguları ve tekrar (dedup) anahtarı,
   kaynak mesajdan ayıklanan fiyatsız adla kurulur; gönderilmiş bildirim okunurken de
   üst satır `split_header_line` ile fiyat ve ad diye ayrılır, aramaya ad gider.
 - Üst satır sığmazsa (medya açıklaması gibi dar kalıplar) fiyat korunur, ürün adının
   kuyruğu `…` ile kırpılır. Bu sığdırma ve gövde kırpması UTF-16 birimiyle ölçer;
   emoji/süslü font ağırlıklı iletilerde gönderilen metin 4096/1024 sınırını aşmaz.
-- Üst satır salt görünümdür: `12.299₺` yazısı `12299.9` sayısıyla birebir aynı
-  anlamsal fiyatı taşır (karşılaştırma, arama, dedup ve DM eşiği sayıyı kullanır;
-  `format_price`ın `TL` yazısı diğer yollarda aynen durur).
+- Üst satır salt görünümdür: ekrandaki `₺12.299` yazısı gösterim için
+  kuruşsuzdur; karşılaştırma, arama, dedup ve DM eşiği mesajdan çıkarılan gerçek
+  sayıyı (örn. `12299.9`) kullanır; `format_price`ın `TL` yazısı diğer yollarda
+  aynen durur.
 - **Geçmiş biçimler (yalnız okuma):** bir önceki sürüm `Ürün başlığı` + alt satırda
   `💰 1.299 TL`, en eski sabit düzen gövdede `💰Fiyat: …` üretiyordu. Bunlar yeni
   çıktının parçası değildir; açılış taraması bu iletileri de aynı fırsat anahtarına

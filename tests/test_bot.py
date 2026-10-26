@@ -318,6 +318,16 @@ class StatusTextTest(unittest.TestCase):
         self.assertIn("çekiliş", opened)
         self.assertIn("/open ve /close", opened)
 
+    def test_status_shows_poll_telemetry_and_bot_api_metrics(self):
+        bot.POLL_TELEMETRY.update({"interval": 300.0, "last_elapsed": 4.2,
+                                   "flood_count": 2, "last_flood_wait": 181.0})
+        self.addCleanup(bot.POLL_TELEMETRY.update,
+                        {"interval": 3.0, "last_elapsed": 0.0, "flood_count": 0, "last_flood_wait": 0.0})
+        status = bot.build_status_text({"include_keywords": ["çay"]})
+        self.assertIn("Hızlı tarama: açık · aralık 300 sn", status)
+        self.assertIn("FloodWait 2 (son 181 sn)", status)
+        self.assertIn("Bot API hız sınırı:", status)
+
     def test_status_marks_disabled_exclude_filter(self):
         status = bot.build_status_text({"exclude_keywords": ["çekiliş"], "exclude_enabled": False})
         self.assertIn("Harici filtre: KAPALI", status)
@@ -1841,6 +1851,67 @@ class BlankLineNormalizationTest(unittest.TestCase):
             "\n\nFırsatZ"
         ))
 
+    def test_bot_notification_omits_separate_product_link_line(self):
+        """Bot bildirimi: önizleme linki ayrı satır olmaz; alıntı + Mesajı Gör + kaynak kalır.
+
+        Kullanıcı isteği: ürün linki orijinal mesaj alıntısında zaten var; aynı
+        link bildirimde ikinci kez ayrı satır olarak gösterilmez. Hesap
+        kopyasının varsayılan düzeni (buton/önizleme linki metinde) değişmez.
+        """
+        message = make_message(
+            "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n129,90 TL",
+            media=False, webpage="https://example.com/urun",
+        )
+        composed = bot.compose_message(
+            message,
+            message_link="https://t.me/firsatz/123",
+            source_name="FırsatZ",
+            link_kinds=bot.link_kinds_for("smart", bot=True),
+        )
+        self.assertEqual(composed["text"], (
+            "A101 Çamaşır Deterjanı 4 Lt"
+            "\n\n🔥 A101 Çamaşır Deterjanı 4 Lt"
+            "\n\n129,90 TL"
+            "\n\n🔗 Mesajı Gör: https://t.me/firsatz/123"
+            "\n\nFırsatZ"
+        ))
+        self.assertNotIn("https://example.com/urun", composed["text"])
+        # Hesap kopyası: kullanıcı hesabı önizlemeyi taşıyamadığında link metinde kalır.
+        account = bot.compose_message(
+            message,
+            message_link="https://t.me/firsatz/123",
+            source_name="FırsatZ",
+        )
+        self.assertIn("\n\n🔗 https://example.com/urun\n\n", account["text"])
+
+    def test_bot_notification_keeps_visible_product_link_once(self):
+        """Alıntıdaki görünür ürün linki aynen kalır ve ikinci kez yazılmaz."""
+        text = "Çay fırsatı 5 TL\n\n🛒 https://amzn.to/urun"
+        composed = bot.compose_message(
+            make_message(text, media=False),
+            message_link="https://t.me/firsatz/123",
+            source_name="FırsatZ",
+            link_kinds=bot.link_kinds_for("smart", bot=True),
+        )
+        self.assertIn(text, composed["text"], "alıntı aynen korunur")
+        self.assertEqual(composed["text"].count("https://amzn.to/urun"), 1)
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/123", composed["text"])
+        self.assertTrue(composed["text"].endswith("FırsatZ"))
+
+    def test_bot_notification_without_link_or_body_has_no_stray_lines(self):
+        """Link yok / alıntı boş varyantlarında boş blok ya da kırık satır üretilmez."""
+        composed = bot.compose_message(
+            make_message("", media=False),
+            message_link="https://t.me/firsatz/123",
+            source_name="FırsatZ",
+            link_kinds=bot.link_kinds_for("smart", bot=True),
+        )
+        self.assertNotIn("\n\n\n", composed["text"])
+        self.assertNotIn("🔗 https://", composed["text"].replace(
+            "🔗 Mesajı Gör: https://", ""))
+        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/123", composed["text"])
+        self.assertTrue(composed["text"].endswith("FırsatZ"))
+
     def test_changed_flag_is_set_when_only_blank_lines_differ(self):
         self.assertTrue(bot.sanitize_message(make_message("a\n\n\n\nb", media=False)).changed)
         self.assertFalse(bot.sanitize_message(make_message("a\n\nb", media=False)).changed)
@@ -2365,7 +2436,9 @@ class LinkAppendixModeTest(unittest.TestCase):
     def test_default_is_smart(self):
         self.assertEqual(bot.link_appendix_mode({}), "smart")
         self.assertEqual(bot.link_kinds_for("smart"), ("button", "webpage"))
-        self.assertEqual(bot.link_kinds_for("smart", bot=True), ("webpage",))
+        # Bot bildiriminde ürün linki ayrı satır olarak tekrarlanmaz; hesap
+        # kopyasında buton/önizleme linkleri metne yazılmaya devam eder.
+        self.assertEqual(bot.link_kinds_for("smart", bot=True), ())
 
     def test_all_and_off_modes(self):
         for value in ("all", "ALL", "hepsi", "tüm", True, 1):
