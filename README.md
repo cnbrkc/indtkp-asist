@@ -819,9 +819,12 @@ forward ile geri eklenmez.
 
 Orijinal mesajın altına `🔗 Mesajı Gör: <t.me linki>`, en alta kaynak grup adı eklenir.
 Gövdede tıklanabilir kalan gizli hyperlink'ler ek listeye yazılmaz.
-`link_appendix: "smart"` (varsayılan) yalnızca başka türlü taşınamayan linkleri
-(buton ve önizleme linkleri) orijinal mesajın altına ekler; `"all"` gizli
-hyperlink'leri de yazar; `"off"` ek bağlantı listesi yazmaz.
+`link_appendix: "smart"` (varsayılan) hesap kopyasında yalnızca başka türlü
+taşınamayan linkleri (buton ve önizleme linkleri) orijinal mesajın altına ekler.
+Bot bildiriminde ürün linki ayrı bir satır olarak tekrar yazılmaz; bağlantı
+orijinal mesaj alıntısının içinde kalır, önizlemedeki hedefe de `🔗 Mesajı Gör`
+üzerinden ulaşılır. `"all"` gizli hyperlink'leri de yazar; `"off"` ek bağlantı
+listesi yazmaz.
 
 ---
 

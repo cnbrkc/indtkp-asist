@@ -207,6 +207,51 @@ class RateLimitRegressionTest(unittest.IsolatedAsyncioTestCase):
         release.set()
         await task
 
+    async def test_429_metrics_name_method_and_never_log_token(self):
+        token = "999:SECRETTEST"
+        calls = []
+
+        async def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                return {"ok": False, "error_code": 429, "parameters": {"retry_after": 2}}
+            return {"ok": True, "result": {}}
+
+        with mock.patch.object(telegram_retry.asyncio, "sleep", new_callable=mock.AsyncMock):
+            with self.assertLogs("telegram_retry", level="WARNING") as captured:
+                body = await telegram_retry.request_with_retry(token, "sendPhoto", flaky)
+        self.assertTrue(body["ok"])
+        stats = telegram_retry.gate_stats(token)
+        self.assertEqual(stats["rate_limit_count"], 1)
+        self.assertEqual(stats["rate_limits_by_method"], {"sendPhoto": 1})
+        self.assertEqual(stats["retry_wait_seconds"], 2.25)
+        # Aynı isteğin beklemeleri birbirini çift saymaz: kilit bekleme ve
+        # soğuma bekleme, tanımlı (retry_after+0.25) toplamından küçüktür;
+        # retry bekleme yalnızca duyurulan sürelerin toplamıdır.
+        self.assertLess(stats["lock_wait_seconds"], stats["retry_wait_seconds"])
+        self.assertLess(stats["cooldown_wait_seconds"], stats["retry_wait_seconds"])
+        self.assertIn("metot=sendPhoto", "\n".join(captured.output))
+        self.assertNotIn(token, "\n".join(captured.output))
+        self.assertNotIn("SECRETTEST", "\n".join(captured.output))
+
+    async def test_lock_wait_is_measured(self):
+        gate = telegram_retry.gate_for("lockwait-token")
+        request = mock.AsyncMock(return_value={"ok": True})
+
+        async def hold_and_release():
+            async with gate.lock:
+                task = asyncio.create_task(
+                    telegram_retry.request_with_retry("lockwait-token", "sendMessage", request))
+                await asyncio.sleep(0.05)
+            return await task
+
+        await hold_and_release()
+        self.assertGreaterEqual(gate.stats()["lock_wait_seconds"], 0.04)
+
+    def test_gate_stats_does_not_create_gate_or_leak(self):
+        self.assertEqual(telegram_retry.gate_stats("yok-boyle-token")["rate_limit_count"], 0)
+        self.assertEqual(telegram_retry.gate_stats("")["rate_limits_by_method"], {})
+
     async def test_not_modified_is_success_without_error_log(self):
         exc = urllib.error.HTTPError("redacted", 400, "Bad Request", {}, io.BytesIO(
             b'{"description":"Bad Request: message is not modified"}'))
@@ -233,14 +278,177 @@ class DeliveryRegressionTest(unittest.TestCase):
     _send = ti.DedupBotBadgeTest._send
 
     def test_basic_group_history_never_uses_account_id_as_bot_id(self):
+        # P4: temel grupta bot geçmişi düzenlenemez (ID uzayları ayrı) ama
+        # bastırma kaydı tutulur: aynı fırsat restart sonrası yeniden
+        # bildirilmez ve geçmiş ID ile düzenleme KESİNLİKLE denenmez.
         ti.FakeClient.default_history = [
             (ti.GROUP_ID, "Çay\n\nÇay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9", 123, None, None, [], 83375),
         ]
         client = self._run(fast_notify=True)
+        self.assertTrue(bot.DEDUP_CACHE)
+        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertIsNone(entry["editable"])
+        self.assertIsNone(entry["bot_message_id"])
+        self._send(client, "Çay 5 TL", media=False)
+        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(len(self.ping_calls), 0)
+        self.assertFalse(self.edit_text_calls)
+
+    def _assert_new_offer_after_basic_history(self, text):
+        ti.FakeClient.default_history = [
+            (ti.GROUP_ID, "Çay\n\nÇay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9", 123, None, None, [], 83375),
+        ]
+        client = self._run(fast_notify=True)
+        self._send(client, text, media=False)
+        self.assertEqual(len(self.ping_calls), 1)
+
+    def test_basic_group_history_does_not_suppress_price_drop(self):
+        self._assert_new_offer_after_basic_history("Çay 4 TL")
+
+    def test_basic_group_history_does_not_suppress_condition_change(self):
+        self._assert_new_offer_after_basic_history("Çay 5 TL\nPrime üyelerine özel")
+
+    def test_basic_group_history_does_not_suppress_variant(self):
+        self._assert_new_offer_after_basic_history("Çay Demlik Poşet 5 TL")
+
+    def _basic_history_client(self, history_text="Çay\n\nÇay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9"):
+        ti.FakeClient.default_history = [(ti.GROUP_ID, history_text, 123, None, None, [], 83375)]
+        return self._run(fast_notify=True)
+
+    def test_basic_group_history_same_title_different_seller_merges(self):
+        # Mevcut kimlik politikası: satıcı adı tek başına ürünü ayırmaz;
+        # aynı başlık/fiyattaki teklif farklı satıcıdan da gelse tekrardır.
+        client = self._basic_history_client()
+        self._send(client, "Çay 5 TL\nSatıcı: Başka Mağaza", media=False)
+        self.assertEqual(len(self.ping_calls), 0)
+        self.assertEqual(bot.STATS["deduped"], 1)
+
+    def test_basic_group_history_different_link_does_not_suppress(self):
+        # Bağlantı çelişkisi: geçmiş kayıt ile canlı mesajın ürün bağlantıları
+        # örtüşmüyorsa aynı ürün kanıtlanamaz; geçmiş kaydı fırsatı bastıramaz.
+        client = self._basic_history_client(
+            "Çay\n\nÇay 5 TL https://ornek.example/urun-a\n\n🔗 Mesajı Gör: https://t.me/firsatz/9")
+        self._send(client, "Çay 5 TL https://ornek.example/urun-b", media=False)
+        self.assertEqual(len(self.ping_calls), 1)
+        self.assertEqual(bot.STATS["deduped"], 0)
+
+    def test_basic_group_history_same_link_suppresses(self):
+        client = self._basic_history_client(
+            "Çay\n\nÇay 5 TL https://ornek.example/urun-a\n\n🔗 Mesajı Gör: https://t.me/firsatz/9")
+        self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
+        self.assertEqual(len(self.ping_calls), 0)
+        self.assertEqual(bot.STATS["deduped"], 1)
+
+    def test_basic_group_history_without_link_does_not_suppress_linked_live(self):
+        # Belirsiz geçmiş kaydı: geçmişte ürün bağlantısı yok ama canlı
+        # mesajda varsa, kaydın aynı ürün olduğu doğrulanamaz; bastırma yok.
+        client = self._basic_history_client()
+        self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
+        self.assertEqual(len(self.ping_calls), 1)
+
+    def test_preload_record_is_taken_over_by_first_linked_live_offer(self):
+        # Yaşam döngüsü: linksiz preload kaydı bastıramaz; ilk linkli canlı
+        # mesaj gönderilir ve kaydı devralır (preload işareti düşer, link
+        # kümesi canlınınki olur). Sonrasında aynı link birleşir, farklı
+        # link yeni fırsat olarak ayrıca gider.
+        client = self._basic_history_client()
+        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertTrue(entry["preload"])
+        self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
+        self.assertEqual(len(self.ping_calls), 1)
+        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertFalse(entry["preload"])
+        self.assertEqual(entry["links"], {"ornek.example/urun-a"})
+        # Aynı canlı mesajın kaynak kimliğiyle tekrarı ayrı sayılmaz; aynı
+        # ürünün aynı linkle yeni paylaşımı dedup'a düşer.
+        self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
+        self.assertEqual(len(self.ping_calls), 1)
+        self.assertEqual(bot.STATS["deduped"], 1)
+        self._send(client, "Çay 5 TL https://ornek.example/urun-b", media=False)
+        self.assertEqual(len(self.ping_calls), 2)
+
+    def test_failed_takeover_drops_preload_record_without_suppressing_retry(self):
+        # Devralma gönderimi başarısızsa kayıt düşer: sonraki tekrar ne
+        # yanlışlıkla bastırılır ne de kayıt hayalet gibi yaşamaya devam eder.
+        client = self._basic_history_client()
+        with mock.patch.object(bot, "send_bot_ping",
+                               new=mock.AsyncMock(return_value=(False, "Forbidden"))):
+            self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
+        self.assertTrue(client.delivered, "hesap yedeği iletmiş olmalı")
         self.assertFalse(bot.DEDUP_CACHE)
+        self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
+        self.assertEqual(len(self.ping_calls), 1)
+
+    def test_live_same_product_different_store_link_is_not_suppressed(self):
+        # Canlı dedup ile preload aynı kuralı kullanır: bağlantı çelişkisi
+        # fail-open'dır (aynı ürün farklı mağaza da olabilir; fırsatı
+        # kaybetmektense ayrı bildirim). Bağlantısız tekrarlar birleşir.
+        client = self._run(fast_notify=True)
+        self._send(client, "Çay 5 TL https://magaza-a.example/urun", media=False)
+        self._send(client, "Çay 5 TL https://magaza-b.example/urun", media=False)
+        self.assertEqual(len(self.ping_calls), 2)
+        self._send(client, "Çay 5 TL https://magaza-b.example/urun", media=False)
+        self.assertEqual(len(self.ping_calls), 2)
+        self.assertEqual(bot.STATS["deduped"], 1)
+
+    def test_basic_group_history_does_not_suppress_new_coupon(self):
+        client = self._basic_history_client()
+        self._send(client, "Çay 5 TL\nKupon: CAY10", media=False)
+        self.assertEqual(len(self.ping_calls), 1)
+
+    def test_basic_group_history_with_unknown_price_does_not_suppress_known_price(self):
+        # Geçmiş kaydın fiyatı güvenilir çıkarılamıyorsa (None) canlı mesajın
+        # bilinen fiyatı yeni fırsat sayılır; bastırma yapılmaz.
+        ti.FakeClient.default_history = [
+            (ti.GROUP_ID, "Çay\n\n🔗 Mesajı Gör: https://t.me/firsatz/9", 123, None, None, [], 83375),
+        ]
+        client = self._run(fast_notify=True)
         self._send(client, "Çay 5 TL", media=False)
         self.assertEqual(len(self.ping_calls), 1)
-        self.assertFalse(self.edit_text_calls)
+
+    def test_concurrent_media_deliveries_do_not_share_downloads(self):
+        # P5: eşzamanlı iki teslimde her bildirim kendi mesajının medyasını
+        # kullanır; indirme bağlamları (ContextVar) birbirine karışmaz.
+        client = self._run(fast_notify=False)
+        client.fail_modes.update({"forward", "copy"})
+        downloads = []
+        real_download = client.download_media
+
+        async def per_message_download(message, file=None):
+            downloads.append(message.id)
+            return f"veri-{message.id}".encode()
+
+        client.download_media = per_message_download
+
+        async def scenario():
+            handler = client.handlers[1][1]
+            chat = next(iter(bot.SOURCE_IDS))
+            await asyncio.gather(
+                handler(ti.FakeEvent(chat, 7, "Çay 5 TL", message_id=41)),
+                handler(ti.FakeEvent(chat, 7, "Çay Demlik 9 TL", message_id=42)),
+            )
+
+        asyncio.run(scenario())
+        self.assertEqual(sorted(downloads), [41, 42])
+        sent_data = sorted(call["data"] for call in self.media_calls)
+        self.assertEqual(sent_data, [b"veri-41", b"veri-42"])
+
+    def test_media_is_downloaded_once_in_fallback_path(self):
+        # P5: yedek zincirde send_media'nın indirdiği medya, bildirimde
+        # ikinci kez indirilmez; teslim yine de hem hesap hem bot yoluyla olur.
+        client = self._run(fast_notify=False)
+        client.fail_modes.update({"forward", "copy"})
+        downloads = []
+        real_download = client.download_media
+
+        async def counting_download(message, file=None):
+            downloads.append(1)
+            return await real_download(message, file)
+
+        client.download_media = counting_download
+        self._send(client, "Çay fırsatı")
+        self.assertEqual(len(downloads), 1)
+        self.assertEqual(len(self.media_calls), 1)
 
     def test_account_only_history_does_not_suppress_notification(self):
         ti.FakeClient.default_history = [
@@ -344,6 +552,12 @@ class DeliveryRegressionTest(unittest.TestCase):
         self.assertEqual(len(self.edit_text_calls), 1)
         self.assertIn("11 kere paylaşıldı: firsatz", self.edit_text_calls[0]["text"])
         self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))["sources"], ["firsatz"])
+
+    def test_badge_edits_are_spaced_for_coalescing_by_default(self):
+        # P2: varsayılan rozet aralığı, art arda gelen tekrarların ayrı ayrı
+        # düzenlemeye dönüşmesini engelleyecek genişliktedir; yeni bildirim
+        # yolu bu aralığı beklemez (aralık yalnızca rozet görevindedir).
+        self.assertGreaterEqual(bot.DEDUP_EDIT_MIN_INTERVAL, 5.0)
 
     def test_onual_429_keeps_media_notification_instead_of_account_fallback(self):
         real_media = bot.send_bot_media

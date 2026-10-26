@@ -125,7 +125,10 @@ class DedupIdentityRegressions(unittest.TestCase):
     def test_rounding_not_a_new_offer_but_meaningful_drop_is(self):
         for a, b in [(13485.92, 13485), (13485, 13485.92)]:
             self.assertFalse(bot.better_or_different_offer((a, ''), (b, '')))
-        for a, b in [(13485, 13400), (10, 9.1), (200, 199), (13485.92, 13485.5)]:
+        # NOT (P1 kuruş politikası): (13485.92, 13485.5) artık yeni fırsat
+        # DEĞİL; aynı tam TL (13485) içindeki kuruş farkı tek başına
+        # birleştirilir. Tam TL'si de düşen fiyat yeni fırsat olmayı sürdürür.
+        for a, b in [(13485, 13400), (10, 9.1), (200, 199), (13485.92, 13484.5)]:
             self.assertTrue(bot.better_or_different_offer((a, ''), (b, '')))
         self.assertTrue(bot.better_or_different_offer((13485, ''), (13485, 'prime')))
 
@@ -160,8 +163,10 @@ class DedupIdentityRegressions(unittest.TestCase):
             (13486, 13485, False),  # tam 1 TL: sınır dahil
             (13486.01, 13485, True),
             (1000.09, 1000, False),  # %0,01 daha dar üst sınır
-            (1000.11, 1000, True),
-            (1000.09, 1000.01, True),  # iki kesirli fiyat: eski 0,01 TL
+            # P1: aynı tam TL içindeki kuruş farkı artık yeni fırsat değil
+            # (önceki beklenti: True). Bkz. test_kurus_only_difference_*.
+            (1000.11, 1000, False),
+            (1000.09, 1000.01, False),
             (200, 199, True),
         ]
         for old, new, different in cases:
@@ -173,6 +178,78 @@ class DedupIdentityRegressions(unittest.TestCase):
         self.assertFalse(pf.price_matches(text, 13485)[0])
         self.assertFalse(bot.dm_should_send({'dm_price_max': ['13485']}, text))
         self.assertTrue(bot.dm_should_send({'dm_price_max': ['13485,92']}, text))
+
+    def test_kurus_only_difference_merges_in_both_orders(self):
+        # P1: aynı tam TL, farklı kuruş — geliş sırasından bağımsız birleşir.
+        # 10.000 TL altı özellikle seçildi: eski %0,01 toleransı orada 1 TL'nin
+        # altında kaldığı için eski davranış sıraya bağlı olarak yeni bildirim
+        # üretiyordu (örn. 1299.90 -> 1299).
+        pairs = [
+            (1299.90, 1299), (1299.40, 1299.90),
+            (0.90, 0), (0.90, 0.40), (12.00, 12.99), (56.90, 56),
+        ]
+        for a, b in pairs:
+            with self.subTest(old=a, new=b):
+                self.assertFalse(bot.better_or_different_offer((a, ''), (b, '')))
+                self.assertFalse(bot.better_or_different_offer((b, ''), (a, '')))
+
+    def test_whole_tl_boundary_unknown_and_condition_rules(self):
+        # Kesme sınırı: 12,00 -> 11,99 tam kısmı değiştirir ama 0,01 TL'lik
+        # gerçek fark mevcut tolerans içinde kalır; 56 -> 49 gerçek düşüştür.
+        self.assertFalse(bot.better_or_different_offer((12.00, ''), (11.99, '')))
+        self.assertTrue(bot.better_or_different_offer((56, ''), (49, '')))
+        self.assertFalse(bot.better_or_different_offer((49, ''), (56, '')))
+        # Bilinmeyen fiyat: yeni bilinmiyorsa birleşir, eski bilinmiyor ve
+        # yeni biliniyorsa yeni fırsattır; None asla 0 sayılmaz.
+        self.assertFalse(bot.better_or_different_offer((1299.90, ''), (None, '')))
+        self.assertTrue(bot.better_or_different_offer((None, ''), (1299.90, '')))
+        self.assertFalse(bot.better_or_different_offer((None, ''), (None, '')))
+        self.assertIsNone(bot._dedup_whole_tl(None))
+        self.assertIsNone(bot._dedup_whole_tl(float('nan')))
+        self.assertIsNone(bot._dedup_whole_tl(-5))
+        self.assertEqual(bot._dedup_whole_tl(0.90), 0)
+        self.assertEqual(bot._dedup_whole_tl(1299.90), 1299)
+        # Koşul değişimi kuruş normalleştirmesini aşar: yine yeni fırsattır.
+        self.assertTrue(bot.better_or_different_offer((1299.90, ''), (1299, 'prime')))
+
+    def test_real_price_survives_kurus_comparison_policy(self):
+        # Karşılaştırma değeri yalnızca dedup katmanında yaşar: çıkarım,
+        # format ve üst satır gösterimi gerçek kuruşu aynen korur.
+        text = self.TITLE + '\nFiyat: 1.299,90 TL'
+        self.assertEqual(pf.extract_price(text).value, 1299.90)
+        self.assertEqual(pf.format_price(1299.90), '1.299,90 TL')
+        self.assertEqual(bot.header_price_text(1299.90), '1.299,90₺')
+        event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
+        self.assertEqual(bot.offer_terms(event)[0], 1299.90)
+
+    def test_product_link_keys_normalize_and_exclude_non_product_links(self):
+        def event(text, url=None):
+            entities = [SimpleNamespace(url=url, offset=0, length=3)] if url else []
+            return SimpleNamespace(message=text, raw_text=text, entities=entities,
+                                   media=None, reply_markup=None)
+
+        keys = bot.product_link_keys(event(
+            "Çay https://ornek.example/urun-a/?utm_source=kanal#bolum "
+            "https://t.me/firsatz/9 https://www.akakce.com/ara/?q=cay"))
+        self.assertEqual(keys, frozenset({"ornek.example/urun-a"}))
+        # Gizli bağlantı da kimliğe girer; takip parametresi farkı çelişki değildir.
+        hidden = bot.product_link_keys(event("Çay", url="https://ornek.example/urun-a/?utm_medium=paylasim"))
+        self.assertEqual(hidden, keys)
+        self.assertTrue(bot._link_conflict(keys, frozenset({"baska.example/urun"})))
+        self.assertFalse(bot._link_conflict(keys, hidden))
+        self.assertFalse(bot._link_conflict(frozenset(), keys))
+        # Anlamlı parametreler (varyant/kupon/sku taşıyabilir) atılmaz:
+        # yalnızca bunlarla ayrışan bağlantılar aynı ürün sayılmaz.
+        for left, right in [
+            ("https://ornek.example/urun?sku=1", "https://ornek.example/urun?sku=2"),
+            ("https://ornek.example/urun?renk=mavi", "https://ornek.example/urun?renk=kirmizi"),
+            ("https://ornek.example/urun?kampanya=CAY10", "https://ornek.example/urun"),
+            ("https://ornek.example/urun?ref=a", "https://ornek.example/urun?ref=b"),
+        ]:
+            with self.subTest(left=left, right=right):
+                self.assertTrue(bot._link_conflict(
+                    bot.product_link_keys(event("Çay", url=left)),
+                    bot.product_link_keys(event("Çay", url=right))))
 
     def test_unknown_status_is_absence_of_evidence_not_new(self):
         base = self.TITLE + '\nFiyat: 13.485 TL'
