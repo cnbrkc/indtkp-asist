@@ -98,5 +98,8 @@
     "mini led",
     "miniled",
     "magnezyum"
+  ],
+  "dm_price_max": [
+    "10"
   ]
 }
