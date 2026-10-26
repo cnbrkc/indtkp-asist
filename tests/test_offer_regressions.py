@@ -213,12 +213,13 @@ class DedupIdentityRegressions(unittest.TestCase):
         self.assertTrue(bot.better_or_different_offer((1299.90, ''), (1299, 'prime')))
 
     def test_real_price_survives_kurus_comparison_policy(self):
-        # Karşılaştırma değeri yalnızca dedup katmanında yaşar: çıkarım,
-        # format ve üst satır gösterimi gerçek kuruşu aynen korur.
+        # Karşılaştırma değeri yalnızca dedup katmanında yaşar: çıkarım ve
+        # format gerçek kuruşu aynen korur. Üst satır GÖSTERİMİ kuruşu atar
+        # (kullanıcı isteği) ama bu, gerçek değeri değiştirmez.
         text = self.TITLE + '\nFiyat: 1.299,90 TL'
         self.assertEqual(pf.extract_price(text).value, 1299.90)
         self.assertEqual(pf.format_price(1299.90), '1.299,90 TL')
-        self.assertEqual(bot.header_price_text(1299.90), '1.299,90₺')
+        self.assertEqual(bot.header_price_text(1299.90), '₺1.299')
         event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
         self.assertEqual(bot.offer_terms(event)[0], 1299.90)
 

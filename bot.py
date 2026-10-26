@@ -1702,7 +1702,7 @@ def is_price_line(line: str | None) -> bool:
     Yalnızca geriye dönük tanıma için tutulur: eski bildirimlerdeki
     ``💰Fiyat: …`` satırları ve rozet konumları bu sayede okunabilir kalır.
     Yeni bildirimlerde ayrı bir fiyat satırı yoktur; fiyat, ürün adıyla birlikte
-    üst satıra emojisiz yazılır (``56₺ - Ürün adı``; bkz. ``build_header_line``)
+    üst satıra emojisiz yazılır (``₺56 — Ürün adı``; bkz. ``build_header_line``)
     ve mesajın gövdesi olduğu gibi iletilir.
     """
     content = _LEADING_NOISE_RE.sub("", (line or "").strip())
@@ -1764,7 +1764,7 @@ def _price_search_url(service: str, query: str) -> str:
     """Ürün arama adresini kur (query başlık ayıklayıcısından gelir).
 
     ``header_search_title`` çağrısının tek nedeni bildirim ÜST SATIRININ
-    (``56₺ - Ad``, ``❓ - Ad``) arama sorgusuna karışmasını imkânsız
+    (``₺56 — Ad``, ``❓ — Ad``) arama sorgusuna karışmasını imkânsız
     kılmaktır: tutar, para birimi, ayraç ve ``❓`` burada her koşulda düşer,
     servise salt ürün adı gider.
     """
@@ -1848,7 +1848,7 @@ def _entities_within(entities: Sequence[Any] | None, limit: int) -> list[Any]:
     return kept
 
 
-# Yeni bildirim üst bloğu (TEK ÜST SATIR: "56₺ - ürün adı" ya da "❓ - ürün adı";
+# Yeni bildirim üst bloğu (TEK ÜST SATIR: "₺56 — ürün adı" ya da "❓ — ürün adı";
 # alıntılanmış orijinal mesajın üstünde).
 # config.json → smart_header; anahtar yoksa KAPALI (eski düzen aynen sürer).
 SMART_HEADER = False
@@ -1887,17 +1887,20 @@ MEDIA_DOWNLOAD_CACHE: "contextvars.ContextVar[dict | None]" = contextvars.Contex
     "media_download_cache", default=None)
 # --- Bildirim üst satırı (kullanıcı isteği: fiyat EN BAŞTA, emojisiz) --------
 # Tasarım (tek satır, kalın):
-#     56₺ - Penti Kız Çocuk Basic Colorful 4lü Patik Çorap
+#     ₺56 — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap
 # Fiyat güvenle bulunamayınca:
-#     ❓ - Penti Kız Çocuk Basic Colorful 4lü Patik Çorap
+#     ❓ — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap
 # Eskiden 1. satır ürün başlığı, 2. satır fiyat (boş satırla ayrı) idi; şimdi
 # fiyat ile ad AYNI satırda ve fiyat solda, böylece kesilen telefon
 # bildiriminde fiyat + adın ilk kelimeleri birlikte okunur.
 # Üst satır YALNIZCA görünen metindir: arama sorguları (Google Alışveriş,
 # Akakçe, Cimri) ve tekrar (dedup) anahtarı daima fiyatsız addan kurulur
 # (bkz. ``is_header_price``, ``split_header_line``, ``header_search_title``).
-HEADER_SEPARATOR = " - "
-# Fiyat yazımı: tutar + tek para birimi işareti, boşluksuz (``56₺``).
+HEADER_SEPARATOR = " — "
+# Önceki sürümün üst satır ayracı (``56₺ - Ad``); yalnızca geriye dönük
+# okumada (geçmiş taraması/rozet) kabul edilir, yeni bildirimde üretilmez.
+PREV_HEADER_SEPARATOR = " - "
+# Fiyat yazımı: para birimi işareti + kuruşsuz tutar, boşluksuz (``₺56``).
 # Gövdedeki orijinal metne dokunulmaz; bu yazım yalnızca üst satırdadır.
 PRICE_CURRENCY_MARK = "₺"
 # Fiyat bulunamadığında uzun uyarı yazmak yerine yalnızca bu işaret konur
@@ -1933,17 +1936,19 @@ def is_header_price(text: str) -> bool:
 
 
 def header_price_text(value: float | None) -> str:
-    """Üst satır fiyat yazısı: ``56₺``, ``12.299₺``, ``12.299,90₺``; yoksa ``❓``.
+    """Üst satır fiyat yazısı: ``₺56``, ``₺12.299``; yoksa ``❓``.
 
-    Ayrıştırıcıya/`format_price`a dokunulmaz (gövde, DM ve raporlar "TL" yazımıyla
-    devam eder); yalnızca görüntüleme için sondaki " TL" işaretle değiştirilir.
+    Yalnızca GÖSTERİM biçimlendirilir (kullanıcı isteği): kuruş, yuvarlanmadan
+    atılır (``199,90`` → ``₺199``; ``12.299,99`` → ``₺12.299``) ve tutar binlik
+    ayraçlarıyla yazılır. Gerçek fiyat değerine dokunulmaz: ayrıştırıcı,
+    `format_price` (gövde/DM/raporlar "TL" yazımıyla devam eder), fiyat düşüşü
+    ve dedup karşılaştırmaları kuruşlu gerçek değerle çalışmayı sürdürür.
     """
-    if value is None:
+    if value is None or not math.isfinite(value):
         return PRICE_MISSING_MARK
-    text = price_filter.format_price(value)
-    if text.endswith(" TL"):
-        text = text[: -len(" TL")]
-    return f"{text}{PRICE_CURRENCY_MARK}" or PRICE_MISSING_MARK
+    whole = math.trunc(value)  # kuruşu at; asla yuvarlama
+    text = f"{whole:,}".replace(",", ".")
+    return f"{PRICE_CURRENCY_MARK}{text}"
 
 
 def build_header_line(price_text: str, title: str) -> str:
@@ -2020,7 +2025,10 @@ def split_header_line(line: str | None) -> tuple[str, str]:
         return "", ""
     legacy = text.startswith(PRICE_LINE_PREFIX)
     body = text[len(PRICE_LINE_PREFIX):].strip() if legacy else text
-    separators = (HEADER_SEPARATOR, LEGACY_HEADER_SEPARATOR) if legacy else (HEADER_SEPARATOR,)
+    # Güncel ayraç + önceki sürümlerin ayraçları: geçmişteki bildirimler
+    # (``56₺ - Ad``, ``💰 12.299 TL — Ad``) de doğru bölünmeye devam eder.
+    separators = tuple(dict.fromkeys(
+        (HEADER_SEPARATOR, LEGACY_HEADER_SEPARATOR, PREV_HEADER_SEPARATOR)))
     for separator in separators:
         head, found, tail = body.partition(separator)
         head = head.strip()
@@ -2034,7 +2042,7 @@ def header_search_title(text: str | None) -> str:
 
     Arama sorguları normalde kaynak mesajdan (``_search_query``) ayıklanır ve
     fiyat zaten içeride değildir. Bu fonksiyon, üst satırın bir yere yanlışlıkla
-    olduğu gibi taşınmasına karşı tek noktadaki sigortadır: ``56₺ - Ad`` gelir,
+    olduğu gibi taşınmasına karşı tek noktadaki sigortadır: ``₺56 — Ad`` gelir,
     ``Ad`` çıkar; tutar, para birimi, ayraç ve ``❓`` arama kutusuna girmez.
     Ayraçsız salt fiyat/``❓`` satırı aranacak bir ad taşımaz, boş döner.
     """
@@ -2153,9 +2161,9 @@ def compose_message(
     """Basit bildirim düzenini kur (kullanıcı isteği):
 
     1. en üstte TEK SATIR üst başlık (kalın) — ``smart_header`` açıksa önce
-       fiyat, sonra ``-``, sonra ürün adı (``56₺ - Penti Kız Çocuk ...``);
+       fiyat, sonra ``—``, sonra ürün adı (``₺56 — Penti Kız Çocuk ...``);
        fiyat güvenle bulunamadığında fiyat yerine ``❓`` yazılır
-       (``❓ - Penti Kız Çocuk ...``). Kapalıysa yalnız ürün adı gelir.
+       (``❓ — Penti Kız Çocuk ...``). Kapalıysa yalnız ürün adı gelir.
        Fiyatın başta olması, bildirimin kesilen ön izlemesinde fiyat ile ürün
        adının ilk kelimelerinin birlikte görülmesini sağlar,
     2. altında kaynak mesaj **olduğu gibi** (yalnızca güvenlik temizliği
@@ -2228,7 +2236,7 @@ def compose_message(
 
     # Blok sırası (kullanıcı isteği): ÜST SATIR (fiyat - ürün adı) → mesaj olduğu
     # gibi → taşınamayan gizli linkler → "Mesajı Gör" → en altta kaynak grup adı.
-    # Fiyat, ürün adıyla AYNI satırda ve en baştadır (``56₺ - Ad``); böylece
+    # Fiyat, ürün adıyla AYNI satırda ve en baştadır (``₺56 — Ad``); böylece
     # kesilen bildirim ön izlemesinde fiyat ile adın ilk kelimeleri birlikte
     # okunur. Tekrarlı paylaşımda kaynak adı satırı çoklu paylaşım notuyla
     # değiştirilir.
@@ -5634,7 +5642,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 )
                 layout_ok = bool(dry_run["text"] or media or links)
                 if dry_run["header"]:
-                    # Basit düzen: üst satır ("56₺ - ürün adı") en üstte,
+                    # Basit düzen: üst satır ("₺56 — ürün adı") en üstte,
                     # mesajın aslı hemen altında.
                     layout_ok = (
                         layout_ok
@@ -6452,7 +6460,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         """Bildirim botuyla fırsatın kopyasını at; (gönderildi_mi, bilgi) döner.
 
         Tasarım (basit düzen): en üstte ÜST SATIR — ``smart_header`` açıksa
-        ``56₺ - ürün adı`` (fiyat en başta; fiyat yoksa ``❓ - ürün adı``),
+        ``₺56 — ürün adı`` (fiyat en başta; fiyat yoksa ``❓ — ürün adı``),
         kapalıysa ürün başlığı →
         altında mesaj OLDUĞU GİBİ → gizli link ekleri (varsa) →
         "🔗 Mesajı Gör: <t.me linki>" → en altta kaynak grup adı
