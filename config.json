@@ -54,7 +54,10 @@
     "star wars",
     "ödül mama",
     "prochoice",
-    "gimcat"
+    "gimcat",
+    "yaş mama",
+    "kedi mama",
+    "köpek mama"
   ],
   "match_mode": "any",
   "include_enabled": false,
