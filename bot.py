@@ -2980,7 +2980,41 @@ def offer_terms(obj: Any) -> tuple[float | None, str]:
     if re.search(r"ikinci el|kullanılmış|kullanilmis|yenilenmiş|yenilenmis", status):
         conditions.append("durum:yenilenmiş" if re.search(r"yenilenmiş|yenilenmis", status)
                           else "durum:ikinci el yeni gibi" if "yeni gibi" in status else "durum:ikinci el")
+    conditions.extend(_offer_marker_terms(status_text))
     return value, "|".join(sorted(set(" ".join(c.split()) for c in conditions)))
+
+
+# Teklif koşulu işaretleri (depo/warehouse, açık kutu, kutusuz, outlet, 2. el) ve
+# kargo. Yalnızca kısa satırlarda aranır (en fazla _OFFER_SHORT_LINE_WORDS kelime);
+# URL'ler ve uzun açıklama cümleleri taranmaz; satıcı satırları (``Satıcı: ...``)
+# kondisyon sayılmaz. Bir mesajda görünen işaret teklifi farklı kılar: otomatik
+# birleştirme yok (güvenli yön: ayrı bildirim).
+_OFFER_URL_RE = re.compile(r"https?://\S+|www\.\S+|\S+\.(?:com|net|org)(?:\.tr)?/\S*")
+_OFFER_SHORT_LINE_WORDS = 6
+_OFFER_SELLER_LINE_RE = re.compile(r"^[^\w]*(?:satıcı|satici|mağaza|magaza)\b")
+_OFFER_CONDITION_RULES = (
+    ("depo", re.compile(r"\bdepo\b|\bwarehouse\b")),
+    ("açık kutu", re.compile(r"açık kutu|acik kutu|open box")),
+    ("kutusuz", re.compile(r"\bkutusuz\b")),
+    ("outlet", re.compile(r"\boutlet\b")),
+    ("ikinci el", re.compile(r"(?<![\d.,])2\s*\.?\s*el\b")),
+)
+
+
+def _offer_marker_terms(text: str) -> list[str]:
+    markers: list[str] = []
+    for raw_line in _OFFER_URL_RE.sub(" ", normalize(text)).splitlines():
+        line = " ".join(raw_line.split())
+        if not line or len(re.findall(r"\w+", line)) > _OFFER_SHORT_LINE_WORDS:
+            continue
+        if _OFFER_SELLER_LINE_RE.match(line):
+            continue
+        markers.extend(f"durum:{name}" for name, pattern in _OFFER_CONDITION_RULES
+                       if pattern.search(line))
+        if re.search(r"\bkargo\b", line):
+            free = re.search(r"ücretsiz|ucretsiz|bedava", line)
+            markers.append("kargo:ücretsiz" if free else "kargo:" + line)
+    return markers
 
 
 def dedup_offer_key(title: str, offer: tuple[float | None, str]) -> str | None:
@@ -2990,13 +3024,45 @@ def dedup_offer_key(title: str, offer: tuple[float | None, str]) -> str | None:
     return key
 
 
-# Dedup bağlantı kimliğinden çıkarılan alanlar: kaynak (t.me) linkleri ve
-# bildirim botunun ürettiği arama düğmeleri (Google/Akakçe/Cimri) ürün
-# bağlantısı değildir. Yalnızca evrensel takip parametreleri (utm_*) kimliği
-# değiştirmez; sku/varyant/kupon taşıyabilecek diğer tüm parametreler
-# korunur — farklı çıkarsa çelişki sayılır (fail-open).
+# Dedup bağlantı kimliğinden çıkarılan alanlar: kaynak (t.me) linkleri, kanalın
+# WhatsApp tanıtım linkleri ve bildirim botunun ürettiği arama düğmeleri
+# (Google/Akakçe/Cimri) ürün bağlantısı değildir; kanala özgüdürler. Genel kural:
+# yalnızca utm_* takip parametresi kimliği değiştirmez, diğer parametreler
+# kimliktedir (fail-open: farklı çıkarsa çelişki sayılır, bastırılmaz).
 _LINK_IDENTITY_EXCLUDED_HOSTS = {"t.me", "telegram.me", "wa.me", "www.wa.me"}
-_LINK_SEARCH_HOSTS = ("google.", "akakce.com", "cimri.com")
+# google.com, www.google.com.tr, akakce.com, cimri.com (alt alan adlarıyla).
+_LINK_SEARCH_DOMAIN_RE = re.compile(
+    r"(?:^|\.)(?:google\.(?:(?:com|co)(?:\.[a-z]{2})?|[a-z]{2})|akakce\.com|cimri\.com)$"
+)
+
+# Amazon ürün kimliği: yalnızca amazon.com.tr, ürün ASIN'i (büyük harf, 10 karakter)
+# /dp/ veya /gp/product/ yolunda (resmî Associates biçimi: dp/ASIN/ref=nosim?tag=...).
+# Yalnızca ürün bilgisi taşımadığı doğrulanmış parametreler kimlikten çıkarılır:
+# tag (ilişkilendirme kimliği), ref/ref_ (yönlendirme izi), linkCode/linkId/ascsubtag
+# (ilişkilendirme bağlantı kimlikleri). Emin olunmayan her parametre kimlikte kalır:
+# qid, sr, keywords, sprefix, crid, pd_rd_*, pf_rd_*, camp, creative, creativeASIN,
+# th, psc, smid, ... (P4 korunur: yanlış birleşmek yerine ayrı bildirim).
+_AMAZON_PRODUCT_RE = re.compile(r"/(?:dp|gp/product)/([A-Z0-9]{10})(?=[/?#]|$)")
+_AMAZON_TRACKING_PARAMS = frozenset({"tag", "ref", "ref_", "linkcode", "linkid", "ascsubtag"})
+_AMAZON_TRACKING_PREFIXES = ("utm_",)
+
+
+def _amazon_product_identity(host: str, path: str, query: Sequence[tuple[str, str]]) -> str | None:
+    """amazon.com.tr ürün bağlantısının kimliği; uygulanmazsa ``None`` (genel kimlik)."""
+    if re.sub(r"^(?:www|m)\.", "", host) != "amazon.com.tr":
+        return None
+    match = _AMAZON_PRODUCT_RE.search(path or "")
+    if not match:
+        return None
+    kept = sorted(
+        (name, value) for name, value in query
+        if not name.lower().startswith(_AMAZON_TRACKING_PREFIXES)
+        and name.lower() not in _AMAZON_TRACKING_PARAMS
+    )
+    identity = f"amazon.com.tr#{match.group(1)}"
+    if kept:
+        identity += "?" + urllib.parse.urlencode(kept)
+    return identity
 
 
 def product_link_keys(obj: Any) -> frozenset[str]:
@@ -3017,10 +3083,15 @@ def product_link_keys(obj: Any) -> frozenset[str]:
         host = (parsed.hostname or "").lower()
         if not host or host in _LINK_IDENTITY_EXCLUDED_HOSTS:
             continue
-        if any(host.startswith(prefix) or host.endswith("." + prefix.rstrip("."))
-               for prefix in _LINK_SEARCH_HOSTS):
+        if is_whatsapp_url(item["url"]):
+            continue  # kanal tanıtımı: kaynak kanala özgü, ürün değil
+        if _LINK_SEARCH_DOMAIN_RE.search(host.rstrip(".")):
             continue
         query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        store_identity = _amazon_product_identity(host.rstrip("."), parsed.path or "", query)
+        if store_identity:
+            keys.add(store_identity)
+            continue
         kept = sorted(
             (name, value) for name, value in query
             if not name.lower().startswith("utm_")
@@ -4760,13 +4831,27 @@ def query_price(text: str) -> str:
     kupon/çekiliş tutarı ürün fiyatı sayılmaz. Fiyat satırı yoksa mesajdaki
     fiyatların en düşüğü, hiç fiyat yoksa ``fiyat yok`` döner.
     """
+    if price_filter.has_campaign_marker(text):
+        # Kampanya izi varsa analiz, bildirimdeki fiyatla aynı kararı kullanır: kampanya
+        # tutarı ya da belirsiz çoklu tutar analizde farklı bir fiyat olarak görünmez.
+        info = price_filter.extract_price(text)
+        if info.value is not None:
+            return info.shown
+        if info.reason.startswith("kampanya"):
+            return "fiyat yok"
     listed: list[tuple[float, str]] = []
     plain: list[tuple[float, str]] = []
     fallback: list[str] = []
-    for line in (text or "").splitlines():
+    lines = (text or "").splitlines()
+    for index, line in enumerate(lines):
+        prev_line = lines[index - 1] if index else None
+        if price_filter.ambiguous_campaign_line(line):
+            continue  # aynı satırda kampanya + etiketsiz tutar: hangisi ürün fiyatı belirsiz
         skipped = bool(_ANALYSIS_PRICE_LINE_SKIP_RE.search(line))
         on_price_line = _price_line_extra_words(line) <= ANALYSIS_PRICE_LINE_MAX_WORDS
         for match in _SEARCH_PRICE_RE.finditer(line):
+            if price_filter.is_campaign_extra_amount(line, match.start(), match.end(), prev_line):
+                continue  # "2. ürün 1 TL" gibi kampanya koşulu: ürün fiyatı değil
             shown = " ".join(match.group().split())
             value = parse_price_value(match.group())
             if value is None or skipped:
