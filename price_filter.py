@@ -182,6 +182,20 @@ _COND_BEFORE_RE = re.compile(
     r"\d+\s*al\s*\d+\s*öde)\s*$"
 )                                                           # "2 adet alımda 48 TL", "2. ürün 1 TL"
 _FIRST_PARTY_RE = re.compile(r"\b1p\b")                    # Amazon (1P) son fiyatı → eski/başka fiyat
+# Kampanya koşulu tutarı: "2. ürün 1 TL", "ikinci ürüne 1₺", "2. ürün: 1 TL",
+# "2 al 2. 1₺", "2 alana 1 TL", "1 TL ek ürün". Bu tutar ürünün satış fiyatı
+# değildir: ikinci/ek ürünün ya da bir alım koşulunun fiyatıdır. Yalnızca aynı
+# satırdaki bağlamdan tanınır; "2 al 100 TL" gibi toplu fiyatlar etkilenmez.
+_CAMPAIGN_BEFORE_RE = re.compile(
+    r"(?:\b2\s*\.\s*|\bikinci\s+|\bek\s+)(?:ürün|urun)\w*"
+    r"(?:\s+(?:fiyat\w*))?\s*[:=\-–]?\s*$"
+    r"|\b\d+\s*al\s*\d+\s*\.\s*$"
+    r"|\b\d+\s*al(?:ana|ınca|ırsan|ırsanız|arak)\s*[,:]?\s*$"
+)
+# "Kampanya: 1 TL ek ürün": yalnızca kampanya etiketli satırda ve "fiyat" kelimesi
+# olmadığında tutarın sonrasına bakılır ("Kampanya fiyatı: 49,90 TL ek ürün" gerçek fiyattır).
+_CAMPAIGN_EXTRA_AFTER_RE = re.compile(r"^\s*(?:ek|ikinci)\s+(?:ürün|urun)\b")
+_CAMPAIGN_LABEL_RE = re.compile(r"\bkampanya\w*")
 _PRICE_EMOJI_RE = re.compile(r"[💰🏷💵💸🔥✅💲🎯🔻💳]")
 _HISTORY_HINT_RE = re.compile(r"\bgün|\bay\b|geçmiş|gecmis|ortalama|haftan|ayın|ayin|yılın|yilin|son \d+")
 
@@ -226,6 +240,36 @@ def _stem_in(token: str, stems: Sequence[str]) -> bool:
     return False
 
 
+# Çok satırlı kampanya: "2. ürün:" / "2 al 2." / "Ek ürün" satırının HEMEN ARDINDAKİ
+# satır yalnızca bir tutarsa ("1 TL", "1₺") o tutar kampanya koşuludur. Emojili ya da
+# başka kelime içeren satırlar (🏷 49,90 TL) bu kuralın dışındadır: gerçek fiyat kalır.
+_BARE_AMOUNT_LINE_RE = re.compile(rf"(?:{_CUR}\s*)?{_NUM}\s*(?:{_CUR})?", re.IGNORECASE)
+
+
+def _campaign_line_continues(prev_line: str | None, line: str) -> bool:
+    """Önceki satır kampanya koşulunda bitiyor ve bu satır yalnız tutar mı?"""
+    return bool(prev_line and _CAMPAIGN_BEFORE_RE.search(norm(prev_line))
+                and _BARE_AMOUNT_LINE_RE.fullmatch(line.strip()))
+
+
+def is_campaign_extra_amount(line: str, start: int, end: int, prev_line: str | None = None) -> bool:
+    """``line[start:end]`` tutarı kampanya koşulu mu (ürün fiyatı değil)?
+
+    Tutarın ÖNCESİNDEKİ aynı satır bağlamına bakar: "2. ürün", "ikinci ürün",
+    "ek ürün", "2 al 2.", "2 alana". Tek başına tutar olan satır için (``prev_line``)
+    bir önceki satır da kampanya koşulunda bitiyorsa tutar kampanyadır. Tutarın SONRASINA bakılmaz: "🏷
+    49,90 TL 2. ürün 1 TL" satırında gerçek fiyat 49,90 TL'dir ve kampanya
+    ifadesi ondan sonra gelir. ``'ye al`` ("1 TL'ye al") tek başına kampanya değildir.
+    """
+    if _campaign_line_continues(prev_line, line):
+        return True
+    before = norm(line[:start])
+    if _CAMPAIGN_BEFORE_RE.search(before):
+        return True
+    return bool(_CAMPAIGN_EXTRA_AFTER_RE.match(norm(line[end:]))
+                and _CAMPAIGN_LABEL_RE.search(before) and "fiyat" not in before)
+
+
 def _classify(line: str, start: int, end: int, abs_start: int, strike: Sequence[tuple[int, int]],
               suffix: str = "") -> tuple[str, bool]:
     """Tutarın türünü belirle. ``end`` para biriminin bittiği yerdir; ``suffix`` 'ye/'den gibi ektir."""
@@ -236,6 +280,10 @@ def _classify(line: str, start: int, end: int, abs_start: int, strike: Sequence[
 
     if any(a <= abs_start < b for a, b in strike):
         return "old", False
+    # Kampanya koşulu ('ye al / kampanyası gibi ekler ürün fiyatı gibi görünse de)
+    # ürün fiyatı değildir; diğer sınıflandırmalardan önce ayrılır.
+    if is_campaign_extra_amount(line, start, end):
+        return "campaign", False
 
     if _THRESHOLD_DATIVE_RE.match(norm(after_clean)):
         return "other", False
@@ -286,7 +334,9 @@ def _classify(line: str, start: int, end: int, abs_start: int, strike: Sequence[
 def find_candidates(text: str, strike: Sequence[tuple[int, int]] = ()) -> list[Candidate]:
     candidates: list[Candidate] = []
     offset = 0
-    for index, line in enumerate((text or "").split("\n")):
+    lines = (text or "").split("\n")
+    for index, line in enumerate(lines):
+        prev_line = lines[index - 1] if index else None
         seen_spans: list[tuple[int, int]] = []
         for match in PRICE_RE.finditer(line):
             raw = match.group("a1") or match.group("a2")
@@ -298,6 +348,8 @@ def find_candidates(text: str, strike: Sequence[tuple[int, int]] = ()) -> list[C
             core_end = match.end("cur") if match.group("cur") else match.end("a1")
             cls, strong = _classify(line, match.start(), core_end, offset + match.start(), strike,
                                     suffix=match.group("suf") or "")
+            if cls in {"price", "cond"} and _campaign_line_continues(prev_line, line):
+                cls, strong = "campaign", False   # çok satırlı kampanya: "2. ürün" / "1 TL"
             candidates.append(Candidate(value, match.group().strip(), cls, strong, index, match.start(), core_end))
             seen_spans.append(match.span())
         for regex in (LABELED_RE, EMOJI_LINE_RE):
@@ -327,7 +379,7 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
         line = lines[c.line]
         before, after = norm(line[:c.start]), norm(line[c.end:])
         c.role = {"price": "normal", "cond": "conditional", "old": "old",
-                  "history": "history", "other": "unrelated"}[c.cls]
+                  "history": "history", "other": "unrelated", "campaign": "campaign"}[c.cls]
         # Üstü çizili ve eski/geçmiş tutarlar asla yeniden terfi ettirilmez.
         if c.cls in {"old", "history"}:
             c.reason = c.role
@@ -371,9 +423,72 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
         c.reason = c.role
 
 
+def ambiguous_campaign_line(line: str) -> bool:
+    """Aynı satırda kampanya tutarı ile GÜÇLÜ işaretsiz (etiketsiz) başka tutar varsa ``True``.
+
+    "1 TL 2. ürün 49,90 TL" ve "49,90 TL 2. ürün 1 TL" yapısal olarak aynıdır; hangisinin
+    ürün fiyatı olduğu metinden kesin çıkmaz. Güçlü işaretli tutar ("🏷 49,90 TL",
+    "Fiyat: …") güvenilir kabul edilir ve belirsizlik sayılmaz.
+    """
+    cands = find_candidates(line)
+    campaigns = [c for c in cands if c.cls == "campaign"]
+    if not campaigns:
+        return False
+    if any(c.role in {"multi_unit", "unit"} for c in cands):
+        # "2 adet alımda 256 TL" gibi açık çoklu alım/birim bağlamı tutarı teklifi zaten
+        # tanımlar; mevcut çözümleme bu satırda belirsizlik üretmez.
+        return False
+    plain = [c for c in cands if c.cls == "price"]
+    # Güçlü işaret (🏷, "Fiyat:") yalnızca kampanya tutarından ÖNCE gelen tutara aittir;
+    # sonradan gelen tutarın işareti kampanyaya ait olabilir.
+    trusted = [c for c in plain if c.strong and not any(k.start < c.start for k in campaigns)]
+    return bool(plain) and not trusted
+
+
+_EXPLICIT_PRICE_ROLES = {"multi_unit", "unit", "discounted", "product_coupon", "basket_coupon"}
+
+
+def campaign_plain_ambiguous(cands: Sequence[Candidate]) -> bool:
+    """Mesajda kampanya tutarı + etiketsiz ürün tutarı var, etiketli fiyat ve açık bağlam yok.
+
+    Etiketli (güçlü işaretli) fiyat varsa ``🏷 49,90 TL`` gibi gerçek fiyat korunur.
+    Çoklu alım / nihai fiyat bağlamı (``2 adet alımda 256 TL``) varsa mevcut çözümleme
+    geçerlidir. Kampanya tutarı yoksa bu kural hiç devreye girmez.
+    """
+    if not any(c.cls == "campaign" for c in cands):
+        return False
+    if any(c.role in _EXPLICIT_PRICE_ROLES for c in cands):
+        return False
+    if any(c.cls == "price" and c.strong for c in cands):
+        return False
+    return any(c.cls == "price" for c in cands)
+
+
+def has_campaign_marker(text: str) -> bool:
+    """Mesajda kampanya koşulu izi var mı (``2. ürün:`` satırı ya da kampanya tutarı)?"""
+    if any(_CAMPAIGN_BEFORE_RE.search(norm(line)) for line in (text or "").split("\n")):
+        return True
+    return any(c.cls == "campaign" for c in find_candidates(text))
+
+
 def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInfo:
     """Mesajdaki ürün fiyatını seç. ``confidence`` 'low' ise filtre kullanmaz."""
+    lines = (text or "").split("\n")
+    unsure = {index for index, line in enumerate(lines) if ambiguous_campaign_line(line)}
+    if unsure:
+        # Belirsiz satırın tutarları ürün fiyatı sayılmaz; kalan satırlarda aranır.
+        # Satırlar aynı uzunlukta boşlukla maskelenir: üstü çizili (strike) konumlar kaymaz.
+        masked = "\n".join(" " * len(line) if index in unsure else line
+                           for index, line in enumerate(lines))
+        info = extract_price(masked, strike)
+        if info.value is None:
+            return PriceInfo(None, "", "none", "kampanya ile aynı satırda etiketsiz tutar: belirsiz")
+        return info
     cands = find_candidates(text, strike)
+    if campaign_plain_ambiguous(cands):
+        # Çok satırlı mesaj: kampanya tutarı + etiketsiz tutar, etiketli fiyat yok.
+        # Hangisinin ürün fiyatı olduğu güvenilir değil: fiyat bilinmiyor (❓).
+        return PriceInfo(None, "", "none", "kampanya tutarı ile etiketsiz tutar: belirsiz")
     finals = [c for c in cands if c.role in {"discounted", "product_coupon", "basket_coupon"}]
     normal = [c for c in cands if c.cls == "price" and c not in finals]
     units = [c for c in cands if c.role in {"multi_unit", "unit"}]
@@ -403,6 +518,10 @@ def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInf
     if fallback:
         best = min(fallback, key=lambda c: (c.value, c.line, c.start))
         return PriceInfo(best.value, best.shown, "low", "yalnız eski/geçmiş fiyat")
+    if any(c.cls == "campaign" for c in cands):
+        # Kampanya koşulu tutarı (ör. "2. ürün 1 TL") ürün fiyatı değildir: değeri
+        # verilmez; belirsiz fiyat davranışı (❓) korunur.
+        return PriceInfo(None, "", "none", "yalnız kampanya koşulu tutarı")
     return PriceInfo(None, "", "none", "yalnız kupon/indirim/taksit tutarı")
 
 
