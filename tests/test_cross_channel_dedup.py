@@ -134,6 +134,18 @@ class SameOfferTest(Harness, unittest.TestCase):
         self.assertIn(FIRST_CHANNEL, text)
         self.assertIn(SECOND_CHANNEL, text)
 
+    def test_homend_same_asin_psc_and_button_different_channels(self):
+        # Kaynakların tam Telegram entity/önizleme verisi yok; metinler paylaşılan
+        # bildirimlerden yeniden oluşturuldu, iki ürün URL'si kullanıcıdan alındı.
+        first_url = "https://www.amazon.com.tr/dp/B0DGLLJP1M?psc=1&tag=indirimalarmi-21"
+        second_url = "https://www.amazon.com.tr/dp/B0DGLLJP1M?tag=indirimgeldi-21"
+        first = ("🛍️ Homend Profashion 3023H Stand Mikser Antrasit\n\n"
+                 "💰 Fiyat : 6619 TL\n🗓️ 365 Günün En Düşük Fiyatı\n\n" + first_url)
+        second = ("✅ Homend Profashion 3023H Stand Mikser Antrasit\n\n"
+                  "🏷 6.619 TL\n\n👉 FIRSATA GİT!\n\n🛍 Amazon")
+        self.assertPings(first, second, 1, second_buttons=[second_url])
+        self.assertEqual(bot.STATS["deduped"], 1)
+
     def test_source_promo_search_and_utm_differences_one_notification(self):
         cases = {
             "kanal tanıtımı (WhatsApp) farklı": (with_lines(WHATSAPP_FIRST), with_lines(WHATSAPP_SECOND), {}),
@@ -196,6 +208,16 @@ class DifferentOfferTest(Harness, unittest.TestCase):
                          "varyant parametresi kimliktedir")
         self.assertPings(with_lines(amazon(extra="smid=A1XYZ")), with_lines(amazon()), 2,
                          "satıcı parametresi kimliktedir")
+
+    def test_psc_difference_does_not_hide_real_offer_differences(self):
+        first = with_lines(amazon(extra="psc=1"))
+        plain_link = amazon()
+        self.assertPings(first, with_lines(plain_link, body=offer(
+            "Nivea Fresh Cherry Kadın Sprey Deodorant, 250 ml")), 2)
+        self.assertPings(first, with_lines("Açık kutu ürün", plain_link), 2)
+        self.assertPings(first, with_lines(plain_link, body=offer(price="79,90")), 2)
+        self.assertPings(first, with_lines(
+            "https://www.amazon.com.tr/dp/B0ZZZ99999"), 2)
 
     def test_campaign_and_coupon_difference_is_new_notification(self):
         self.assertPings(offer(), offer(campaign="2 al 1 öde"), 2)
@@ -350,6 +372,16 @@ class LinkIdentityTest(unittest.TestCase):
                     "https://amazon.com.tr/dp/b0abc12345"]:   # küçük harf: kural yok (fail-open)
             with self.subTest(url=url):
                 self.assertFalse(any("#" in key for key in self.keys(f"Çay 5 TL {url}")))
+
+    def test_amazon_only_psc_one_is_ignored_other_parameters_remain(self):
+        base = "https://www.amazon.com.tr/dp/B0DGLLJP1M"
+        key = self.keys(base)
+        self.assertEqual(self.keys(base + "?psc=1&tag=indirimalarmi-21"), key)
+        for query in ("psc=0", "psc=2", "psc=", "psc=1&th=1", "psc=1&smid=A1"):
+            with self.subTest(query=query):
+                self.assertTrue(bot._link_conflict(key, self.keys(base + "?" + query)))
+        self.assertTrue(bot._link_conflict(key, self.keys(
+            "https://www.amazon.com.tr/dp/B0ZZZ99999?psc=1")))
 
     def test_real_product_links_keep_their_params(self):
         keys = self.keys("Çay 5 TL https://www.nivea.com.tr/urun?sku=1 https://t.me/firsatz/1")
