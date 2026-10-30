@@ -3041,7 +3041,9 @@ _LINK_SEARCH_DOMAIN_RE = re.compile(
 # tag (ilişkilendirme kimliği), ref/ref_ (yönlendirme izi), linkCode/linkId/ascsubtag
 # (ilişkilendirme bağlantı kimlikleri). Emin olunmayan her parametre kimlikte kalır:
 # qid, sr, keywords, sprefix, crid, pd_rd_*, pf_rd_*, camp, creative, creativeASIN,
-# th, psc, smid, ... (P4 korunur: yanlış birleşmek yerine ayrı bildirim).
+# th, psc=1 dışındaki psc değerleri, smid, ... (P4 korunur). Yalnızca
+# psc=1, aynı ASIN için isteğe bağlı ürün sayfası işareti olarak ele alınır;
+# başka parametreler, varyant başlığı ve teklif koşulları korunur.
 _AMAZON_PRODUCT_RE = re.compile(r"/(?:dp|gp/product)/([A-Z0-9]{10})(?=[/?#]|$)")
 _AMAZON_TRACKING_PARAMS = frozenset({"tag", "ref", "ref_", "linkcode", "linkid", "ascsubtag"})
 _AMAZON_TRACKING_PREFIXES = ("utm_",)
@@ -3058,6 +3060,7 @@ def _amazon_product_identity(host: str, path: str, query: Sequence[tuple[str, st
         (name, value) for name, value in query
         if not name.lower().startswith(_AMAZON_TRACKING_PREFIXES)
         and name.lower() not in _AMAZON_TRACKING_PARAMS
+        and not (name.lower() == "psc" and value == "1")
     )
     identity = f"amazon.com.tr#{match.group(1)}"
     if kept:
