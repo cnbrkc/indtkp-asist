@@ -249,16 +249,33 @@ class DifferentOfferTest(Harness, unittest.TestCase):
                          with_lines("Ücretsiz kargo", NIVEA_LINK), 1, "aynı kargo, farklı yazım")
 
     def test_different_product_links_stay_separate_p4(self):
-        cases = {
+        # Mağaza ayrımı, farklı Amazon alan adı ve açık varyant/SKU çelişkisi
+        # ayrı bildirim üretmeye devam eder.
+        separate_cases = {
+            "farklı mağaza": (NIVEA_LINK, "https://www.trendyol.com/nivea/cherry-150ml-p-123456"),
+            "aynı ASIN, farklı Amazon alan adı": (PRODUCT_LINK, "https://www.amazon.de/dp/B0ABC12345"),
+            "açık SKU/varyant parametresi farklı": (NIVEA_LINK + "?sku=150A", NIVEA_LINK + "?sku=150B"),
+        }
+        for name, (first, second) in separate_cases.items():
+            with self.subTest(name):
+                self.assertPings(with_lines(first), with_lines(second), 2)
+
+        # Politika güncellendi: güçlü ürün başlığı + aynı fiyat + aynı mağazada
+        # salt kanal referans parametresi (?ref=...) veya farklı amzn.to kısa
+        # affiliate linkleri tek başına yeni ürün sayılmaz (önceki beklenti: 2).
+        merged_affiliate_cases = {
             "ref farklı (genel parametre)": (NIVEA_LINK + "?ref=firsatz", NIVEA_LINK + "?ref=tayfa"),
             "parametre yalnız bir tarafta": (NIVEA_LINK, NIVEA_LINK + "?ref=tayfa"),
             "farklı kısa linkler": ("https://amzn.to/3abcXYZ", "https://amzn.to/3defUVW"),
-            "farklı mağaza": (NIVEA_LINK, "https://www.trendyol.com/nivea/cherry-150ml-p-123456"),
-            "aynı ASIN, farklı Amazon alan adı": (PRODUCT_LINK, "https://www.amazon.de/dp/B0ABC12345"),
         }
-        for name, (first, second) in cases.items():
+        for name, (first, second) in merged_affiliate_cases.items():
             with self.subTest(name):
-                self.assertPings(with_lines(first), with_lines(second), 2)
+                self.assertPings(with_lines(first), with_lines(second), 1)
+
+        # Zayıf/kısa başlıkta (< 3 anlamlı kelime) katı link çelişkisi korunur.
+        self.assertPings("Çay\n104 TL\nhttps://amzn.to/3abcXYZ",
+                         "Çay\n104 TL\nhttps://amzn.to/3defUVW", 2,
+                         "zayıf başlıkta farklı kısa linkler hâlâ ayrı kalmalı")
 
     def test_cross_store_with_promo_and_search_buttons_stays_separate_p4(self):
         self.assertPings(with_lines(PRODUCT_LINK + " " + WHATSAPP_FIRST.replace("💚", "")),
