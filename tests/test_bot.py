@@ -258,13 +258,13 @@ class StatusTextTest(unittest.TestCase):
         self.assertEqual(commands, (
             "/komutlar", "/start", "/durum", "/dmfiltre", "/dmac", "/dmkapat", "/ayar", "/ekle", "/çıkar",
             "/kaydet", "/iptal", "/open", "/close", "/kaynaklar", "/kaynaktest",
-            "/analiz", "/test", "/id", "/restart",
+            "/analiz", "/test", "/id", "/restart", "/takip",
         ))
 
     def test_dispatch_paths_and_help_catalog_share_the_same_commands(self):
         routed = {
             bot.COMMAND_HELP, bot.COMMAND_START, bot.COMMAND_STATUS,
-            bot.COMMAND_TEST, bot.COMMAND_ID, bot.COMMAND_RESTART, bot.COMMAND_SOURCES,
+            bot.COMMAND_TEST, bot.COMMAND_ID, bot.COMMAND_RESTART, bot.COMMAND_SOURCES, bot.COMMAND_TRACK,
         }
         routed.update(bot.CMD_DM_COMMANDS - {bot.COMMAND_DM_ADD, bot.COMMAND_DM_REMOVE})
         routed.update(bot.SETTINGS_COMMANDS)

@@ -439,12 +439,13 @@ dahil) `/kaydet` seçilene kadar taslakta kalır. `/restart` için
 | `/test` | Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir. |
 | `/id` | Bulunduğun sohbetin ve kullanıcının kimliğini gösterir. |
 | `/restart` | Yeni takipçi çalışması başlatır; GH_PAT gerekir. |
+| `/takip` | Özel sohbette ürün takip menüsünü açar. |
 
 **Tamamı virgülle ayrılmış hâli** (BotFather açıklamasına, sabitlenmiş mesaja ya da
 grubun komut menüsüne doğrudan yapıştırabilirsin):
 
 ```text
-/komutlar, /start, /durum, /dmfiltre, /dmac, /dmkapat, /ayar, /ekle, /çıkar, /kaydet, /iptal, /open, /close, /kaynaklar, /kaynaktest, /analiz, /test, /id, /restart
+/komutlar, /start, /durum, /dmfiltre, /dmac, /dmkapat, /ayar, /ekle, /çıkar, /kaydet, /iptal, /open, /close, /kaynaklar, /kaynaktest, /analiz, /test, /id, /restart, /takip
 ```
 
 #### Kaynak mesaj erişimini test etme
@@ -1267,3 +1268,143 @@ Hesap kopyası silinemediğinde de silinmiş gibi işaretlenmez.
 Regresyonları çalıştırmak için: `python -m unittest discover -s tests -v`.
 Testler gerçek Telegram gönderimi yapmadan HTTP 429, OnuAl medya bildirimi,
 geçmiş ID alanları, fiyat düşüşü, eşzamanlı olaylar ve iptal senaryolarını sınar.
+
+## Akakçe ürün takibi — aynı botun özel sohbetinde
+
+Varsayılan **kapalıdır**. Aynı Actions job'unda çalışır; yeni bot/token gerekmez.
+Mevcut kanal filtreleri, iletim zinciri ve dedup akışı değişmez. Yalnız hesap sahibi
+botun **özel sohbetinden** yönetir ve alarmı yine orada alır; hedef gruba gönderilmez.
+
+### Bildirim biçimi
+
+```text
+₺6.839 — Philips Airfryer 3000 Serisi HD9243/90 L 4.1 lt Yağsız Fritöz
+
+Akakçe Takip Bildirimi
+
+https://www.pttavm.com/…
+
+https://www.akakce.com/fritoz/…-fiyati,248390291.html
+```
+
+İlk satır mevcut kanal bildirimlerinin aynı başlık fonksiyonunu kullanır: kuruş
+**yalnız başlıkta**, yuvarlanmadan atılır. Hedef karşılaştırması kuruşlu gerçek
+fiyatla yapılır. Bloklar arasında bir boş satır vardır. Önizleme kapalıdır; alarm
+tek, düz metin mesajdır. Hedef, satıcı açıklaması veya ek footer normal alarma
+ilave edilmez. Teknik/kayıt hatası varsa ayrıca bir uyarı mesajı gelebilir.
+
+Satın alma linki yalnız doğrulanmış en düşük **fiyat + aynı satıcı** ile JSON-LD
+teklifinde eşleşirse eklenir. Merchant/varyant/kupon query parametreleri korunur.
+Link bulunamaz veya güvenlik denetimini geçmezse o blok atlanır; başka satıcının
+linki veya tahmini link kullanılmaz. Akakçe takip linki her zaman en sondadır.
+Satıcı sitesine ek HTTP isteği yapılmaz.
+
+### İlk kontrollü deneme
+
+Bu komutlar ancak PR birleştirilip **güncel ana bot başladıktan sonra** kullanılabilir.
+PR kontrolü tek başına çalışan botu güncellemez. Merge sonrasında mevcut botun
+özel sohbetine `/restart` gönderip yenilemenin tamamlanmasını bekleyebilirsin
+(mevcut GH_PAT gerekir); bu komutun mevcut workflow yenileme yolu değiştirilmedi.
+Yenilenen bot hazır olunca `/takip` menüyü göstermelidir. Aynı bot token'ıyla
+ikinci bir bağımsız Telegram dinleyicisi başlatma.
+
+Botla özel sohbetinde sırayla:
+
+1. `/durum` — mevcut dinleyicinin yanıt verdiğini kontrol et.
+2. `/takip` — alt komutların kısa menüsünü açar.
+3. `/takipac` — **Kalıcı kaydedildi** yanıtını bekle.
+4. Takip edeceğin Akakçe **ürün detay linkini** gönder.
+5. Bot ürünü ve okuduğu fiyatı gösterip hedefi sorunca, test için gördüğün güncel
+   fiyatın biraz **üstünde** hedef yaz. Örneğin fiyat hâlâ 6.839,05 TL ise `7000`.
+6. Kalıcı kayıt onayını bekle. İlk başarılı periyodik okumada yukarıdaki biçimde
+   özel mesaj beklenir. Boş kuyrukta genellikle sonraki kontrolde gelir; host
+   beklemesi, ağ hatası veya yoğunlukta gecikebilir. Saniyesi garanti değildir.
+7. `/takipler` — hedefi ve son kontrol durumunu gör. `/durum` ile eski dinleyiciyi
+   tekrar kontrol et. Mevcut kanal fırsatları aynı hedefe gelmeye devam etmeli.
+8. Test bitince **aynı Akakçe linkini tekrar gönder**, sorulduğunda gerçek hedefini
+   yaz (örneğin `6500`). Bu işlem o ürünün hedefini günceller ve alarm kaydını sıfırlar.
+
+Aynı fiyat her kontrolde yeniden gönderilmez. Alarm yalnız fiyat **hedefin kesin
+altında** ise gelir; eşit fiyat gönderilmez. Daha düşük yeni fiyat tekrar bildirilebilir.
+Fiyat yukarı çıkıp eski alarm fiyatına geri gelirse yeniden bildirilmez.
+
+Mevcut `/test` komutunu bu Akakçe denemesi için kullanma: o komut eskisi gibi
+hedef gruba test gönderir, Akakçe alarmını sınamaz.
+
+| Komut | İşlev |
+|---|---|
+| `/takip` | Kısa menü ve komut kopyalama düğmeleri |
+| `/takipac` | Ürün kontrollerini açar, GitHub'a kaydeder |
+| `/takipkapat` | Takip listesini koruyarak kontrolleri kapatır |
+| `/takipler` | Ürün numarası, hedef ve bu oturumun kontrol durumu |
+| `/takipsil 1` | Listedeki numarayla ürün siler |
+| `/takipiptal` | Hedef fiyat taslağını iptal eder |
+| `/takipyardim` | Kısa kullanım |
+
+Yalnız **`/takip`** komutunu hatırlaman yeterli. Menüde her alt komutun yanında
+2–4 kelimelik açıklama ve komutu panoya kopyalayan düğmeler vardır. Düğmeye basmak
+komutu çalıştırmaz; kopyalananı yazı alanına yapıştırıp gönderirsin. Telegram bot
+mesajları yazı alanını doğrudan dolduramaz. `/takipsil` kopyalanınca ürün numarasını
+sen eklersin. Kopyalama düğmelerini desteklemeyen istemcide düz komutları kullan.
+Eski alt komutlar çalışmayı sürdürür; `/takipyardim` ayrıntılı yardım olarak kalır.
+Menüyü açmak bekleyen hedef/filtre taslağını bozmaz veya takibi açıp kapatmaz.
+
+Mevcut filtre düzenleme taslağı açıksa önce `/kaydet` veya `/iptal` ile bitir.
+Hedef taslağı 10 dakika sonra geçersiz olur. Bir ürün okuması sıradaysa komut sonucu
+ayrıca bildirilir; yalnız "sıraya alındı" yanıtı kalıcı kayıt onayı değildir.
+`/takipkapat` için de tamamlanma onayını bekle.
+
+### Fiyat doğrulaması ve sınırlar
+
+- Tüm satıcı sayfalarını indirmek gerekli değildir. Okunan somut geçerli TRY
+  teklifinin minimumu, aynı ürünün `AggregateOffer.lowPrice` alanıyla eşleşmeli
+  (`minimum_verified: true`). Eksik/uyuşmayan minimumla takip okuması reddedilir.
+- Satıcı izin listesi yok. Eksik satıcı sayısı (`coverage_complete: false`), minimum
+  eşleşiyorsa takibe engel değildir. Yıllık dip otomatik çekilmez; hedefi sen girersin.
+- Gerçek kullanıcı raporunda 6.839,05 TL / Pttavm/Promo doğrulandı; JSON-LD 10 teklif,
+  HTML ana liste 16 satır, bildirilen toplam 20 idi. Gerçek rapor parçaları offline
+  regresyon fixture'larında tutulur. Bu ölçüm her ürüne/gelecek güne garanti değildir.
+- Kupon, üyelik, kargo, stok ve fiyatın güncelliği satın almadan kontrol edilmeli.
+  Aynı Akakçe yanıtını doğrulamak mağaza kasasındaki fiyatı doğrulamaz.
+- İlk sürüm en fazla **30 ürün**; ürün başına **5 dakika hedef aralık**, host başına
+  en az **10 saniye** boşluk kullanır. Hatalarda bekleme artar; üç başarısız
+  kontrolde özel sohbetine uyarı gelir. Bunlar Akakçe'nin onaylı limitleri değildir.
+
+### Kalıcılık ve izolasyon
+
+`product_watches.json` ürünleri, hedefleri, açık/kapalı ve küçük alarm durumunu tutar.
+Her kontrolde commit/HTML arşivi üretilmez. GitHub Contents API kullanılır; mevcut
+config yazarıyla ortak kilit vardır, checkout kirletilmez. Başarısız kalıcı kayıtta
+ayar geri alınır ve uyarı verilir. Ürün/hedefler public repo ve Git geçmişinde görünür;
+secret yazılmaz. Mevcut Actions'ın repository/branch ve yazma token'ı gerekir.
+
+Okuma ayrı, sırları almayan alt süreçtedir; süre, gövde boyutu ve kuyruk sınırlıdır.
+Kanal dinleyicisi ağ işçisini beklemez. Aynı runner kaynakları paylaşıldığı için
+mutlak izolasyon/kesintisiz çalışma garantisi yoktur. Actions geçişinde fırsat
+kaçabilir. Telegram gönderimi ile GitHub kaydı atomik değildir; ani kesintide
+tekrar alarm mümkündür. Bozuk takip dosyası yalnız bu özelliği devre dışı bırakır.
+
+Kalıcı kayıt testi için doğal runner yenilenmesinden sonra `/takipler` gönder:
+ürün/hedef korunmalı, aynı fiyattan gönderilmiş alarm normalde tekrar etmemeli.
+Geri dönüş için `/takipkapat` yazıp kalıcı kayıt onayını bekle; mevcut kanal takibi sürer.
+
+### Geçici erişim testi kaldırıldı
+
+Geliştirme sırasında kullanılan `Akakçe erişim testi` workflow'u son PR'dan
+çıkarıldı. PR güncellemelerinde ayrıca Akakçe sayfası açan veya rapor artifact'i
+üreten bir iş artık yok. Önceden tamamlanan çalışmalar Actions geçmişinde
+görünebilir; bu, yeniden çalıştıkları anlamına gelmez. Normal `Testler` workflow'u
+kod regresyonlarını, `Telegram indirim takipçisi` ise asıl botu çalıştırmaya devam eder.
+Akakçe takibi ayrıca bir workflow açmaz; ana botta `/takipac` ile açılır.
+
+Actions ekranındaki eski `Gecici push testi` de ayrı bir tarihsel teşhis kaydıdır:
+6 Ekim 2026'da eski `arena/61a972b6-indtkp-asist` dalında push kimlik doğrulamasını
+sınamak için çalışmıştır. `tmp-push-test.yml` hem mevcut `main`de hem bu PR'da yoktur;
+Asıl bot bu denemeyi çağırmaz. Gereksiz test betiği, sonuç dosyası veya çağrı kalıntısı
+bulunmadı. Eski Actions kaydı PR ile silinmez; repo yöneticisi Actions → Gecici push
+testi → ⋯ → Disable workflow ile kaydı devre dışı bırakabilir. Geçmiş çalışmalar
+listede kalabilir. Botun `commit_and_push` / `push_branch` kodu gerçek ayar kaydı için
+kullanılır, bu tarihsel testin parçası sayılıp kaldırılmamalıdır.
+
+Deneme raporu: bildirim ekran görüntüsü, `/takipler` çıktısı, kayıt onayı/uyarıları ve
+mevcut kanal dinleyicisinin çalışıp çalışmadığını paylaş. Cookie/token/secret paylaşma.
