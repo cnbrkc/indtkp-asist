@@ -1267,3 +1267,104 @@ Hesap kopyası silinemediğinde de silinmiş gibi işaretlenmez.
 Regresyonları çalıştırmak için: `python -m unittest discover -s tests -v`.
 Testler gerçek Telegram gönderimi yapmadan HTTP 429, OnuAl medya bildirimi,
 geçmiş ID alanları, fiyat düşüşü, eşzamanlı olaylar ve iptal senaryolarını sınar.
+
+## Akakçe ürün takibi — isteğe bağlı ilk sürüm
+
+**Varsayılan kapalıdır.** Mevcut kanal filtreleri, iletim zinciri ve dedup ayarlarını
+ değiştirmez. Aynı Actions job'unda, aynı bildirim botunun özel sohbetinden yalnızca
+ hesap sahibi yönetir. Yeni bot/token veya sürekli ikinci runner gerekmez.
+
+### Önce erişim testi
+
+Bu okuyucunun canlı Akakçe erişimi henüz bu geliştirme ortamından doğrulanmadı.
+Offline testler, gerçek sitede çalıştığı garantisi değildir. Değişiklikler GitHub'a
+aktarıldıktan sonra **Actions → Akakçe erişim testi → Run workflow** ile bir HTTPS
+Akakçe ürün detay linkini dene. Bu iş yalnızca tek sayfa okur; Telegram'a bağlanmaz,
+secret kullanmaz, takip dosyasına yazmaz. `ok: true` ve sayfayla tutarlı fiyat
+beklenir. 403/429, doğrulama ekranı veya farklı sayfa yapısı varsa ana botu değiştirmek
+veya korumayı zorlamak yerine takip özelliğini kapalı tut.
+
+### Kullanım
+
+1. Güncellenmiş ana bot çalışırken özel sohbetten `/takipyardim` yaz.
+2. `/takipac` ile aç. **Kalıcı kaydedildi** yanıtını bekle.
+3. Akakçe ürün detay linkini gönder (arama/kategori linki değil).
+4. Ürün okunduğunda bot hedef fiyatı sorar. `6500` veya `6.500,50 TL` yaz.
+5. Kaydı doğrulamak için `/takipler` kullan.
+
+| Komut | İşlev |
+|---|---|
+| `/takipac` | Takibi açar ve GitHub'a kaydeder |
+| `/takipkapat` | Kayıtları silmeden periyodik kontrolleri kapatır |
+| `/takipler` | Ürün numaraları, hedefler ve bu oturumun kontrol durumları |
+| `/takipsil 1` | Listedeki numarayla takip siler |
+| `/takipiptal` | Hedef fiyat girişi taslağını iptal eder |
+| `/takipyardim` | Kısa kullanım ve sınırlar |
+
+Mevcut filtre düzenleme taslağı açıkken önce onu `/kaydet` veya `/iptal` ile
+bitir. Yeni özellik mevcut taslak için gelen mesajı ele geçirmez. Aynı ürün linkini
+tekrar eklemek hedefi günceller ve alarm eşiği kaydını sıfırlar. Hedef taslağı 10 dakika
+sonra geçersiz olur. Ürün/hedef ekleme işlemi, kuyruktaki okuma veya kayıttan dolayı
+hemen bitmeyebilir; sonuç ayrıca gönderilir.
+
+### Kapsam ve sınırlar
+
+- İlk sürüm en fazla **30 ürün**, ürün başına **5 dakika hedef aralık** ve host başına
+  en az **10 saniye** istek aralığı kullanır. Hatalarda bekleme artar. Bunlar
+  Akakçe'nin onaylanmış erişim limitleri değildir; engelde trafik artırılmaz.
+- Satıcı izin/engelleme listesi yoktur. Ürünün JSON-LD verisinden okunabilen tüm geçerli
+  TRY teklifleri karşılaştırılır. Stok dışı teklifler alınmaz; eksik stok bilgisi kesin
+  stok garantisi sayılmaz. **JSON-LD'nin sayfada görünen tüm teklifleri kapsadığı
+  doğrulanmadı.** Yalnız `AggregateOffer.lowPrice` varsa, belirli teklif gibi
+  yorumlamak yerine okuma başarısız sayılır. Liste fiyatı/taksit regex'iyle tahmin yapılmaz.
+- Fiyatın **hedefin kesin olarak altında** olması gerekir. Eşit fiyat alarm üretmez.
+  Aynı/daha yüksek fiyat tekrar bildirilmez; yeni daha düşük fiyat bildirilir.
+  Fiyat hedefin üstüne çıkıp aynı seviyeye geri gelirse yeniden alarm verilmez.
+- Kupon, üyelik, kargo ve stok koşulları JSON-LD'de eksik olabilir. Bildirim Akakçe
+  fiyat gözlemidir; mağazada ödenecek kesin fiyat garantisi değildir. Satın almadan
+  koşulları kontrol et. Bir yıllık dip otomatik okunmaz, hedefi kullanıcı girer.
+- Okuma ayrı, 20 saniye dış zaman aşımı olan alt süreçtedir; bot/GitHub sırları
+  aktarılmaz. Yanıt boyutu ve iş kuyruğu sınırlıdır. Ana Telethon dinleyicisi bu
+  sürecin sonucunu beklemez. Alt süreç runner kaynaklarını paylaşır; tam izolasyon yoktur.
+- Ürün işlemleri kendi seri kuyruğunda çalışır. İşlemdeki bir okuma tamamlanmadan
+  `/takipkapat` sonucu gelmeyebilir. Kapatma onayı geldiğinde yeni kontroller durur.
+- `product_watches.json` küçük takip/alarm durumudur; her sorguda fiyat arşivi tutulmaz.
+  GitHub Contents API, mevcut ayar kayıtlarıyla ortak yazma kilidi altında kullanılır.
+  Checkout kirletilmez. Başarısız kalıcı kayıtta değişiklik çalışan durumda geri alınır.
+- Dosya public depoda ve Git geçmişinde görünür. Token/secret yazılmaz. Mevcut
+  `GITHUB_REPOSITORY`, yazma yetkili token ve çalışma dalı bilgileri gerekir; mevcut
+  Actions bunları sağlar. Yerel ortamda bu bilgiler yoksa kalıcı kayıt başarısızdır.
+- Alarm gönderimiyle GitHub kaydı atomik değildir: ani kesintide tekrar mümkündür.
+  Kalıcı alarm kaydı başarısızsa o oturumda tekrar bastırılır ve uyarı gönderilir.
+- Actions geçiş boşluğu veya Akakçe güncelleme gecikmesi nedeniyle fırsat kaçabilir.
+  Üç başarısız kontrolde uyarı verilir; `/takipler` oturum içi sağlık bilgisini gösterir.
+
+**Geri dönüş:** `/takipkapat` → kalıcı kayıt onayını bekle. Başlatma dosyası bozuksa
+yalnız takip devre dışı kalır; dosya sessizce sıfırlanmaz. Eski bot sürümüne dönülürse
+kanal dinleme önceki gibi çalışır; ayrı takip JSON'u kendiliğinden işlenmez.
+
+### PR birleştirilmeden ilk test ve gönderilecek rapor
+
+Bu değişikliğin PR'ında **Akakçe erişim testi / probe** otomatik çalışır. Sabit bir
+Philips Airfryer örneğini okur; `main`deki Telegram botunu başlatmaz/durdurmaz.
+PR → Checks → Akakçe erişim testi → Details yoluyla sonucu aç. GitHub, yeni
+workflow'u ilk kez çalıştırmadan önce onay isteyebilir; yalnızca bu erişim testini
+onayla. Testler workflow'u da bağımsız regresyon kontrolüdür.
+
+- `Raporu loga yaz` adımındaki JSON'u kopyala veya run sayfasının Artifacts bölümünden
+  `akakce-report` ZIP'ini indirip içindeki `akakce-report.json` dosyasını gönder.
+- Başarısız okumada da rapor yüklenir. `http_status: 403/429` erişim/limit sorunudur;
+  `reason` ayrıştırma ya da güvenlik reddi için kısa tanı verir. İşin kırmızı olması
+  bu denemenin başarısız olduğunu gösterir, Telegram dinleyicisinin bozulduğunu değil.
+- Başarılı raporda `price` ve `sample_offers[].price` **kuruş** cinsindedir: 683905 =
+  6.839,05 TL. `offers` geçerli okunan teklif sayısıdır; `sample_offers` en ucuz 20
+  teklifin fiyat/satıcı örneğidir, tüm sayfanın eksiksiz okunduğu kanıtı değildir.
+- Raporla birlikte ürün linkini, kontrol saatini, sayfadaki en düşük kargo dahil fiyatı,
+  onun satıcısını, sayfanın bildirdiği teklif sayısını ve varsa ekran görüntüsünü gönder.
+  Koşullu fiyatlar veya stok dışı teklifler sayı/fiyat farkına yol açabilir; fark ayrıca
+  incelenmelidir. Cookie, oturum bilgisi ve secret gönderme.
+
+Yeni workflow `main`e girmeden Actions menüsünde manuel çalıştırma düğmesi görünmeyebilir.
+Bu nedenle ilk test için PR kontrolünü kullan; **sırf test etmek için PR'ı birleştirme**.
+Rapor değerlendirildikten sonra gerekiyorsa okuyucu tamamlanır; mevcut Telegram testleri
+ve canlı fiyat doğrulaması tekrar geçince ayrı bir kararla birleştirilir/açılır.

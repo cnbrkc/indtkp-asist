@@ -1,0 +1,48 @@
+name: Akakçe erişim testi
+
+on:
+  pull_request:
+    paths:
+      - 'akakce_worker.py'
+      - 'product_tracker.py'
+      - '.github/workflows/akakce-probe.yml'
+  workflow_dispatch:
+    inputs:
+      product_url:
+        description: HTTPS Akakçe ürün detay bağlantısı
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Tek ürün oku (Telegram ve sırlar kullanılmaz)
+        env:
+          PRODUCT_URL: ${{ inputs.product_url || 'https://www.akakce.com/fritoz/en-ucuz-philips-airfryer-l-hd9243-90-3000-serisi-4-1-lt-yagsiz-fiyati,248390291.html' }}
+        run: |
+          python -I akakce_worker.py "$PRODUCT_URL" > akakce-report.json
+      - name: Raporu loga yaz
+        if: always()
+        run: |
+          if [ -f akakce-report.json ]; then
+            python -m json.tool akakce-report.json
+          fi
+      - name: Raporu indirilebilir yap
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: akakce-report
+          path: akakce-report.json
+          if-no-files-found: warn
+          retention-days: 3

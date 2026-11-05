@@ -29,6 +29,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -4667,7 +4668,15 @@ def current_branch(repo: Path) -> str:
     return branch
 
 
+GIT_WRITE_LOCK = threading.RLock()
+
+
 def commit_and_push(path: Path, message: str) -> tuple[str, str]:
+    with GIT_WRITE_LOCK:
+        return _commit_and_push_locked(path, message)
+
+
+def _commit_and_push_locked(path: Path, message: str) -> tuple[str, str]:
     """config.json'ı commit'leyip origin'e gönder: (durum, detay).
 
     durum: pushed | clean | local | no-repo | error
@@ -5676,6 +5685,40 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
     settings_lock = asyncio.Lock()
     private_api = BotAPI(NOTIFY_BOT_TOKEN) if NOTIFY_BOT_TOKEN else None
+    # Optional feature: failure to initialize must not prevent channel listening.
+    tracker = None
+    if private_api and config_flag(store.config.get("private_control"), False):
+        try:
+            from product_tracker import ProductTracker
+
+            def persist_products(path, data):
+                # Contents API avoids dirtying the shared checkout while config
+                # commits/rebases use it. The next runner checks out this snapshot.
+                with GIT_WRITE_LOCK:
+                    repository = os.getenv("GITHUB_REPOSITORY", "").strip()
+                    token = push_token()
+                    repo = git_repo_root(store.path.parent)
+                    branch = (os.getenv("CONFIG_PUSH_BRANCH", "").strip()
+                              or (current_branch(repo) if repo else "")
+                              or os.getenv("GITHUB_REF_NAME", "").strip())
+                    if not repository or not token or not branch:
+                        return False, "GitHub kalıcı kayıt ortamı eksik."
+                    url = f"https://api.github.com/repos/{repository}/contents/{path.name}"
+                    ok, remote, detail = _github_api("GET", f"{url}?ref={urllib.parse.quote(branch, safe='')}", token)
+                    if not ok or not isinstance(remote, dict) or not remote.get("sha"):
+                        return False, "Takip dosyasının GitHub sürümü okunamadı."
+                    payload = {
+                        "message": "config: ürün takip güncellemesi",
+                        "branch": branch, "sha": remote["sha"],
+                        "content": base64.b64encode((json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode()).decode(),
+                    }
+                    ok, _, detail = _github_api("PUT", url, token, payload)
+                    return ok, "Ürün takip ayarı GitHub'a yazıldı." if ok else "GitHub yazımı başarısız."
+
+            tracker = ProductTracker(store.path.with_name("product_watches.json"),
+                                     private_api, persist_products)
+        except Exception:
+            log.exception("Ürün takibi başlatılamadı; kanal dinleme devam ediyor.")
 
     async def prepare_private_offer(item):
         # Turning off/changing the filter also cancels queued, unsent copies.
@@ -7336,6 +7379,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
             )
             return
 
+        # Owner-only optional feature. Existing config drafts always retain priority.
+        if tracker and isinstance(event, PrivateControlEvent) and event.sender_id == SELF_ID:
+            if await tracker.handle(event, raw, existing_pending=peek_pending(pending_key(event)) is not None):
+                return
+
         # Komut değil: çok adımlı akışta beklenen değer olabilir.
         if not command:
             await handle_pending_message(event, raw)
@@ -7663,6 +7711,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
     # Özel komutlar ve fırsat kuyruğu ayrı görevlerde çalışır; açılış mesajı gönderilmez.
     private_tasks = []
+    if tracker:
+        private_tasks.append(asyncio.create_task(tracker.run()))
     if private_api:
         private_tasks.append(asyncio.create_task(private_offers.run()))
         if config_flag(store.config.get("private_control"), False):
