@@ -1,80 +1,57 @@
-# Akakçe takip entegrasyonu — uygulama öncesi güvenlik planı
+# Akakçe takibi — uygulanan tasarım ve kabul kontrolü
 
-Tarih: 2026-11-05. Durum: kapalı varsayılanlı ilk entegrasyon uygulandı; canlı Akakçe/Actions doğrulaması henüz tamamlanmadı.
+## Kapsam
 
-Uygulama notu: takip kalıcılığı yerel checkout dosyasına yazmak yerine GitHub Contents API kullanır; mevcut config Git işlemleriyle ortak RLock altında sıralanır. Sonraki runner güncel takip JSON’unu checkout eder. Sentetik/offline testler canlı erişim yerine geçmez. Kullanım ve gerçek ilk sürüm sınırları README’nin Akakçe bölümündedir.
+- Aynı Telegram botu, mevcut Actions job'u ve hesap sahibinin özel sohbeti.
+- Akakçe ürün detay linki + kullanıcının elle girdiği hedef fiyat.
+- Somut geçerli teklif minimumu ile ürünün TRY `AggregateOffer.lowPrice` tutarı eşleşir.
+- Tüm satıcıları sayfalama, yıllık dip otomasyonu ve doğrudan mağaza okuması yok.
+- Satıcı filtresi yok. Takip varsayılan kapalı.
 
-## Onaylanan kapsam
+## Bildirim sözleşmesi
 
-- Aynı repo, aynı Actions job'u, aynı Telegram botunun özel sohbeti.
-- Kullanıcı Akakçe ürün detay linkini gönderir; bot hedef fiyatı sorar.
-- Satıcı izin/engelleme listesi yok. Okunabilen tüm teklifler değerlendirilir; üyelik, kupon, kargo gibi koşullar varsa bildirimde belirtilir. Eksik koşullar uydurulmaz.
-- Karşılaştırma kesin olarak fiyat < hedef şeklindedir; eşit fiyat alarm üretmez.
-- Takipler ve hedefler GitHub'da küçük bir JSON dosyasıyla kalıcı tutulur. Dosya ve Git geçmişi public olacaktır; sır içermez.
-- İlk sürüm yıllık dip fiyatın otomatik çıkarılmasına bağımlı değildir. Cimri ve doğrudan mağazalar kapsam dışıdır.
+1. Mevcut `build_header_line(header_price_text(...), title)` ile fiyat–ürün başlığı.
+2. Boş satır, `Akakçe Takip Bildirimi`.
+3. Bulunabiliyorsa boş satır ve fiyat/satıcıyla eşleşmiş satın alma linki.
+4. Boş satır ve takip edilen Akakçe ürün linki.
 
-## Mevcut sistemde doğrulananlar
+Tek düz metin mesaj, link önizlemesi kapalı. Kuruş yalnız mevcut başlık davranışıyla
+atılır; karşılaştırma kuruş tamsayısıyla yapılır. Teknik hatalar ayrı uyarılardır.
+Üretimde alıcı doğrudan `SELF_ID` ile sabitlenir; kayıttaki başka bir chat_id alarmı
+başka sohbete yönlendiremez. Mevcut `/test` hâlâ grup testidir, değiştirilmedi.
 
-- telegram-monitor.yml: tek monitor job, timeout 350 dakika, yeniden başlatma hedefi 330 dakika.
-- private_bot.poll_private_commands komut handler'ını sıralı await eder. Akakçe HTTP isteği bu handler içinde beklenmemelidir.
-- bot.py on_control_message komut olmayan mesajları mevcut handle_pending_message akışına yollar. Yeni link/hedef akışı, mevcut filtre düzenleme taslaklarını ele geçirmemelidir.
-- save_config, commit_and_push işlemini thread'e taşır. Yeni bir kalıcılık yazarı eklenirken ortak Git yazma kilidi olmadan paralel commit/rebase/push yapılmamalıdır.
-- Yenileme workflow_dispatch ile yeni run başlatır; eski run iptal edilebilir. Sadece kapanışta kayıt yapmak yeterli değildir.
-- Yerel Python 3.11 ortamında mevcut 781 unittest geçti. CI Python 3.12 kullanıyor. Bu sonuç henüz olmayan entegrasyonu veya canlı Akakçe erişimini doğrulamaz.
+## Yalıtım
 
-## İzolasyon tasarımı
-
-1. Akakçe okuyucusu Telegram/Telethon ve bot.py import etmez.
-2. Ağ işçisi aynı runner'da ayrı alt süreç olarak çalışır; kısa zaman aşımı, sınırlı yanıt boyutu, sınırlı iş kuyruğu, tek eşzamanlı istek ve artan bekleme uygular. Kontrolsüz thread/process üretimi yoktur.
-3. Ana bot işçinin sayfa yanıtını komut işleyicisinde beklemez. Yerel mesajlaşma yalnızca sınırlı ve doğrulanan veri taşır; işçi sır ve bot token'ı almaz.
-4. İşçi bozulursa yalnızca ürün takibi durur. Yeniden başlatma sınırlıdır; sürekli çöküşte devre kesici açılır, kanal dinleyicisi devam eder.
-5. Tek getUpdates tüketicisi korunur. Akakçe komutları yalnızca mevcut yetkili özel sohbet yönlendirmesine eklenir.
-6. Akakçe bildirim kuyruğu sınırlı ve kanal/DM kopya kuyruğundan ayrıdır. Aynı Telegram token'ının hız sınırları ortaktır; alarm yığılması sınırlandırılır ve mevcut gönderim kapısı kullanılır.
-7. Açılış varsayılanı kapalıdır. Tek kapatma seçeneği ağ işçisini durdurur; mevcut kanal ayarlarını değiştirmez.
-8. Mevcut dedup, kanal filtreleme, kaynak çözümleme ve teslim zinciri davranışları değiştirilmez.
-
-Alt süreç, paylaşılan runner'ın bellek/CPU/ağ veya GitHub arızasına karşı mutlak izolasyon sağlamaz. Sıfır risk/kaçırmama garantisi verilmez.
+- Ana Telethon kanal handler'ları, filtre/dedup/teslim kodları değiştirilmedi.
+- Mevcut özel bot poller'ına yalnız hesap sahibi için dar bir yönlendirme eklendi.
+- Mevcut filtre taslakları komut olmayan mesajlarda öncelikli kalır.
+- Komut handler'ında Akakçe HTTP isteği beklenmez; ayrı sınırlı iş kuyruğu kullanılır.
+- Ağ okuması ayrı, sırları devralmayan süreçte; 15 sn HTTP ve 20 sn dış zaman aşımı.
+- 3 MB sayfa sınırı, tek eşzamanlı okuma, host aralığı ve hata beklemesi vardır.
+- Aynı bot token'ının mevcut hız sınırı kapısı kullanılır. İkinci getUpdates yok.
+- Runner tamamen kapanması/bellek/ağ sorunu için mutlak izolasyon iddiası yoktur.
 
 ## Kalıcılık
 
-- Ayrı takip dosyası, şema sürümü, doğrulama ve atomik dosya yazımı.
-- Ürün ekleme/hedef değiştirme/silme, kalıcı kayıt başarısızsa 'kalıcı kaydedildi' diye yanıtlanmaz. Başarısızlık açıkça belirtilir ve yeniden deneme imkânı sunulur.
-- Mevcut config yazarı dahil tüm Git mutasyonları ortak kilitle seri hale getirilir. Yalnızca hedef dosyalar stage edilir.
-- Aynı fiyat her sorguda Git'e yazılmaz. Küçük alarm durumu kontrollü sıklıkta saklanır; sınırsız HTML/ölçüm arşivi tutulmaz.
-- Bozuk takip dosyası yalnızca yeni özelliği devre dışı bırakır; mevcut bot açılışını engellemez ve dosya sessizce boşaltılmaz.
-- Yeni runner kayıtlı takipleri yükler. Kalıcılaştırılmamış son gözlemler kaybolabilir.
-- Telegram gönderimi ile GitHub yazımı atomik değildir. Ani iptalde tekrar alarm/kaçırma arasındaki politika test edilip belgelenmelidir; exactly-once iddiası yoktur.
+Küçük takip JSON'u GitHub Contents API ile kaydedilir. Config Git işlemleri ve ürün
+API yazımları ortak RLock altında sıralanır; ürün yazımı checkout'u kirletmez.
+Kayıt başarısızsa ayar RAM'de geri alınır; yanlış kalıcı kayıt onayı verilmez.
+Yeni runner güncel takip JSON'unu checkout eder. Dosya ve geçmiş public'tir.
+Alarm gönderimi/GitHub yazımı atomik değildir; kesintide tekrar riski belgelenmiştir.
+Bozuk takip JSON'u mevcut kanal botunun açılışını engellemez.
 
-## Okuyucu güvenliği ve doğruluk
+## Doğrulamalar ve kalan kontrollü deneme
 
-- Yalnızca HTTPS Akakçe ürün detay URL'leri; host tam eşleşmesi. Kullanıcı URL'si üzerinden localhost, özel IP, yabancı host veya kontrolsüz redirect okunmaz.
-- Kaynak yapısı görülmeden CSS seçicisi/endpoint uydurulmaz. Ham yanıt fixture'ı ve runner erişim ölçümü gerekir.
-- CAPTCHA, 403, 429, zaman aşımı ve eksik fiyat ayrı sonuçlardır; 0 TL'ye çevrilmez.
-- TRY tutarları kuruş tamsayısıyla karşılaştırılır. Taksit, eski fiyat ve indirim tutarı satış fiyatı değildir.
-- Satıcı filtresi yoktur. Koşullu tekliflerin koşulları korunur. Tüm teklifleri kapsama, sayfadan gerçekten elde edilen listeyle sınırlıdır.
-- Akakçe güncelleme zamanı ile bizim okuma zamanımız ayrı tutulur. Okuma, mağazadaki anlık fiyat garantisi değildir.
-- İlk öneri az sayıda üründe 5 dakika hedef aralıktır; doğrulanmış servis limiti değildir. Toplam host bütçesi, hatalar ve ürün sayısıyla aralık uzar. Engelde daha fazla yük bindirilmez.
+- Önceki canlı Actions probe: güncel minimum/satıcı kullanıcı gözlemiyle eşleşti.
+- Gerçek raporun JSON-LD ve ana HTML parçaları offline fixture olarak eklendi.
+- Fiyat eşitliği, daha düşük yeni fiyat, tekrar bastırma, farklı satıcıdan link
+  ödünç almama, query parametrelerinin korunması ve güvensiz link testleri vardır.
+- Başlığın mevcut kanal fonksiyonuyla aynı olması, tam bildirim metni, boş satırlar,
+  linksiz fallback ve sabit özel sohbet alıcısı test edilir.
+- Eski regresyonlar, askıda okuyucu sırasında komut yönlendirme, bozuk kayıt,
+  kuyruk doluluğu ve kalıcı kayıt başarısızlığı testleri vardır.
+- Canlı Telegram'da hedef girme/alarm gönderimi ve doğal runner geçişi sonrası
+  kalıcılık kullanıcıyla kontrollü olarak doğrulanmalıdır. README tam adımları içerir.
 
-## Yayına geçiş kapıları
-
-- [ ] Kullanıcının gerçek örnek linklerinde ham HTTP yanıtı ve fiyat/teklif yapısı doğrulandı.
-- [ ] Aynı URL'ler gerçek Actions runner'ında, sırları loglamadan denendi. Bu test geçmiş sonucu gösterir, gelecek erişimi garanti etmez.
-- [ ] Fiyat, koşul, stok, bozuk yanıt, üyelik ve eksik satıcı fixture testleri geçti.
-- [ ] İşçi askıda/çökmüşken kanal olayı ve /durum yanıtı çalışmaya devam etti.
-- [ ] Mevcut /ekle, /çıkar, /kaydet, /iptal taslakları link/hedef mesajlarından etkilenmedi.
-- [ ] Config kaydı ile takip kaydı eşzamanlı test edildi; değişiklikler kaybolmadı.
-- [ ] Runner iptali, yeniden açılış, bozuk kayıt, GitHub kayıt hatası ve tekrar alarm senaryoları test edildi.
-- [ ] 781 mevcut test ve yeni regresyonlar CI Python 3.12'de geçti.
-- [ ] Önce kapalı entegrasyon, sonra bildirimsiz gölge test, ardından az ürünle alarm açılışı yapıldı.
-
-Bu kapılar tamamlanmadan 'mevcut sistemi bozmadan çalışıyor' sonucu ilan edilmez.
-
-
-## Güncel kapsam sadeleştirmesi
-
-Kullanıcı kararı: tüm satıcı sayfalarını yüklemek gerekli değil; Akakçe'nin güncel
-minimumunu takip etmek yeterli. `coverage_complete` tanı alanı olarak kalır, aktivasyon
-şartı değildir. Yeni şart: somut geçerli teklif minimumu ile ürünün TRY cinsindeki
-`AggregateOffer.lowPrice` alanı eşit olmalı (`minimum_verified: true`). Eksik veya
-uyuşmayan minimumla alarm üretilmez. Kullanıcı manuel hedef fiyat girer. Yıllık dip,
-kalan tekliflerin sayfalanması ve tüm satıcıların kapsanması ilk sürüm kapsamı dışıdır.
+PR'ı ready yapmak otomatik merge/aktivasyon değildir. Aktivasyon varsayılan kapalı
+kalır; merge sonrası güncel bot başladığında kullanıcı `/takipac` ile açar.

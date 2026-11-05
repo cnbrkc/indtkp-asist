@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from akakce_worker import cents, parse_page, product_url, target_cents, page_diagnostics
-from product_tracker import ProductTracker, load_state
+from akakce_worker import cents, parse_page, product_url, target_cents, page_diagnostics, purchase_url
+from product_tracker import ProductTracker, load_state, notification_text
 
 URL = 'https://www.akakce.com/fritoz/en-ucuz-ornek-fiyati,123.html'
 
@@ -167,6 +167,54 @@ class ReaderTests(unittest.TestCase):
         for aggregate in [{'offers': [offer('6839.05')]},
                           {'priceCurrency': 'USD', 'lowPrice': '6839.05', 'offers': [offer('6839.05')]}]:
             self.assertFalse(parse_page(page(aggregate))['minimum_verified'])
+
+
+    def test_actual_offer_purchase_link_matches_price_and_seller(self):
+        path = Path(__file__).parent / 'fixtures' / 'akakce' / 'current-minimum.html'
+        result = parse_page(path.read_text())
+        self.assertEqual(result['purchase_url'],
+                         'https://www.pttavm.com/philips-airfryer-3000-serisi-hd9243-90-l-4-1-lt-yagsiz-fritoz-p-1438966890')
+
+    def test_wrong_seller_link_is_not_borrowed(self):
+        raw = page({'priceCurrency': 'TRY', 'lowPrice': '6000', 'offers': [
+            offer('6000', 'Mağaza/A', url='https://example.com/product?merchant=A')]})
+        raw += '<ul id="PL">' + self.html_offer('6.000,00 TL', 'B') + '</ul>'
+        result = parse_page(raw)
+        self.assertTrue(result['minimum_verified'])
+        self.assertIsNone(result['purchase_url'])
+
+    def test_link_keeps_merchant_and_variant_queries(self):
+        link = 'https://example.com/product?merchantId=23&variant=blue&bskt=1'
+        result = parse_page(page({'priceCurrency': 'TRY', 'lowPrice': '6000',
+                                  'offers': [offer('6000', url=link)]}))
+        self.assertEqual(result['purchase_url'], link)
+
+    def test_purchase_url_security(self):
+        for bad in ['javascript:alert(1)', 'http://example.com/product',
+                    'https://127.0.0.1/product', 'https://shop.local/product',
+                    'https://user:password@example.com/product', 'https://example.com:444/product',
+                    'https://www.akakce.com/redirect', 'https://example.com/a\nb', None]:
+            with self.subTest(bad=bad):
+                self.assertIsNone(purchase_url(bad))
+
+    def test_exact_notification_blocks(self):
+        result = {'price': 683905, 'title': 'Philips\nAirfryer',
+                  'purchase_url': 'https://example.com/product?merchantId=23'}
+        self.assertEqual(notification_text(result, URL),
+                         '₺6.839 — Philips Airfryer\n\nAkakçe Takip Bildirimi\n\n'
+                         'https://example.com/product?merchantId=23\n\n' + URL)
+
+    def test_missing_purchase_url_omits_only_that_block(self):
+        result = {'price': 683905, 'title': 'Philips', 'purchase_url': None}
+        self.assertEqual(notification_text(result, URL),
+                         '₺6.839 — Philips\n\nAkakçe Takip Bildirimi\n\n' + URL)
+
+    def test_notification_reuses_existing_channel_header_format(self):
+        import bot
+        result = {'price': 683905, 'title': 'Philips'}
+        text = notification_text(result, URL,
+                                 lambda cents, title: bot.build_header_line(bot.header_price_text(cents / 100), title))
+        self.assertEqual(text.split('\n')[0], bot.build_header_line(bot.header_price_text(6839.05), 'Philips'))
 
 
 class TrackerTests(unittest.IsolatedAsyncioTestCase):
@@ -358,3 +406,20 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
             json.dumps({'ok': True, 'result': result}).encode(), b'')))
         with patch('product_tracker.asyncio.create_subprocess_exec', new=AsyncMock(return_value=process)):
             self.assertEqual(await read_product(URL), result)
+
+
+    async def test_alert_is_single_plain_private_message(self):
+        self.tracker.owner_id = 123
+        item = self.item()
+        item['chat_id'] = 999  # persisted data cannot redirect the owner's alert
+        await self.tracker.check(item)
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0]['chat_id'], 123)
+        self.assertEqual(self.sent[0]['text'], '₺6.000 — Örnek\n\nAkakçe Takip Bildirimi\n\n' + URL)
+        self.assertNotIn('parse_mode', self.sent[0])
+        self.assertTrue(self.sent[0]['link_preview_options']['is_disabled'])
+
+    async def test_tracker_owner_guard_rejects_other_chat(self):
+        self.tracker.owner_id = 456
+        self.assertFalse(await self.tracker.handle(self.event, '/takipac'))
+        self.assertTrue(self.tracker.queue.empty())

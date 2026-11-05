@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
 import sys
 import urllib.request
@@ -20,6 +21,28 @@ def product_url(raw):
             or not re.fullmatch(r'/[a-zA-Z0-9_/,.-]+-fiyati,\d+\.html', parts.path)):
         raise ValueError('HTTPS Akakçe ürün detay linki gönder.')
     return urlunsplit(('https', 'www.akakce.com', parts.path, '', ''))
+
+
+def purchase_url(raw):
+    """Validate a display-only seller link; never visit it or strip its query."""
+    if not isinstance(raw, str) or len(raw) > 1500 or any(c.isspace() for c in raw):
+        return None
+    try:
+        parts = urlsplit(raw)
+        host = parts.hostname or ''
+        if (parts.scheme != 'https' or parts.username or parts.password
+                or parts.port not in (None, 443) or '.' not in host
+                or host.endswith(('.local', '.localhost')) or host == 'akakce.com'
+                or host.endswith('.akakce.com')):
+            return None
+        try:
+            if not ipaddress.ip_address(host).is_global:
+                return None
+        except ValueError:
+            pass
+        return raw
+    except ValueError:
+        return None
 
 
 def cents(value):
@@ -203,13 +226,15 @@ def parse_page(raw):
                     return
                 seller = node.get('seller') or {}
                 name = seller.get('name', '') if isinstance(seller, dict) else str(seller)
-                offers.append({'price': price, 'seller': str(name)[:200]})
+                offers.append({'price': price, 'seller': str(name)[:200],
+                               'url': purchase_url(node.get('url'))})
             if 'offers' in node:
                 collect(node['offers'])
 
     collect(product.get('offers'))
     if not offers:
         raise ValueError('Geçerli TRY teklifi okunamadı')
+    jsonld_offers = list(offers)
     jsonld_count = len(offers)
     aggregate = product.get('offers')
     reported = None
@@ -241,13 +266,22 @@ def parse_page(raw):
     # Full seller pagination is unnecessary for minimum-price tracking. Verify
     # a concrete available offer against Akakçe's product-level current minimum.
     minimum_verified = declared_minimum is not None and best['price'] == declared_minimum
+    # HTML rows may lack a purchase href. Reuse JSON-LD only when both exact
+    # price AND seller match. Query parameters can identify the seller/variant.
+    seller_key = lambda value: ''.join(value.split()).casefold()
+    direct_url = next((offer.get('url') for offer in jsonld_offers
+                       if offer['price'] == best['price']
+                       and seller_key(offer['seller']) == seller_key(best['seller'])
+                       and offer.get('url')), None) if minimum_verified else None
     return {'title': str(product.get('name') or 'Akakçe ürünü')[:250],
             'price': best['price'], 'seller': best['seller'], 'offers': len(offers),
+            'purchase_url': direct_url,
             'source': source, 'jsonld_offers': jsonld_count,
             'html_rows': html_rows, 'invalid_html_rows': invalid_rows,
             'reported_offer_count': reported, 'coverage_complete': complete,
             'declared_minimum': declared_minimum, 'minimum_verified': minimum_verified,
-            'sample_offers': sorted(offers, key=lambda offer: offer['price'])[:20]}
+            'sample_offers': [{'price': offer['price'], 'seller': offer['seller']}
+                              for offer in sorted(offers, key=lambda offer: offer['price'])[:20]]}
 
 
 class Outline(HTMLParser):

@@ -5715,8 +5715,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     ok, _, detail = _github_api("PUT", url, token, payload)
                     return ok, "Ürün takip ayarı GitHub'a yazıldı." if ok else "GitHub yazımı başarısız."
 
-            tracker = ProductTracker(store.path.with_name("product_watches.json"),
-                                     private_api, persist_products)
+            tracker = ProductTracker(
+                store.path.with_name("product_watches.json"), private_api, persist_products,
+                owner_id=SELF_ID,
+                header_formatter=lambda cents, title: build_header_line(header_price_text(cents / 100), title),
+            )
         except Exception:
             log.exception("Ürün takibi başlatılamadı; kanal dinleme devam ediyor.")
 

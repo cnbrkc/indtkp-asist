@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from akakce_worker import product_url, target_cents
+from akakce_worker import product_url, purchase_url, target_cents
 
 log = logging.getLogger(__name__)
 MAX_PRODUCTS = 30
@@ -21,6 +21,20 @@ COMMANDS = {'/takipac', '/takipkapat', '/takipler', '/takipsil', '/takipiptal', 
 
 def money(value):
     return f'{value / 100:,.2f}'.replace(',', '_').replace('.', ',').replace('_', '.') + ' TL'
+
+
+def notification_text(result, tracked_url, header_formatter=None):
+    title = ' '.join(result['title'].split())[:250]
+    if header_formatter:
+        header = header_formatter(result['price'], title)
+    else:
+        header = f"₺{result['price'] // 100:,}".replace(',', '.') + f" — {title}"
+    blocks = [header, 'Akakçe Takip Bildirimi']
+    direct = purchase_url(result.get('purchase_url'))
+    if direct:
+        blocks.append(direct)
+    blocks.append(product_url(tracked_url))
+    return '\n\n'.join(blocks)
 
 
 def load_state(path):
@@ -78,8 +92,10 @@ async def read_product(url):
 
 
 class ProductTracker:
-    def __init__(self, path, api, persist, reader=read_product):
+    def __init__(self, path, api, persist, reader=read_product, *, owner_id=None, header_formatter=None):
         self.path, self.api, self.persist, self.reader = Path(path), api, persist, reader
+        self.owner_id = owner_id
+        self.header_formatter = header_formatter
         self.queue = asyncio.Queue(maxsize=32)
         self.drafts = {}
         self.health = {}
@@ -114,6 +130,8 @@ class ProductTracker:
 
     async def handle(self, event, raw, *, existing_pending=False):
         """Only owner-private messages reach here. Never await Akakçe I/O here."""
+        if self.owner_id is not None and event.chat_id != self.owner_id:
+            return False
         command = raw.split()[0].lower() if raw.startswith('/') else ''
         if existing_pending and command not in COMMANDS:
             return False
@@ -221,10 +239,13 @@ class ProductTracker:
             price = result['price']
             if price >= item['target'] or (item.get('alert_price') is not None and price >= item['alert_price']):
                 return
-            await self.tell(item['chat_id'], f"🎯 Hedef fiyatın altına indi\n{result['title']}\n"
-                            f"Akakçe'de okunan fiyat: {money(price)}\nHedef: {money(item['target'])}\n"
-                            f"Satıcı: {result['seller'] or 'belirtilmedi'}\n{url}\n"
-                            'Akakçe verisidir; stok, kargo, üyelik ve kupon koşullarını satın almadan kontrol et.')
+            text = notification_text(result, url, self.header_formatter)
+            if len(text.encode('utf-16-le')) // 2 > 4096:
+                raise ValueError('Takip bildirimi Telegram uzunluk sınırını aşıyor')
+            await self.api.call('sendMessage', {
+                'chat_id': self.owner_id or item['chat_id'], 'text': text,
+                'link_preview_options': {'is_disabled': True},
+            })
             before = copy.deepcopy(self.state)
             item['alert_price'] = price
             ok, _ = await self.save(before)
@@ -233,14 +254,14 @@ class ProductTracker:
                 current = next(i for i in self.state['items'] if i['url'] == url)
                 current['alert_price'] = price
                 health['status'] += ' | alarm kaydı kalıcılaştırılamadı'
-                await self.tell(item['chat_id'], '⚠️ Alarm gönderildi ancak GitHub kaydı başarısız; yeniden başlatmada tekrarlanabilir.')
+                await self.tell(self.owner_id or item['chat_id'], '⚠️ Alarm gönderildi ancak GitHub kaydı başarısız; yeniden başlatmada tekrarlanabilir.')
         except asyncio.CancelledError:
             raise
         except Exception:
             health['failures'] = health.get('failures', 0) + 1
             health['status'] = 'Okunamadı; otomatik bekleme'
             if health['failures'] == 3:
-                await self.tell(item['chat_id'], f"⚠️ Bu ürün 3 kontroldür okunamıyor. Telegram kanal dinleme devam ediyor.\n{url}")
+                await self.tell(self.owner_id or item['chat_id'], f"⚠️ Bu ürün 3 kontroldür okunamıyor. Telegram kanal dinleme devam ediyor.\n{url}")
         finally:
             failures = health.get('failures', 0)
             health['due'] = time.monotonic() + min(3600, INTERVAL * 2 ** min(failures, 4))
