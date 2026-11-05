@@ -1368,3 +1368,11 @@ Yeni workflow `main`e girmeden Actions menüsünde manuel çalıştırma düğme
 Bu nedenle ilk test için PR kontrolünü kullan; **sırf test etmek için PR'ı birleştirme**.
 Rapor değerlendirildikten sonra gerekiyorsa okuyucu tamamlanır; mevcut Telegram testleri
 ve canlı fiyat doğrulaması tekrar geçince ayrı bir kararla birleştirilir/açılır.
+
+İlk canlı PR testinde örnek ürünün en ucuz fiyatı ve satıcısı kullanıcı kontrolüyle
+eşleşti (6.839,05 TL, Pttavm/Promo). Ancak kullanıcı 17 teklif görürken JSON-LD
+okuyucusu 10 teklif döndürdü. Bu nedenle tam teklif kapsamı onaylanmadı ve takip
+kapalı tutuluyor. Güncel probe raporu yalnız test modunda `diagnostics` alanı da
+üretir: sınırlı DOM metni/yapısı ve JSON-LD örnekleri. Bu alan normal Telegram
+okuyucusunda üretilmez, HTML çalıştırılmaz; HTTP çerez/header veya bot sırları
+rapora eklenmez. Ayrıntılar artifact'te, kısa fiyat özeti logda bulunur.

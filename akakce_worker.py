@@ -128,12 +128,70 @@ def parse_page(raw):
             'sample_offers': sorted(offers, key=lambda offer: offer['price'])[:20]}
 
 
+class Outline(HTMLParser):
+    """Bounded inert DOM outline; no URLs, script bodies, forms or arbitrary attrs."""
+    def __init__(self):
+        super().__init__()
+        self.hidden = None
+        self.lines = []
+        self.size = 0
+        self.script_types = []
+
+    def add(self, text):
+        if self.size + len(text) <= 100_000:
+            self.lines.append(text)
+            self.size += len(text)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'script' and len(self.script_types) < 50:
+            self.script_types.append(attrs.get('type', 'javascript')[:100])
+        if tag in {'script', 'style', 'head', 'noscript', 'form'}:
+            if self.hidden is None:
+                self.hidden = tag
+            return
+        if self.hidden:
+            return
+        if tag in {'div', 'li', 'ul', 'span', 'b', 'strong', 'p', 'h1', 'h2', 'section', 'a', 'img'}:
+            # Only structural labels. Never serialize event handlers or URLs.
+            labels = ' '.join(f'{key}={attrs[key][:150]}' for key in ('id', 'class') if attrs.get(key))
+            self.add(f'<{tag} {labels}>')
+            if tag == 'img' and attrs.get('alt'):
+                self.add(attrs['alt'][:150])
+
+    def handle_endtag(self, tag):
+        if self.hidden == tag:
+            self.hidden = None
+        elif not self.hidden and tag in {'li', 'ul', 'div', 'section'}:
+            self.add(f'</{tag}>')
+
+    def handle_data(self, data):
+        if not self.hidden:
+            text = ' '.join(data.split())
+            if text:
+                self.add(text[:1000])
+
+
+def page_diagnostics(raw):
+    outline = Outline()
+    outline.feed(raw)
+    scripts = Scripts()
+    scripts.feed(raw)
+    # This is an anonymous public fetch, not a browser session. Keep only
+    # bounded structural text, not executable HTML or cookie/header values.
+    return {'html_characters': len(raw), 'script_types': outline.script_types,
+            'jsonld_blocks': len(scripts.scripts),
+            'dom_outline': '\n'.join(outline.lines),
+            'outline_limit': 100_000,
+            'jsonld_preview': [script[:30_000] for script in scripts.scripts[:3]]}
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise ValueError('Yönlendirme reddedildi')
 
 
-def fetch(url):
+def fetch(url, *, diagnostics=False):
     url = product_url(url)
     request = urllib.request.Request(url, headers={
         'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'tr-TR,tr;q=0.9'})
@@ -141,12 +199,16 @@ def fetch(url):
         data = response.read(MAX_BODY + 1)
         if len(data) > MAX_BODY:
             raise ValueError('Sayfa boyutu sınırı aşıldı')
-    return parse_page(data.decode('utf-8', errors='replace'))
+    raw = data.decode('utf-8', errors='replace')
+    result = parse_page(raw)
+    if diagnostics:
+        result['diagnostics'] = page_diagnostics(raw)
+    return result
 
 
 if __name__ == '__main__':
     try:
-        print(json.dumps({'ok': True, 'result': fetch(sys.argv[1])}, ensure_ascii=False))
+        print(json.dumps({'ok': True, 'result': fetch(sys.argv[1], diagnostics='--diagnostics' in sys.argv[2:])}, ensure_ascii=False))
     except Exception as exc:
         # No arbitrary remote body or URL is echoed.
         report = {'ok': False, 'error': type(exc).__name__}

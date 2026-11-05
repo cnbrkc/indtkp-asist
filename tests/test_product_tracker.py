@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from akakce_worker import cents, parse_page, product_url, target_cents
+from akakce_worker import cents, parse_page, product_url, target_cents, page_diagnostics
 from product_tracker import ProductTracker, load_state
 
 URL = 'https://www.akakce.com/fritoz/en-ucuz-ornek-fiyati,123.html'
@@ -76,6 +76,24 @@ class ReaderTests(unittest.TestCase):
                     page([]), page([offer('0')])]:
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 parse_page(raw)
+
+
+    def test_diagnostics_are_inert_bounded_outline(self):
+        raw = ('<div class="offers" onclick="SECRET_HANDLER">17 teklif'
+               '<a href="https://example.com/SECRET_URL">6.839,05 TL</a>'
+               '<script>SECRET_SCRIPT</script><form>SECRET_FORM</form></div>')
+        result = page_diagnostics(raw)
+        outline = result['dom_outline']
+        self.assertIn('17 teklif', outline)
+        self.assertIn('6.839,05 TL', outline)
+        self.assertNotIn('SECRET', outline)
+        self.assertLessEqual(len(page_diagnostics('<div>' + 'x' * 200_000)['dom_outline']), 100_000)
+
+    def test_diagnostics_keep_jsonld_separate(self):
+        result = page_diagnostics(page([offer('6839.05')]))
+        self.assertEqual(result['jsonld_blocks'], 1)
+        self.assertIn('6839.05', result['jsonld_preview'][0])
+        self.assertNotIn('6839.05', result['dom_outline'])
 
 
 class TrackerTests(unittest.IsolatedAsyncioTestCase):
