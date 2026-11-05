@@ -1312,10 +1312,11 @@ hemen bitmeyebilir; sonuç ayrıca gönderilir.
 - İlk sürüm en fazla **30 ürün**, ürün başına **5 dakika hedef aralık** ve host başına
   en az **10 saniye** istek aralığı kullanır. Hatalarda bekleme artar. Bunlar
   Akakçe'nin onaylanmış erişim limitleri değildir; engelde trafik artırılmaz.
-- Satıcı izin/engelleme listesi yoktur. Ürünün JSON-LD verisinden okunabilen tüm geçerli
-  TRY teklifleri karşılaştırılır. Stok dışı teklifler alınmaz; eksik stok bilgisi kesin
+- Satıcı izin/engelleme listesi yoktur. Okunan geçerli TRY tekliflerinin minimumu,
+  Akakçe ürün JSON-LD verisinin `AggregateOffer.lowPrice` güncel minimumuyla karşılaştırılır.
+  Aynıysa `minimum_verified: true` olur; uyuşmazsa/alan yoksa normal takip okuması reddedilir. Stok dışı teklifler alınmaz; eksik stok bilgisi kesin
   stok garantisi sayılmaz. **JSON-LD'nin sayfada görünen tüm teklifleri kapsadığı
-  doğrulanmadı.** Yalnız `AggregateOffer.lowPrice` varsa, belirli teklif gibi
+  doğrulanmadı ve ilk sürüm için şart değil.** Yalnız `AggregateOffer.lowPrice` varsa, belirli teklif gibi
   yorumlamak yerine okuma başarısız sayılır. Liste fiyatı/taksit regex'iyle tahmin yapılmaz.
 - Fiyatın **hedefin kesin olarak altında** olması gerekir. Eşit fiyat alarm üretmez.
   Aynı/daha yüksek fiyat tekrar bildirilmez; yeni daha düşük fiyat bildirilir.
@@ -1377,7 +1378,7 @@ kapalı tutuluyor. Güncel probe raporu yalnız test modunda `diagnostics` alan�
 okuyucusunda üretilmez, HTML çalıştırılmaz; HTTP çerez/header veya bot sırları
 rapora eklenmez. Ayrıntılar artifact'te, kısa fiyat özeti logda bulunur.
 
-#### Son kapsam incelemesi (aynı rapor)
+#### Önceki kapsam incelemesi (tarihsel not; aşağıdaki minimum kuralıyla değiştirildi)
 
 Ayrıntılı raporda `AggregateOffer.offerCount=20`, JSON-LD listesi 10 teklif,
 ana HTML `ul#PL` listesi 16 satır ve ardından “Daha fazla fiyat gör” kontrolü
@@ -1385,8 +1386,25 @@ bulundu. Kullanıcının tarayıcıdaki 17 gözlemiyle farkın tamamı henüz a�
 Okuyucu artık ana HTML listesini de değerlendirir; önerilen ürün fiyatlarını,
 tarihsel tabloyu ve piyasa fiyatlarını bu listeye karıştırmaz. Raporda `source`,
 `jsonld_offers`, `html_rows`, `invalid_html_rows`, `reported_offer_count` ve
-`coverage_complete` bulunur. **Kapsamın eksik olduğu biliniyorsa normal takip
-okuyucusu sonuçla alarm üretmez.** Probe tanı için kısmi sonuçları raporlamaya
+`coverage_complete` bulunur. **Bu aşamada kullanılan tam-kapsam engeli, kullanıcının güncel minimum takibi
+kararıyla kaldırıldı; normal okuyucu artık `minimum_verified` kontrolünü kullanır.** Probe tanı için kısmi sonuçları raporlamaya
 devam eder. `ok: true` artık yalnız okumanın başarılı olduğunu gösterir;
-`coverage_complete: false` olan ürün henüz tam kapsam testinden geçmemiştir.
+`coverage_complete: false` yalnız tüm satıcıların alınmadığını belirtir; minimum doğrulandıysa takibe engel değildir.
 Kalan fiyatları yükleme yöntemi henüz uygulanmadı; bu aşama aktivasyon onayı değildir.
+
+
+#### Güncel karar: yalnız güncel minimum + kullanıcının hedefi
+
+Tüm teklifleri indirmek gerekli değildir. Son kullanıcı raporunda ana HTML listesinde
+16 teklif ve toplam 20 sayısı olsa da, somut en ucuz teklif (6.839,05 TL / Pttavm/Promo)
+Akakçe'nin `lowPrice=6839.05` bilgisiyle eşleşti. Raporun gerçek JSON-LD ve ana liste
+parçaları regresyon fixture'ı olarak kaydedildi. Bu örnekte minimum doğrulaması geçer.
+
+Güncel kabul alanı **`minimum_verified: true`** değeridir. `declared_minimum` Akakçe'nin
+bildirdiği güncel minimumu kuruş cinsinden gösterir. Eksik satıcı sayısı bilgi amaçlıdır;
+`coverage_complete: false` minimum eşleşmişse alarmı engellemez. Minimumun farklı
+olması, bulunamaması veya TRY olmaması normal takipte reddedilir. Özet fiyatı tek başına
+satıcıya bağlamadan kullanmayız: okunabilir bir somut teklif de aynı fiyatı taşımalıdır.
+Bu doğrulama aynı sayfa yanıtındaki tutarlılığı gösterir, mağaza kasasındaki fiyatı veya
+Akakçe'nin güncelliğini garanti etmez. Hedefi kullanıcı elle girer; yıllık dip henüz
+otomatik okunmaz. "Daha fazla fiyat gör" için ek istek yapılmaz.

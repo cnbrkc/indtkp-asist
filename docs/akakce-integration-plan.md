@@ -68,3 +68,13 @@ Alt süreç, paylaşılan runner'ın bellek/CPU/ağ veya GitHub arızasına kar�
 - [ ] Önce kapalı entegrasyon, sonra bildirimsiz gölge test, ardından az ürünle alarm açılışı yapıldı.
 
 Bu kapılar tamamlanmadan 'mevcut sistemi bozmadan çalışıyor' sonucu ilan edilmez.
+
+
+## Güncel kapsam sadeleştirmesi
+
+Kullanıcı kararı: tüm satıcı sayfalarını yüklemek gerekli değil; Akakçe'nin güncel
+minimumunu takip etmek yeterli. `coverage_complete` tanı alanı olarak kalır, aktivasyon
+şartı değildir. Yeni şart: somut geçerli teklif minimumu ile ürünün TRY cinsindeki
+`AggregateOffer.lowPrice` alanı eşit olmalı (`minimum_verified: true`). Eksik veya
+uyuşmayan minimumla alarm üretilmez. Kullanıcı manuel hedef fiyat girer. Yıllık dip,
+kalan tekliflerin sayfalanması ve tüm satıcıların kapsanması ilk sürüm kapsamı dışıdır.

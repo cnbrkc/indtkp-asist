@@ -66,8 +66,8 @@ async def read_product(url):
         if process.returncode or not body.get('ok'):
             raise ValueError('Akakçe okunamadı; erişim engeli veya sayfa değişikliği olabilir')
         result = body['result']
-        if result.get('coverage_complete') is False:
-            raise ValueError('Teklif listesi eksik: daha fazla fiyat yüklenmesi gerekiyor; takip açılmadı')
+        if result.get('minimum_verified') is not True:
+            raise ValueError('Güncel en düşük fiyat doğrulanamadı; Akakçe minimumu ve okunan teklif uyuşmalı')
         if type(result.get('price')) is not int or result['price'] <= 0:
             raise ValueError('Geçersiz fiyat')
         return result
@@ -134,7 +134,8 @@ class ProductTracker:
         if command == '/takipyardim':
             await event.reply('Akakçe ürün linkini gönder, ardından hedef fiyatı yaz.\n'
                               '/takipac · /takipkapat · /takipler · /takipsil NUMARA · /takipiptal\n'
-                              'Tüm okunabilen teklifler değerlendirilir. Ürünler/hedefler public repoya kaydedilir.\n'
+                              'Akakçe güncel minimumu doğrulanarak izlenir; tüm teklifleri indirmek gerekmez.\n'
+                              'Hedefi sen girersin. Ürünler/hedefler public repoya kaydedilir.\n'
                               'Alarm: fiyat < hedef. Aynı veya daha yüksek fiyat tekrar bildirilmez.\n'
                               'Kontroller hedef olarak 5 dk aralıklı; engelde ve yoğunlukta uzar.')
             return True
@@ -183,7 +184,7 @@ class ProductTracker:
             self.drafts[chat] = {'url': value, 'title': result['title'],
                                  'until': time.monotonic() + 600}
             await self.tell(chat, f"{result['title']}\nOkunan en düşük teklif: {money(result['price'])}\n"
-                            f"Okunan teklif: {result['offers']}\nHangi fiyatın altına düşerse haber vereyim?\n"
+                            "Akakçe güncel minimumuyla doğrulandı.\nHangi fiyatın altına düşerse haber vereyim?\n"
                             'Örnek: 6500 veya 6.500,50 TL. İptal: /takipiptal')
             return
         before = copy.deepcopy(self.state)

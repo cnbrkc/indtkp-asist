@@ -232,11 +232,21 @@ def parse_page(raw):
     else:
         complete = jsonld_count == reported if reported else None
     best = min(offers, key=lambda offer: offer['price'])
+    declared_minimum = None
+    if isinstance(aggregate, dict) and aggregate.get('priceCurrency') == 'TRY':
+        try:
+            declared_minimum = cents(aggregate.get('lowPrice'))
+        except (ValueError, TypeError):
+            pass
+    # Full seller pagination is unnecessary for minimum-price tracking. Verify
+    # a concrete available offer against Akakçe's product-level current minimum.
+    minimum_verified = declared_minimum is not None and best['price'] == declared_minimum
     return {'title': str(product.get('name') or 'Akakçe ürünü')[:250],
             'price': best['price'], 'seller': best['seller'], 'offers': len(offers),
             'source': source, 'jsonld_offers': jsonld_count,
             'html_rows': html_rows, 'invalid_html_rows': invalid_rows,
             'reported_offer_count': reported, 'coverage_complete': complete,
+            'declared_minimum': declared_minimum, 'minimum_verified': minimum_verified,
             'sample_offers': sorted(offers, key=lambda offer: offer['price'])[:20]}
 
 

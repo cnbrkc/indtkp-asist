@@ -148,6 +148,27 @@ class ReaderTests(unittest.TestCase):
         self.assertFalse(result['coverage_complete'])
 
 
+    def test_actual_report_minimum_verified_without_all_sellers(self):
+        path = Path(__file__).parent / 'fixtures' / 'akakce' / 'current-minimum.html'
+        result = parse_page(path.read_text())
+        self.assertEqual(result['price'], 683905)
+        self.assertEqual(result['seller'], 'Pttavm/Promo')
+        self.assertEqual(result['offers'], 16)
+        self.assertFalse(result['coverage_complete'])
+        self.assertTrue(result['minimum_verified'])
+        self.assertEqual(result['declared_minimum'], 683905)
+
+    def test_minimum_mismatch_not_verified(self):
+        result = parse_page(page({'priceCurrency': 'TRY', 'lowPrice': '6000',
+                                  'offers': [offer('6839.05')]}))
+        self.assertFalse(result['minimum_verified'])
+
+    def test_missing_or_foreign_currency_minimum_not_verified(self):
+        for aggregate in [{'offers': [offer('6839.05')]},
+                          {'priceCurrency': 'USD', 'lowPrice': '6839.05', 'offers': [offer('6839.05')]}]:
+            self.assertFalse(parse_page(page(aggregate))['minimum_verified'])
+
+
 class TrackerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -319,11 +340,21 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item['alert_price'], 550000)
 
 
-    async def test_incomplete_worker_result_cannot_trigger_tracking(self):
+    async def test_unverified_minimum_cannot_trigger_tracking(self):
         from unittest.mock import AsyncMock, patch
         from product_tracker import read_product
         process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(
-            json.dumps({'ok': True, 'result': {'price': 683905, 'coverage_complete': False}}).encode(), b'')))
+            json.dumps({'ok': True, 'result': {'price': 683905, 'coverage_complete': False, 'minimum_verified': False}}).encode(), b'')))
         with patch('product_tracker.asyncio.create_subprocess_exec', new=AsyncMock(return_value=process)):
-            with self.assertRaisesRegex(ValueError, 'Teklif listesi eksik'):
+            with self.assertRaisesRegex(ValueError, 'Güncel en düşük fiyat doğrulanamadı'):
                 await read_product(URL)
+
+
+    async def test_verified_minimum_allowed_with_partial_seller_list(self):
+        from unittest.mock import AsyncMock, patch
+        from product_tracker import read_product
+        result = {'price': 683905, 'coverage_complete': False, 'minimum_verified': True}
+        process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(
+            json.dumps({'ok': True, 'result': result}).encode(), b'')))
+        with patch('product_tracker.asyncio.create_subprocess_exec', new=AsyncMock(return_value=process)):
+            self.assertEqual(await read_product(URL), result)
