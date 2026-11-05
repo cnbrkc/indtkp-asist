@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from akakce_worker import cents, parse_page, product_url, target_cents, page_diagnostics, purchase_url
-from product_tracker import ProductTracker, load_state, notification_text
+from product_tracker import ProductTracker, load_state, notification_text, TRACK_MENU, COMMANDS, tracking_menu
 
 URL = 'https://www.akakce.com/fritoz/en-ucuz-ornek-fiyati,123.html'
 
@@ -217,6 +217,21 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(text.split('\n')[0], bot.build_header_line(bot.header_price_text(6839.05), 'Philips'))
 
 
+    def test_tracking_menu_is_complete_short_and_copy_only(self):
+        text, keyboard = tracking_menu(False)
+        self.assertEqual(COMMANDS, {'/takip'} | {command for command, _ in TRACK_MENU})
+        buttons = [button for row in keyboard['inline_keyboard'] for button in row]
+        self.assertEqual(len(buttons), len(TRACK_MENU))
+        for (command, description), button in zip(TRACK_MENU, buttons):
+            self.assertTrue(2 <= len(description.split()) <= 4)
+            self.assertIn(f'{command} — {description}', text)
+            self.assertEqual(button['copy_text']['text'].strip(), command)
+            self.assertNotIn('callback_data', button)
+            self.assertNotIn('switch_inline_query_current_chat', button)
+        self.assertIn('Kapalı', text)
+        self.assertIn('Açık', tracking_menu(True)[0])
+
+
 class TrackerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -423,3 +438,37 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         self.tracker.owner_id = 456
         self.assertFalse(await self.tracker.handle(self.event, '/takipac'))
         self.assertTrue(self.tracker.queue.empty())
+
+
+    async def test_root_menu_read_only_preserves_existing_drafts(self):
+        self.tracker.drafts[123] = {'until': float('inf'), 'url': URL}
+        before = copy.deepcopy(self.tracker.state)
+        handled = await self.tracker.handle(self.event, '/takip', existing_pending=True)
+        self.assertTrue(handled)
+        self.assertEqual(self.tracker.state, before)
+        self.assertIn(123, self.tracker.drafts)
+        self.assertTrue(self.tracker.queue.empty())
+        self.assertEqual(self.sent[-1]['chat_id'], 123)
+        self.assertIn('inline_keyboard', self.sent[-1]['reply_markup'])
+        self.assertFalse(self.saved)
+
+    async def test_root_menu_rejects_non_owner(self):
+        self.tracker.owner_id = 456
+        self.assertFalse(await self.tracker.handle(self.event, '/takip'))
+        self.assertFalse(self.sent)
+
+    async def test_menu_falls_back_only_on_explicit_bad_request(self):
+        from private_bot import BotAPIError
+        async def unsupported(method, payload):
+            raise BotAPIError('unsupported button', code=400)
+        self.tracker.api = SimpleNamespace(call=unsupported)
+        self.assertTrue(await self.tracker.handle(self.event, '/takip'))
+        self.assertIn('/takipac', self.replies[-1])
+
+    async def test_menu_uncertain_send_is_not_replayed(self):
+        async def timeout(method, payload):
+            raise TimeoutError()
+        self.tracker.api = SimpleNamespace(call=timeout)
+        with self.assertRaises(TimeoutError):
+            await self.tracker.handle(self.event, '/takip')
+        self.assertFalse(self.replies)

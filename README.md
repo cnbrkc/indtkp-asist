@@ -439,12 +439,13 @@ dahil) `/kaydet` seçilene kadar taslakta kalır. `/restart` için
 | `/test` | Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir. |
 | `/id` | Bulunduğun sohbetin ve kullanıcının kimliğini gösterir. |
 | `/restart` | Yeni takipçi çalışması başlatır; GH_PAT gerekir. |
+| `/takip` | Özel sohbette ürün takip menüsünü açar. |
 
 **Tamamı virgülle ayrılmış hâli** (BotFather açıklamasına, sabitlenmiş mesaja ya da
 grubun komut menüsüne doğrudan yapıştırabilirsin):
 
 ```text
-/komutlar, /start, /durum, /dmfiltre, /dmac, /dmkapat, /ayar, /ekle, /çıkar, /kaydet, /iptal, /open, /close, /kaynaklar, /kaynaktest, /analiz, /test, /id, /restart
+/komutlar, /start, /durum, /dmfiltre, /dmac, /dmkapat, /ayar, /ekle, /çıkar, /kaydet, /iptal, /open, /close, /kaynaklar, /kaynaktest, /analiz, /test, /id, /restart, /takip
 ```
 
 #### Kaynak mesaj erişimini test etme
@@ -1304,13 +1305,13 @@ Bu komutlar ancak PR birleştirilip **güncel ana bot başladıktan sonra** kull
 PR kontrolü tek başına çalışan botu güncellemez. Merge sonrasında mevcut botun
 özel sohbetine `/restart` gönderip yenilemenin tamamlanmasını bekleyebilirsin
 (mevcut GH_PAT gerekir); bu komutun mevcut workflow yenileme yolu değiştirilmedi.
-Yenilenen bot hazır olunca `/takipyardim` yanıt vermelidir. Aynı bot token'ıyla
+Yenilenen bot hazır olunca `/takip` menüyü göstermelidir. Aynı bot token'ıyla
 ikinci bir bağımsız Telegram dinleyicisi başlatma.
 
 Botla özel sohbetinde sırayla:
 
 1. `/durum` — mevcut dinleyicinin yanıt verdiğini kontrol et.
-2. `/takipyardim`
+2. `/takip` — alt komutların kısa menüsünü açar.
 3. `/takipac` — **Kalıcı kaydedildi** yanıtını bekle.
 4. Takip edeceğin Akakçe **ürün detay linkini** gönder.
 5. Bot ürünü ve okuduğu fiyatı gösterip hedefi sorunca, test için gördüğün güncel
@@ -1332,12 +1333,21 @@ hedef gruba test gönderir, Akakçe alarmını sınamaz.
 
 | Komut | İşlev |
 |---|---|
+| `/takip` | Kısa menü ve komut kopyalama düğmeleri |
 | `/takipac` | Ürün kontrollerini açar, GitHub'a kaydeder |
 | `/takipkapat` | Takip listesini koruyarak kontrolleri kapatır |
 | `/takipler` | Ürün numarası, hedef ve bu oturumun kontrol durumu |
 | `/takipsil 1` | Listedeki numarayla ürün siler |
 | `/takipiptal` | Hedef fiyat taslağını iptal eder |
 | `/takipyardim` | Kısa kullanım |
+
+Yalnız **`/takip`** komutunu hatırlaman yeterli. Menüde her alt komutun yanında
+2–4 kelimelik açıklama ve komutu panoya kopyalayan düğmeler vardır. Düğmeye basmak
+komutu çalıştırmaz; kopyalananı yazı alanına yapıştırıp gönderirsin. Telegram bot
+mesajları yazı alanını doğrudan dolduramaz. `/takipsil` kopyalanınca ürün numarasını
+sen eklersin. Kopyalama düğmelerini desteklemeyen istemcide düz komutları kullan.
+Eski alt komutlar çalışmayı sürdürür; `/takipyardim` ayrıntılı yardım olarak kalır.
+Menüyü açmak bekleyen hedef/filtre taslağını bozmaz veya takibi açıp kapatmaz.
 
 Mevcut filtre düzenleme taslağı açıksa önce `/kaydet` veya `/iptal` ile bitir.
 Hedef taslağı 10 dakika sonra geçersiz olur. Bir ürün okuması sıradaysa komut sonucu

@@ -16,7 +16,30 @@ log = logging.getLogger(__name__)
 MAX_PRODUCTS = 30
 INTERVAL = 300
 HOST_GAP = 10
-COMMANDS = {'/takipac', '/takipkapat', '/takipler', '/takipsil', '/takipiptal', '/takipyardim'}
+# One source for the menu, copy buttons and recognized subcommands.
+TRACK_MENU = (
+    ('/takipac', 'Fiyat takibini aç'),
+    ('/takipkapat', 'Fiyat takibini durdur'),
+    ('/takipler', 'Ürünleri ve hedefleri göster'),
+    ('/takipsil', 'Numarayla ürün sil'),
+    ('/takipiptal', 'Hedef girişini iptal'),
+    ('/takipyardim', 'Ayrıntılı kullanımı göster'),
+)
+COMMANDS = frozenset({'/takip', *(command for command, _ in TRACK_MENU)})
+
+
+def tracking_menu(enabled):
+    lines = ['Akakçe Takip Menüsü · ' + ('Açık' if enabled else 'Kapalı'), '']
+    lines.extend(f'{command} — {description}' for command, description in TRACK_MENU)
+    lines.extend(['', 'Ürün eklemek/hedef değiştirmek için Akakçe linkini gönder.',
+                  'Silme: /takipsil NUMARA',
+                  'Düğmeler komutu panoya kopyalar; yapıştırıp gönder.'])
+    buttons = [
+        {'text': command, 'copy_text': {'text': command + (' ' if command == '/takipsil' else '')}}
+        for command, _ in TRACK_MENU
+    ]
+    return '\n'.join(lines), {'inline_keyboard': [buttons[i:i + 2] for i in range(0, len(buttons), 2)]}
+
 
 
 def money(value):
@@ -146,6 +169,19 @@ class ProductTracker:
         is_link = raw.startswith(('https://www.akakce.com/', 'https://akakce.com/'))
         if command not in COMMANDS and not is_link and not (draft and not command):
             return False
+        if command == '/takip':
+            text, keyboard = tracking_menu(self.state['enabled'])
+            try:
+                await self.api.call('sendMessage', {
+                    'chat_id': event.chat_id, 'text': text, 'reply_markup': keyboard,
+                })
+            except Exception as exc:
+                # Copy buttons are optional; never retry an uncertain send.
+                # Only explicit API 400 rejection can fall back to plain text.
+                if getattr(exc, 'code', None) != 400:
+                    raise
+                await event.reply(text)
+            return True
         if self.disabled_error:
             await event.reply('Takip dosyası okunamıyor. Mevcut Telegram dinleme devam ediyor; dosya düzeltilmeli.')
             return True
@@ -160,7 +196,7 @@ class ProductTracker:
         try:
             if is_link:
                 if not self.state['enabled']:
-                    await event.reply('Ürün takibi kapalı. Açmak için /takipac; bilgi: /takipyardim')
+                    await event.reply('Ürün takibi kapalı. Açmak için /takipac; menü: /takip')
                     return True
                 job = ('link', event.chat_id, product_url(raw))
             elif draft and not command:
@@ -194,7 +230,7 @@ class ProductTracker:
                             f"Son kontrol: {h.get('checked', 'bu oturumda henüz yok')} | "
                             f"Durum: {h.get('status', 'bekliyor')}\n{item['url']}")
             await self.tell(chat, 'Takip ' + ('açık' if self.state['enabled'] else 'kapalı') + '\n' +
-                            ('\n\n'.join(rows) if rows else 'Ürün yok.') + '\n/takipyardim')
+                            ('\n\n'.join(rows) if rows else 'Ürün yok.') + '\nMenü: /takip')
             return
         if kind == 'link':
             result = await self.fetch(value)

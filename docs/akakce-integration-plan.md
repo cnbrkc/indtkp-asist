@@ -55,3 +55,12 @@ Bozuk takip JSON'u mevcut kanal botunun açılışını engellemez.
 
 PR'ı ready yapmak otomatik merge/aktivasyon değildir. Aktivasyon varsayılan kapalı
 kalır; merge sonrası güncel bot başladığında kullanıcı `/takipac` ile açar.
+
+## Tek giriş menüsü
+
+`/takip` salt okunur ana menüdür. Kısa açıklamalar, tanınan alt komutlar ve kopyalama
+butonları `TRACK_MENU` kataloğundan üretilir; ayrı yinelenen listeler tutulmaz.
+Kopyalama butonları `copy_text` kullanır: komutu panoya alır, otomatik göndermez veya
+callback/getUpdates akışını değiştirmez. API açıkça 400 reddederse düz metne düşer;
+belirsiz bağlantı hatasında mesaj tekrar gönderilmez. Owner-only kontrolü ve mevcut
+taslak öncelikleri korunur. `/komutlar` yalnız ana `/takip` girişini de listeler.

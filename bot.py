@@ -3780,6 +3780,7 @@ COMMAND_ANALYZE = "/analiz"
 COMMAND_TEST = "/test"
 COMMAND_ID = "/id"
 COMMAND_RESTART = "/restart"
+COMMAND_TRACK = "/takip"
 
 # This is the single, canonical command catalog. HELP_TEXT is generated from it so
 # /komutlar cannot drift from the names and descriptions users actually need.
@@ -3804,6 +3805,7 @@ COMMAND_DESCRIPTIONS = (
     (COMMAND_TEST, "Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir."),
     (COMMAND_ID, "Bulunduğun sohbetin ve kullanıcının kimliğini gösterir."),
     (COMMAND_RESTART, "Yeni takipçi çalışması başlatır; GH_PAT gerekir."),
+    (COMMAND_TRACK, "Özel sohbette ürün takip menüsünü açar."),
 )
 HELP_TEXT = "\n".join(f"{command} - {description}" for command, description in COMMAND_DESCRIPTIONS)
 
@@ -7473,6 +7475,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await control_reply(event, ("🔄 " if ok else "⚠️ ") + message)
         elif command == COMMAND_HELP:
             await control_reply(event, HELP_TEXT)
+        elif command == COMMAND_TRACK:
+            await control_reply(event, "Ürün takip menüsü için bildirim botunun özel sohbetinde /takip yaz.")
         elif command in CMD_ANALYZE:
             await analyze_history(event, rest)
         elif command in CMD_FILTER_OPEN:
