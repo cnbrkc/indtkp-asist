@@ -1388,15 +1388,14 @@ Kalıcı kayıt testi için doğal runner yenilenmesinden sonra `/takipler` gön
 ürün/hedef korunmalı, aynı fiyattan gönderilmiş alarm normalde tekrar etmemeli.
 Geri dönüş için `/takipkapat` yazıp kalıcı kayıt onayını bekle; mevcut kanal takibi sürer.
 
-### Secretsız canlı okuyucu testi (PR aşaması)
+### Geçici erişim testi kaldırıldı
 
-PR Checks → **Akakçe erişim testi** → Details. `minimum_verified: true` beklenir;
-`coverage_complete: false` kabul edilebilir. Probe Telegram'a bağlanmaz veya kayıt
- değiştirmez. `akakce-report` artifact'inde fiyatlar kuruş cinsindedir: 683905 =
-6.839,05 TL. Başarısız okumada da tanı raporu yüklenir; 403/429 erişim/limit hatasıdır.
-Tanı yalnız bu modda üretilir; sınırlı HTML/JSON-LD parçaları çalıştırılmadan raporlanır.
-Artifact'ler üç gün saklanır. Manuel test düğmesi görünüyorsa test branch'ini seçip
-ürün detay URL'si girilebilir; görünmüyorsa sırf denemek için PR'ı birleştirme.
+Geliştirme sırasında kullanılan `Akakçe erişim testi` workflow'u son PR'dan
+çıkarıldı. PR güncellemelerinde ayrıca Akakçe sayfası açan veya rapor artifact'i
+üreten bir iş artık yok. Önceden tamamlanan çalışmalar Actions geçmişinde
+görünebilir; bu, yeniden çalıştıkları anlamına gelmez. Normal `Testler` workflow'u
+kod regresyonlarını, `Telegram indirim takipçisi` ise asıl botu çalıştırmaya devam eder.
+Akakçe takibi ayrıca bir workflow açmaz; ana botta `/takipac` ile açılır.
 
 Deneme raporu: bildirim ekran görüntüsü, `/takipler` çıktısı, kayıt onayı/uyarıları ve
 mevcut kanal dinleyicisinin çalışıp çalışmadığını paylaş. Cookie/token/secret paylaşma.

@@ -64,3 +64,10 @@ Kopyalama butonları `copy_text` kullanır: komutu panoya alır, otomatik gönde
 callback/getUpdates akışını değiştirmez. API açıkça 400 reddederse düz metne düşer;
 belirsiz bağlantı hatasında mesaj tekrar gönderilmez. Owner-only kontrolü ve mevcut
 taslak öncelikleri korunur. `/komutlar` yalnız ana `/takip` girişini de listeler.
+
+## Geçici workflow temizliği
+
+Kullanıcı isteğiyle `.github/workflows/akakce-probe.yml` kaldırıldı. PR güncellemesi
+artık ayrıca canlı Akakçe erişim testi tetiklemez. Daha önce alınan canlı sonuçlar
+ve offline fixture testleri geçerliliğini korur; yeni canlı test çalıştırılmış gibi
+sunulmaz. Ana Telegram workflow'u ve normal Testler workflow'u değiştirilmedi.
