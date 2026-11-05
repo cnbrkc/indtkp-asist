@@ -1397,5 +1397,14 @@ görünebilir; bu, yeniden çalıştıkları anlamına gelmez. Normal `Testler` 
 kod regresyonlarını, `Telegram indirim takipçisi` ise asıl botu çalıştırmaya devam eder.
 Akakçe takibi ayrıca bir workflow açmaz; ana botta `/takipac` ile açılır.
 
+Actions ekranındaki eski `Gecici push testi` de ayrı bir tarihsel teşhis kaydıdır:
+6 Ekim 2026'da eski `arena/61a972b6-indtkp-asist` dalında push kimlik doğrulamasını
+sınamak için çalışmıştır. `tmp-push-test.yml` hem mevcut `main`de hem bu PR'da yoktur;
+Asıl bot bu denemeyi çağırmaz. Gereksiz test betiği, sonuç dosyası veya çağrı kalıntısı
+bulunmadı. Eski Actions kaydı PR ile silinmez; repo yöneticisi Actions → Gecici push
+testi → ⋯ → Disable workflow ile kaydı devre dışı bırakabilir. Geçmiş çalışmalar
+listede kalabilir. Botun `commit_and_push` / `push_branch` kodu gerçek ayar kaydı için
+kullanılır, bu tarihsel testin parçası sayılıp kaldırılmamalıdır.
+
 Deneme raporu: bildirim ekran görüntüsü, `/takipler` çıktısı, kayıt onayı/uyarıları ve
 mevcut kanal dinleyicisinin çalışıp çalışmadığını paylaş. Cookie/token/secret paylaşma.
