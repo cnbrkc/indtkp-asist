@@ -66,6 +66,8 @@ async def read_product(url):
         if process.returncode or not body.get('ok'):
             raise ValueError('Akakçe okunamadı; erişim engeli veya sayfa değişikliği olabilir')
         result = body['result']
+        if result.get('coverage_complete') is False:
+            raise ValueError('Teklif listesi eksik: daha fazla fiyat yüklenmesi gerekiyor; takip açılmadı')
         if type(result.get('price')) is not int or result['price'] <= 0:
             raise ValueError('Geçersiz fiyat')
         return result

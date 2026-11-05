@@ -96,6 +96,58 @@ class ReaderTests(unittest.TestCase):
         self.assertNotIn('6839.05', result['dom_outline'])
 
 
+    def html_offer(self, price, seller):
+        return ('<li><span class="pb_v8"><span class="pt_v8">' + price +
+                '</span></span><span class="v_v8"><img alt="Mağaza">/' + seller +
+                '</span><span class="stock_v8">Stokta</span></li>')
+
+    def test_html_main_list_not_recommendations(self):
+        raw = page({'@type': 'AggregateOffer', 'offerCount': '2', 'offers': [offer('9000')]})
+        raw += '<ul id="PL_22"><li><span class="pt_v8">1 TL</span></li></ul>'
+        raw += '<ul class="pl_v9" id="PL">' + self.html_offer('9.000,00 TL', 'A') + self.html_offer('6.000,00 TL', 'B') + '</ul>'
+        result = parse_page(raw)
+        self.assertEqual(result['price'], 600000)
+        self.assertEqual(result['seller'], 'Mağaza/B')
+        self.assertEqual(result['offers'], 2)
+        self.assertTrue(result['coverage_complete'])
+        self.assertEqual(result['source'], 'html_main_list')
+
+    def test_partial_jsonld_is_explicit(self):
+        result = parse_page(page({'offerCount': '20', 'offers': [offer('6839.05')]}))
+        self.assertFalse(result['coverage_complete'])
+        self.assertEqual(result['reported_offer_count'], 20)
+
+    def test_partial_html_not_declared_complete(self):
+        raw = page({'offerCount': '20', 'offers': [offer('6839.05')]})
+        raw += '<ul id="PL">' + ''.join(self.html_offer('6.839,05 TL', str(i)) for i in range(16)) + '</ul>'
+        result = parse_page(raw)
+        self.assertEqual(result['html_rows'], 16)
+        self.assertEqual(result['offers'], 16)
+        self.assertFalse(result['coverage_complete'])
+
+    def test_invalid_html_row_not_silently_dropped(self):
+        raw = page({'offerCount': '2', 'offers': [offer('6839.05')]})
+        raw += '<ul id="PL">' + self.html_offer('6.839,05 TL', 'A') + '<li>bozuk satır</li></ul>'
+        result = parse_page(raw)
+        self.assertEqual(result['invalid_html_rows'], 1)
+        self.assertFalse(result['coverage_complete'])
+
+    def test_html_price_handles_nonbreaking_space(self):
+        raw = page([offer('6839.05')])
+        raw += '<ul id="PL">' + self.html_offer('6.839,05&nbsp;TL', 'A') + '</ul>'
+        self.assertEqual(parse_page(raw)['price'], 683905)
+
+
+    def test_actual_report_jsonld_is_only_ten_of_twenty(self):
+        path = Path(__file__).parent / 'fixtures' / 'akakce' / 'partial-jsonld.html'
+        result = parse_page(path.read_text())
+        self.assertEqual(result['price'], 683905)
+        self.assertEqual(result['seller'], 'Pttavm/Promo')
+        self.assertEqual(result['jsonld_offers'], 10)
+        self.assertEqual(result['reported_offer_count'], 20)
+        self.assertFalse(result['coverage_complete'])
+
+
 class TrackerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -265,3 +317,13 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         await self.tracker.check(item)
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(item['alert_price'], 550000)
+
+
+    async def test_incomplete_worker_result_cannot_trigger_tracking(self):
+        from unittest.mock import AsyncMock, patch
+        from product_tracker import read_product
+        process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(
+            json.dumps({'ok': True, 'result': {'price': 683905, 'coverage_complete': False}}).encode(), b'')))
+        with patch('product_tracker.asyncio.create_subprocess_exec', new=AsyncMock(return_value=process)):
+            with self.assertRaisesRegex(ValueError, 'Teklif listesi eksik'):
+                await read_product(URL)

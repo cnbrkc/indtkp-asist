@@ -1376,3 +1376,17 @@ kapalı tutuluyor. Güncel probe raporu yalnız test modunda `diagnostics` alan�
 üretir: sınırlı DOM metni/yapısı ve JSON-LD örnekleri. Bu alan normal Telegram
 okuyucusunda üretilmez, HTML çalıştırılmaz; HTTP çerez/header veya bot sırları
 rapora eklenmez. Ayrıntılar artifact'te, kısa fiyat özeti logda bulunur.
+
+#### Son kapsam incelemesi (aynı rapor)
+
+Ayrıntılı raporda `AggregateOffer.offerCount=20`, JSON-LD listesi 10 teklif,
+ana HTML `ul#PL` listesi 16 satır ve ardından “Daha fazla fiyat gör” kontrolü
+bulundu. Kullanıcının tarayıcıdaki 17 gözlemiyle farkın tamamı henüz açıklanmadı.
+Okuyucu artık ana HTML listesini de değerlendirir; önerilen ürün fiyatlarını,
+tarihsel tabloyu ve piyasa fiyatlarını bu listeye karıştırmaz. Raporda `source`,
+`jsonld_offers`, `html_rows`, `invalid_html_rows`, `reported_offer_count` ve
+`coverage_complete` bulunur. **Kapsamın eksik olduğu biliniyorsa normal takip
+okuyucusu sonuçla alarm üretmez.** Probe tanı için kısmi sonuçları raporlamaya
+devam eder. `ok: true` artık yalnız okumanın başarılı olduğunu gösterir;
+`coverage_complete: false` olan ürün henüz tam kapsam testinden geçmemiştir.
+Kalan fiyatları yükleme yöntemi henüz uygulanmadı; bu aşama aktivasyon onayı değildir.
