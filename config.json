@@ -88,7 +88,12 @@
   "clean_commands": true,
   "private_control": true,
   "dm_enabled": true,
-  "dm_exclude_keywords": [],
+  "dm_exclude_keywords": [
+    "nextstar",
+    "grundig",
+    "pensan",
+    "iffalcon"
+  ],
   "dm_keywords": [
     "tlc 75",
     "tcl 65",
