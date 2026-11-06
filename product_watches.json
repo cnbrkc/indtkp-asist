@@ -1,5 +1,13 @@
 {
   "version": 1,
   "enabled": true,
-  "items": []
+  "items": [
+    {
+      "url": "https://www.akakce.com/televizyon/en-ucuz-tcl-65c6k-4k-ultra-hd-65-165-ekran-uydu-alicili-google-smart-miniled-tv-fiyati,1050077996.html",
+      "title": "TCL 65C6K Premium 4K Ultra HD 65&quot; 165 Ekran Uydu Alıcılı Google Smart Mini LED TV",
+      "target": 6100000,
+      "chat_id": 1143378073,
+      "alert_price": null
+    }
+  ]
 }
