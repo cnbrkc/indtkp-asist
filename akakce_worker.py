@@ -1,6 +1,7 @@
 """Bounded, token-free Akakçe reader. Run in a disposable subprocess."""
 from __future__ import annotations
 
+import html
 import json
 import ipaddress
 import re
@@ -273,7 +274,9 @@ def parse_page(raw):
                        if offer['price'] == best['price']
                        and seller_key(offer['seller']) == seller_key(best['seller'])
                        and offer.get('url')), None) if minimum_verified else None
-    return {'title': str(product.get('name') or 'Akakçe ürünü')[:250],
+    # JSON-LD adı bazen HTML kaçışıyla gelir ("65&quot;") — saklamadan önce aç.
+    title = ' '.join(html.unescape(str(product.get('name') or 'Akakçe ürünü')).split())[:250]
+    return {'title': title,
             'price': best['price'], 'seller': best['seller'], 'offers': len(offers),
             'purchase_url': direct_url,
             'source': source, 'jsonld_offers': jsonld_count,
