@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import html
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 
+import timefmt
 from akakce_worker import product_url, purchase_url, target_cents
 
 log = logging.getLogger(__name__)
@@ -44,6 +46,11 @@ def tracking_menu(enabled):
 
 def money(value):
     return f'{value / 100:,.2f}'.replace(',', '_').replace('.', ',').replace('_', '.') + ' TL'
+
+
+def clean_title(value):
+    """JSON-LD başlığı bazen HTML kaçışlı gelir (``&quot;``); metinde aç."""
+    return ' '.join(html.unescape(str(value or '')).split())[:250]
 
 
 def notification_text(result, tracked_url, header_formatter=None):
@@ -123,6 +130,7 @@ class ProductTracker:
         self.drafts = {}
         self.health = {}
         self.next_host = 0.0
+        self.started_at = time.time()
         self.disabled_error = False
         try:
             self.state = load_state(self.path)
@@ -221,15 +229,57 @@ class ProductTracker:
         finally:
             self.next_host = time.monotonic() + HOST_GAP
 
+    def health_line(self, health, now, mono):
+        """Saat dilimi belirsizliği bırakmayan tek satırlık kontrol özeti.
+
+        Eski sürüm ham `time.strftime` kullanıyordu; GitHub runner'ları UTC
+        olduğu için saat Türkiye saatinden 3 saat geride görünüyordu. Artık
+        zaman damgası epoch olarak tutulur, TSİ etiketiyle ve canlı yaşla
+        yazılır.
+        """
+        checked_at = health.get('checked_at')
+        due = health.get('due')
+        next_text = ''
+        if isinstance(due, (int, float)):
+            remaining = due - mono
+            if remaining <= 0:
+                # Süre doldu ama okuma yapılmadı: kuyruk/ağ/engel geciktiriyor.
+                next_text = ' · sıradaki kontrol: ⏳ gecikti'
+            else:
+                next_text = f" · sıradaki kontrol: ~{timefmt.in_seconds(remaining, now)}"
+        if checked_at is None:
+            # Bu çalışmada henüz kontrol yok: zamanı uydurmak yerine söyle.
+            return (f"Son kontrol: bu çalışmada henüz yok | Durum: {health.get('status', 'bekliyor')}"
+                    f"{next_text}")
+        line = (f"Son kontrol: {timefmt.since(checked_at, now)} | "
+                f"Durum: {health.get('status', 'bekliyor')}"
+                f"{self.target_gap(health.get('price'), health.get('target'))}")
+        failures = health.get('failures') or 0
+        if failures:
+            line += f" ({failures} başarısız deneme)"
+        return line + next_text
+
+    @staticmethod
+    def target_gap(price, target):
+        """Hedefe ne kadar kaldığını söyler; alarm koşulu görünür olsun."""
+        if type(price) is not int or type(target) is not int:
+            return ''
+        if price < target:
+            return f" · hedefin {money(target - price)} altında (alarm eşiği)"
+        return f" · hedefin {money(price - target)} üzerinde"
+
     async def job(self, kind, chat, value):
         if kind == '/takipler':
             rows = []
+            now = time.time()
+            mono = time.monotonic()
             for index, item in enumerate(self.state['items'], 1):
                 h = self.health.get(item['url'], {})
-                rows.append(f"{index}. {item['title']}\nHedef altı: {money(item['target'])}\n"
-                            f"Son kontrol: {h.get('checked', 'bu oturumda henüz yok')} | "
-                            f"Durum: {h.get('status', 'bekliyor')}\n{item['url']}")
-            await self.tell(chat, 'Takip ' + ('açık' if self.state['enabled'] else 'kapalı') + '\n' +
+                rows.append(f"{index}. {clean_title(item['title'])}\nHedef altı: {money(item['target'])}\n"
+                            f"{self.health_line(h, now, mono)}\n{item['url']}")
+            header = 'Takip ' + ('açık' if self.state['enabled'] else 'kapalı')
+            header += f' · çalışma başlangıcı {timefmt.stamp(self.started_at)} TSİ'
+            await self.tell(chat, header + '\n' +
                             ('\n\n'.join(rows) if rows else 'Ürün yok.') + '\nMenü: /takip')
             return
         if kind == 'link':
@@ -271,8 +321,9 @@ class ProductTracker:
         health = self.health.setdefault(url, {})
         try:
             result = await self.fetch(url)
-            health.update(checked=time.strftime('%d.%m %H:%M'), status=money(result['price']), failures=0)
             price = result['price']
+            health.update(checked_at=time.time(), status=money(price), price=price,
+                          target=item['target'], failures=0)
             if price >= item['target'] or (item.get('alert_price') is not None and price >= item['alert_price']):
                 return
             text = notification_text(result, url, self.header_formatter)

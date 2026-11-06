@@ -3,12 +3,15 @@ import asyncio
 import copy
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import timefmt
 from akakce_worker import cents, parse_page, product_url, target_cents, page_diagnostics, purchase_url
-from product_tracker import ProductTracker, load_state, notification_text, TRACK_MENU, COMMANDS, tracking_menu
+from product_tracker import (ProductTracker, clean_title, load_state, notification_text,
+                             TRACK_MENU, COMMANDS, tracking_menu)
 
 URL = 'https://www.akakce.com/fritoz/en-ucuz-ornek-fiyati,123.html'
 
@@ -158,6 +161,13 @@ class ReaderTests(unittest.TestCase):
         self.assertTrue(result['minimum_verified'])
         self.assertEqual(result['declared_minimum'], 683905)
 
+    def test_html_escaped_product_name_is_unescaped(self):
+        raw = '<script type="application/ld+json">' + json.dumps({
+            '@type': 'Product', 'name': 'TCL 65C6K Premium 4K 65&quot; 165 Ekran Mini LED TV',
+            'offers': [offer('60927.75')]}) + '</script>'
+        self.assertEqual(parse_page(raw)['title'],
+                         'TCL 65C6K Premium 4K 65" 165 Ekran Mini LED TV')
+
     def test_minimum_mismatch_not_verified(self):
         result = parse_page(page({'priceCurrency': 'TRY', 'lowPrice': '6000',
                                   'offers': [offer('6839.05')]}))
@@ -296,6 +306,71 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         restored = load_state(self.path)
         self.assertEqual(restored['items'][0]['target'], 700000)
         self.assertEqual(restored['items'][0]['url'], URL)
+
+    async def test_check_time_is_stored_as_epoch_for_tsi_display(self):
+        """Regresyon: saat UTC'de ham yazılıyordu ve "3 saat geride" görünüyordu."""
+        item = self.item()
+        before = time.time()
+        await self.tracker.check(item)
+        health = self.tracker.health[URL]
+        self.assertNotIn('checked', health)          # eski, saat dilimsiz alan yok
+        self.assertGreaterEqual(health['checked_at'], before)
+        self.assertLessEqual(health['checked_at'], time.time())
+
+        await self.tracker.job('/takipler', 123, '')
+        listing = self.sent[-1]['text']
+        self.assertIn('Son kontrol: ', listing)
+        self.assertIn('TSİ', listing)
+        self.assertRegex(listing, r'Son kontrol: \d\d\.\d\d \d\d:\d\d TSİ \((az önce|1 dk önce|\d+ dk önce)\)')
+        self.assertIn('sıradaki kontrol:', listing)
+        self.assertIn('hedef altı: ', listing.lower())
+
+    async def test_listing_shows_distance_to_target(self):
+        item = self.item(target=500000)
+        await self.tracker.check(item)   # 6.000,00 TL okunur
+        await self.tracker.job('/takipler', 123, '')
+        listing = self.sent[-1]['text']
+        self.assertIn('hedefin 1.000,00 TL üzerinde', listing)
+
+    async def test_under_target_is_marked_as_alert_threshold(self):
+        item = self.item(target=700000)
+        await self.tracker.check(item)   # 6.000,00 TL < 7.000,00 TL
+        await self.tracker.job('/takipler', 123, '')
+        self.assertIn('hedefin 1.000,00 TL altında (alarm eşiği)', self.sent[-1]['text'])
+
+    async def test_never_checked_product_is_reported_as_such_not_faked(self):
+        self.item()
+        await self.tracker.job('/takipler', 123, '')
+        listing = self.sent[-1]['text']
+        self.assertIn('Son kontrol: bu çalışmada henüz yok', listing)
+        self.assertNotIn('TSİ (az önce)', listing)
+
+    async def test_listing_uses_tsi_label_independent_of_host_zone(self):
+        """Saat, sunucunun TZ'sinden bağımsız olarak TSİ etiketlenir."""
+        item = self.item()
+        await self.tracker.check(item)
+        health = self.tracker.health[URL]
+        expected = timefmt.local(health['checked_at']).strftime('%d.%m %H:%M')
+        self.assertEqual(timefmt.stamp(health['checked_at']), expected)
+        self.assertEqual(timefmt.LABEL, 'TSİ')
+
+    async def test_overdue_check_is_visible_not_silent(self):
+        """Süre dolduğu hâlde okuma yapılmadıysa satır bunu söylemeli."""
+        item = self.item()
+        await self.tracker.check(item)          # ilk okuma + due
+        self.tracker.health[URL]['due'] = 0      # süre geçmiş gibi göster
+        await self.tracker.job('/takipler', 123, '')
+        self.assertIn('sıradaki kontrol: ⏳ gecikti', self.sent[-1]['text'])
+
+    async def test_html_escaped_title_is_readable(self):
+        self.assertEqual(clean_title('TCL 65C6K 65&quot; Mini LED'),
+                         'TCL 65C6K 65" Mini LED')
+        self.tracker.state['items'] = [
+            {'url': URL, 'title': 'TCL 65C6K Premium 65&quot; Mini LED',
+             'target': 4999900, 'chat_id': 123, 'alert_price': None}]
+        await self.tracker.job('/takipler', 123, '')
+        self.assertIn('65" Mini LED', self.sent[-1]['text'])
+        self.assertNotIn('&quot;', self.sent[-1]['text'])
 
     async def test_cancel_draft(self):
         self.tracker.drafts[123] = {'until': float('inf')}

@@ -47,6 +47,7 @@ from telethon.sessions import StringSession
 from telethon.tl import functions, types
 
 import price_filter
+import timefmt
 from telegram_retry import gate_stats, request_with_retry
 from private_bot import (
     BotAPI, BotAPIError, PrivateControlEvent, PrivateOfferQueue,
@@ -54,6 +55,13 @@ from private_bot import (
     private_copy_request,
 )
 
+# Runner UTC çalışır; log saatlerini TSİ'ye sabitle ki kullanıcı saatle
+# karşılaştırabilsin (Actions log'unda "10:44" görünen satırlar TSİ 13:44'tü).
+# Sınıf özniteliği olarak atandığı için staticmethod sarmalayıcı gerekir;
+# aksi hâlde Python bunu bağlı metot sanıp iki argüman geçirir.
+logging.Formatter.converter = staticmethod(
+    lambda seconds: timefmt.local(seconds).timetuple()
+)
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(message)s",
@@ -3858,7 +3866,8 @@ def build_status_text(config: dict, *, connected: bool = True) -> str:
     return (
         "✅ Takipçi aktif\n"
         f"{listening}\n"
-        f"• Çalışma süresi: {humanize(time.time() - STARTED_AT)}\n"
+        f"• Çalışma süresi: {humanize(time.time() - STARTED_AT)}"
+        f" · başlangıç {timefmt.stamp(STARTED_AT)} TSİ (şimdi {timefmt.clock()} TSİ)\n"
         f"• Dinlenen kaynak: {len(SOURCE_IDS)}/{len(config.get('source_chats') or [])}"
         + (f" (çözülemeyen {len(SOURCE_FAILURES)})" if SOURCE_FAILURES else "")
         + "\n"
@@ -7420,7 +7429,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await control_reply(event, text)
         elif command == COMMAND_TEST:
             text = (
-                f"🧪 Deneme mesajı – {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"🧪 Deneme mesajı – {timefmt.local().strftime('%Y-%m-%d %H:%M:%S')} TSİ\n"
                 f"Hedef: {DESTINATION_LABEL}\n"
                 f"Kaynaklar: {len(SOURCE_IDS)} | Görülen: {STATS['seen']} | Eşleşen: {STATS['matched']}"
             )

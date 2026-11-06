@@ -1354,6 +1354,27 @@ Hedef taslağı 10 dakika sonra geçersiz olur. Bir ürün okuması sıradaysa k
 ayrıca bildirilir; yalnız "sıraya alındı" yanıtı kalıcı kayıt onayı değildir.
 `/takipkapat` için de tamamlanma onayını bekle.
 
+### Saatler ve "son kontrol" ne zaman güncellenir
+
+Tüm saatler **TSİ** etiketiyle yazılır. GitHub Actions runner'ları UTC çalıştığı için
+eski sürümde `/takipler` "Son kontrol: 10:44" diyordu; bu aslında **13:44 TSİ** idi ve
+üç saat geride kalmış gibi görünüyordu (saat dilimi etiketi yoktu). Artık zaman damgası
+epoch olarak tutulur ve `06.11 13:44 TSİ (6 dk önce)` biçiminde yazılır; satır ayrıca
+hedefe olan farkı (`hedefin 10.928,75 TL üzerinde`) ve sıradaki kontrolün saatini
+gösterir. Log satırlarının saati de TSİ'ye sabitlenmiştir.
+
+Kontroller yalnız **runner açıkken** çalışır ve her kontrol zaman damgasını yalnız o
+tarayıcı oturumunun belleğinde tutar (`product_watches.json` içine yazılmaz). Bu yüzden:
+
+- Yeni bir runner açıldığında ilk satır bir süre
+  `Son kontrol: bu çalışmada henüz yok` der — bu bir arıza değil, henüz ilk okumanın
+  yapılmadığını söyler (uydurma bir saat yazılmaz).
+- Saat **donmaz**: her başarılı okumada tazelenir ve parantezdeki yaş canlı artar.
+  Başarısız okumada yaş büyümeye devam eder, durum `Okunamadı` olur ve artan bekleme
+  `sıradaki kontrol` saatinde görünür.
+- Runner kapanınca hiçbir saat ilerlemez; ekrandaki son saat, son gerçek kontrolün
+  saatidir. Takip "açık" görünse bile o saatten sonra okuma yapılmamıştır.
+
 ### Fiyat doğrulaması ve sınırlar
 
 - Tüm satıcı sayfalarını indirmek gerekli değildir. Okunan somut geçerli TRY
