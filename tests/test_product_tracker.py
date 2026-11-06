@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import product_tracker as pt_module
 import timefmt
 from akakce_worker import cents, parse_page, product_url, target_cents, page_diagnostics, purchase_url
 from product_tracker import (ProductTracker, clean_title, load_state, notification_text,
@@ -337,6 +338,111 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         await self.tracker.check(item)   # 6.000,00 TL < 7.000,00 TL
         await self.tracker.job('/takipler', 123, '')
         self.assertIn('hedefin 1.000,00 TL altında (alarm eşiği)', self.sent[-1]['text'])
+
+    async def test_notification_failure_keeps_price_and_time(self):
+        """Kusur: alarm gönderilemese de okuma başarılıydı; satır "Okunamadı"
+        olmamalı, fiyat ve saat korunmalı."""
+        async def boom(method, payload):
+            raise TimeoutError('send hung')
+        self.tracker.api = SimpleNamespace(call=boom)
+        item = self.item(target=700000)
+        await self.tracker.check(item)
+        health = self.tracker.health[URL]
+        self.assertTrue(health['status'].startswith('6.000,00 TL'), health['status'])
+        # asyncio.wait_for → TimeoutError; mesaj gitmiş olabileceği için
+        # "doğrulanamadı" denir (yanlış "hiç gitmedi" iddiası yok).
+        self.assertIn('doğrulanamadı', health['status'])
+        self.assertIn('TimeoutError', health['status'])
+        self.assertEqual(health['price'], 600000)
+        self.assertIn('checked_at', health)
+        self.assertEqual(health.get('failures', 0), 0)
+        self.assertEqual(health['notify_failures'], 1)
+        self.assertIsNone(item['alert_price'])
+        # Liste satırı bozuk API olmadan da fiyatı göstermeli.
+        self.assertIn('6.000,00 TL', self.tracker.health_line(health, time.time(), time.monotonic()))
+
+    async def test_notification_failure_backs_off_and_can_retry(self):
+        calls = {'n': 0}
+        async def flaky(method, payload):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                raise TimeoutError()
+            self.sent.append(payload)
+            return {'message_id': 1}
+        self.tracker.api = SimpleNamespace(call=flaky)
+        item = self.item(target=700000)
+        await self.tracker.check(item)
+        self.assertEqual(self.tracker.health[URL]['notify_failures'], 1)
+        self.assertGreater(self.tracker.health[URL]['due'] - time.monotonic(), 200)  # 2x geri çekilme
+        await self.tracker.check(item)
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(item['alert_price'], 600000)
+        # Başarılı gönderimden sonra sayaç sıfırlanmalı; yoksa geri çekilme kalıcı olur.
+        self.assertEqual(self.tracker.health[URL]['notify_failures'], 0)
+
+    async def test_failed_read_sets_attempt_time_but_not_check_time(self):
+        async def fail(url):
+            raise ValueError('blocked')
+        self.tracker.reader = fail
+        item = self.item()
+        await self.tracker.check(item)
+        health = self.tracker.health[URL]
+        self.assertIn('last_attempt_at', health)
+        self.assertNotIn('checked_at', health)   # uydurma "son kontrol" yok
+        self.assertEqual(health['status'], 'Okunamadı; otomatik bekleme')
+
+    async def test_hung_send_times_out_and_check_recovers(self):
+        """Kusur: yanıt vermeyen sendMessage, kontrolü süresiz kilitliyordu
+        → fiyat/saat yazılmıyor, takip donmuş görünüyordu."""
+        async def hangs(method, payload):
+            await asyncio.sleep(3600)
+
+        self.tracker.api = SimpleNamespace(call=hangs)
+        item = self.item(target=4999900)
+        original = pt_module.SEND_TIMEOUT
+        pt_module.SEND_TIMEOUT = 0.1
+        try:
+            started = time.monotonic()
+            await asyncio.wait_for(self.tracker.check(item), timeout=3)
+            elapsed = time.monotonic() - started
+        finally:
+            pt_module.SEND_TIMEOUT = original
+        health = self.tracker.health[URL]
+        self.assertLess(elapsed, 2, 'zaman aşımı kontrolü kilitlememeli')
+        self.assertIn('doğrulanamadı', health['status'])
+        self.assertEqual(health['price'], 600000)   # setuptaki okuyucu 6.000,00 TL döner
+        self.assertIsNotNone(health.get('checked_at'))
+        self.assertEqual(health['notify_failures'], 1)
+        self.assertGreater(health['due'] - time.monotonic(), 0.2)  # geri çekilme
+
+    async def test_notify_backoff_clears_when_no_alert_needed(self):
+        """Alarm artık gerekmiyorsa eski gönderim hatası yavaşlatmayı sürdürmemeli."""
+        self.tracker.health[URL] = {'notify_failures': 3}
+        await self.tracker.check(self.item(target=500000))   # 6.000 > 5.000 → alarm yok
+        health = self.tracker.health[URL]
+        self.assertEqual(health['notify_failures'], 0)
+        self.assertLess(health['due'] - time.monotonic(), 300 * 2 + 1)
+
+    async def test_telemetry_line_answers_did_it_actually_check(self):
+        item = self.item()
+        with self.assertLogs('product_tracker', level='INFO') as logs:
+            self.tracker.telemetry()
+            self.assertIn('bu çalışmada yok', '\n'.join(logs.output))
+        await self.tracker.check(item)
+        with self.assertLogs('product_tracker', level='INFO') as logs:
+            self.tracker.telemetry()
+            text = '\n'.join(logs.output)
+        self.assertIn('Takip kalp atışı: açık=False ürün=1', text)
+        self.assertIn('6.000,00 TL', text)
+        self.assertIn('az önce', text)
+
+    async def test_check_logs_every_read_with_price(self):
+        with self.assertLogs('product_tracker', level='INFO') as logs:
+            await self.tracker.check(self.item())
+        text = '\n'.join(logs.output)
+        self.assertIn('Ürün kontrolü', text)
+        self.assertIn('6.000,00 TL', text)
+        self.assertIn('hedef 7.000,00 TL', text)
 
     async def test_never_checked_product_is_reported_as_such_not_faked(self):
         self.item()

@@ -1375,6 +1375,20 @@ tarayıcı oturumunun belleğinde tutar (`product_watches.json` içine yazılmaz
 - Runner kapanınca hiçbir saat ilerlemez; ekrandaki son saat, son gerçek kontrolün
   saatidir. Takip "açık" görünse bile o saatten sonra okuma yapılmamıştır.
 
+**Nereden anlarım: kontrol ediyor mu, yoksa saat dondu mu?**
+
+- `/takipler` satırındaki `(6 dk önce)` ifadesi canlıdır. Bekleyip tekrar
+  baktığında büyüyorsa okuma olmuyor; küçülüp tazeleniyorsa kontrol çalışıyor.
+- `sıradaki kontrol: ~14:13 TSİ` süresi geçtiği hâlde okuma yoksa satır
+  `⏳ gecikti` yazar (kuyrukta iş var, ağ/engel geciktiriyor ya da runner kapandı).
+- Okuma başarılı ama alarm gönderilemediyse satır "Okunamadı" demez:
+  `60.927,75 TL · alarm iletilemedi (TimeoutError, 2. deneme)` yazar; fiyat ve saat korunur.
+- Telegram gönderimi yanıt vermezse kontrol **45 saniyede** kopar ve döngü devam eder;
+  bir gönderim takılıp takibi kilitleyemez.
+- Actions log'unda her okuma tek satır bırakır:
+  `Ürün kontrolü: TCL 65C6K → 60.927,75 TL (hedef 49.999,00 TL)` ve 30 dakikada bir
+  `Takip kalp atışı: açık=True ürün=1 | … (az önce)`. Log saati TSİ'dir.
+
 ### Fiyat doğrulaması ve sınırlar
 
 - Tüm satıcı sayfalarını indirmek gerekli değildir. Okunan somut geçerli TRY

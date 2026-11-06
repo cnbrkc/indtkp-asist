@@ -17,6 +17,9 @@ from akakce_worker import product_url, purchase_url, target_cents
 log = logging.getLogger(__name__)
 MAX_PRODUCTS = 30
 INTERVAL = 300
+# Tek bir Telegram gönderimi döngüyü kilitlemesin (Bot API'nin kendi 30 sn
+# zaman aşımı vardır; 429 yeniden denemeleri bunun üstüne biner).
+SEND_TIMEOUT = 45
 HOST_GAP = 10
 # One source for the menu, copy buttons and recognized subcommands.
 TRACK_MENU = (
@@ -317,22 +320,41 @@ class ProductTracker:
         await self.tell(chat, ('✅ Kalıcı kaydedildi. ' if ok else '⚠️ Kalıcı kayıt başarısız; değişiklik geri alındı. ') + detail)
 
     async def check(self, item):
+        """Tek kontrol: okuma, bildirim ve kalıcı kayıt ayrı ayrı ele alınır.
+
+        Regresyon: eskiden okuma başarılı olsa bile bildirim/kayıt hatası aynı
+        ``except`` bloğuna düşüyor, satır "Okunamadı" oluyor ve okunan fiyat
+        kayboluyordu. Artık okuma ile teslimat ayrı değerlendirilir; ayrıca her
+        denemenin saati tutulur, böylece "en son ne zaman denendi" görünür.
+        """
         url = item['url']
         health = self.health.setdefault(url, {})
+        ping = self.owner_id or item['chat_id']
+        read_ok = False
+        price = None
         try:
             result = await self.fetch(url)
+            read_ok = True
             price = result['price']
-            health.update(checked_at=time.time(), status=money(price), price=price,
-                          target=item['target'], failures=0)
+            now = time.time()
+            health.update(checked_at=now, last_attempt_at=now, status=money(price),
+                          price=price, target=item['target'], failures=0, last_error=None)
+            log.info('Ürün kontrolü: %s → %s (hedef %s)', clean_title(item['title'])[:60],
+                     money(price), money(item['target']))
             if price >= item['target'] or (item.get('alert_price') is not None and price >= item['alert_price']):
+                # Alarm gerekmiyor: geçmiş bir gönderim hatası geri çekilmeyi
+                # kalıcı olarak şişirmesin.
+                health['notify_failures'] = 0
                 return
             text = notification_text(result, url, self.header_formatter)
             if len(text.encode('utf-16-le')) // 2 > 4096:
                 raise ValueError('Takip bildirimi Telegram uzunluk sınırını aşıyor')
-            await self.api.call('sendMessage', {
-                'chat_id': self.owner_id or item['chat_id'], 'text': text,
+            # Asılı kalan bir gönderim döngüyü süresiz kilitlemesin.
+            await asyncio.wait_for(self.api.call('sendMessage', {
+                'chat_id': ping, 'text': text,
                 'link_preview_options': {'is_disabled': True},
-            })
+            }), timeout=SEND_TIMEOUT)
+            health['notify_failures'] = 0
             before = copy.deepcopy(self.state)
             item['alert_price'] = price
             ok, _ = await self.save(before)
@@ -341,22 +363,61 @@ class ProductTracker:
                 current = next(i for i in self.state['items'] if i['url'] == url)
                 current['alert_price'] = price
                 health['status'] += ' | alarm kaydı kalıcılaştırılamadı'
-                await self.tell(self.owner_id or item['chat_id'], '⚠️ Alarm gönderildi ancak GitHub kaydı başarısız; yeniden başlatmada tekrarlanabilir.')
+                await self.tell(ping, '⚠️ Alarm gönderildi ancak GitHub kaydı başarısız; yeniden başlatmada tekrarlanabilir.')
         except asyncio.CancelledError:
             raise
-        except Exception:
-            health['failures'] = health.get('failures', 0) + 1
-            health['status'] = 'Okunamadı; otomatik bekleme'
-            if health['failures'] == 3:
-                await self.tell(self.owner_id or item['chat_id'], f"⚠️ Bu ürün 3 kontroldür okunamıyor. Telegram kanal dinleme devam ediyor.\n{url}")
+        except Exception as exc:  # noqa: BLE001 - tek ürün hatası döngüyü durdurmaz
+            health['last_attempt_at'] = time.time()
+            health['last_error'] = type(exc).__name__
+            if read_ok:
+                # Fiyat okundu; yalnız bildirim/kayıt tamamlanamadı. "Okunamadı"
+                # demek yanlış olurdu ve fiyatı gizlerdi. Zaman aşımında mesaj
+                # gitmiş de olabilir; bu yüzden "doğrulanamadı" denir.
+                health['notify_failures'] = health.get('notify_failures', 0) + 1
+                outcome = ('alarm gönderimi doğrulanamadı' if isinstance(exc, asyncio.TimeoutError)
+                           else 'alarm iletilemedi')
+                health['status'] = (f"{money(price)} · {outcome} "
+                                    f"({type(exc).__name__}, {health['notify_failures']}. deneme)")
+                log.warning('Takip alarmı iletilemedi: %s (%s)', url, type(exc).__name__)
+            else:
+                health['failures'] = health.get('failures', 0) + 1
+                health['status'] = 'Okunamadı; otomatik bekleme'
+                log.warning('Ürün okunamadı: %s — %s (%d. başarısız deneme)',
+                            url, type(exc).__name__, health['failures'])
+                if health['failures'] == 3:
+                    await self.tell(ping, f"⚠️ Bu ürün 3 kontroldür okunamıyor. Telegram kanal dinleme devam ediyor.\n{url}")
         finally:
-            failures = health.get('failures', 0)
+            # Bildirim hatası da geri çekilmeyi büyütsün ki kopuk bir hâlde
+            # 5 dakikada bir aynı mesajı denemeye çalışmasın.
+            failures = health.get('failures', 0) + health.get('notify_failures', 0)
             health['due'] = time.monotonic() + min(3600, INTERVAL * 2 ** min(failures, 4))
             if health.get('failures'):
                 self.next_host = max(self.next_host, time.monotonic() + 60)
 
+    def telemetry(self):
+        """Kalp atışı: her ürünün son durumu tek satırda, sonraki teşhis için.
+
+        Kullanıcı "takip ediyor muydu, yoksa saat mi dondu?" diye sorduğunda
+        cevap Actions log'unda bulunabilsin diye 30 dakikada bir yazılır.
+        """
+        rows = []
+        now = time.time()
+        for item in self.state['items']:
+            health = self.health.get(item['url'], {})
+            checked = health.get('checked_at')
+            age = timefmt.age_text(now - checked) if checked else 'bu çalışmada yok'
+            rows.append(f"{clean_title(item['title'])[:40]}={health.get('status', 'bekliyor')} ({age})")
+        log.info('Takip kalp atışı: açık=%s ürün=%d | %s',
+                 self.state['enabled'], len(self.state['items']), ' ; '.join(rows) or 'ürün yok')
+
     async def run(self):
+        log.info('Ürün takibi başladı: açık=%s ürün=%d aralık=%ss',
+                 self.state['enabled'], len(self.state['items']), INTERVAL)
+        last_beat = time.monotonic()
         while True:
+            if time.monotonic() - last_beat >= 1800:
+                last_beat = time.monotonic()
+                self.telemetry()
             try:
                 try:
                     job = await asyncio.wait_for(self.queue.get(), timeout=1)
@@ -365,9 +426,15 @@ class ProductTracker:
                 if job:
                     try:
                         await self.job(*job)
-                    except Exception as exc:
-                        await self.tell(job[1], '⚠️ Ürün takip işlemi tamamlanamadı: ' +
-                                        (str(exc) if isinstance(exc, ValueError) else type(exc).__name__))
+                    except Exception as exc:  # noqa: BLE001 - tek iş hatası takibi durdurmaz
+                        log.warning('Ürün takip işlemi tamamlanamadı: %s: %s',
+                                    type(exc).__name__, exc)
+                        try:
+                            await self.tell(job[1], '⚠️ Ürün takip işlemi tamamlanamadı: ' +
+                                            (str(exc) if isinstance(exc, ValueError)
+                                             else type(exc).__name__))
+                        except Exception:  # noqa: BLE001 - yanıt da gitmezse sessiz geç
+                            log.warning('Takip hata yanıtı gönderilemedi.')
                     finally:
                         self.queue.task_done()
                 elif self.state['enabled'] and not self.disabled_error:
@@ -377,6 +444,6 @@ class ProductTracker:
                         await self.check(item)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                log.warning('Ürün takip görevi hata aldı; Telegram dinleyicisi etkilenmedi.')
+            except Exception:  # noqa: BLE001 - son savunma hattı
+                log.exception('Ürün takip görevi hata aldı; Telegram dinleyicisi etkilenmedi.')
                 await asyncio.sleep(10)
