@@ -1433,6 +1433,30 @@ class NotificationTest(unittest.TestCase):
         self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", text)
         self.assertTrue(text.endswith("firsatz"), repr(text))
 
+    def test_amazon_preview_is_disabled_but_product_link_stays_clickable(self):
+        client = self._run({"notify_bot_token": "123:ABC", "notify_media": False,
+                            "include_keywords": []})
+        label = "🔗 Amazon'da gör"
+        text = f"Adidas ESS BTU BP Sırt Çantası\n💸 İndirimli Fiyat: 1.577 TL\n{label}"
+        entity = types.MessageEntityTextUrl(
+            offset=bot.utf16_length(text[:text.index(label)]),
+            length=bot.utf16_length(label),
+            url="https://www.amazon.com.tr/dp/B123",
+        )
+        self._send(client, text, media=False, entities=[entity])
+        call = self.calls[0]
+        self.assertIs(call["link_preview"], False)
+        self.assertIn(label, call["text"])
+        self.assertEqual(
+            [item["url"] for item in self._links(call["entities"])],
+            ["https://www.amazon.com.tr/dp/B123"],
+        )
+
+    def test_account_text_fallback_also_disables_link_preview(self):
+        client = self._run({"notify_media": False, "include_keywords": []})
+        self._send(client, "Adidas sırt çantası\n1.577 TL\nhttps://amazon.com.tr/dp/B123", media=False)
+        self.assertIs(client.sent_kwargs[-1]["link_preview"], False)
+
     def test_media_failure_falls_back_to_text_notification(self):
         self.media_ok = False
         client = self._run({"notify_bot_token": "123:ABC"})

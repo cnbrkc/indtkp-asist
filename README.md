@@ -698,12 +698,19 @@ yerine çoklu paylaşım notu yazılır: `📌 3 kere paylaşıldı: FırsatZ, �
   WhatsApp bağlantısı silinince geriye kalan çoklu boş satırlar tek boş satıra
   indirilir; bu sıkıştırma yalnızca boşluk karakterlerini alır, içerik kaybolmaz.
 - Metinden yalnızca bağımsız `#işbirliği`, `işbirliği`, `#reklam`, `reklam` ifadeleri
-  ile doğrudan WhatsApp URL'leri çıkarılır. WhatsApp'a gizlenmiş hyperlink'in görünen
-  etiketi düz metin olarak korunur; başka kelime ve domain'ler silinmez.
+  ile doğrudan WhatsApp/Instagram URL'leri çıkarılır. WhatsApp'a gizlenmiş hyperlink'in
+  görünen etiketi düz metin olarak korunur; başka kelime ve domain'ler silinmez.
+- **Instagram tanıtım ekleri temizlenir:** `Instagram kanalımıza katılın` gibi tanıtım
+  satırları ile Instagram'a giden gizli bağlantılar, inline butonlar ve önizlemeler
+  bildirime taşınmaz. Bu, Instagram'a özeldir; diğer kanal/mağaza bağlantıları ve aynı
+  satırdaki ürün-fiyat içeriği korunur.
+- Yeniden oluşturulan metin bildirimlerinde Telegram bağlantı önizlemesi kapalıdır.
+  Amazon ürün bağlantısı ve tıklanabilirliği korunur; mesajın altında ayrıca Amazon
+  ürün önizleme kartı oluşmaz.
 - **Kanal tanıtımı ve hashtag satırları temizlenir:** `💚Whatsapp Önemli Fırsatlar` gibi
   mesajlaşma kanalı tanıtımları ve `#amazon #indirimalarmi` gibi yalnızca etiketlerden
   oluşan satırlar bildirime hiç girmez (kullanıcı isteği: "tertemiz görünüm"). Kurallar
-  dar tutulur: satırda hem bir kanal adı (WhatsApp/Telegram) geçmeli hem de satırdaki
+  dar tutulur: satırda hem bir kanal adı (WhatsApp/Telegram/Instagram) geçmeli hem de satırdaki
   **tüm kelimeler** tanıtım sözlüğünden gelmelidir. Sözlükte olmayan tek bir kelime
   satırı korur; bu yüzden `WhatsApp'tan bilgi ... 9 TL` gibi içerik satırları,
   fiyat/ürün satırları ve tüm mesaj silinmesini gerektiren durumlar olduğu gibi kalır.

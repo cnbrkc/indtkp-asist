@@ -404,6 +404,30 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
             c.cls, c.role = "other", "threshold"
         elif re.match(r"^(?:kupon|indirim|kod)", after) or re.search(r"(?:kupon|indirim)\s*[:=]?\s*$", before):
             c.cls, c.role = "other", "discount_amount"
+        elif c.cls in {"other", "price"} and not after.strip("*_~` \t") and any(
+            previous.line == c.line and previous.role == "discount_amount"
+            and previous.end <= c.start
+            and re.fullmatch(
+                r"(?:indirimle|indirim\s+ile|indirim\s+sonrası(?:nda)?)[*_~`\s]*",
+                norm(line[previous.end:c.start]),
+            )
+            for previous in candidates
+        ):
+            # ``14.250 TL / ödeme aşamasında 750 TL indirimle 13.500 TL``:
+            # son tutar, hemen öncesindeki ``indirimle`` yüzünden indirim tutarı
+            # filtresine takılmamalı. Yalnız aynı satırda, hemen önce açık bir
+            # indirim tutarı bulunan ve satır sonunda duran nihai tutarı terfi et.
+            c.cls, c.role, c.strong = "price", "discounted", True
+        elif c.cls == "other" and re.match(
+            r"^[*_~`\s]*[—–-]\s*sepette\b[^/|]*\bindirim\s+kod", after,
+        ) and (
+            _PRICE_EMOJI_RE.search(line[:c.start])
+            or re.search(r"(?:fiyat\w*|price)\s*[:=]?\s*$", before)
+        ):
+            # ``🏷 889 TL — sepette "KOTON300" indirim kodunu uygulayın``:
+            # kupon AÇIKLAMASI fiyatı indirim tutarına çevirmez. Etiket/emoji
+            # ve sepet-kuponu cümlesi birlikte yoksa bu kural devreye girmez.
+            c.cls, c.role, c.strong = "price", "normal", True
         elif re.match(r"^seçili\s+ürün.*satın\s+aldığınızda", after):
             c.cls, c.role = "other", "threshold"
         elif re.search(r"\bkampanya\s*:\s*$", before) and re.match(r"^\(\s*\d+\s*adet\s*\)", after):
@@ -757,6 +781,8 @@ def _segments(line: str) -> list[str]:
 _GENERIC_TITLE_RE = re.compile(
     r"^(?:durum\s*:|takip\s+kuponu\b|kampanya(?:lar)?\s*(?::|\d)|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
     r"(?:anlık|anlik) indirim|bildirimlerinizi|\d+\s+adet kaldı|"
+    r"ürün\s+altından\s+(?:aktif|etkinleştir)\w*|"
+    r"(?:sepete\s+)?\d+\s+adet(?:\s+sepete)?\s+ekle\w*|"
     r"(?:başlangıç|baslangic|bitiş|bitis|tarih)\s*:|"
     r"(?:amazon|n11|trendyol|hepsiburada)\s+indirim kuponu\s*$)",
     re.IGNORECASE,
@@ -822,7 +848,15 @@ def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str], le
         score -= 3
     if _META_WORDS_RE.search(norm(plain)):
         score -= 3
-    if lead_product:
+    # Bazı kanallar ürün adını ``✅ Kapüşonlu Uzun Kollu …`` diye işaretler.
+    # Sayı/fiyat/kampanya metadatası taşımayan açıklayıcı satırı fiyat emojisi
+    # diye cezalandırma; sayısal ``✅ 1.100TL - S/4XL`` kalıbı eski kuralda kalır.
+    checkmark_product = (
+        raw.lstrip().startswith("✅") and count >= 4
+        and not any(char.isdigit() for char in cleaned)
+        and not PRICE_RE.search(raw) and not _META_WORDS_RE.search(norm(plain))
+    )
+    if lead_product or checkmark_product:
         score += 4
     elif _PRICE_LEAD_RE.match(raw):
         score -= 3                       # "💰 2 adet alımda 250₺" gibi fiyat satırı başlık olmasın
@@ -832,7 +866,8 @@ def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str], le
         score -= 2
     if sum(ch.isdigit() for ch in cleaned) > len(cleaned) * 0.5:
         score -= 3
-    if raw.lstrip().startswith(("•", "-", "*", "✔", "✅", "▪", "➡", "👉")) and position > 0:
+    if raw.lstrip().startswith(("•", "-", "*", "✔", "✅", "▪", "➡", "👉")) and position > 0 \
+            and not checkmark_product:
         score -= 1
     score += {0: 2.0, 1: 1.0, 2: 0.5}.get(position, 0)
     if hint_tokens and count >= 3:

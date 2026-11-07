@@ -2118,6 +2118,91 @@ class PromoLineCleanupTest(unittest.TestCase):
         )
 
 
+class InstagramPromoCleanupTest(unittest.TestCase):
+    """Yalnız Instagram tanıtımları temizlenir; ürün ve diğer kanal linkleri kalır."""
+
+    def test_visible_instagram_promo_is_removed_without_clearing_other_appendices(self):
+        text = (
+            "Çay 5 TL\n\n"
+            "📣 Instagram kanalımıza katılın\n"
+            "https://www.instagram.com/ornek\n\n"
+            "📣 Diğer kanallarımız için TAZEFIRSAT.com\n"
+            "https://www.amazon.com.tr/dp/B123"
+        )
+        cleaned = bot.sanitize_message(make_message(text, media=False))
+        self.assertNotIn("Instagram", cleaned.message)
+        self.assertNotIn("instagram.com", cleaned.message)
+        self.assertIn("Çay 5 TL", cleaned.message)
+        self.assertIn("Diğer kanallarımız için TAZEFIRSAT.com", cleaned.message)
+        self.assertIn("https://www.amazon.com.tr/dp/B123", cleaned.message)
+        self.assertNotIn("\n\n\n", cleaned.message)
+
+    def test_hidden_link_button_and_webpage_are_all_removed(self):
+        instagram_label = "📣 Instagram kanalımıza katılın"
+        amazon_label = "🛒 Amazon'da gör"
+        text = f"Çay 5 TL\n\n{instagram_label}\n\n{amazon_label}"
+        entities = [
+            tl_types.MessageEntityTextUrl(
+                offset=bot.utf16_length(text[:text.index(instagram_label)]),
+                length=bot.utf16_length(instagram_label),
+                url="https://instagram.com/ornek",
+            ),
+            tl_types.MessageEntityTextUrl(
+                offset=bot.utf16_length(text[:text.index(amazon_label)]),
+                length=bot.utf16_length(amazon_label),
+                url="https://www.amazon.com.tr/dp/B123",
+            ),
+        ]
+        buttons = [
+            SimpleNamespace(text="Instagram", url="https://instagr.am/ornek", type=None),
+            SimpleNamespace(text="Fırsata Git", url="https://amazon.com.tr/dp/B456", type=None),
+        ]
+        message = make_message(
+            text, entities=entities, buttons=buttons,
+            webpage="https://www.instagram.com/ornek",
+        )
+        cleaned = bot.sanitize_message(message)
+        self.assertEqual(cleaned.message, f"Çay 5 TL\n\n{amazon_label}")
+        self.assertIsNone(cleaned.media)
+        links = bot.extract_links(cleaned)
+        self.assertTrue(links)
+        self.assertFalse(any(bot.is_instagram_url(item["url"]) for item in links))
+        self.assertEqual(
+            {item["url"] for item in links},
+            {"https://www.amazon.com.tr/dp/B123", "https://amazon.com.tr/dp/B456"},
+        )
+        self.assertEqual(message.message, text, "kaynak mesaj değiştirilmemeli")
+        self.assertEqual(len(message.entities), 2, "kaynak entity listesi değiştirilmemeli")
+
+    def test_instagram_destination_identifies_generic_promo_label(self):
+        label = "📣 Kanalımıza katılın"
+        direct = f"Çay 5 TL\n\n{label} https://instagram.com/ornek"
+        self.assertEqual(bot.sanitize_message(make_message(direct, media=False)).message, "Çay 5 TL")
+
+        hidden = f"Çay 5 TL\n\n{label}"
+        entity = tl_types.MessageEntityTextUrl(
+            offset=bot.utf16_length(hidden[:hidden.index(label)]),
+            length=bot.utf16_length(label), url="https://instagram.com/ornek",
+        )
+        cleaned = bot.sanitize_message(make_message(hidden, entities=[entity], media=False))
+        self.assertEqual(cleaned.message, "Çay 5 TL")
+        self.assertEqual(bot.extract_links(cleaned), [])
+
+        content = "Instagram bağlantısı ürün açıklamasında 9 TL"
+        self.assertIn(content, bot.sanitize_message(make_message(content, media=False)).message)
+
+    def test_instagram_url_on_product_line_does_not_delete_product_text(self):
+        text = "Çay 5 TL instagram.com/ornek"
+        cleaned = bot.sanitize_message(make_message(text, media=False))
+        self.assertEqual(cleaned.message, "Çay 5 TL")
+        for url in ("https://notinstagram.com/ornek", "https://instagram.com.example.org/ornek"):
+            with self.subTest(url=url):
+                self.assertFalse(bot.is_instagram_url(url))
+                self.assertEqual(bot.sanitize_message(make_message(url, media=False)).message, url)
+        product = "Insta360 kamera 5 TL"
+        self.assertEqual(bot.sanitize_message(make_message(product, media=False)).message, product)
+
+
 class NoteCommandMessagesTest(unittest.TestCase):
     """Komut sohbeti kaydı: yalnızca son alışveriş tutulur, eskiler silinir."""
 
@@ -2503,6 +2588,22 @@ class BotApiSendTest(unittest.TestCase):
         keyboard = json.loads(payload["reply_markup"])
         self.assertEqual(keyboard["inline_keyboard"][0][0]["text"], "Fırsata Git")
         self.assertEqual(keyboard["inline_keyboard"][0][0]["url"], "https://amzn.to/b")
+
+    def test_ping_can_disable_link_preview_without_removing_the_link(self):
+        with mock.patch("bot.urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
+            ok, _ = asyncio.run(bot.send_bot_ping(
+                "123:ABC", -100, "Amazon'da gör",
+                entities=[{"type": "text_link", "offset": 0, "length": 13,
+                           "url": "https://www.amazon.com.tr/dp/B123"}],
+                link_preview=False,
+            ))
+        self.assertTrue(ok)
+        payload = json.loads(urlopen.call_args[0][0].data.decode())
+        self.assertEqual(json.loads(payload["link_preview_options"]), {"is_disabled": True})
+        self.assertEqual(
+            json.loads(payload["entities"])[0]["url"],
+            "https://www.amazon.com.tr/dp/B123",
+        )
 
     def test_media_posts_multipart_to_sendphoto(self):
         with mock.patch("bot.urllib.request.urlopen", return_value=self._fake_response()) as urlopen:

@@ -858,6 +858,7 @@ async def edit_bot_text(
     *,
     entities: list[dict[str, Any]] | None = None,
     keyboard: dict[str, Any] | None = None,
+    link_preview: bool | None = None,
 ) -> tuple[bool, str]:
     """Bildirim botunun gönderdiği bir metin mesajını yerinde günceller.
 
@@ -874,6 +875,8 @@ async def edit_bot_text(
         payload["entities"] = json.dumps(entities)
     if keyboard:
         payload["reply_markup"] = json.dumps(keyboard)
+    if link_preview is not None:
+        payload["link_preview_options"] = json.dumps({"is_disabled": not link_preview})
     ok, detail = await _bot_api_request(
         token, "editMessageText",
         payload=json.dumps(payload).encode(), content_type="application/json", what="bildirim güncellemesi",
@@ -975,8 +978,8 @@ URL_RE = re.compile(
     r"(?:"
     r"(?:https?://|whatsapp://|t\.me/|telegram\.me/|www\.|wa\.me/|wa\.link/)"
     r"[^\s<>\"')\]}]+"
-    r"|(?<![\w.-])(?:[\w-]+\.)*(?:wa\.me|wa\.link|whatsapp\.(?:com|net)|akakce\.com|"
-    r"marketfiyati\.org\.tr|cimri\.com|google\.com(?:\.tr)?)(?:[/?#][^\s<>\"')\]}]*)?"
+    r"|(?<![\w.-])(?:[\w-]+\.)*(?:wa\.me|wa\.link|whatsapp\.(?:com|net)|instagram\.com|instagr\.am|"
+    r"akakce\.com|marketfiyati\.org\.tr|cimri\.com|google\.com(?:\.tr)?)(?:[/?#][^\s<>\"')\]}]*)?"
     r"(?=$|[\s<>\"')\]},;:!?…])"
     r")",
     re.IGNORECASE,
@@ -1010,15 +1013,18 @@ HASHTAG_WORD_RE = re.compile(r"#([^\W_]+)", re.UNICODE)
 # Kök sözlüğü: 4+ harfli kökler önek eşleşir (fırsat→fırsatlar, katıl→katılın),
 # kısa kelimeler birebir eşleşir (ve, ile, mi…). Türkçe küçük harfle yazılır.
 PROMO_WORD_ROOTS = frozenset("""
-abone aile amazon bize bizi biz bildirim bu burada buradan burdan da davet de
-duyuru edin ekle ekleyin fırsat gel gelin grup grub gün güncel haber hemen her
-herkes hepsiburada ile için indirim istersen kampanya kanal katıl kaçır link
+abone aile amazon bize bizi biz bildirim bu burada buradan burdan da davet de diğer diger
+duyuru edin ekle ekleyin fırsat gel gelin grup grub gün güncel haber hemen her hesap
+herkes hepsiburada ile için indirim instagram ınstagram istersen kampanya kanal katıl kaçır link
 olun önemli paylaş sayfa sitemiz şimdi takip telegram topluluk trendyol tüm üye
 ve whatsapp watsap web wp yazın
 """.split())
 # Tanıtım satırı sayılmak için satırda bu köklerden biri geçmelidir: satır bir
-# mesajlaşma kanalını tanıtıyorsa (WhatsApp/Telegram) tanıtım satırı sayılır.
-CHANNEL_WORD_ROOTS = ("whatsapp", "watsap", "whats", "wp", "telegram")
+# sosyal/mesajlaşma kanalını (WhatsApp/Telegram/Instagram) tanıtıyorsa tanıtımdır.
+CHANNEL_WORD_ROOTS = (
+    "whatsapp", "watsap", "whats", "wp", "telegram",
+    "instagram", "ınstagram",
+)
 
 
 def utf16_length(text: str) -> int:
@@ -1041,8 +1047,8 @@ def clean_url(url: Any) -> str:
         text = text[:-1]
     lowered = text.lower()
     scheme_less_service = re.match(
-        r"(?:[\w-]+\.)*(?:wa\.me|wa\.link|whatsapp\.(?:com|net)|akakce\.com|"
-        r"marketfiyati\.org\.tr|cimri\.com|google\.com(?:\.tr)?)(?:$|[/?#])",
+        r"(?:[\w-]+\.)*(?:wa\.me|wa\.link|whatsapp\.(?:com|net)|instagram\.com|instagr\.am|"
+        r"akakce\.com|marketfiyati\.org\.tr|cimri\.com|google\.com(?:\.tr)?)(?:$|[/?#])",
         lowered,
     )
     if lowered.startswith(("t.me/", "telegram.me/", "www.")) or scheme_less_service:
@@ -1160,6 +1166,21 @@ def is_whatsapp_url(url: Any) -> bool:
     )
 
 
+def is_instagram_url(url: Any) -> bool:
+    """Instagram tanıtım bağlantısını alan adıyla tanı; benzer alanları eleme."""
+    text = clean_url(url)
+    if "://" not in text.lower():
+        text = "https://" + text
+    try:
+        host = (urllib.parse.urlsplit(text).hostname or "").rstrip(".").lower()
+    except ValueError:
+        return False
+    return (
+        host == "instagram.com" or host.endswith(".instagram.com")
+        or host == "instagr.am" or host.endswith(".instagr.am")
+    )
+
+
 def _utf16_to_index(text: str, offset: int) -> int:
     """Telegram UTF-16 offset'ini Python karakter indeksine çevir."""
     target = max(0, int(offset or 0))
@@ -1269,18 +1290,34 @@ def _word_matches(token: str, roots: Iterable[str]) -> bool:
     return False
 
 
-def _promo_line_spans(text: str) -> list[tuple[int, int]]:
+def _promo_line_spans(text: str, entities: Sequence[Any] = ()) -> list[tuple[int, int]]:
     """Kanal tanıtımı ve salt hashtag satırlarının silinecek aralıkları.
 
     Kullanıcı isteği: bildirimde "💚Whatsapp Önemli Fırsatlar" ve
     "#amazon #indirimalarmi" gibi satırlar hiç görünmesin. Kurallar dardır;
     fiyat/ürün satırı taşıyan bir satır silinmez (bkz. PROMO_WORD_ROOTS).
     Silinecek aralık satır sonunu İÇERMEZ; artakalan boş satırlar
-    ``_blank_line_spans`` ile sıkıştırılır.
+    ``_blank_line_spans`` ile sıkıştırılır. Görünen etikette Instagram yazmasa
+    bile gerçek Instagram entity'si, genel tanıtım etiketini hedefli şekilde
+    tanır (ör. Instagram'a bağlı ``Kanalımıza katılın``).
     """
+    instagram_entity_spans: list[tuple[int, int]] = []
+    for entity in entities:
+        if not is_instagram_url(getattr(entity, "url", None)):
+            continue
+        try:
+            offset = int(getattr(entity, "offset", 0) or 0)
+            length = int(getattr(entity, "length", 0) or 0)
+            start = _utf16_to_index(text, offset)
+            end = _utf16_to_index(text, offset + length)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if end > start:
+            instagram_entity_spans.append((start, end))
     spans: list[tuple[int, int]] = []
     for match in re.finditer(r"[^\n]+", text or ""):
-        masked = URL_RE.sub(" ", match.group(0))  # URL harfleri kelime sayılmasın
+        raw_line = match.group(0)
+        masked = URL_RE.sub(" ", raw_line)  # URL harfleri kelime sayılmasın
         words = WORD_TOKEN_RE.findall(masked)
         if not words:
             continue
@@ -1288,7 +1325,14 @@ def _promo_line_spans(text: str) -> list[tuple[int, int]]:
         if tagged and len(tagged) == len(words):
             spans.append((match.start(), match.end()))  # yalnızca etiketler
             continue
-        if not any(_word_matches(word, CHANNEL_WORD_ROOTS) for word in words):
+        has_instagram_link = any(
+            is_instagram_url(url.group(0)) for url in URL_RE.finditer(raw_line)
+        ) or any(
+            start < match.end() and end > match.start()
+            for start, end in instagram_entity_spans
+        )
+        if not has_instagram_link \
+                and not any(_word_matches(word, CHANNEL_WORD_ROOTS) for word in words):
             continue
         if all(_word_matches(word, PROMO_WORD_ROOTS) for word in words):
             spans.append((match.start(), match.end()))
@@ -1335,9 +1379,10 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
     """İletilecek kopyayı temizle; kaynak Telethon mesajına hiçbir zaman dokunma.
 
     Kaldırılanlar: bağımsız ``#işbirliği``/``işbirliği``/``#reklam``/``reklam``
-    ifadeleri, doğrudan WhatsApp URL'leri, gizli WhatsApp entity'leri, WhatsApp
-    hedefli inline butonlar ve kanal tanıtımı/salt hashtag satırları
-    (``_promo_line_spans``). Diğer metin, entity, medya ve linkler korunur.
+    ifadeleri, doğrudan WhatsApp/Instagram URL'leri, bu hedeflere ait gizli
+    entity'ler/inline butonlar/önizlemeler ve kanal tanıtımı/salt hashtag
+    satırları (``_promo_line_spans``). Instagram tanıtım satırları kaldırılır;
+    diğer kanal ekleri, ürün metni, entity, medya ve linkler korunur.
     Silme işleminin artığında oluşan çoklu boş satırlar tek boş satıra indirilir
     (``_blank_line_spans``); bu adım yalnızca boşluk karakterlerini alır, metin
     içeriğini değiştirmez.
@@ -1354,18 +1399,18 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
             continue
         span = (match.start(), match.start() + len(raw_url))
         visible_urls.append(span)
-        if is_whatsapp_url(raw_url):
+        if is_whatsapp_url(raw_url) or is_instagram_url(raw_url):
             removed.append(_with_adjacent_space(text, *span))
 
     disclosure_spans = _disclosure_spans(text, protected=visible_urls)
     removed.extend(disclosure_spans)
     # Kanal tanıtımı ("💚Whatsapp Önemli Fırsatlar") ve salt hashtag satırları
     # ("#amazon #indirimalarmi") bildirime hiç girmez.
-    removed.extend(_promo_line_spans(text))
+    removed.extend(_promo_line_spans(text, entities))
     removed_spans = _merge_spans(removed)
     cleaned_text = _remove_spans(text, removed_spans)
     remapped_entities = _remap_entities(text, cleaned_text, entities, removed_spans) if removed_spans else list(entities)
-    # Silinen WhatsApp linki/#reklam etiketi geriye çoklu boş satır bırakır.
+    # Silinen WhatsApp/Instagram linki/#reklam etiketi çoklu boş satır bırakabilir.
     # Bölümler arasında tek boş satır kalacak şekilde sıkıştır; ikinci geçiş
     # ``cleaned_text`` koordinatlarında yapılır, bu yüzden entity'ler bir kez
     # daha kaydırılır (``removed_spans`` özgün metne göre kalır).
@@ -1381,12 +1426,13 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
     cleaned_entities = [
         entity for entity in remapped_entities
         if not is_whatsapp_url(getattr(entity, "url", None))
+        and not is_instagram_url(getattr(entity, "url", None))
     ]
 
     preserved_links = list(getattr(message, "preserved_links", None) or [])
     for entity in entities:
         url = getattr(entity, "url", None)
-        if not url or is_whatsapp_url(url):
+        if not url or is_whatsapp_url(url) or is_instagram_url(url):
             continue
         old_start = _utf16_to_index(text, int(getattr(entity, "offset", 0) or 0))
         old_end = _utf16_to_index(
@@ -1412,7 +1458,7 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
             continue
         url = clean_url(item.get("url"))
         key = url.rstrip("/").lower()
-        if not url or key in seen_preserved:
+        if not url or is_instagram_url(url) or key in seen_preserved:
             continue
         seen_preserved.add(key)
         unique_preserved.append({
@@ -1429,7 +1475,7 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
         cleaned_buttons: list[Any] = []
         for button in getattr(row, "buttons", None) or []:
             info = button_link(button)
-            if info and is_whatsapp_url(info[0]):
+            if info and (is_whatsapp_url(info[0]) or is_instagram_url(info[0])):
                 markup_changed = True
                 continue
             if not info:
@@ -1454,7 +1500,10 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
 
     media = getattr(message, "media", None)
     webpage = getattr(media, "webpage", None)
-    if webpage is not None and is_whatsapp_url(getattr(webpage, "url", None)):
+    if webpage is not None and (
+        is_whatsapp_url(getattr(webpage, "url", None))
+        or is_instagram_url(getattr(webpage, "url", None))
+    ):
         media = None
 
     changed = (
@@ -1694,6 +1743,13 @@ def _search_query(obj: Any, limit: int = SEARCH_QUERY_LIMIT) -> str:
         if not candidate or price_filter.is_generic_title(candidate):
             continue
         score = _search_candidate_score(candidate)
+        # ``✅`` ile işaretlenen, sayısal metadata taşımayan açıklayıcı ürün
+        # satırı kupon talimatına karşı eşitlikte kalmasın. Başlık ayıklayıcıdaki
+        # dar kuralın arama sorgusundaki karşılığıdır.
+        if raw_line.lstrip().startswith("✅") \
+                and len(WORD_TOKEN_RE.findall(candidate)) >= 4 \
+                and not any(char.isdigit() for char in candidate):
+            score += 2
         if best_score is None or score > best_score:
             best_candidate, best_score = candidate, score
     return best_candidate[:limit].strip()
@@ -2187,8 +2243,8 @@ def compose_message(
        Fiyatın başta olması, bildirimin kesilen ön izlemesinde fiyat ile ürün
        adının ilk kelimelerinin birlikte görülmesini sağlar,
     2. altında kaynak mesaj **olduğu gibi** (yalnızca güvenlik temizliği
-       uygulanır: reklam/işbirliği etiketleri, WhatsApp linkleri, kanal
-       tanıtımı ve salt hashtag satırları),
+       uygulanır: reklam/işbirliği etiketleri, WhatsApp/Instagram linkleri,
+       Instagram tanıtımları, kanal tanıtımı ve salt hashtag satırları),
     3. ``🔗 <etiket>: <t.me linki>`` — orijinal mesajın adresi,
     4. en altta kaynak grup adı (kalın; etiket ve link yok).
 
@@ -6268,7 +6324,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             DESTINATION,
             composed["text"],
             formatting_entities=composed["entities"],
-            link_preview=True,
+            link_preview=False,
         )
 
     async def send_media(event: events.NewMessage.Event) -> Any:
@@ -6328,7 +6384,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             DESTINATION,
             composed["text"] + note,
             formatting_entities=composed["entities"],
-            link_preview=True,
+            link_preview=False,
         )
 
     async def send_link_card(event: events.NewMessage.Event) -> Any:
@@ -6349,7 +6405,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if composed["appendix"]:
                 body += f"\n{composed['appendix']}"
             body += "\n(medya korumalı olduğu için iletilemedi, bağlantıdan açabilirsin)"
-        return await client.send_message(DESTINATION, body[:MESSAGE_LIMIT], link_preview=True)
+        return await client.send_message(DESTINATION, body[:MESSAGE_LIMIT], link_preview=False)
 
     SENDERS = {
         "forward": send_forward,
@@ -6586,7 +6642,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     else:
                         ok, detail = await edit_bot_text(
                             NOTIFY_BOT_TOKEN, DESTINATION_ID, bot_message_id, new_text,
-                            entities=new_entities, keyboard=keyboard,
+                            entities=new_entities, keyboard=keyboard, link_preview=False,
                         )
                     if ok:
                         async with DEDUP_LOCK:
@@ -6620,7 +6676,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     try:
                         await client.edit_message(
                             DESTINATION, account_message_id, new_text,
-                            formatting_entities=new_tl, link_preview=True,
+                            formatting_entities=new_tl, link_preview=False,
                         )
                     except errors.FloodWaitError as exc:
                         log.warning("Rozet FloodWait (%s sn); kısa rozet denenmeden bırakılıyor.", exc.seconds)
@@ -6829,7 +6885,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         Arama düğmeleri (Google Alışveriş / Akakçe / Cimri) kaynak mesajdan
         ayıklanan FİYATSIZ adla kurulur; üst satıra yazılan fiyat arama
-        sorgusuna taşınmaz.
+        sorgusuna taşınmaz. Metin gönderiminde Telegram bağlantı önizlemesi
+        kapalıdır; ürün bağlantısı ve tıklanabilirliği korunur, mesajın altında
+        ikinci bir Amazon ürün kartı oluşmaz.
 
         Dönen ilk değer, tek mesaj modunda hesap kopyasının silinip
         silinmeyeceğini belirler (bkz. delete_account_copy). İkinci değer,
@@ -6911,7 +6969,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         text = composed["text"] or f"🔔 Yeni fırsat – {source_name}"
         send_result = await send_bot_ping(
             NOTIFY_BOT_TOKEN, DESTINATION_ID, text,
-            entities=entities, keyboard=keyboard,
+            entities=entities, keyboard=keyboard, link_preview=False,
         )
         ok, detail = send_result
         if ok:
