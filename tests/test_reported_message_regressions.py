@@ -97,6 +97,48 @@ HAUSTIER = (
     "🗓️ 365 Günün En Düşük Fiyatı\n\n🛒 https://link.amazon/B0ewaZard"
 )
 
+DREAME_N11 = (
+    "n11'den Dreame L50S Pro Ultra Robot Süpürge Beyaz\n\n"
+    "https://sl.n11.com/n/vAjGnql\n\nTık hızında 2000 kuponla 50499"
+)
+THRUSTMASTER_USED = (
+    "🛍️ Thrustmaster T128 Yarış Direksiyonu – Hibrit Force Feedback Teknolojisi – "
+    "Manyetik Vites ve Pedal Seti – LED Hız Göstergesi – Xbox Series X|S, Xbox One ve PC Uyumlu\n\n"
+    "💰 Fiyat : 13199 TL\n🗓️ 60 Günün En Düşük Fiyatı\n"
+    "♻️ İkinci El (Yeni Gibi) : 12539 TL\n\n"
+    "https://www.amazon.com.tr/dp/B0B3RJNZXG?psc=1&tag=indirimalarmi-21"
+)
+PHILIPS_HAIR_COUPON = (
+    "✅ Philips 3000 Serisi 3'ü 1 Arada Saç Şekillendirici, Seramik Argan Yağı Katkılı Plakalar\n\n"
+    "🏷 1.649 TL — sepette 250 TL kupon ile. Listedeki diğer Philips ürünlerini de "
+    "inceleyebilirsiniz 1500/250 kupon var."
+)
+PHILIPS_SHAVER_COUPON = (
+    "✅ Philips 3000 Serisi Islak&Kuru Tıraş Makinesi, 5 Yönde Dönen Başlıklar, "
+    "Hassas Düzeltici, S3144/00\n\n🏷 1.749 TL — sepette 250 TL kupon ile."
+)
+LOGITECH_CHAT = (
+    "Logitech BRIO 100 Full HD Web Kamerası, Toplantı ve Yayın Amaçlı, Otomatik Işık Dengesi, "
+    "Dahili Mikrofon, Gizlilik Kapağı, USB-A, Microsoft Teams, Google Meet, Zoom ile Uyumlu, Siyah\n\n"
+    "💰2.300,00TL\n\n📦 Durum: İkinci El: Yeni Gibi\n\n"
+    "💬 Yorum: Yorum: Ürün orijinal ambalajında gönderilir.\n\n🏪 Satıcı: Amazon Depo\n\n"
+    "🔗FIRSATA GİT!\n\n📦 Stok: Stokta sadece 1 adet kaldı.\n\n"
+    "📣 Sohbet Grubumuz İçin @firsatzsohbet"
+)
+HOMEND_COUPON = (
+    "Homend Dustroyer 1272H 2 in 1 Metal Borulu Kablolu Dikey Süpürge\n\n1376 TL kupon ile"
+)
+EVEREST_MULTI = (
+    "🔥Everest Gümüş Işıklandırmalı Oyuncu Mouse\n\n"
+    "✅249TL - 2’li Alımda 2 Al 1 Öde İle Tanesi 124TL’ye Geliyor"
+)
+TRIOMOVE_SECOND = "TrioMove Protein Bar Ürünlerinde Sepette 2.si 1 TL"
+BOYNER_BOGO = (
+    "Boyner'de 1 Alana 1 Bedava + BOYNER1000 kodu ile birleşiyor\n\n"
+    "https://app.hb.biz/qbRcRZ2m9A5G\n\n"
+    "🔗 Mesajı Gör: https://t.me/indirimalarmigrup/528059"
+)
+
 
 class ReportedMessageRegressions(unittest.TestCase):
     def test_sleepy_quantity_instruction_never_replaces_product_name(self):
@@ -256,6 +298,113 @@ class ReportedMessageRegressions(unittest.TestCase):
         event = SimpleNamespace(message=HAUSTIER, raw_text=HAUSTIER, entities=[], media=None)
         with patch.object(bot, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺1.209 — {title}")
+
+    def test_n11_store_prefix_and_currency_less_coupon_final_price(self):
+        title = "Dreame L50S Pro Ultra Robot Süpürge Beyaz"
+        info = pf.extract_price(DREAME_N11)
+        self.assertEqual((info.value, info.confidence, info.reason), (50499, "high", "discounted"))
+        self.assertEqual([(c.value, c.role) for c in pf.find_candidates(DREAME_N11)],
+                         [(50499, "discounted")])
+        self.assertEqual(pf.extract_title(DREAME_N11), title)
+        self.assertEqual(bot._search_query(DREAME_N11), title)
+        event = SimpleNamespace(message=DREAME_N11, raw_text=DREAME_N11, entities=[], media=None)
+        self.assertEqual(bot.smart_dedup_title(event), title)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(event)["header"], f"₺50.499 — {title}")
+        self.assertIsNone(pf.extract_price("Kuponla 2 al 1 öde").value)
+
+    def test_explicit_used_condition_price_wins_over_new_reference_price(self):
+        title = "Thrustmaster T128 Yarış Direksiyonu"
+        info = pf.extract_price(THRUSTMASTER_USED)
+        self.assertEqual((info.value, info.confidence, info.reason), (12539, "high", "condition_price"))
+        self.assertEqual([c.role for c in pf.find_candidates(THRUSTMASTER_USED)],
+                         ["normal", "condition_price"])
+        self.assertEqual(bot.offer_terms(THRUSTMASTER_USED)[0], 12539)
+        event = SimpleNamespace(message=THRUSTMASTER_USED, raw_text=THRUSTMASTER_USED, entities=[], media=None)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(event)["header"], f"₺12.539 — {title}")
+        ambiguous = THRUSTMASTER_USED + "\n♻️ İkinci El (Çok İyi) : 12499 TL"
+        self.assertEqual(pf.extract_price(ambiguous).confidence, "low")
+        self.assertIsNone(bot.offer_terms(ambiguous)[0])
+
+    def test_price_followed_by_coupon_ile_is_not_discount_amount(self):
+        title_homend = "Homend Dustroyer 1272H 2 in 1 Metal Borulu Kablolu Dikey Süpürge"
+        title_hair = "Philips 3000 Serisi 3'ü 1 Arada Saç Şekillendirici, Seramik Argan Yağı Katkılı Plakalar"
+        title_shaver = "Philips 3000 Serisi Islak&Kuru Tıraş Makinesi, 5 Yönde Dönen Başlıklar, Hassas Düzeltici, S3144/00"
+        cases = [
+            (HOMEND_COUPON, title_homend, 1376, "discounted", ["discounted"], "₺1.376"),
+            (PHILIPS_HAIR_COUPON, title_hair, 1649, "normal", ["normal", "discount_amount"], "₺1.649"),
+            (PHILIPS_SHAVER_COUPON, title_shaver, 1749, "normal", ["normal", "discount_amount"], "₺1.749"),
+        ]
+        for text, title, value, reason, roles, shown in cases:
+            with self.subTest(title=title):
+                info = pf.extract_price(text)
+                self.assertEqual((info.value, info.confidence, info.reason), (value, "high", reason))
+                self.assertEqual([c.role for c in pf.find_candidates(text)], roles)
+                self.assertEqual(pf.extract_title(text), title)
+                event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
+                with patch.object(bot, "SMART_HEADER", True):
+                    self.assertEqual(bot.compose_message(event)["header"], f"{shown} — {title}")
+        self.assertIsNone(pf.extract_price("Sepette 250 TL kupon").value)
+        self.assertIsNone(pf.extract_price("Sepette 250 TL kupon ile").value)
+        self.assertIsNone(pf.extract_price("250 TL kupon ile").value)
+        threshold = pf.extract_price("100 TL kupon ile 90 TL")
+        self.assertEqual((threshold.value, threshold.reason), (90, "discounted"))
+        self.assertEqual([c.role for c in pf.find_candidates("100 TL kupon ile 90 TL")],
+                         ["discount_amount", "discounted"])
+
+    def test_chat_promotion_never_replaces_logitech_product_name(self):
+        title = (
+            "Logitech BRIO 100 Full HD Web Kamerası, Toplantı ve Yayın Amaçlı, Otomatik Işık Dengesi, "
+            "Dahili Mikrofon, Gizlilik Kapağı, USB-A, Microsoft Teams, Google Meet, Zoom ile Uyumlu, Siyah"
+        )
+        self.assertEqual(pf.extract_title(LOGITECH_CHAT), title)
+        self.assertEqual(bot._search_query(LOGITECH_CHAT), title)
+        self.assertEqual(pf.extract_price(LOGITECH_CHAT).value, 2300)
+        event = SimpleNamespace(message=LOGITECH_CHAT, raw_text=LOGITECH_CHAT, entities=[], media=None)
+        self.assertEqual(bot.smart_dedup_title(event), title)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(event)["header"], f"₺2.300 — {title}")
+
+    def test_buy_pay_unit_price_overrides_pack_total_only_with_explicit_campaign(self):
+        title = "Everest Gümüş Işıklandırmalı Oyuncu Mouse"
+        info = pf.extract_price(EVEREST_MULTI)
+        self.assertEqual((info.value, info.confidence, info.reason), (124, "medium", "multi_unit"))
+        self.assertEqual([c.role for c in pf.find_candidates(EVEREST_MULTI)], ["pack_total", "multi_unit"])
+        self.assertTrue(pf.price_matches(EVEREST_MULTI, 124)[0])
+        self.assertFalse(pf.price_matches(EVEREST_MULTI, 123)[0])
+        event = SimpleNamespace(message=EVEREST_MULTI, raw_text=EVEREST_MULTI, entities=[], media=None)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(event)["header"], f"₺124 — {title}")
+        plain_breakdown = "Everest Mouse\n249 TL (Tanesi 124 TL)"
+        self.assertEqual(pf.extract_price(plain_breakdown).value, 249)
+
+    def test_ordinal_second_item_amount_is_campaign_not_main_price(self):
+        info = pf.extract_price(TRIOMOVE_SECOND)
+        self.assertEqual((info.value, info.confidence, info.reason),
+                         (None, "none", "yalnız kampanya koşulu tutarı"))
+        self.assertEqual([c.role for c in pf.find_candidates(TRIOMOVE_SECOND)], ["campaign"])
+        self.assertIsNone(bot.offer_terms(TRIOMOVE_SECOND)[0])
+        self.assertFalse(pf.price_matches(TRIOMOVE_SECOND, 1000)[0])
+        with_base_price = "TrioMove Protein Bar\n🏷 49 TL\n" + TRIOMOVE_SECOND
+        self.assertEqual(pf.extract_price(with_base_price).value, 49)
+        self.assertEqual([c.role for c in pf.find_candidates(with_base_price)], ["normal", "campaign"])
+        event = SimpleNamespace(message=TRIOMOVE_SECOND, raw_text=TRIOMOVE_SECOND, entities=[], media=None)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertTrue(bot.compose_message(event)["header"].startswith("❓"))
+
+    def test_bogo_free_campaign_is_not_zero_product_price(self):
+        info = pf.extract_price(BOYNER_BOGO)
+        self.assertEqual((info.value, info.confidence), (None, "none"))
+        self.assertEqual(pf.extract_title(BOYNER_BOGO), "")
+        self.assertIsNone(bot.offer_terms(BOYNER_BOGO)[0])
+        self.assertFalse(pf.price_matches(BOYNER_BOGO, 1000)[0])
+        event = SimpleNamespace(message=BOYNER_BOGO, raw_text=BOYNER_BOGO, entities=[], media=None)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(event)["header"], "")
+        self.assertEqual(bot.smart_dedup_title(event), "")
+        real_free = pf.extract_price("Kalem Seti bedava")
+        self.assertEqual((real_free.value, real_free.confidence), (0, "medium"))
 
     def test_notification_header_uses_correct_or_unknown_amount(self):
         expected = [

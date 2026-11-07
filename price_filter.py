@@ -73,12 +73,16 @@ PRICE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# "Fiyat: 1299", "💰 1.299" gibi para birimi yazılmayan etiketli tutarlar
+# "Fiyat: 1299", "💰 1.299", "2000 kuponla 50499" gibi para
+# birimi yazılmayan etiketli tutarlar. Kupon/kod etiketindeki yalın sayıların
+# küçük kampanya miktarlarına dönüşmesi find_candidates içinde ayrıca engellenir.
 LABELED_RE = re.compile(
-    rf"(?:fiyat\w*|price|sepette|net)\s*[:=\-–]?\s*(?P<a>{_NUM}){_AMOUNT_END}"
+    rf"(?:fiyat\w*|price|sepette|net|kuponla|kuponuyla|kupon\s+ile|kodla|koduyla|kod\s+ile)"
+    rf"\s*[:=\-–]?\s*(?P<a>{_NUM}){_AMOUNT_END}"
     rf"(?=\s*(?:{_CUR}|lira(?![{_LETTER}])|$|[!?,;:)\]])|\.(?![{_LETTER}]))",
     re.IGNORECASE,
 )
+_COUPON_LABEL_RE = re.compile(r"^(?:kuponla|kuponuyla|kupon\s+ile|kodla|koduyla|kod\s+ile)\b", re.IGNORECASE)
 EMOJI_LINE_RE = re.compile(
     rf"^\s*(?:[💰🏷💵💸🔥✅💲]\ufe0f?\s*)+(?P<a>{_NUM})\s*$"
 )
@@ -180,7 +184,8 @@ _MONTHLY_RE = re.compile(r"^\s*(?:/\s*ay|[x×]\s*\d|\+\s*kdv)", re.IGNORECASE)
 _FREE_RE = re.compile(r"(?<![\w])(?:ücretsiz|ucretsiz|bedava|free)(?![\w])", re.IGNORECASE)
 _FREE_BLOCK_RE = re.compile(
     r"kargo|teslimat|gönderim|gonderim|iade|kurulum|montaj|deneme|üyelik|uyelik|aboneli|"
-    r"ilk\s+ay|değişim|degisim|nakliye|hızlı|hizli|prime",
+    r"ilk\s+ay|değişim|degisim|nakliye|hızlı|hizli|prime|"
+    r"\d+\s+alana\s+\d+\s+bedava",
     re.IGNORECASE,
 )
 _COUPON_SLASH_RE = re.compile(r"\d[\d.,]*\s*/\s*$")          # "1.000/300TL" → eşik/indirim yazımı
@@ -370,8 +375,16 @@ def find_candidates(text: str, strike: Sequence[tuple[int, int]] = ()) -> list[C
                 continue
             if any(s <= match.start("a") < e for s, e in seen_spans):
                 continue
+            coupon_label = regex is LABELED_RE and _COUPON_LABEL_RE.match(
+                norm(line[match.start():match.start("a")])
+            )
             value = parse_amount(match.group("a"))
             if value is None or value > 10_000_000:
+                continue
+            if coupon_label and value < 100:
+                # Para birimsiz kupon etiketi yalnız belirgin (en az 100 TL)
+                # fiyatları tamamlar. ``kuponla 2 al 1 öde`` içindeki 2, fiyat
+                # adayına dönüşmemeli; mevcut küçük etiketli fiyatlar değişmez.
                 continue
             cls, _ = _classify(line, match.start("a"), match.end("a"), offset + match.start("a"), strike)
             candidates.append(Candidate(value, match.group().strip(), cls, True, index, match.start("a"), match.end("a")))
@@ -396,7 +409,15 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
         if c.cls in {"old", "history"}:
             c.reason = c.role
             continue
-        if c.cls in {"price", "cond", "other"} and re.fullmatch(
+        if c.cls in {"price", "cond", "other"} and re.search(
+            r"(?:ikinci\s+el|2\s*\.\s*el|yenilenmiş|yenilenmis|renewed|refurbished)\b[^/\n]*$",
+            before,
+        ):
+            # Açık kondisyon etiketi, aynı mesajdaki yeni ürün referansından
+            # ayrı bir tekliftir. Birden fazla farklı kondisyon fiyatı varsa
+            # extract_price mevcut çoklu-değer belirsizliğini korur.
+            c.cls, c.role, c.strong = "price", "condition_price", True
+        elif c.cls in {"price", "cond", "other"} and re.fullmatch(
             r"sepette[*_~`\s.!]*", after,
         ):
             # ``Sepette 43.728 TL`` ile ``43.728 TL sepette`` aynı açık
@@ -407,6 +428,25 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
         elif re.match(r"^[’'](?:ye|ya|e|a)\s+\d[\d.,]*\s*(?:tl|₺|try)\s*(?:kupon|indirim)", after):
             c.cls, c.role = "other", "threshold"
         elif re.search(r"(?:kupon|kod)\s+(?:uygulayınca|uygulandığında|uygulandiginda)\s*$", before) and c.cls == "other":
+            c.cls, c.role, c.strong = "price", "discounted", True
+        elif c.cls in {"price", "cond", "other"} and re.search(
+            r"(?:kuponla|kuponuyla|kupon\s+ile|kodla|koduyla|kod\s+ile)\s*[:=]?\s*$",
+            before,
+        ):
+            # ``2000 kuponla 50499`` ve ``100 TL kupon ile 90 TL``:
+            # sondaki tutar nihai fiyattır; önceki kupon tutarı aşağıdaki
+            # discount_amount dalında ayrıca elenir. Ürün/sepet kuponu rol
+            # ayrımı mevcut son bağlam kuralıyla birebir aynı tutulur.
+            clause = re.split(r"[/|(]", before)[-1]
+            c.cls, c.strong = "price", True
+            c.role = "product_coupon" if re.search(r"ürün alt", clause) else "basket_coupon" if "sepette" in clause else "discounted"
+        elif c.cls == "other" and len(candidates) == 1 \
+                and re.fullmatch(r"kupon\s+ile[*_~`\s.!]*", after) \
+                and not _TOKEN_RE.findall(before) \
+                and _has_product_context_before(lines, c.line):
+            # ``<ürün>\n1376 TL kupon ile``: tek tutar ve gerçek ürün satırı
+            # varken bu, kupon miktarı değil kuponla verilen ürün fiyatıdır.
+            # ``Sepette 250 TL kupon`` veya iki tutarlı biçim bu dala girmez.
             c.cls, c.role, c.strong = "price", "discounted", True
         elif re.match(r"^(?:ve\s+)?(?:üzeri|uzeri|üstü|ustu|alışveriş|harcama)", after):
             c.cls, c.role = "other", "threshold"
@@ -427,26 +467,36 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
             # indirim tutarı bulunan ve satır sonunda duran nihai tutarı terfi et.
             c.cls, c.role, c.strong = "price", "discounted", True
         elif c.cls == "other" and re.match(
-            r"^[*_~`\s]*[—–-]\s*sepette\b[^/|]*\bindirim\s+kod", after,
+            r"^[*_~`\s]*[—–-]\s*sepette\b[^/|]*\b(?:indirim\s+kod|kupon(?:la|uyla|\s+ile|\s+kod))", after,
         ) and (
             _PRICE_EMOJI_RE.search(line[:c.start])
             or re.search(r"(?:fiyat\w*|price)\s*[:=]?\s*$", before)
         ):
-            # ``🏷 889 TL — sepette "KOTON300" indirim kodunu uygulayın``:
-            # kupon AÇIKLAMASI fiyatı indirim tutarına çevirmez. Etiket/emoji
-            # ve sepet-kuponu cümlesi birlikte yoksa bu kural devreye girmez.
+            # ``🏷 889 TL — sepette "KOTON300" indirim kodunu uygulayın`` ve
+            # ``🏷 1.649 TL — sepette 250 TL kupon ile``: kupon AÇIKLAMASI
+            # etiketli fiyatı indirim tutarına çevirmez. İkinci 250 TL'nin
+            # kendi ``after`` bağlamı sepette ile başlamadığı için terfi etmez.
             c.cls, c.role, c.strong = "price", "normal", True
         elif re.match(r"^seçili\s+ürün.*satın\s+aldığınızda", after):
             c.cls, c.role = "other", "threshold"
         elif re.search(r"\bkampanya\s*:\s*$", before) and re.match(r"^\(\s*\d+\s*adet\s*\)", after):
             # Etiketli kampanya + sonda miktar, birim fiyat kanıtı değildir.
             c.cls, c.role = "cond", "campaign_quantity"
+        elif c.cls in {"price", "cond", "other"} and re.search(
+            r"\b2\s*\.\s*s[ıiuü]\s*[:=]?\s*$", before,
+        ):
+            # ``2.si 1 TL`` ordinal kampanya koşuludur; ürünün taban fiyatı
+            # değildir. Bu dar biçim, açık nihai fiyat bulunan mevcut
+            # ``2. ürün`` guard'ını değiştirmeden ayrıca tanınır.
+            c.cls, c.role, c.strong = "campaign", "campaign", False
         elif re.search(r"(?:\b1\s+adet|\badedi|\btanesi|(?:adet|birim|tane)\s*(?:baş[ıi]|fiyat[ıi]))\s*[:=]?\s*$", before) and c.cls in {"price", "cond", "other"}:
             # Yakındaki kupon sözcüğü açık birim fiyatı gölgeleyebilir.
             # Kupon tutarı/eskiler yukarıda elenir; kargo/taksit terfi etmez.
             unit_prefix = re.sub(r"(?:\b1\s+adet|\badedi|\btanesi|(?:adet|birim|tane)\s*(?:baş[ıi]|fiyat[ıi]))\s*[:=]?\s*$", "", before)
             if not re.search(r"(?:kargo|taksit|teslimat)\s*[:=]?\s*$", unit_prefix):
-                c.cls, c.role, c.strong = "cond", "multi_unit" if re.search(r"\d+\s*adet\s*al[ıi]m(?:da|larda)\s*", before) else "unit", True
+                explicit_multi = re.search(r"\d+\s*adet\s*al[ıi]m(?:da|larda)\s*", before) \
+                    or re.search(r"\d+\s+al\s+\d+\s+öde\b", before)
+                c.cls, c.role, c.strong = "cond", "multi_unit" if explicit_multi else "unit", True
         elif re.search(r"\d+\s+al\s+\d+\s+öde(?:\s+ile)?(?:\s+toplam)?\s*$", before) and c.cls in {"price", "cond"}:
             c.cls, c.role, c.strong = "cond", "multi_total" if before.endswith("toplam") or re.match(r"^toplam\b", after) else "multi_unit", False
         elif c.cls in {"price", "cond"}:
@@ -471,9 +521,12 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
     # Refine the old catch-all role without changing which amounts are price candidates.
     for c in candidates:
         line = lines[c.line]
-        if c.role == "normal" and any(
-            unit.role == "unit" and unit.line == c.line and unit.start > c.end
-            for unit in candidates
+        if c.role == "normal" and (
+            any(unit.role == "unit" and unit.line == c.line and unit.start > c.end
+                for unit in candidates)
+            or any(unit.role == "multi_unit" and unit.line == c.line and unit.start > c.end
+                   and re.search(r"\d+\s+al\s+\d+\s+öde\b", norm(line[c.end:unit.start]))
+                   for unit in candidates)
         ):
             c.role = "pack_total"
         elif c.role == "unrelated":
@@ -509,7 +562,7 @@ def ambiguous_campaign_line(line: str) -> bool:
     return bool(plain) and not trusted
 
 
-_EXPLICIT_PRICE_ROLES = {"multi_unit", "unit", "discounted", "product_coupon", "basket_coupon"}
+_EXPLICIT_PRICE_ROLES = {"multi_unit", "unit", "discounted", "product_coupon", "basket_coupon", "condition_price"}
 
 
 def campaign_plain_ambiguous(cands: Sequence[Candidate]) -> bool:
@@ -596,7 +649,7 @@ def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInf
         # Çok satırlı mesaj: kampanya tutarı + etiketsiz tutar, etiketli fiyat yok.
         # Hangisinin ürün fiyatı olduğu güvenilir değil: fiyat bilinmiyor (❓).
         return PriceInfo(None, "", "none", "kampanya tutarı ile etiketsiz tutar: belirsiz")
-    finals = [c for c in cands if c.role in {"discounted", "product_coupon", "basket_coupon"}]
+    finals = [c for c in cands if c.role in {"discounted", "product_coupon", "basket_coupon", "condition_price"}]
     normal = [c for c in cands if c.cls == "price" and c not in finals]
     units = [c for c in cands if c.role in {"multi_unit", "unit"}]
     # Önce açık nihai fiyat; çoklu alım sadece bu teklife daha avantajlı bir
@@ -688,6 +741,22 @@ STORES = frozenset(
     "steam epic gamivo ebay aliexpress temu pazarama ptt avm itopya incehesap gittigidiyor "
     "sahibinden dolap kitapyurdu d&r idefix".split()
 )
+_STORE_PATTERN = "|".join(re.escape(store) for store in sorted(STORES, key=len, reverse=True))
+_STORE_FROM_PREFIX_RE = re.compile(
+    rf"^\s*(?:{_STORE_PATTERN})['’](?:den|dan|ten|tan)\s+",
+    re.IGNORECASE,
+)
+_STORE_LOCATIVE_PREFIX_RE = re.compile(
+    rf"^(?:{_STORE_PATTERN})['’](?:de|da|te|ta)\b",
+    re.IGNORECASE,
+)
+
+
+def strip_store_prefix(text: str) -> str:
+    """Yalnız ``n11'den Ürün`` gibi kaynak önekini kaldır; ``N11’de`` korunur."""
+    return _STORE_FROM_PREFIX_RE.sub("", text or "", count=1)
+
+
 _UNIT_RE = re.compile(
     r"\b\d+(?:[.,]\d+)?\s?(?:gb|tb|mb|mah|w|kw|inç|inch|in|cm|mm|ml|lt|l|kg|gr|g|adet|'?li|'?lı|"
     r"'?lu|'?lü|hz|mp|ghz|rpm|bar|litre|metre|m|watt|volt|v|mbps|ssd|ram)\b|\d+\"",
@@ -696,6 +765,7 @@ _UNIT_RE = re.compile(
 _PRICE_LEAD_RE = re.compile(r"^\s*[\U0001F4B0\U0001F3F7\U0001F4B8\U0001F3AF\U0001F53B\U0001F4B3\u2705]")   # 💰 🏷 💸 🎯 🔻 💳 ✅ → fiyat satırı
 _PRODUCT_EMOJI_RE = re.compile(r"^\s*[\U0001F6CD\U0001F6D2\U0001F4E6\U0001F48E]")   # 🛍 🛒 📦 💎 → ürün satırı
 _MODEL_RE = re.compile(r"\b(?=[A-Za-z0-9\-/]*[A-Za-z])(?=[A-Za-z0-9\-/]*\d)[A-Za-z0-9\-/]{3,}\b")
+_CATALOG_CONNECTION_RE = re.compile(r"\bUSB-[A-Z0-9]+\b", re.IGNORECASE)
 
 
 def _remove_noise(line: str) -> str:
@@ -754,7 +824,7 @@ def _strip_edge_price(line: str) -> str:
 
 def _trim_edges(line: str) -> str:
     """Baş/sondaki fırsat sözcüklerini, kenar fiyatını ve ayraçları temizle (ürün adı ortada kalır)."""
-    line = _strip_tags(line)
+    line = strip_store_prefix(_strip_tags(line))
 
     def bare(word: str) -> str:
         return norm(re.sub(r"^[^\w]+|[^\w]+$", "", word))
@@ -793,6 +863,8 @@ _GENERIC_TITLE_RE = re.compile(
     r"(?:sepete\s+)?\d+\s+adet(?:\s+sepete)?\s+ekle\w*|"
     r"(?:başlangıç|baslangic|bitiş|bitis|tarih)\s*:|"
     r"(?:amazon|n11|trendyol|hepsiburada)\s+indirim kuponu\s*$|"
+    r"sohbet\s+(?:grubumuz|kanalımız)(?:\s+(?:için|icin))?\s*$|"
+    r"mesajı(?:\s+(?:gör|gor|beğen|begen)\w*)?(?:\s+\d+)?\s*$|"
     r"[a-z0-9][a-z0-9_-]*\s+(?:koduyla|kodla|kuponuyla|kuponla)"
     r"(?:\s+(?:fiyat\w*\s*)?(?:\d[\d.,]*\s*(?:tl|₺|try)|₺\s*\d[\d.,]*))?\s*$)",
     re.IGNORECASE,
@@ -812,6 +884,10 @@ def is_generic_title(text: str) -> bool:
     """
     plain = norm(_remove_noise(text)).strip(" ()[]{}.,:;!-")
     if not plain or plain in STORES or _GENERIC_TITLE_RE.search(plain):
+        return True
+    if _STORE_LOCATIVE_PREFIX_RE.match(plain) and re.search(r"\b\d+\s+alana\s+\d+\b", plain):
+        # Mağaza + BOGO + kupon kodu satırı ürün kimliği değildir. Arama
+        # temizliği ``bedava``yı kaldırsa bile kalan ``1 alana 1`` yakalanır.
         return True
     first_word = plain.split(maxsplit=1)[0] if plain else ""
     if first_word in STORES and re.search(r"\btanıtım\b", plain):
@@ -841,6 +917,17 @@ def _is_noise(text: str) -> bool:
     if not tokens or not re.search(r"[^\W\d_]", text):
         return True
     return all(tok in DEAL_WORDS or tok in STORES for tok in tokens)
+
+
+def _has_product_context_before(lines: Sequence[str], line_index: int) -> bool:
+    """Kuponlu yalın tutardan önce bağımsız bir ürün satırı bulunduğunu doğrula."""
+    for raw in reversed(list(lines[:line_index])):
+        if not raw.strip() or _URL_RE.search(raw):
+            continue
+        cleaned = _trim_edges(_remove_noise(raw))
+        if cleaned and not _is_noise(cleaned):
+            return True
+    return False
 
 
 def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str], lead_product: bool = False) -> float:
@@ -966,13 +1053,15 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
             title = f"{cleaned} {continuation}"
     title = " ".join(title.split())
     if len(title) > limit:
-        # Katalog adının sonundaki açık model kodunu kırpıp atmak, ürün
-        # kimliğini ve dedup eşleşmesini zayıflatır. Yalnız model kodu sınırın
-        # ötesinde kalan makul uzunluktaki adlara, çağıran daha dar bir limit
-        # istemediyse 80 karakter ek alan ver; diğer uzun başlıklar mevcut
-        # 160 karakter görünümünü korur.
-        model_beyond_cut = limit >= 160 and bool(_MODEL_RE.search(title[limit:]))
-        if not model_beyond_cut or len(title) > limit + 80:
+        # Katalog adındaki açık model/bağlantı kimliğini kırpıp atmak, ürün
+        # kimliğini ve dedup eşleşmesini zayıflatır. Model kodu sınırın ötesinde
+        # kalan ya da USB-A/USB-C gibi katalog bağlantısı taşıyan makul uzunluktaki
+        # adlara, çağıran daha dar bir limit istemediyse 80 karakter ek alan ver;
+        # diğer uzun başlıklar mevcut 160 karakter görünümünü korur.
+        identity_extension = limit >= 160 and bool(
+            _MODEL_RE.search(title[limit:]) or _CATALOG_CONNECTION_RE.search(title)
+        )
+        if not identity_extension or len(title) > limit + 80:
             cut = title[:limit].rsplit(" ", 1)[0].rstrip(" ,.-–|")
             title = cut + "…"
     return title

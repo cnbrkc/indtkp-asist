@@ -1668,6 +1668,7 @@ def _search_line_candidate(raw_line: str) -> str:
     """Fiyat/indirim/CTA satırlarını ayıkla, ürün adı olabilecek metni döndür."""
     line = URL_RE.sub(" ", raw_line or "")
     line = clean_disclosure_tokens(line)
+    line = price_filter.strip_store_prefix(line)
     # Hashtag-only tanıtım satırları sanitize_message tarafından kaldırılır;
     # başlıkta gerçek bir ürün adı varsa kelimeyi koruyup # işaretini sil.
     line = re.sub(r"(?<!\w)#(?=\w)", "", line)
