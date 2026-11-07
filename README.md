@@ -694,16 +694,28 @@ yerine çoklu paylaşım notu yazılır: `📌 3 kere paylaşıldı: FırsatZ, �
 - Başlık, fiyat veya link kaynak mesajdan **silinmez**: gövde her zaman orijinal
   metnin kendisidir. Fiyat/indirim satırlarının ayıklanması yalnızca başlık
   ayıklayıcısında ve arama düğmelerinin sorgusunda kullanılır.
+- `Amazon tanıtım …`, `n11 (Satıcı: …) Tanıtım` ve yalnız kupon/fiyat içeren
+  `SOFRAM300 koduyla 1.690 TL` gibi metadata satırları ürün adı seçilmez. Uzun
+  katalog adlarında sondaki açık model kodu kısaltma sırasında korunur.
+- `43.728 TL sepette`, `Sepette 43.728 TL` ile aynı açık sepet fiyatıdır. Buna karşılık
+  `750 TL sepette indirim` bir indirim tutarıdır ve ürün fiyatı olarak gösterilmez.
 - Bölümler arasında **tam bir boş satır** olur. Reklam/işbirliği etiketi veya
   WhatsApp bağlantısı silinince geriye kalan çoklu boş satırlar tek boş satıra
   indirilir; bu sıkıştırma yalnızca boşluk karakterlerini alır, içerik kaybolmaz.
 - Metinden yalnızca bağımsız `#işbirliği`, `işbirliği`, `#reklam`, `reklam` ifadeleri
-  ile doğrudan WhatsApp URL'leri çıkarılır. WhatsApp'a gizlenmiş hyperlink'in görünen
-  etiketi düz metin olarak korunur; başka kelime ve domain'ler silinmez.
+  ile doğrudan WhatsApp/Instagram URL'leri çıkarılır. WhatsApp'a gizlenmiş hyperlink'in
+  görünen etiketi düz metin olarak korunur; başka kelime ve domain'ler silinmez.
+- **Instagram tanıtım ekleri temizlenir:** `Instagram kanalımıza katılın` gibi tanıtım
+  satırları ile Instagram'a giden gizli bağlantılar, inline butonlar ve önizlemeler
+  bildirime taşınmaz. Bu, Instagram'a özeldir; diğer kanal/mağaza bağlantıları ve aynı
+  satırdaki ürün-fiyat içeriği korunur.
+- Yeniden oluşturulan metin bildirimlerinde Telegram bağlantı önizlemesi kapalıdır.
+  Amazon ürün bağlantısı ve tıklanabilirliği korunur; mesajın altında ayrıca Amazon
+  ürün önizleme kartı oluşmaz.
 - **Kanal tanıtımı ve hashtag satırları temizlenir:** `💚Whatsapp Önemli Fırsatlar` gibi
   mesajlaşma kanalı tanıtımları ve `#amazon #indirimalarmi` gibi yalnızca etiketlerden
   oluşan satırlar bildirime hiç girmez (kullanıcı isteği: "tertemiz görünüm"). Kurallar
-  dar tutulur: satırda hem bir kanal adı (WhatsApp/Telegram) geçmeli hem de satırdaki
+  dar tutulur: satırda hem bir kanal adı (WhatsApp/Telegram/Instagram) geçmeli hem de satırdaki
   **tüm kelimeler** tanıtım sözlüğünden gelmelidir. Sözlükte olmayan tek bir kelime
   satırı korur; bu yüzden `WhatsApp'tan bilgi ... 9 TL` gibi içerik satırları,
   fiyat/ürün satırları ve tüm mesaj silinmesini gerektiren durumlar olduğu gibi kalır.
@@ -878,7 +890,9 @@ Kaçırılmayacak fırsat!
   platformun sunduğu en güçlü vurgu kombinasyonudur. Çok dar medya açıklamalarında
   grup adları sığmazsa yalnızca sayı yazılır.
 - Grup adları kaynaklardan toplanır (ilk kopyayı gönderen grup + sonraki kopyaları
-  yakalayan gruplar); aynı grup birden fazla kez paylaşırsa adı bir kez yazılır.
+  yakalayan gruplar); aynı grup birden fazla kez paylaşırsa adı bir kez yazılır. Sayaç
+  paylaşım adedini göstermeye devam eder; listede yalnız bir grup varsa rozet
+  `📌 2 kere paylaşıldı: FırsatZ · tek grup` diyerek ikinci bir grubun eksik olmadığını açıklar.
 - **Geriye dönük uyumluluk:** eski `✅ 2 kaynakta paylaşıldı · teyitli fırsat` /
   `🔥 3 kaynakta ...` / `🚨 N KAYNAKTA PAYLAŞILDI` rozetleri hâlâ tanınır ve sökülür;
   daha eski sürümün ikinci satırdaki `📌 Kaynaklar: ...` listesi de atlanır. Böylece
@@ -888,6 +902,10 @@ Kaçırılmayacak fırsat!
   ve `6.2L` / `6,2 L` gibi sayı biçimi farkları normalize edilir; böylece fiyatı başta
   yazan kaynakla ürünü başta yazan kaynak eşleşebilir. Başlıksız (salt medya) iletiler
   birleştirilmez.
+- Uzun/kısa katalog adları ancak sıralı en az 10 kelimelik güçlü bir önek ve sayısal/model
+  kimliği varsa, son kelime kırılması açıklanabiliyorsa ve renk/kapasite/varyant çelişkisi
+  yoksa birleşir. Uzun addaki ek sayılar yalnız `DST7030/20` gibi model koduna ait olabilir;
+  farklı model, ölçü, kapasite, renk ve aksesuarlar ayrı fırsat olarak kalır.
 - Üst satır artık `fiyat - ürün adı` taşırken de açılış taraması aynı anahtarı
   bulur: gönderilmiş bildirimin ilk satırı `split_header_line` ile ayrıştırılır,
   anahtar **fiyatsız** addan üretilir (canlı yoldaki `smart_dedup_title` ile birebir

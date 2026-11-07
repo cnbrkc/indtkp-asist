@@ -24,6 +24,14 @@ import test_integration as ti  # noqa: E402
 from test_cross_channel_dedup import FIRST_CHANNEL, Harness, SECOND_CHANNEL_ID  # noqa: E402
 
 HOMEND_TITLE = "Homend Profashion 3023H Stand Mikser Antrasit"
+PHILIPS_SHORT = (
+    "Philips 7000 Serisi Buharlı Ütü - 2800W, Steamglide Plus Taban, 250 G Güçlendirme, "
+    "50 G/Dk Sürekli Buhar, Otomatik Kapan"
+)
+PHILIPS_LONG = (
+    "Philips 7000 Serisi Buharlı Ütü - 2800W, SteamGlide Plus Taban, 250 g Güçlendirme, "
+    "50 g/dk Sürekli Buhar, Otomatik Kapanma, Hızlı Kireç Temizleme (DST7030/20)"
+)
 
 
 def deal(title: str = HOMEND_TITLE, price: str = "6.619", *extra_lines: str) -> str:
@@ -309,6 +317,32 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
         self.assertEqual(bot.STATS["deduped"], 1)
 
 
+    def test_philips_ordered_long_title_merges_with_truncated_short_title(self):
+        client = self.start()
+        self.offers(client, [
+            (self.first_id, 681, deal(PHILIPS_SHORT, "1.874", "https://amzn.to/short7030")),
+            (SECOND_CHANNEL_ID, 682, deal(PHILIPS_LONG, "1.874", "https://ty.gl/long7030")),
+        ])
+        self.assertEqual(len(self.ping_calls), 1)
+        self.assertEqual(bot.STATS["deduped"], 1)
+        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertEqual(entry["count"], 2)
+        self.assertEqual(entry["title"], PHILIPS_LONG,
+                         "daha zengin model kodlu başlık sonraki eşleşmeler için korunmalı")
+        self.assertIn("2 kere paylaşıldı", self.edit_text_calls[-1]["text"])
+
+    def test_promoted_long_title_prevents_transitive_merge_with_another_model(self):
+        client = self.start()
+        other_model = PHILIPS_LONG.replace("DST7030/20", "DST7031/20")
+        self.offers(client, [
+            (self.first_id, 691, deal(PHILIPS_SHORT, "1.874")),
+            (SECOND_CHANNEL_ID, 692, deal(PHILIPS_LONG, "1.874")),
+            (self.first_id, 693, deal(other_model, "1.874")),
+        ])
+        self.assertEqual(len(self.ping_calls), 2,
+                         "iki farklı model kodu kısa ortak başlık üzerinden birleşmemeli")
+        self.assertEqual(bot.STATS["deduped"], 1)
+
     def test_iffalcon_50u65_editorial_titles_at_same_price_merge(self):
         titles = [
             "iFFALCON 50U65 50 İnç Smart TV 4K UHD HDR 10 Gaming Google TV, "
@@ -352,6 +386,30 @@ class TitleMatcherUnitTests(unittest.TestCase):
             "Hepsiburada: Homend Profashion 3023H Stand Mikser Antrasit",
             "Homend Profashion 3023-H Stand Mikser, Antrasit",
         ))
+
+    def test_ordered_prefix_requires_identity_evidence_and_allows_truncated_last_word(self):
+        self.assertTrue(bot.titles_match_product(PHILIPS_SHORT, PHILIPS_LONG))
+        self.assertTrue(bot.titles_match_product(PHILIPS_LONG, PHILIPS_SHORT))
+        self.assertFalse(bot.titles_match_product(
+            PHILIPS_SHORT,
+            PHILIPS_LONG.replace("2800W", "3200W"),
+        ), "ortak önek içindeki farklı güç/model değeri korunmalı")
+        self.assertFalse(bot.titles_match_product(
+            PHILIPS_SHORT,
+            PHILIPS_LONG + " Kırmızı",
+        ), "uzun başlığa eklenen farklı renk varyantı birleşmemeli")
+        self.assertFalse(bot.titles_match_product(
+            PHILIPS_SHORT,
+            PHILIPS_LONG + " 256 GB",
+        ), "uzun başlığa eklenen kapasite varyantı birleşmemeli")
+        self.assertFalse(bot.titles_match_product(
+            PHILIPS_SHORT,
+            PHILIPS_LONG + " 2026",
+        ), "model koduna ait olmayan ek sayı güvenli önek sayılmamalı")
+        self.assertFalse(bot.titles_match_product(
+            "Philips 7000 Serisi Buharlı Ütü Otomatik Kapan",
+            "Philips 7000 Serisi Buharlı Ütü Otomatik Kapanma Hızlı Kireç Temizleme DST7030/20",
+        ), "kısa önek tek başına yeterli kimlik kanıtı değildir")
 
     def test_plus_duplicate_numbers_and_accessories_do_not_merge(self):
         self.assertFalse(bot.titles_match_product(
