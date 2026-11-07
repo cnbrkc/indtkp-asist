@@ -176,6 +176,12 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertEqual(pf.extract_title(AMAZON_PROMO), "")
         self.assertEqual(pf.find_candidates(AMAZON_PROMO), [])
         self.assertFalse(bot.dm_should_send({"dm_price_max": ["20000"]}, AMAZON_PROMO))
+        fallback = bot._search_query(AMAZON_PROMO)
+        self.assertTrue(pf.is_generic_title(fallback), fallback)
+        event = SimpleNamespace(message=AMAZON_PROMO, raw_text=AMAZON_PROMO, entities=[], media=None)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(event)["header"], "")
+        self.assertEqual(bot.smart_dedup_title(event), "")
 
     def test_previous_high_price_shipping_and_ten_pack_are_separated(self):
         info = pf.extract_price(SHIPPING_PACK)

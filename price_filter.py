@@ -819,7 +819,10 @@ def is_generic_title(text: str) -> bool:
         # Tanıtım`` mağaza/kanal metadata'sıdır; başındaki 🛍️ ve içindeki
         # sayısal mağaza adı bunları gerçek ürün adından daha yüksek puanlayabiliyordu.
         return True
-    if re.search(r"\bseçili ürünlerde\b.*\b(?:indirim|kupon|kampanya)\b", plain):
+    if re.search(r"\bseçili ürünlerde\b", plain):
+        # Arama sorgusu ``Sepette 2.ye %50 İndirim`` kısmını temizledikten
+        # sonra bile kalan ``Seçili ürünlerde…`` kampanya metadata'sıdır;
+        # indirim/kupon kelimesinin artık görünmesi gerekmez.
         return True
     if re.search(r"\b(?:çıkmıştı|cikmisti|tekrar)\b", plain) \
             and re.search(r"\b(?:sepette|kargo|teslimat|paket\w*|ödemek|alabilirsiniz)\b", plain):
