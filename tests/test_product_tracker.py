@@ -230,7 +230,7 @@ class ReaderTests(unittest.TestCase):
 
     def test_tracking_menu_is_complete_short_and_copy_only(self):
         text, keyboard = tracking_menu(False)
-        self.assertEqual(COMMANDS, {'/takip'} | {command for command, _ in TRACK_MENU})
+        self.assertEqual(COMMANDS, {'/webtakip'} | {command for command, _ in TRACK_MENU})
         buttons = [button for row in keyboard['inline_keyboard'] for button in row]
         self.assertEqual(len(buttons), len(TRACK_MENU))
         for (command, description), button in zip(TRACK_MENU, buttons):
@@ -318,7 +318,7 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(health['checked_at'], before)
         self.assertLessEqual(health['checked_at'], time.time())
 
-        await self.tracker.job('/takipler', 123, '')
+        await self.tracker.job('/webtakipler', 123, '')
         listing = self.sent[-1]['text']
         self.assertIn('Son kontrol: ', listing)
         self.assertIn('TSİ', listing)
@@ -329,14 +329,14 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
     async def test_listing_shows_distance_to_target(self):
         item = self.item(target=500000)
         await self.tracker.check(item)   # 6.000,00 TL okunur
-        await self.tracker.job('/takipler', 123, '')
+        await self.tracker.job('/webtakipler', 123, '')
         listing = self.sent[-1]['text']
         self.assertIn('hedefin 1.000,00 TL üzerinde', listing)
 
     async def test_under_target_is_marked_as_alert_threshold(self):
         item = self.item(target=700000)
         await self.tracker.check(item)   # 6.000,00 TL < 7.000,00 TL
-        await self.tracker.job('/takipler', 123, '')
+        await self.tracker.job('/webtakipler', 123, '')
         self.assertIn('hedefin 1.000,00 TL altında (alarm eşiği)', self.sent[-1]['text'])
 
     async def test_notification_failure_keeps_price_and_time(self):
@@ -446,7 +446,7 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_never_checked_product_is_reported_as_such_not_faked(self):
         self.item()
-        await self.tracker.job('/takipler', 123, '')
+        await self.tracker.job('/webtakipler', 123, '')
         listing = self.sent[-1]['text']
         self.assertIn('Son kontrol: bu çalışmada henüz yok', listing)
         self.assertNotIn('TSİ (az önce)', listing)
@@ -465,7 +465,7 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         item = self.item()
         await self.tracker.check(item)          # ilk okuma + due
         self.tracker.health[URL]['due'] = 0      # süre geçmiş gibi göster
-        await self.tracker.job('/takipler', 123, '')
+        await self.tracker.job('/webtakipler', 123, '')
         self.assertIn('sıradaki kontrol: ⏳ gecikti', self.sent[-1]['text'])
 
     async def test_html_escaped_title_is_readable(self):
@@ -474,7 +474,7 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         self.tracker.state['items'] = [
             {'url': URL, 'title': 'TCL 65C6K Premium 65&quot; Mini LED',
              'target': 4999900, 'chat_id': 123, 'alert_price': None}]
-        await self.tracker.job('/takipler', 123, '')
+        await self.tracker.job('/webtakipler', 123, '')
         self.assertIn('65" Mini LED', self.sent[-1]['text'])
         self.assertNotIn('&quot;', self.sent[-1]['text'])
 
@@ -486,7 +486,7 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
     async def test_queue_full(self):
         for _ in range(32):
             self.tracker.queue.put_nowait(('x', 123, ''))
-        await self.tracker.handle(self.event, '/takipler')
+        await self.tracker.handle(self.event, '/webtakipler')
         self.assertIn('dolu', self.replies[-1])
 
     async def test_target_equality_no_alert(self):
@@ -516,14 +516,14 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_save_failure_rolls_back(self):
         self.tracker.persist = lambda *args: (False, 'failure')
-        await self.tracker.job('/takipac', 123, '')
+        await self.tracker.job('/webtakipac', 123, '')
         self.assertFalse(self.tracker.state['enabled'])
         self.assertIn('başarısız', self.sent[-1]['text'])
 
     async def test_delete_bad_index_does_not_mutate(self):
         self.item()
         with self.assertRaises(ValueError):
-            await self.tracker.job('/takipsil', 123, '/takipsil 0')
+            await self.tracker.job('/webtakipsil', 123, '/webtakipsil 0')
         self.assertEqual(len(self.tracker.state['items']), 1)
 
     async def test_corrupt_file_isolated(self):
@@ -555,7 +555,7 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         try:
             await asyncio.wait_for(started.wait(), 2)
             self.assertFalse(await asyncio.wait_for(self.tracker.handle(self.event, '/durum'), .1))
-            self.assertTrue(await asyncio.wait_for(self.tracker.handle(self.event, '/takipler'), .1))
+            self.assertTrue(await asyncio.wait_for(self.tracker.handle(self.event, '/webtakipler'), .1))
         finally:
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
@@ -565,7 +565,7 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         self.tracker.state['items'] = [
             {'url': URL.replace('123', str(i)), 'title': 'Ürün adı ' * 20,
              'target': 700000, 'chat_id': 123, 'alert_price': None} for i in range(1, 31)]
-        await self.tracker.job('/takipler', 123, '')
+        await self.tracker.job('/webtakipler', 123, '')
         all_text = '\n'.join(p['text'] for p in self.sent)
         self.assertIn('30. ', all_text)
         self.assertTrue(all(len(p['text'].encode('utf-16-le')) // 2 <= 4096 for p in self.sent))
@@ -617,14 +617,14 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tracker_owner_guard_rejects_other_chat(self):
         self.tracker.owner_id = 456
-        self.assertFalse(await self.tracker.handle(self.event, '/takipac'))
+        self.assertFalse(await self.tracker.handle(self.event, '/webtakipac'))
         self.assertTrue(self.tracker.queue.empty())
 
 
     async def test_root_menu_read_only_preserves_existing_drafts(self):
         self.tracker.drafts[123] = {'until': float('inf'), 'url': URL}
         before = copy.deepcopy(self.tracker.state)
-        handled = await self.tracker.handle(self.event, '/takip', existing_pending=True)
+        handled = await self.tracker.handle(self.event, '/webtakip', existing_pending=True)
         self.assertTrue(handled)
         self.assertEqual(self.tracker.state, before)
         self.assertIn(123, self.tracker.drafts)
@@ -635,7 +635,7 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_root_menu_rejects_non_owner(self):
         self.tracker.owner_id = 456
-        self.assertFalse(await self.tracker.handle(self.event, '/takip'))
+        self.assertFalse(await self.tracker.handle(self.event, '/webtakip'))
         self.assertFalse(self.sent)
 
     async def test_menu_falls_back_only_on_explicit_bad_request(self):
@@ -643,13 +643,13 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         async def unsupported(method, payload):
             raise BotAPIError('unsupported button', code=400)
         self.tracker.api = SimpleNamespace(call=unsupported)
-        self.assertTrue(await self.tracker.handle(self.event, '/takip'))
-        self.assertIn('/takipac', self.replies[-1])
+        self.assertTrue(await self.tracker.handle(self.event, '/webtakip'))
+        self.assertIn('/webtakipac', self.replies[-1])
 
     async def test_menu_uncertain_send_is_not_replayed(self):
         async def timeout(method, payload):
             raise TimeoutError()
         self.tracker.api = SimpleNamespace(call=timeout)
         with self.assertRaises(TimeoutError):
-            await self.tracker.handle(self.event, '/takip')
+            await self.tracker.handle(self.event, '/webtakip')
         self.assertFalse(self.replies)

@@ -3771,49 +3771,68 @@ COMMAND_HELP = "/komutlar"
 COMMAND_START = "/start"
 COMMAND_STATUS = "/durum"
 COMMAND_DM_STATUS = "/dmfiltre"
-COMMAND_DM_ADD = "/dmfiltreekle"
-COMMAND_DM_REMOVE = "/dmfiltrecikar"
-COMMAND_DM_OPEN = "/dmac"
-COMMAND_DM_CLOSE = "/dmkapat"
+COMMAND_DM_FILTER_OPEN = "/dmfiltreac"
+COMMAND_DM_FILTER_CLOSE = "/dmfiltrekapat"
 COMMAND_SETTINGS_MENU = "/ayar"
 COMMAND_SETTINGS_ADD = "/ekle"
-COMMAND_SETTINGS_REMOVE = "/çıkar"
+COMMAND_SETTINGS_REMOVE = "/cikar"
 COMMAND_SETTINGS_SAVE = "/kaydet"
 COMMAND_SETTINGS_REVERT = "/iptal"
-COMMAND_FILTER_OPEN = "/open"
-COMMAND_FILTER_CLOSE = "/close"
+COMMAND_TG_FILTER_OPEN = "/tgfiltreac"
+COMMAND_TG_FILTER_CLOSE = "/tgfiltrekapat"
 COMMAND_SOURCES = "/kaynaklar"
 COMMAND_SOURCE_TEST = "/kaynaktest"
 COMMAND_ANALYZE = "/analiz"
 COMMAND_TEST = "/test"
 COMMAND_ID = "/id"
 COMMAND_RESTART = "/restart"
-COMMAND_TRACK = "/takip"
+COMMAND_WEB_TRACK = "/webtakip"
 
-# This is the single, canonical command catalog. HELP_TEXT is generated from it so
-# /komutlar cannot drift from the names and descriptions users actually need.
+# Bu katalog tek kaynak olduğu için /komutlar, README tablosu ve BotFather
+# virgülle ayrılmış listesi aynı sırayla üretilir. Komutlar işleve göre
+# gruplandırılmış, üstten alta okunış sırasıyla:
+#   1) Temel komutlar
+#   2) Liste yönetimi
+#   3) Telegram indirim filtreleri
+#   4) Kişisel bildirim filtreleri (DM)
+#   5) Web ürün takibi (/webtakip menüsü içinde gömülü alt komutlar da görünür)
+#   6) Gelişmiş araçlar
+#   7) Yönetim komutu
 COMMAND_DESCRIPTIONS = (
-    (COMMAND_HELP, "Tüm desteklenen komutları ve açıklamalarını listeler."),
+    # --- 1) Temel komutlar ---
+    (COMMAND_HELP, "Tüm desteklenen komutları ve açıklamalarını kategoriler halinde listeler."),
     (COMMAND_START, "Özel sohbet kullanımını açıklar; fırsat hedefini değiştirmez."),
     (COMMAND_STATUS, "Takipçinin dinleme durumunu, hedefini, sayaçlarını ve filtre durumunu gösterir."),
-    (COMMAND_DM_STATUS, "DM dahil/hariç listelerini, açık/kapalı durumunu ve sayaçlarını gösterir."),
-    (COMMAND_DM_OPEN, "Kayıtlı kişisel filtreyi açar; boş listeyi açmaz."),
-    (COMMAND_DM_CLOSE, "Kelimeleri koruyarak kişisel fırsat gönderimini kapatır."),
-    (COMMAND_SETTINGS_MENU, "Dahil, hariç, grup, dmdahil, dmharic ve dmfiyat listelerinin menüsünü gösterir."),
-    (COMMAND_SETTINGS_ADD, "Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat)."),
-    (COMMAND_SETTINGS_REMOVE, "Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat)."),
+    (COMMAND_SETTINGS_MENU, "Bot yönetim merkezi: liste, TG filtre, DM filtre ve web ürün takibi bölümlerini gösterir."),
+    # --- 2) Liste yönetimi ---
+    (COMMAND_SETTINGS_ADD, "Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat/web ürün takibi)."),
+    (COMMAND_SETTINGS_REMOVE, "Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat/web ürün takibi)."),
     (COMMAND_SETTINGS_SAVE, "Bekleyen liste taslağını kaydeder (DM listeleri dahil)."),
-    (COMMAND_SETTINGS_REVERT, "Bekleyen ekleme/çıkarma veya filtre seçimini iptal eder."),
-    (COMMAND_FILTER_OPEN, "Grup filtresini açar; dahili, harici veya ikisi seçilebilir."),
-    (COMMAND_FILTER_CLOSE, "Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir."),
+    (COMMAND_SETTINGS_REVERT, "Bekleyen ekleme veya çıkarma işlemini iptal eder."),
+    # --- 3) Telegram indirim filtreleri ---
+    (COMMAND_TG_FILTER_OPEN, "Telegram indirim akışında dahili, harici veya iki filtreyi açar."),
+    (COMMAND_TG_FILTER_CLOSE, "Telegram indirim akışında dahili, harici veya iki filtreyi kapatır."),
+    # --- 4) Kişisel bildirim filtreleri (DM) ---
+    (COMMAND_DM_STATUS, "Kişisel bildirim filtresinin durumunu, dahil/hariç listesini ve fiyat sınırını gösterir."),
+    (COMMAND_DM_FILTER_OPEN, "Kişisel bildirim filtresini açar."),
+    (COMMAND_DM_FILTER_CLOSE, "Kişisel bildirim filtresini kapatır; kelime listeleri korunur."),
+    # --- 5) Web ürün takibi (Akakçe ProductTracker) ---
+    (COMMAND_WEB_TRACK, "Akakçe ürün takip menüsünü açar; Akakçe linkini gönderip hedef fiyatı belirlersin."),
+    ("/webtakipac", "Web ürün fiyat takibini etkinleştirir."),
+    ("/webtakipkapat", "Web ürün fiyat takibini durdurur; ana Telegram indirim akışını durdurmaz."),
+    ("/webtakipler", "Takip edilen web ürünlerini, hedeflerini ve son kontrol durumunu listeler."),
+    ("/webtakipsil", "Numarayla takip edilen web ürününü siler."),
+    ("/webtakipiptal", "Bekleyen web ürün takip işlemini iptal eder."),
+    ("/webtakipyardim", "Web ürün takibinin ayrıntılı kullanımını gösterir."),
+    # --- 6) Gelişmiş araçlar ---
     (COMMAND_SOURCES, "İzlenen kaynakları ve çözülemeyenleri listeler."),
     (COMMAND_SOURCE_TEST, "Her kaynağın son ham mesajını ve yerel işlem yolunu denetler; canlı event sayısını raporlar."),
     (COMMAND_ANALYZE, "Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü veya "
                        "/analiz 1000 tcl 65 (eşleşen ürünleri 'ürün adı - fiyat' olarak listeler)."),
     (COMMAND_TEST, "Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir."),
     (COMMAND_ID, "Bulunduğun sohbetin ve kullanıcının kimliğini gösterir."),
+    # --- 7) Yönetim ---
     (COMMAND_RESTART, "Yeni takipçi çalışması başlatır; GH_PAT gerekir."),
-    (COMMAND_TRACK, "Özel sohbette ürün takip menüsünü açar."),
 )
 HELP_TEXT = "\n".join(f"{command} - {description}" for command, description in COMMAND_DESCRIPTIONS)
 
@@ -3849,14 +3868,14 @@ def build_status_text(config: dict, *, connected: bool = True) -> str:
     keyword_text = ", ".join(str(item) for item in keywords) or "(kelime yok)"
     exclude_text = ", ".join(str(item) for item in exclude_words) or "(kelime yok)"
     if state["include"]:
-        filter_line = f"• 🔎 Dahili filtre: AÇIK · {keyword_text} ({mode})"
+        filter_line = f"• 🔎 Telegram dahili filtre: AÇIK · {keyword_text} ({mode})"
     else:
-        filter_line = "• 🔎 Dahili filtre: KAPALI · kelimeler yok sayılıyor"
+        filter_line = "• 🔎 Telegram dahili filtre: KAPALI · kelimeler yok sayılıyor"
     if state["exclude"]:
-        filter_line += f"\n• 🚫 Harici filtre: AÇIK · {exclude_text}"
+        filter_line += f"\n• 🚫 Telegram harici filtre: AÇIK · {exclude_text}"
     else:
-        filter_line += "\n• 🚫 Harici filtre: KAPALI · engelleme yapılmıyor"
-    filter_line += "\n• Değiştirmek için /open ve /close"
+        filter_line += "\n• 🚫 Telegram harici filtre: KAPALI · engelleme yapılmıyor"
+    filter_line += "\n• Değiştirmek için /tgfiltreac ve /tgfiltrekapat"
     if not connected:
         listening = "• Dinleme: BAĞLANTI YOK — Telegram bağlantısı bekleniyor."
     elif not SOURCE_IDS:
@@ -3925,42 +3944,41 @@ def build_source_text() -> str:
 # /open ve /close ile bağımsız açılıp kapatılır. Diğer ayarlar config/kod üzerinden.
 
 def build_main_menu_text() -> str:
-    """/ayar çıktısı: Telegram'dan düzenlenebilen beş listeyi açıklar."""
+    """/ayar çıktısı: botun ana yönetim merkezi."""
     return "\n".join([
-        "⚙️  TELEGRAM AYARLARI",
+        "⚙️  BOT YÖNETİM MERKEZİ",
         "━━━━━━━━━━━━━━━━━━━━",
-        "Liste olarak Telegram'dan şu altı alan düzenlenebilir:",
         "",
-        "➕  /ekle   · Listeye kayıt ekle (virgülle birden çok)",
-        "➖  /çıkar  · Listeden kayıt çıkar (virgülle birden çok)",
+        "📝  LİSTE YÖNETİMİ",
+        "➕  /ekle   · Listelere kayıt ekleme taslağı başlatır",
+        "➖  /cikar  · Listelerden kayıt çıkarma taslağı başlatır",
+        "   (/kaydet ile taslağı kaydet, /iptal ile vazgeç)",
         "",
-        "Akış: işlem seç → listeyi seç → değerleri gönder.",
-        "Son adımda değişikliği kaydetmen veya iptal etmen istenir.",
+        "🔎  TELEGRAM İNDİRİM FİLTRELERİ",
+        "🟢  /tgfiltreac   · Dahili, harici veya iki filtreyi açar",
+        "🔴  /tgfiltrekapat · Dahili, harici veya iki filtreyi kapatır",
+        "   İkisi bağımsızdır: kelime listeleri silinmez, sadece etkinlik",
+        "   durumu değişir; /durum'dan durumları görebilirsin.",
         "",
-        "🔎  /analiz · Geçmiş mesajların başlığını tara:",
-        "     en çok geçen 25 kelime + en çok geçen 25 ilk kelime.",
+        "📩  KİŞİSEL BİLDİRİM FİLTRELERİ (DM)",
+        "ℹ️  /dmfiltre    · DM filtrelerinin durumunu ve listelerini gösterir",
+        "🟢  /dmfiltreac  · Kişisel bildirim filtresini açar",
+        "🔴  /dmfiltrekapat · Kişisel bildirim filtresini kapatır",
+        "   DM dahil/hariç kelimeler ve fiyat sınırı korunur;",
+        "   sadece hesap sahibinin özel sohbetinden düzenlenir.",
         "",
-        "✅  /kaydet  · Taslağı config.json'a yazıp GitHub'a gönder",
-        "↩️  /iptal   · Bekleyen taslağı iptal et",
+        "🌐  WEB ÜRÜN TAKİBİ (Akakçe)",
+        "🛒  /webtakip    · Ürün takip menüsünü açar",
+        "▶️  /webtakipac  · Ürün fiyat takibini etkinleştirir",
+        "⏸️  /webtakipkapat · Ürün fiyat takibini durdurur",
+        "📋  /webtakipler · Takip edilen ürünleri listeler",
+        "🗑️  /webtakipsil · Takip edilen ürünü siler",
+        "↩️  /webtakipiptal · Bekleyen ürün takip işlemini iptal eder",
         "",
-        "🔓 /open   · Filtre aç  (sorar: dahili mi, harici mi, ikisi mi?)",
-        "🔒 /close  · Filtre kapat (sorar: hangisi kapansın?)",
-        "   İkisi bağımsızdır: dahili ve harici filtre ayrı ayrı açılıp kapanır.",
-        "   Örnek: /open dahili · /close harici · /open ikisi",
-        "",
-        "Düzenlenebilir listeler:",
-        "  🔎 Dahili kelimeler",
-        "  🚫 Harici kelimeler",
-        "  📣 Grup isimleri (kanal/grup kullanıcı adı veya ID)",
-        "  🎯 dmdahil — özel kopyada aranan ifadeler",
-        "  🔕 dmharic — özel kopyayı engelleyen ifadeler",
-        "  💰 dmfiyat — bu tutar ve altı fiyatlar özel kopya gönderir",
-        "  DM listeleri yalnızca hesap sahibinin botla özel sohbetinden düzenlenir.",
-        "",
-        "🧹  Komut temizliği: yeni komutta bir önceki komut ve yanıt silinir;",
-        "     bu sohbette ekranda yalnızca son mesaj kalır. Bildirimler silinmez.",
-        "",
-        "Diğer tüm teknik ayarlar yalnızca config.json/kod üzerinden değiştirilir.",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "Detaylı komut rehberi: /komutlar",
+        "Gelişmiş araçlar: /analiz, /kaynaklar, /kaynaktest, /test, /id",
+        "Yeniden başlatma: /restart",
     ])
 
 
@@ -3968,6 +3986,11 @@ def build_main_menu_text() -> str:
 DM_LIST_FIELDS = ("dm_keywords", "dm_exclude_keywords")
 DM_PRICE_FIELD = "dm_price_max"   # tek değerli; kelime listelerinden ayrı işlenir
 TELEGRAM_LIST_FIELDS = ("include_keywords", "exclude_keywords", "source_chats", *DM_LIST_FIELDS, DM_PRICE_FIELD)
+# /ekle ve /çıkar menüsünün 7. seçeneği: Akakçe ürün fiyat takibi.
+# Bu config listesi değildir; seçilince product_tracker (link → hedef fiyat →
+# product_watches.json) akışına yönlendirilir.
+WEBTAKIP_FIELD = "__webtakip__"
+WEBTAKIP_CHOICES = {"7", "webdetakip", "web_takip", "akakcetakip", "akakce_takip"}
 TELEGRAM_LIST_META: dict[str, dict[str, str]] = {
     "dm_keywords": {
         "title": "dmdahil — DM dahil kelimeler",
@@ -4047,20 +4070,34 @@ def dm_should_send(config: dict, text: str, strike: Sequence[tuple[int, int]] = 
 
 
 def resolve_telegram_list(text: Any) -> str | None:
-    """Menüdeki 1–6 seçimini veya Türkçe liste adını kurallı alana çevir."""
+    """Menüdeki 1–6 seçimini, Türkçe liste adını veya webdetakip'i kurallı alana çevir."""
     raw = normalize(str(text or "")).strip().lstrip("/")
     if raw.isdigit():
         index = int(raw)
         if 1 <= index <= len(TELEGRAM_LIST_FIELDS):
             return TELEGRAM_LIST_FIELDS[index - 1]
+        if index == 7:
+            return WEBTAKIP_FIELD
     key = re.sub(r"[\s-]+", "_", raw)
+    if key in WEBTAKIP_CHOICES:
+        return WEBTAKIP_FIELD
     for field, aliases in TELEGRAM_LIST_ALIASES.items():
         if key == field or key in aliases:
             return field
     return None
 
 
-def build_list_category_prompt(action: str, config: dict) -> str:
+def _webtakip_count(store: Any) -> int | None:
+    """product_watches.json'daki takip edilen ürün sayısı (okunamazsa None)."""
+    try:
+        return len(load_state(store.path.with_name("product_watches.json")).get("items", []))
+    except Exception:
+        return None
+
+
+def build_list_category_prompt(
+    action: str, config: dict, webtakip_count: int | None = None,
+) -> str:
     """/ekle veya /çıkar sonrası gösterilen sade, numaralı liste seçimi."""
     is_add = action == "add"
     title = "➕  LİSTEYE EKLE" if is_add else "➖  LİSTEDEN ÇIKAR"
@@ -4071,7 +4108,14 @@ def build_list_category_prompt(action: str, config: dict) -> str:
         count = len(telegram_list_items(config, field))
         lines.append(f"{index}. {meta['icon']}  {meta['title']}  ·  {count} kayıt")
         lines.append(f"   {meta['description']}")
-    lines += ["", "Seçmek için 1, 2, 3, 4, 5, 6 ya da liste adını yaz.", "Vazgeçmek için /iptal."]
+    count_text = "–" if webtakip_count is None else str(webtakip_count)
+    lines += [
+        f"7. 🌐  webdetakip  ·  Akakçe ürün fiyat takibi  ·  {count_text} kayıt",
+        "   Akakçe ürün linkiyle fiyat/hedef takibi: link → hedef fiyat → kalıcı kayıt",
+        "",
+        "Seçmek için 1, 2, 3, 4, 5, 6 ya da 7 (webdetakip) yazabilir; listedeki adı da geçer.",
+        "Vazgeçmek için /iptal.",
+    ]
     return "\n".join(lines)
 
 
@@ -4501,21 +4545,26 @@ def build_list_change_confirmation(action: str, field: str, value: Any, config: 
     ])
 
 
-# Command groups use the catalog constants. The old DM add/remove commands
-# remain unlisted compatibility shortcuts; new list edits use /ekle and /çıkar.
+# Command groups use the catalog constants. Eski komut isimleri (/open, /close,
+# /dmac, /dmkapat, /takip, /dmfiltreekle, /dmfiltrecikar) alias olarak
+# TÜMKEN kaldırıldı; yeni isimler tek ve kanonik kaynaktır.
 # Turkish uppercase I/İ is normalized at parse time; it is not a second command.
 CMD_DM_COMMANDS = frozenset({
-    COMMAND_DM_STATUS, COMMAND_DM_ADD, COMMAND_DM_REMOVE, COMMAND_DM_OPEN, COMMAND_DM_CLOSE,
+    COMMAND_DM_STATUS, COMMAND_DM_FILTER_OPEN, COMMAND_DM_FILTER_CLOSE,
 })
 CMD_SETTINGS_MENU = frozenset({COMMAND_SETTINGS_MENU})
 CMD_SETTINGS_ADD = frozenset({COMMAND_SETTINGS_ADD})
 CMD_SETTINGS_REMOVE = frozenset({COMMAND_SETTINGS_REMOVE})
 CMD_SETTINGS_SAVE = frozenset({COMMAND_SETTINGS_SAVE})
 CMD_SETTINGS_REVERT = frozenset({COMMAND_SETTINGS_REVERT})
-CMD_FILTER_OPEN = frozenset({COMMAND_FILTER_OPEN})
-CMD_FILTER_CLOSE = frozenset({COMMAND_FILTER_CLOSE})
+CMD_TG_FILTER_OPEN = frozenset({COMMAND_TG_FILTER_OPEN})
+CMD_TG_FILTER_CLOSE = frozenset({COMMAND_TG_FILTER_CLOSE})
 CMD_ANALYZE = frozenset({COMMAND_ANALYZE})
 CMD_SOURCE_TEST = frozenset({COMMAND_SOURCE_TEST})
+# /webtakip menüsünün içindeki Akakçe takip alt komutları product_tracker.handle
+# üzerinden yönlendirilir (bildirim botu özel sohbeti); /komutlar'da görünür tutulur.
+CMD_WEB_TRACK_MENU = frozenset({"/webtakipac", "/webtakipkapat", "/webtakipler",
+                                "/webtakipsil", "/webtakipiptal", "/webtakipyardim"})
 SETTINGS_COMMANDS = frozenset().union(
     CMD_SETTINGS_MENU, CMD_SETTINGS_ADD, CMD_SETTINGS_REMOVE,
     CMD_SETTINGS_SAVE, CMD_SETTINGS_REVERT,
@@ -5700,7 +5749,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     tracker = None
     if private_api and config_flag(store.config.get("private_control"), False):
         try:
-            from product_tracker import ProductTracker
+            from product_tracker import ProductTracker, load_state
 
             def persist_products(path, data):
                 # Contents API avoids dirtying the shared checkout while config
@@ -5877,35 +5926,19 @@ async def main(argv: Sequence[str] | None = None) -> int:
         key = pending_key(event)
         if command == COMMAND_DM_STATUS:
             await control_reply(event, dm_status() + (
-                "\n\nBu komut yalnızca bilgi gösterir. Kelime eklemek için /ekle → dmdahil/dmharic, "
-                "çıkarmak için /çıkar → dmdahil/dmharic kullan." if rest else ""
+                "\n\nBu komut yalnızca bilgi gösterir. Kelime eklemek / çıkarmak için /ekle veya "
+                "/cikar → dmdahil/dmharic seçip /kaydet kullanın." if rest else ""
             ))
-        elif command in {COMMAND_DM_OPEN, COMMAND_DM_CLOSE}:
-            enabled = command != COMMAND_DM_CLOSE
+        elif command == COMMAND_DM_FILTER_OPEN:
+            enabled = True
             if enabled and not store.config.get("dm_keywords"):
                 await control_reply(event, "Önce /ekle → dmdahil ile kelimelerini ekleyip /kaydet. Boş liste hiçbir şeyi göndermez.")
                 return
             await save_dm_setting(event, enabled=enabled)
+        elif command == COMMAND_DM_FILTER_CLOSE:
+            await save_dm_setting(event, enabled=False)
         else:
-            if peek_pending(key):
-                await control_reply(event, "Önce bekleyen işlemi /kaydet veya /iptal ile tamamla.")
-                return
-            action = "add" if command == COMMAND_DM_ADD else "remove"
-            if action == "remove" and not store.config.get("dm_keywords"):
-                await control_reply(event, "ℹ️ Kişisel liste boş; çıkarılacak kelime yok.\n" + dm_status())
-                return
-            if not rest:
-                set_pending(key, stage="dm_words", action=action)
-                prompt = ("Eklenecek kelimeleri virgülle ayırarak yaz: tcl, lg, iphone\n"
-                          "Mevcut kelimeler korunur; yeni kelime eklemek kişisel bildirimleri açar."
-                          if action == "add" else
-                          "Çıkarılacak kelimeleri virgülle ayırarak yaz; listedeki tam kelime/ifadeyi kullan.\n"
-                          "Diğer kelimeler korunur. Son kelime çıkarılırsa kişisel bildirimler kapanır.")
-                await control_reply(event, dm_status() + "\n\n" + prompt + "\n"
-                                    "Değişiklik hemen kaydedilir. /iptal ile vazgeç.\n"
-                                    "Not: kelimeler config.json ve depo geçmişine kaydedilir.")
-                return
-            await save_dm_setting(event, action=action, raw=rest)
+            await control_reply(event, f"Bilinmeyen komut: {command}\n\n{HELP_TEXT}")
 
     async def can_edit_list(event, field):
         if (field in DM_LIST_FIELDS or field == DM_PRICE_FIELD) and (
@@ -5922,6 +5955,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
             pending = peek_pending(key)
             if pending is None:
                 await control_reply(event, "ℹ️ Kaydedilecek bekleyen bir değişiklik yok. Önce /ekle veya /çıkar.")
+                return
+            if pending.get("stage") == "webdetakip":
+                # product_tracker kayıtlarını product_watches.json'da anında
+                # kalıcı tutar; /ekle akışındaki ayrı /kaydet adımı yoktur.
+                drop_pending(key)
+                await control_reply(event, "ℹ️ Ürün takip kayıtları product_watches.json'da; bu akışta kayıt anında kalıcılaşır, ayrı /kaydet adımı yok. Ayar taslağı kapatıldı. Takip menüsü: /takip")
                 return
             if pending.get("stage") != "confirm":
                 await control_reply(event, "ℹ️ İşlem henüz tamamlanmadı. Önce istenen liste/değer seçimini yap veya /iptal.")
@@ -6390,7 +6429,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
             action = "add" if command in CMD_SETTINGS_ADD else "remove"
             set_pending(key, **new_telegram_edit(action, store.config))
-            await control_reply(event, build_list_category_prompt(action, store.config))
+            webtakip_count = _webtakip_count(store)
+            await control_reply(event, build_list_category_prompt(action, store.config, webtakip_count))
             return
 
         if command in CMD_SETTINGS_SAVE:
@@ -6442,8 +6482,26 @@ async def main(argv: Sequence[str] | None = None) -> int:
             field = resolve_telegram_list(text)
             if field is None:
                 set_pending(key, **item)
-                await control_reply(event, "❌ Seçimi anlayamadım. 1, 2, 3, 4, 5, 6 yazabilir ya da listedeki adı seçebilirsin.\n\n"
-                                    + build_list_category_prompt(str(item.get("action")), store.config))
+                await control_reply(event, "❌ Seçimi anlayamadım. 1, 2, 3, 4, 5, 6 ya da 7 (webdetakip) yazabilir; listedeki adı da geçer.\n\n"
+                                    + build_list_category_prompt(str(item.get("action")), store.config, _webtakip_count(store)))
+                return True
+
+            if field == WEBTAKIP_FIELD:
+                if not isinstance(event, PrivateControlEvent) or event.sender_id != SELF_ID:
+                    await control_reply(event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
+                    return True
+                if tracker is None:
+                    drop_pending(key)
+                    await control_reply(event, "❌ Ürün takibi şu an kullanılamıyor (bildirim botu yapılandırması eksik).")
+                    return True
+                item["stage"] = "webdetakip"
+                item["field"] = WEBTAKIP_FIELD
+                set_pending(key, **item)
+                if str(item.get("action")) == "remove":
+                    await tracker.job("/webtakipler", event.chat_id, "")
+                    await control_reply(event, "Çıkarılacak ürünün /webtakipler listesindeki numarasını gönder (ör. 3). İptal: /iptal")
+                else:
+                    await control_reply(event, "Akakçe ürün detay linkini gönder (…akakce.com/…-fiyati,ID.html). Hedef fiyatı bir sonraki mesajda istenecek. İptal: /iptal")
                 return True
 
             if not await can_edit_list(event, field):
@@ -6459,6 +6517,35 @@ async def main(argv: Sequence[str] | None = None) -> int:
             item["field"] = field
             set_pending(key, **item)
             await control_reply(event, build_list_value_prompt(str(item.get("action")), field, config))
+            return True
+
+        if item.get("stage") == "webdetakip":
+            if tracker is None:
+                drop_pending(key)
+                await control_reply(event, "❌ Ürün takibi şu an çalışmıyor (bildirim botu yapılandırması eksik).")
+                return True
+            if not isinstance(event, PrivateControlEvent) or event.sender_id != SELF_ID:
+                await control_reply(event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
+                return True
+            action = str(item.get("action") or "add")
+            ok = True
+            if action == "add":
+                if not text.startswith(("https://www.akakce.com/", "https://akakce.com/")):
+                    await control_reply(event, "Akakçe ürün detay linki bekleniyor (…akakce.com/…-fiyati,ID.html). İptal: /iptal")
+                    return True
+                ok = await tracker.handle(event, text, existing_pending=False)
+            else:
+                try:
+                    number = int(text.split()[0])
+                except (ValueError, IndexError):
+                    await control_reply(event, "Çıkarılacak ürünün /webtakipler listesindeki numarasını gönder (ör. 3). İptal: /iptal")
+                    return True
+                ok = await tracker.handle(event, f"/webtakipsil {number}", existing_pending=False)
+            # product_tracker kendi kayıtlarını product_watches.json'da anında
+            # kalıcı tutar; bu nedenle ayar taslağına ayrı bir /kaydet adımı yok.
+            drop_pending(key)
+            if not ok:
+                await control_reply(event, "⚠️ İşlem anlaşılamadı; lütfen Akakçe linki veya geçerli bir ürün numarası gönder.")
             return True
 
         if item.get("stage") == "value":
@@ -7395,7 +7482,19 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         # Owner-only optional feature. Existing config drafts always retain priority.
         if tracker and isinstance(event, PrivateControlEvent) and event.sender_id == SELF_ID:
-            if await tracker.handle(event, raw, existing_pending=peek_pending(pending_key(event)) is not None):
+            handled = await tracker.handle(event, raw, existing_pending=peek_pending(pending_key(event)) is not None)
+            if handled:
+                pending = peek_pending(pending_key(event))
+                if pending and pending.get("stage") == "webdetakip":
+                    # Ürün takibi kendi dosyasını anında günceller; /ekle
+                    # taslağına devam edilmemesi için kapatılır.
+                    drop_pending(pending_key(event))
+                    if command in {"/iptal", "/webtakipiptal"}:
+                        await control_reply(event, "↩️ Ürün takip taslağı iptal edildi; ayar düzenleme taslağı da kapatıldı.")
+                    elif command == COMMAND_SETTINGS_SAVE:
+                        await control_reply(event, "ℹ️ Ürün takip kayıtları product_watches.json'da; ayar düzenleme taslağı kapatıldı. Takip menüsü: /webtakip")
+                    else:
+                        await control_reply(event, "ℹ️ Ürün takip işlemi işlendi; ayar düzenleme taslağı kapatıldı. Takip menüsü: /webtakip")
                 return
 
         # Komut değil: çok adımlı akışta beklenen değer olabilir.
@@ -7424,6 +7523,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await handle_dm_command(event, command, rest)
         elif command == COMMAND_STATUS:
             text = build_status_text(store.config, connected=client.is_connected())
+            dm_on = config_flag(store.config.get("dm_enabled"), False)
+            text += f"\n• 📩 Kişisel bildirim filtresi: {'AÇIK' if dm_on else 'KAPALI'}"
+            if tracker is not None:
+                wt_on = bool(tracker.state.get("enabled", False))
+                text += f"\n• 🌐 Web ürün takibi: {'AÇIK' if wt_on else 'KAPALI'}"
             if isinstance(event, PrivateControlEvent):
                 text += "\n\n" + dm_status()
             await control_reply(event, text)
@@ -7484,13 +7588,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await control_reply(event, ("🔄 " if ok else "⚠️ ") + message)
         elif command == COMMAND_HELP:
             await control_reply(event, HELP_TEXT)
-        elif command == COMMAND_TRACK:
-            await control_reply(event, "Ürün takip menüsü için bildirim botunun özel sohbetinde /takip yaz.")
+        elif command == COMMAND_WEB_TRACK:
+            await control_reply(event, "Ürün takip menüsü için bildirim botunun özel sohbetinde /webtakip yaz.")
         elif command in CMD_ANALYZE:
             await analyze_history(event, rest)
-        elif command in CMD_FILTER_OPEN:
+        elif command in CMD_TG_FILTER_OPEN:
             await handle_filter_command(event, "open", rest)
-        elif command in CMD_FILTER_CLOSE:
+        elif command in CMD_TG_FILTER_CLOSE:
             await handle_filter_command(event, "close", rest)
         elif command in SETTINGS_COMMANDS:
             await handle_settings_command(event, command, rest)

@@ -256,31 +256,42 @@ class StatusTextTest(unittest.TestCase):
         self.assertEqual(len(commands), len(set(commands)))
         self.assertTrue(all(description.strip() for _, description in bot.COMMAND_DESCRIPTIONS))
         self.assertEqual(commands, (
-            "/komutlar", "/start", "/durum", "/dmfiltre", "/dmac", "/dmkapat", "/ayar", "/ekle", "/çıkar",
-            "/kaydet", "/iptal", "/open", "/close", "/kaynaklar", "/kaynaktest",
-            "/analiz", "/test", "/id", "/restart", "/takip",
+            "/komutlar", "/start", "/durum", "/ayar",
+            "/ekle", "/cikar", "/kaydet", "/iptal",
+            "/tgfiltreac", "/tgfiltrekapat",
+            "/dmfiltre", "/dmfiltreac", "/dmfiltrekapat",
+            "/webtakip", "/webtakipac", "/webtakipkapat",
+            "/webtakipler", "/webtakipsil", "/webtakipiptal", "/webtakipyardim",
+            "/kaynaklar", "/kaynaktest", "/analiz", "/test", "/id",
+            "/restart",
         ))
 
     def test_dispatch_paths_and_help_catalog_share_the_same_commands(self):
         routed = {
             bot.COMMAND_HELP, bot.COMMAND_START, bot.COMMAND_STATUS,
-            bot.COMMAND_TEST, bot.COMMAND_ID, bot.COMMAND_RESTART, bot.COMMAND_SOURCES, bot.COMMAND_TRACK,
+            bot.COMMAND_TEST, bot.COMMAND_ID, bot.COMMAND_RESTART, bot.COMMAND_SOURCES, bot.COMMAND_WEB_TRACK,
         }
-        routed.update(bot.CMD_DM_COMMANDS - {bot.COMMAND_DM_ADD, bot.COMMAND_DM_REMOVE})
+        routed.update(bot.CMD_DM_COMMANDS)
         routed.update(bot.SETTINGS_COMMANDS)
-        routed.update(bot.CMD_FILTER_OPEN)
-        routed.update(bot.CMD_FILTER_CLOSE)
+        routed.update(bot.CMD_TG_FILTER_OPEN)
+        routed.update(bot.CMD_TG_FILTER_CLOSE)
         routed.update(bot.CMD_ANALYZE)
         routed.update(bot.CMD_SOURCE_TEST)
+        routed.update(bot.CMD_WEB_TRACK_MENU)
         documented = {command for command, _ in bot.COMMAND_DESCRIPTIONS}
         self.assertEqual(routed, documented)
 
     def test_redundant_command_variants_are_not_in_help_catalog(self):
         commands = {command for command, _ in bot.COMMAND_DESCRIPTIONS}
         for removed in (
-            "/status", "/dmaç", "/ayarlar", "/cikar", "/kaynak", "/source",
+            "/status", "/dmaç", "/ayarlar", "/kaynak", "/source",
             "/sources", "/testkaynak", "/testkaynaklar", "/kelimeanalizi",
             "/deneme", "/yenile", "/yeniden", "/help", "/yardim", "/yardım",
+            # Eski komut isimleri alias kalmadan tamamen kaldırilmali:
+            "/çıkar", "/open", "/close", "/dmac", "/dmkapat",
+            "/dmfiltreekle", "/dmfiltrecikar",
+            "/takip", "/takipac", "/takipkapat", "/takipler", "/takipsil",
+            "/takipiptal", "/takipyardim",
         ):
             with self.subTest(command=removed):
                 self.assertNotIn(removed, commands)
@@ -309,14 +320,14 @@ class StatusTextTest(unittest.TestCase):
         bot.CONTROL_NAMES.clear()
         bot.CONTROL_IDS.clear()
         closed = bot.build_status_text({"match_mode": "forward_all", "include_keywords": ["çay"]})
-        self.assertIn("Dahili filtre: KAPALI", closed)
+        self.assertIn("Telegram dahili filtre: KAPALI", closed)
         self.assertIn("kelimeler yok sayılıyor", closed)
         opened = bot.build_status_text({"include_keywords": ["çay"], "exclude_keywords": ["çekiliş"]})
-        self.assertIn("Dahili filtre: AÇIK", opened)
+        self.assertIn("Telegram dahili filtre: AÇIK", opened)
         self.assertIn("çay (any)", opened)
-        self.assertIn("Harici filtre: AÇIK", opened)
+        self.assertIn("Telegram harici filtre: AÇIK", opened)
         self.assertIn("çekiliş", opened)
-        self.assertIn("/open ve /close", opened)
+        self.assertIn("/tgfiltreac ve /tgfiltrekapat", opened)
 
     def test_status_shows_poll_telemetry_and_bot_api_metrics(self):
         bot.POLL_TELEMETRY.update({"interval": 300.0, "last_elapsed": 4.2,
@@ -330,7 +341,7 @@ class StatusTextTest(unittest.TestCase):
 
     def test_status_marks_disabled_exclude_filter(self):
         status = bot.build_status_text({"exclude_keywords": ["çekiliş"], "exclude_enabled": False})
-        self.assertIn("Harici filtre: KAPALI", status)
+        self.assertIn("Telegram harici filtre: KAPALI", status)
         self.assertIn("engelleme yapılmıyor", status)
 
 
@@ -422,20 +433,21 @@ class TelegramCommandTest(unittest.TestCase):
     """Yalnızca belgelenen Telegram komutları tanınır."""
 
     def test_filter_toggle_commands_are_active(self):
-        self.assertIn("/open", bot.CMD_FILTER_OPEN)
-        self.assertIn("/close", bot.CMD_FILTER_CLOSE)
-        self.assertEqual(bot.CMD_FILTER_OPEN | bot.CMD_FILTER_CLOSE,
-                         {"/open", "/close"})
+        self.assertIn("/tgfiltreac", bot.CMD_TG_FILTER_OPEN)
+        self.assertIn("/tgfiltrekapat", bot.CMD_TG_FILTER_CLOSE)
+        self.assertEqual(bot.CMD_TG_FILTER_OPEN | bot.CMD_TG_FILTER_CLOSE,
+                         {"/tgfiltreac", "/tgfiltrekapat"})
         self.assertIn("/ekle", bot.SETTINGS_COMMANDS)
-        self.assertIn("/çıkar", bot.SETTINGS_COMMANDS)
+        self.assertIn("/cikar", bot.SETTINGS_COMMANDS)
         self.assertIn("/kaydet", bot.SETTINGS_COMMANDS)
         self.assertIn("/iptal", bot.SETTINGS_COMMANDS)
 
     def test_removed_filter_commands_are_gone(self):
-        """Eski /hepsinial ve /filtrelial komutları tamamen kaldırıldı."""
-        for command in ("/hepsinial", "/filtrelial"):
+        """Eski komut isimleri alias kalmadan tamamen kaldırıldı."""
+        for command in ("/hepsinial", "/filtrelial", "/open", "/close",
+                        "/dmac", "/dmkapat", "/takip", "/çıkar"):
             with self.subTest(command=command):
-                self.assertNotIn(command, bot.CMD_FILTER_OPEN | bot.CMD_FILTER_CLOSE)
+                self.assertNotIn(command, bot.CMD_TG_FILTER_OPEN | bot.CMD_TG_FILTER_CLOSE)
                 self.assertNotIn(command, bot.SETTINGS_COMMANDS)
                 self.assertNotIn(command, bot.HELP_TEXT)
                 self.assertNotIn(command, bot.build_main_menu_text())
@@ -449,10 +461,11 @@ class TelegramCommandTest(unittest.TestCase):
         menu = bot.build_main_menu_text()
         help_text = bot.HELP_TEXT
         for text in (menu, help_text):
-            for command in ("/open", "/close", "/ekle", "/çıkar", "/kaydet", "/iptal"):
+            for command in ("/tgfiltreac", "/tgfiltrekapat", "/ekle", "/cikar",
+                            "/kaydet", "/iptal", "/webtakip"):
                 with self.subTest(command=command, text=text[:12]):
                     self.assertIn(command, text)
-        for command in ("/mod", "/token", "/kelime_ekle", "/ayar_set"):
+        for command in ("/mod", "/token", "/kelime_ekle", "/ayar_set", "/open", "/close", "/çıkar"):
             self.assertNotIn(command, menu)
 
 
@@ -487,7 +500,9 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertEqual(bot.resolve_telegram_list("dmharic"), "dm_exclude_keywords")
         self.assertEqual(bot.resolve_telegram_list("dmhariç"), "dm_exclude_keywords")
         self.assertEqual(bot.resolve_telegram_list("dmfiyat"), "dm_price_max")
-        self.assertIsNone(bot.resolve_telegram_list("7"))
+        self.assertEqual(bot.resolve_telegram_list("7"), bot.WEBTAKIP_FIELD)
+        self.assertEqual(bot.resolve_telegram_list("webdetakip"), bot.WEBTAKIP_FIELD)
+        self.assertEqual(bot.resolve_telegram_list("akakcetakip"), bot.WEBTAKIP_FIELD)
         self.assertIsNone(bot.resolve_telegram_list("hedef"))
 
     def test_category_menu_is_compact_and_shows_current_counts(self):
@@ -495,7 +510,8 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertIn("1. 🔎  Dahili kelimeler  ·  2 kayıt", text)
         self.assertIn("2. 🚫  Harici kelimeler  ·  1 kayıt", text)
         self.assertIn("3. 📣  Grup isimleri  ·  2 kayıt", text)
-        self.assertIn("1, 2, 3", text)
+        self.assertIn("7. 🌐  webdetakip  ·  Akakçe ürün fiyat takibi", text)
+        self.assertIn("1, 2, 3, 4, 5, 6 ya da 7 (webdetakip)", text)
 
     def test_selected_category_shows_list_before_asking_for_value(self):
         add_prompt = bot.build_list_value_prompt("add", "include_keywords", self.config)

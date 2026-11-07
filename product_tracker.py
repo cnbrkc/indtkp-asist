@@ -23,24 +23,24 @@ SEND_TIMEOUT = 45
 HOST_GAP = 10
 # One source for the menu, copy buttons and recognized subcommands.
 TRACK_MENU = (
-    ('/takipac', 'Fiyat takibini aç'),
-    ('/takipkapat', 'Fiyat takibini durdur'),
-    ('/takipler', 'Ürünleri ve hedefleri göster'),
-    ('/takipsil', 'Numarayla ürün sil'),
-    ('/takipiptal', 'Hedef girişini iptal'),
-    ('/takipyardim', 'Ayrıntılı kullanımı göster'),
+    ('/webtakipac', 'Fiyat takibini aç'),
+    ('/webtakipkapat', 'Fiyat takibini durdur'),
+    ('/webtakipler', 'Ürünleri ve hedefleri göster'),
+    ('/webtakipsil', 'Numarayla ürün sil'),
+    ('/webtakipiptal', 'Hedef girişini iptal'),
+    ('/webtakipyardim', 'Ayrıntılı kullanımı göster'),
 )
-COMMANDS = frozenset({'/takip', *(command for command, _ in TRACK_MENU)})
+COMMANDS = frozenset({'/webtakip', *(command for command, _ in TRACK_MENU)})
 
 
 def tracking_menu(enabled):
     lines = ['Akakçe Takip Menüsü · ' + ('Açık' if enabled else 'Kapalı'), '']
     lines.extend(f'{command} — {description}' for command, description in TRACK_MENU)
     lines.extend(['', 'Ürün eklemek/hedef değiştirmek için Akakçe linkini gönder.',
-                  'Silme: /takipsil NUMARA',
+                  'Silme: /webtakipsil NUMARA',
                   'Düğmeler komutu panoya kopyalar; yapıştırıp gönder.'])
     buttons = [
-        {'text': command, 'copy_text': {'text': command + (' ' if command == '/takipsil' else '')}}
+        {'text': command, 'copy_text': {'text': command + (' ' if command == '/webtakipsil' else '')}}
         for command, _ in TRACK_MENU
     ]
     return '\n'.join(lines), {'inline_keyboard': [buttons[i:i + 2] for i in range(0, len(buttons), 2)]}
@@ -173,14 +173,14 @@ class ProductTracker:
         if draft and draft['until'] < time.monotonic():
             self.drafts.pop(event.chat_id, None)
             draft = None
-        if command == '/takipiptal' or (command == '/iptal' and draft):
+        if command == '/webtakipiptal' or (command == '/iptal' and draft):
             self.drafts.pop(event.chat_id, None)
             await event.reply('Ürün takip taslağı iptal edildi.')
             return True
         is_link = raw.startswith(('https://www.akakce.com/', 'https://akakce.com/'))
         if command not in COMMANDS and not is_link and not (draft and not command):
             return False
-        if command == '/takip':
+        if command == '/webtakip':
             text, keyboard = tracking_menu(self.state['enabled'])
             try:
                 await self.api.call('sendMessage', {
@@ -196,9 +196,9 @@ class ProductTracker:
         if self.disabled_error:
             await event.reply('Takip dosyası okunamıyor. Mevcut Telegram dinleme devam ediyor; dosya düzeltilmeli.')
             return True
-        if command == '/takipyardim':
+        if command == '/webtakipyardim':
             await event.reply('Akakçe ürün linkini gönder, ardından hedef fiyatı yaz.\n'
-                              '/takipac · /takipkapat · /takipler · /takipsil NUMARA · /takipiptal\n'
+                              '/webtakipac · /webtakipkapat · /webtakipler · /webtakipsil NUMARA · /webtakipiptal\n'
                               'Akakçe güncel minimumu doğrulanarak izlenir; tüm teklifleri indirmek gerekmez.\n'
                               'Hedefi sen girersin. Ürünler/hedefler public repoya kaydedilir.\n'
                               'Alarm: fiyat < hedef. Aynı veya daha yüksek fiyat tekrar bildirilmez.\n'
@@ -207,7 +207,7 @@ class ProductTracker:
         try:
             if is_link:
                 if not self.state['enabled']:
-                    await event.reply('Ürün takibi kapalı. Açmak için /takipac; menü: /takip')
+                    await event.reply('Ürün takibi kapalı. Açmak için /webtakipac; menü: /webtakip')
                     return True
                 job = ('link', event.chat_id, product_url(raw))
             elif draft and not command:
@@ -272,7 +272,7 @@ class ProductTracker:
         return f" · hedefin {money(price - target)} üzerinde"
 
     async def job(self, kind, chat, value):
-        if kind == '/takipler':
+        if kind == '/webtakipler':
             rows = []
             now = time.time()
             mono = time.monotonic()
@@ -283,7 +283,7 @@ class ProductTracker:
             header = 'Takip ' + ('açık' if self.state['enabled'] else 'kapalı')
             header += f' · çalışma başlangıcı {timefmt.stamp(self.started_at)} TSİ'
             await self.tell(chat, header + '\n' +
-                            ('\n\n'.join(rows) if rows else 'Ürün yok.') + '\nMenü: /takip')
+                            ('\n\n'.join(rows) if rows else 'Ürün yok.') + '\nMenü: /webtakip')
             return
         if kind == 'link':
             result = await self.fetch(value)
@@ -292,11 +292,11 @@ class ProductTracker:
                                  'until': time.monotonic() + 600}
             await self.tell(chat, f"{result['title']}\nOkunan en düşük teklif: {money(result['price'])}\n"
                             "Akakçe güncel minimumuyla doğrulandı.\nHangi fiyatın altına düşerse haber vereyim?\n"
-                            'Örnek: 6500 veya 6.500,50 TL. İptal: /takipiptal')
+                            'Örnek: 6500 veya 6.500,50 TL. İptal: /webtakipiptal')
             return
         before = copy.deepcopy(self.state)
-        if kind in {'/takipac', '/takipkapat'}:
-            self.state['enabled'] = kind == '/takipac'
+        if kind in {'/webtakipac', '/webtakipkapat'}:
+            self.state['enabled'] = kind == '/webtakipac'
         elif kind == 'add':
             item = next((i for i in self.state['items'] if i['url'] == value['url']), None)
             if item is None:
@@ -306,13 +306,13 @@ class ProductTracker:
                 self.state['items'].append(item)
             item.update(title=value['title'], target=value['target'], chat_id=chat, alert_price=None)
             self.health.pop(item['url'], None)
-        elif kind == '/takipsil':
+        elif kind == '/webtakipsil':
             try:
                 index = int(value.split()[1]) - 1
                 if index < 0 or index >= len(self.state['items']):
                     raise ValueError()
             except (IndexError, ValueError):
-                raise ValueError('/takipler listesindeki numarayı kullan: /takipsil 1') from None
+                raise ValueError('/webtakipler listesindeki numarayı kullan: /webtakipsil 1') from None
             self.state['items'].pop(index)
         else:
             return
