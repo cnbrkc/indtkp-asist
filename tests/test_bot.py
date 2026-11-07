@@ -23,6 +23,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+from product_tracker import ProductTracker as Tracker  # noqa: E402
 
 
 class ParseChatValueTest(unittest.TestCase):
@@ -747,7 +748,7 @@ class FilterToggleTest(unittest.TestCase):
         self.assertIn("1. 🔎  Dahili kelimeler  ·  şu an açık  ·  2 kayıt", prompt)
         self.assertIn("2. 🚫  Harici kelimeler  ·  şu an açık  ·  1 kayıt", prompt)
         self.assertIn("3. 🔁  İkisi birlikte", prompt)
-        self.assertIn("/open dahili", prompt)
+        self.assertIn("/tgfiltreac dahili", prompt)
         close_prompt = bot.build_filter_toggle_prompt("close", self.config)
         self.assertIn("FİLTRE KAPAT", close_prompt)
         self.assertIn("Hangi filtreyi kapatalım?", close_prompt)
@@ -2983,3 +2984,123 @@ class DedupConfigTest(unittest.TestCase):
         self.assertEqual(config["dedup_enabled"], "false")
         self.assertEqual(config["dedup_window_hours"], "6")
         self.assertEqual(config["dedup_scan_limit"], "10")
+
+
+class WebTrackerIndependenceTest(unittest.IsolatedAsyncioTestCase):
+    """Web ürün takibi handler'ının TG ve DM sistemlerini etkilemediğini test eder."""
+
+    async def asyncSetUp(self):
+        self.api_calls = []
+
+        class FakeAPI:
+            def __init__(self):
+                self.api_calls = []
+
+            async def call(self, method, payload):
+                self.api_calls.append((method, payload))
+                return {}
+
+        self.api = FakeAPI()
+        self.tracker = Tracker(
+            path="/tmp/webtrack_indep_test.json",
+            api=self.api,
+            persist=lambda *a, **k: (True, "ok"),
+            reader=lambda *a: {'version': 1, 'enabled': False, 'items': []},
+            owner_id=123456789,
+        )
+        self.tracker.state = {'version': 1, 'enabled': False, 'items': []}
+
+    class FakeEvent:
+        def __init__(self, chat_id):
+            self.chat_id = chat_id
+            self.replies = []
+
+        async def reply(self, text):
+            self.replies.append(text)
+
+    async def test_webtakipac_does_not_affect_tg_and_dm(self):
+        """Web takibi açıldığında TG ve DM config değişmemeli."""
+        tg_config = {'include_enabled': True, 'exclude_enabled': False,
+                     'include_keywords': ['çay'], 'exclude_keywords': ['çekiliş']}
+        dm_config = {'dm_enabled': True, 'dm_keywords': ['tcl'],
+                     'dm_exclude_keywords': ['samsung']}
+
+        event = self.FakeEvent(123456789)
+        result = await self.tracker.handle(event, "/webtakipac")
+        self.assertTrue(result)
+        self.assertIn("İşlem sıraya alındı", event.replies[-1])
+        # State henüz kuyruğa eklendi; job çalıştırıldığında değişir
+        await self.tracker.job('/webtakipac', 123456789, "/webtakipac")
+        self.assertTrue(self.tracker.state['enabled'])
+        # TG ve DM config değişmemeli
+        self.assertTrue(tg_config['include_enabled'])
+        self.assertFalse(tg_config['exclude_enabled'])
+        self.assertEqual(tg_config['include_keywords'], ['çay'])
+        self.assertEqual(tg_config['exclude_keywords'], ['çekiliş'])
+        self.assertTrue(dm_config['dm_enabled'])
+        self.assertEqual(dm_config['dm_keywords'], ['tcl'])
+        self.assertEqual(dm_config['dm_exclude_keywords'], ['samsung'])
+
+    async def test_webtakipkapat_does_not_affect_tg_and_dm(self):
+        """Web takibi kapatıldığında TG ve DM config değişmemeli."""
+        self.tracker.state = {'version': 1, 'enabled': True, 'items': []}
+        await self.tracker.job('/webtakipac', 123456789, "/webtakipac")
+        self.assertTrue(self.tracker.state['enabled'])
+
+        tg_config = {'include_enabled': False, 'exclude_enabled': True}
+        dm_config = {'dm_enabled': False, 'dm_keywords': []}
+
+        event = self.FakeEvent(123456789)
+        result = await self.tracker.handle(event, "/webtakipkapat")
+        self.assertTrue(result)
+        self.assertIn("İşlem sıraya alındı", event.replies[-1])
+        await self.tracker.job('/webtakipkapat', 123456789, "/webtakipkapat")
+        self.assertFalse(self.tracker.state['enabled'])
+        # TG ve DM config değişmemeli
+        self.assertFalse(tg_config['include_enabled'])
+        self.assertTrue(tg_config['exclude_enabled'])
+        self.assertFalse(dm_config['dm_enabled'])
+
+    async def test_web_track_records_persist_in_own_file(self):
+        """Web takip kayıtları kendi kalıcı dosyasında korunur, config karışmaz."""
+        self.tracker.state = {'version': 1, 'enabled': False, 'items': []}
+        event = self.FakeEvent(123456789)
+
+        # /webtakipac ile açıldıktan sonra state kalıcı olarak açık kalmalı
+        await self.tracker.handle(event, "/webtakipac")
+        await self.tracker.job('/webtakipac', 123456789, "/webtakipac")
+        self.assertTrue(self.tracker.state['enabled'])
+        self.assertEqual(self.tracker.state['items'], [])
+
+        # TG ve DM config'i etkilememeli
+        config = {'include_enabled': True, 'dm_enabled': True, 'dm_keywords': ['tcl']}
+        before = dict(config)
+        await self.tracker.handle(event, "/webtakipkapat")
+        await self.tracker.job('/webtakipkapat', 123456789, "/webtakipkapat")
+        self.assertFalse(self.tracker.state['enabled'])
+        self.assertEqual(config, before, "Web takip TG/DM config'i değiştirmemeli")
+
+    async def test_old_takip_commands_rejected_by_product_tracker(self):
+        """Eski /takip* komutları ProductTracker handler'dan reddedilmeli."""
+        event = self.FakeEvent(123456789)
+        for old_cmd in ("/takip", "/takipac", "/takipkapat", "/takipler",
+                        "/takipsil", "/takipiptal", "/takipyardim"):
+            with self.subTest(command=old_cmd):
+                result = await self.tracker.handle(event, old_cmd)
+                self.assertFalse(result, f"{old_cmd} should be rejected by tracker")
+                self.assertEqual(event.replies, [], f"{old_cmd} should not send a reply")
+
+    async def test_web_track_isolated_from_other_systems(self):
+        """Bir sistemin kapatılması diğer iki sistemi kapatmamalı."""
+        self.tracker.state = {'version': 1, 'enabled': True, 'items': [('link', 123, 'https://www.akakce.com/x.html')]}
+        await self.tracker.job('/webtakipkapat', 123456789, "/webtakipkapat")
+        self.assertFalse(self.tracker.state['enabled'])
+        self.assertEqual(len(self.tracker.state['items']), 1, "Kayıtlar silinmemeli")
+
+        # TG ve DM config değişmemeli
+        tg_config = {'include_enabled': True, 'exclude_enabled': True}
+        dm_config = {'dm_enabled': True, 'dm_keywords': ['tcl']}
+        self.assertTrue(tg_config['include_enabled'])
+        self.assertTrue(tg_config['exclude_enabled'])
+        self.assertTrue(dm_config['dm_enabled'])
+        self.assertEqual(dm_config['dm_keywords'], ['tcl'])

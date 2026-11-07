@@ -402,7 +402,7 @@ def matches(
 ) -> bool:
     """Mesaj metnini anahtar kelimelere göre değerlendir.
 
-    İki filtre birbirinden bağımsızdır (/open ve /close ile yönetilir):
+    İki filtre birbirinden bağımsızdır (/tgfiltreac ve /tgfiltrekapat ile yönetilir):
       * ``exclude_enabled`` açıkken ``exclude`` kelimelerinden biri geçen mesaj
         engellenir (varsayılan davranış).
       * ``include_enabled`` kapalıysa ``include`` listesi tamamen yok sayılır;
@@ -583,7 +583,7 @@ def print_report(config: dict, problems: list[str]) -> None:
     filter_state = filter_state_of(config)
     print(f"Filtre durumu      : dahili {'AÇIK' if filter_state['include'] else 'KAPALI'} | "
           f"harici {'AÇIK' if filter_state['exclude'] else 'KAPALI'} "
-          f"(/open ve /close ile değiştirilir)", flush=True)
+          f"(/tgfiltreac ve /tgfiltrekapat ile değiştirilir)", flush=True)
     print(f"İletim sırası      : {' → '.join(build_delivery_chain(config))}", flush=True)
     print(f"Medya sınırı       : {config.get('max_media_mb', 25)} MB", flush=True)
     mode = link_appendix_mode(config)
@@ -3958,7 +3958,7 @@ def build_source_text() -> str:
 # ---------------------------------------------------------------------------
 #
 # Telegram'da beş liste taslak akışıyla düzenlenir; iki filtre ise
-# /open ve /close ile bağımsız açılıp kapatılır. Diğer ayarlar config/kod üzerinden.
+# /tgfiltreac ve /tgfiltrekapat ile bağımsız açılıp kapatılır. Diğer ayarlar config/kod üzerinden.
 
 def build_main_menu_text() -> str:
     """/ayar çıktısı: botun ana yönetim merkezi."""
@@ -4003,7 +4003,7 @@ def build_main_menu_text() -> str:
 DM_LIST_FIELDS = ("dm_keywords", "dm_exclude_keywords")
 DM_PRICE_FIELD = "dm_price_max"   # tek değerli; kelime listelerinden ayrı işlenir
 TELEGRAM_LIST_FIELDS = ("include_keywords", "exclude_keywords", "source_chats", *DM_LIST_FIELDS, DM_PRICE_FIELD)
-# /ekle ve /çıkar menüsünün 7. seçeneği: Akakçe ürün fiyat takibi.
+# /ekle ve /cikar menüsünün 7. seçeneği: Akakçe ürün fiyat takibi.
 # Bu config listesi değildir; seçilince product_tracker (link → hedef fiyat →
 # product_watches.json) akışına yönlendirilir.
 WEBTAKIP_FIELD = "__webtakip__"
@@ -4115,7 +4115,7 @@ def _webtakip_count(store: Any) -> int | None:
 def build_list_category_prompt(
     action: str, config: dict, webtakip_count: int | None = None,
 ) -> str:
-    """/ekle veya /çıkar sonrası gösterilen sade, numaralı liste seçimi."""
+    """/ekle veya /cikar sonrası gösterilen sade, numaralı liste seçimi."""
     is_add = action == "add"
     title = "➕  LİSTEYE EKLE" if is_add else "➖  LİSTEDEN ÇIKAR"
     instruction = "Hangi listeye ekleyelim?" if is_add else "Hangi listeden kayıt çıkaralım?"
@@ -4366,7 +4366,7 @@ def resolve_confirmation_choice(text: Any) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Filtre aç/kapat (/open, /close)
+# Filtre aç/kapat (/tgfiltreac, /tgfiltrekapat)
 # ---------------------------------------------------------------------------
 #
 # Dahili (🔎 include_keywords) ve harici (🚫 exclude_keywords) filtreler
@@ -4411,7 +4411,7 @@ FILTER_TARGET_ALIASES: dict[str, set[str]] = {
 
 
 def resolve_filter_target(text: Any) -> str | None:
-    """``/open`` / ``/close`` yanıtını hedefe çevir: include | exclude | both.
+    """``/tgfiltreac`` / ``/tgfiltrekapat`` yanıtını hedefe çevir: include | exclude | both.
 
     Kabul edilenler: ``1``/``2``/``3``, ``dahili``, ``harici``, ``ikisi``,
     ``hariç kelimeler`` gibi yazımlar (boşluk/tire/büyük-küçük farkı yok sayılır).
@@ -4444,7 +4444,7 @@ def filter_state_lines(config: dict) -> list[str]:
 
 
 def build_filter_toggle_prompt(action: str, config: dict) -> str:
-    """`/open` veya `/close` argümansız yazıldığında hangi filtreyi sorar."""
+    """`/tgfiltreac` veya `/tgfiltrekapat` argümansız yazıldığında hangi filtreyi sorar."""
     state = filter_state_of(config)
     is_open = action == "open"
     lines = [
@@ -4464,7 +4464,7 @@ def build_filter_toggle_prompt(action: str, config: dict) -> str:
         f"{'açık' if state['include'] and state['exclude'] else 'kapalı'}",
         "",
         "1, 2, 3 yaz ya da filtre adını yaz (dahili / harici / ikisi).",
-        "Doğrudan da yazabilirsin: /open dahili · /close harici · /open ikisi",
+        "Doğrudan da yazabilirsin: /tgfiltreac dahili · /tgfiltrekapat harici · /tgfiltreac ikisi",
         "Vazgeçmek için /iptal.",
     ]
     return "\n".join(lines)
@@ -4519,7 +4519,7 @@ def build_filter_result_text(action: str, target: str, config: dict) -> str:
 
 
 def new_filter_edit(action: str) -> dict[str, Any]:
-    """`/open` ve `/close` için bekleyen seçim oturumu (config değişmez)."""
+    """`/tgfiltreac` ve `/tgfiltrekapat` için bekleyen seçim oturumu (config değişmez)."""
     return {"stage": "filter", "action": action}
 
 
@@ -4562,9 +4562,10 @@ def build_list_change_confirmation(action: str, field: str, value: Any, config: 
     ])
 
 
-# Command groups use the catalog constants. Eski komut isimleri (/open, /close,
-# /dmac, /dmkapat, /takip, /dmfiltreekle, /dmfiltrecikar) alias olarak
-# TÜMKEN kaldırıldı; yeni isimler tek ve kanonik kaynaktır.
+# Komut yeniden adlandırma tamamlandı: /open→/tgfiltreac, /close→/tgfiltrekapat,
+# /dmac→/dmfiltreac, /dmkapat→/dmfiltrekapat, /takip*→/webtakip*,
+# /dmfiltreekle→/ekle+/cikar, /dmfiltrecikar→/ekle+/cikar; eski isimler alias
+# kalmadan tamamen kaldırıldı, yeni isimler tek ve kanonik kaynaktır.
 # Turkish uppercase I/İ is normalized at parse time; it is not a second command.
 CMD_DM_COMMANDS = frozenset({
     COMMAND_DM_STATUS, COMMAND_DM_FILTER_OPEN, COMMAND_DM_FILTER_CLOSE,
@@ -5169,7 +5170,7 @@ ANALYSIS_USAGE = "\n".join([
     "  /analiz 500 tümü   → ikisi birlikte",
     "",
     "Sonuçlara bakıp istemediğin kelimeleri harici listeye ekle:",
-    "/çıkar → 2 (Harici kelimeler) → örnek: bebek, oyuncak, kitap",
+    "/cikar → 2 (Harici kelimeler) → örnek: bebek, oyuncak, kitap",
 ])
 
 
@@ -5297,7 +5298,7 @@ def build_analysis_report(
     lines += [
         "",
         "🚫 = harici listende · 🔎 = dahili listende",
-        "İstemediğin kelimeleri harici listeye ekle: /çıkar → 2 (Harici kelimeler)",
+        "İstemediğin kelimeleri harici listeye ekle: /cikar → 2 (Harici kelimeler)",
         "Örnek: bebek, oyuncak, kitap — birden çok kelimeyi virgülle ayırabilirsin.",
     ]
     return "\n".join(lines)
@@ -5859,9 +5860,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
             f"Bu oturum: gönderilen {private_offers.sent}, hata {private_offers.failed}, "
             f"kuyrukta {private_offers.queue.qsize()}, taşma {private_offers.dropped}\n"
             "/ekle → dmdahil / dmharic / dmfiyat → değer → /kaydet\n"
-            "/çıkar → dmdahil / dmharic / dmfiyat → numara veya değer → /kaydet\n"
-            "/dmac - Aç\n"
-            "/dmkapat - Kapat"
+            "/cikar → dmdahil / dmharic / dmfiyat → numara veya değer → /kaydet\n"
+            "/dmfiltreac - Aç\n"
+            "/dmfiltrekapat - Kapat"
         )
 
     async def private_channel_health() -> str:
@@ -5971,13 +5972,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
         async with settings_lock:
             pending = peek_pending(key)
             if pending is None:
-                await control_reply(event, "ℹ️ Kaydedilecek bekleyen bir değişiklik yok. Önce /ekle veya /çıkar.")
+                await control_reply(event, "ℹ️ Kaydedilecek bekleyen bir değişiklik yok. Önce /ekle veya /cikar.")
                 return
             if pending.get("stage") == "webdetakip":
                 # product_tracker kayıtlarını product_watches.json'da anında
                 # kalıcı tutar; /ekle akışındaki ayrı /kaydet adımı yoktur.
                 drop_pending(key)
-                await control_reply(event, "ℹ️ Ürün takip kayıtları product_watches.json'da; bu akışta kayıt anında kalıcılaşır, ayrı /kaydet adımı yok. Ayar taslağı kapatıldı. Takip menüsü: /takip")
+                await control_reply(event, "ℹ️ Ürün takip kayıtları product_watches.json'da; bu akışta kayıt anında kalıcılaşır, ayrı /kaydet adımı yok. Ayar taslağı kapatıldı. Takip menüsü: /webtakip")
                 return
             if pending.get("stage") != "confirm":
                 await control_reply(event, "ℹ️ İşlem henüz tamamlanmadı. Önce istenen liste/değer seçimini yap veya /iptal.")
@@ -5988,7 +5989,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             draft = pending.get("draft_config") or {}
             if field not in TELEGRAM_LIST_FIELDS or field not in draft:
                 drop_pending(key)
-                await control_reply(event, "❌ Taslak geçersiz olduğu için iptal edildi. Yeniden /ekle veya /çıkar ile başla.")
+                await control_reply(event, "❌ Taslak geçersiz olduğu için iptal edildi. Yeniden /ekle veya /cikar ile başla.")
                 return
 
             if not await can_edit_list(event, field):
@@ -5998,7 +5999,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 drop_pending(key)
                 await control_reply(event,
                     f"⚠️ {TELEGRAM_LIST_META[field]['title']} taslağı hazırlanırken başka bir değişiklik yapılmış.\n"
-                    "Güncel listeyi korudum; lütfen /ekle veya /çıkar ile yeniden başla."
+                    "Güncel listeyi korudum; lütfen /ekle veya /cikar ile yeniden başla."
                 )
                 return
 
@@ -6079,7 +6080,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await control_reply(event, note + "\n" + save_note)
 
     async def handle_filter_command(event: events.NewMessage.Event, action: str, rest: str) -> None:
-        """`/open` ve `/close`: argümanla hemen uygula, argüman yoksa sor."""
+        """`/tgfiltreac` ve `/tgfiltrekapat`: argümanla hemen uygula, argüman yoksa sor."""
         key = pending_key(event)
         pending = peek_pending(key)
         if pending and pending.get("stage") == "confirm":
@@ -6439,7 +6440,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 return
             if rest.strip():
                 await control_reply(event,
-                    "Komutu tek başına gönder: /ekle veya /çıkar.\n"
+                    "Komutu tek başına gönder: /ekle veya /cikar.\n"
                     "Ardından listelerden birini seçip değeri ayrı mesaj olarak yaz."
                 )
                 return
@@ -6452,7 +6453,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         if command in CMD_SETTINGS_SAVE:
             if pending is None:
-                await control_reply(event, "ℹ️ Kaydedilecek bekleyen bir değişiklik yok. Başlamak için /ekle veya /çıkar.")
+                await control_reply(event, "ℹ️ Kaydedilecek bekleyen bir değişiklik yok. Başlamak için /ekle veya /cikar.")
             else:
                 await save_pending_change(event, key)
             return
@@ -7534,7 +7535,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if command == COMMAND_START:
             await control_reply(event, "👋 Komutlarını artık burada verebilirsin. Fırsatlar aynı hedef gruba gider.\n"
                                 "Grup ayarları: /ayar · Durum: /durum · Tüm komutlar: /komutlar\n"
-                                "Kişisel fırsatlar: /dmfiltre · /ekle /çıkar → dmdahil / dmharic\n"
+                                "Kişisel fırsatlar: /dmfiltre · /ekle /cikar → dmdahil / dmharic\n"
                                 "Özel sohbet geçmişi silinmez. Kayıtlı Mesajlar yedek kontrol olarak açık.")
         elif command in CMD_DM_COMMANDS:
             await handle_dm_command(event, command, rest)

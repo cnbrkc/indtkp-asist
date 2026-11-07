@@ -97,8 +97,9 @@ aktarılmayabilir. **Özel kelimeler gizli değildir; config ve Git geçmişinde
 | `/dmfiltreac` | Kayıtlı listeyle tekrar açar; boş listeyi açmaz |
 | `/komutlar` | Her desteklenen komutu ve açıklamasını tek kez listeler |
 
-`/start` yanıtında `/komutlar` hatırlatılır. Yardım listesi başlıksız, maddesiz ve
-her satırda tek canonical komut olacak şekilde üretilir.
+`/start` yanıtında `/komutlar` hatırlatılır. `/komutlar` yedi başlıkla kategorik
+olarak üretilir: Temel komutlar, Liste yönetimi, Telegram indirim filtreleri,
+Kişisel bildirim filtreleri (DM), Web ürün takibi, Gelişmiş araçlar ve Yönetim.
 
 Bu kişisel ayarlar ve alıcı **yalnızca hesabın sahibine** aittir; başka bir admin
 kişisel alıcıyı kendisine çeviremez. Çok kullanıcılı abonelik sistemi değildir.

@@ -404,6 +404,22 @@ class IntegrationTest(MainHarness, unittest.TestCase):
                 )
                 self.assertIn(f"Bilinmeyen komut: {command}", "\n".join(event.replies))
 
+    def test_old_product_tracker_commands_rejected_in_private_chat(self):
+        old_commands = ("/takip", "/takipac", "/takipkapat", "/takipler",
+                        "/takipsil", "/takipiptal", "/takipyardim")
+        for command in old_commands:
+            with self.subTest(command=command):
+                event = self._call(
+                    self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, command),
+                )
+                self.assertIn(f"Bilinmeyen komut: {command}", "\n".join(event.replies))
+        for command in old_commands:
+            with self.subTest(command=command):
+                event = self._call(
+                    self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, command),
+                )
+                self.assertIn(f"Bilinmeyen komut: {command}", "\n".join(event.replies))
+
     def test_redundant_command_variants_are_not_dispatched(self):
         removed_commands = (
             "/status", "/dmaç", "/ayarlar", "/kaynak", "/source",
