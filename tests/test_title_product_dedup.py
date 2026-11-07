@@ -5,10 +5,7 @@ Kapsam:
   Trendyol / Paylaş Kazan / yönlendirme URL'leri -> tek bildirim.
 - İlk üç anlamlı kelime aynı olsa bile farklı model numarası, ürün kodu, kapasite,
   boyut, paket adedi, renk veya gerçek ürün varyantı -> ayrı bildirim.
-- Fiyat düşüşü, kondisyon farkı (depo, açık kutu, outlet, kutusuz, ikinci el,
-  yenilenmiş), kargo/kupon koşulu farkı, farklı ASIN/SKU ve farklı mağaza ayrımı
-  korunur.
-- Amazon psc=1 dar kapsamlı düzeltmesi korunur.
+- Başlık ve fiyat değişimi değerlendirilir; link/mağaza/koşul bilgileri kimliği etkilemez.
 """
 from __future__ import annotations
 
@@ -221,22 +218,17 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
             msg="aynı tam TL kuruş farkı birleşmeye devam etmeli",
         )
 
-    def test_same_product_different_condition_stays_separate(self):
-        for cond in ("Amazon Depo", "Açık kutu ürün", "Outlet fiyatı",
-                     "Kutusuz", "2. el", "İkinci El: Yeni Gibi", "Ürün durumu: Yenilenmiş"):
+    def test_same_product_conditions_do_not_split_title_price_identity(self):
+        for cond in ("Amazon Depo", "Açık kutu ürün", "Outlet fiyatı", "Kutusuz",
+                     "2. el", "İkinci El: Yeni Gibi", "Ürün durumu: Yenilenmiş",
+                     "Kargo ücretsiz", "Kupon: HB100", "Prime"):
             with self.subTest(condition=cond):
                 self.assertPings(
                     deal(HOMEND_TITLE, "6.619", cond, "https://app.hb.biz/c1"),
                     deal(HOMEND_TITLE, "6.619", "https://app.hb.biz/c2"),
-                    2,
+                    1,
                     msg=cond,
                 )
-        # İki tarafta da aynı kondisyon varsa ve yalnız yönlendirme URL'si farklıysa tek bildirim.
-        self.assertPings(
-            deal(HOMEND_TITLE, "6.619", "Outlet fiyatı", "https://app.hb.biz/c1"),
-            deal(HOMEND_TITLE, "6.619", "Outlet ürünü", "https://app.hb.biz/c2"),
-            1,
-        )
 
     def test_same_product_different_real_variant_not_merged(self):
         cases = {
@@ -272,63 +264,29 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
                 deal("Philips Avent Doğal Biberon", "349", "https://app.hb.biz/av1"),
                 deal("Philips Avent Doğal Emzik", "349", "https://app.hb.biz/av2"),
             ),
-            "aynı başlık ama farklı Amazon ASIN": (
-                deal(HOMEND_TITLE, "6.619", "https://www.amazon.com.tr/dp/B0DGLLJP1M?tag=a-21"),
-                deal(HOMEND_TITLE, "6.619", "https://www.amazon.com.tr/dp/B0ZZZ99999?tag=b-21"),
-            ),
-            "aynı başlık ama farklı Hepsiburada SKU (-p-HBCV...)": (
-                deal(HOMEND_TITLE, "6.619",
-                     "https://www.hepsiburada.com/homend-mikser-p-HBCV000011111?magaza=A"),
-                deal(HOMEND_TITLE, "6.619",
-                     "https://www.hepsiburada.com/homend-mikser-p-HBCV000022222?magaza=A"),
-            ),
-            "aynı başlık ama farklı Trendyol içerik kimliği (-p-...)": (
-                deal(HOMEND_TITLE, "6.619",
-                     "https://www.trendyol.com/homend/mikser-p-12345678?boutiqueId=61"),
-                deal(HOMEND_TITLE, "6.619",
-                     "https://www.trendyol.com/homend/mikser-p-87654321?boutiqueId=61"),
-            ),
         }
         for name, (first, second) in cases.items():
             with self.subTest(name):
                 self.assertPings(first, second, 2, msg=name)
 
-    def test_cross_store_shipping_coupon_and_psc_policies_preserved(self):
-        # Farklı mağazalar (kısa/yönlendirme linkleri dahil) birleştirilmez.
-        self.assertPings(
-            deal(HOMEND_TITLE, "6.619", "https://app.hb.biz/K9xL1m2N3p"),
-            deal(HOMEND_TITLE, "6.619", "https://ty.gl/homend111"),
-            2,
-            msg="Hepsiburada vs Trendyol kısa link ayrımı",
-        )
-        self.assertPings(
-            deal(HOMEND_TITLE, "6.619", "https://amzn.to/3homendA"),
-            deal(HOMEND_TITLE, "6.619", "https://app.hb.biz/K9xL1m2N3p"),
-            2,
-            msg="Amazon vs Hepsiburada kısa link ayrımı",
-        )
-        # Kargo ve kupon koşulu farkı korunur.
-        self.assertPings(
-            deal(HOMEND_TITLE, "6.619", "Kargo ücretsiz", "https://app.hb.biz/k1"),
-            deal(HOMEND_TITLE, "6.619", "Kargo 49,90 TL", "https://app.hb.biz/k2"),
-            2,
-            msg="kargo farkı",
-        )
-        self.assertPings(
-            deal(HOMEND_TITLE, "6.619", "Kupon: HB100", "https://app.hb.biz/kp1"),
-            deal(HOMEND_TITLE, "6.619", "Kupon: HB250", "https://app.hb.biz/kp2"),
-            2,
-            msg="kupon kodu farkı",
-        )
-        # Amazon psc=1 düzeltmesi korunur.
-        self.assertPings(
-            deal(HOMEND_TITLE, "6.619",
-                 "https://www.amazon.com.tr/dp/B0DGLLJP1M?psc=1&tag=indirimalarmi-21"),
-            deal(HOMEND_TITLE, "6.619",
-                 "https://www.amazon.com.tr/dp/B0DGLLJP1M?tag=indirimgeldi-21"),
-            1,
-            msg="Amazon psc=1 dar kapsamlı düzeltme",
-        )
+    def test_links_store_and_conditions_are_not_identity(self):
+        cases = [
+            (deal(HOMEND_TITLE, "6.619", "https://app.hb.biz/K9xL1m2N3p"),
+             deal(HOMEND_TITLE, "6.619", "https://ty.gl/homend111")),
+            (deal(HOMEND_TITLE, "6.619", "https://amzn.to/3homendA"),
+             deal(HOMEND_TITLE, "6.619", "https://app.hb.biz/K9xL1m2N3p")),
+            (deal(HOMEND_TITLE, "6.619", "Kargo ücretsiz", "https://app.hb.biz/k1"),
+             deal(HOMEND_TITLE, "6.619", "Kargo 49,90 TL", "https://app.hb.biz/k2")),
+            (deal(HOMEND_TITLE, "6.619", "Kupon: HB100", "https://app.hb.biz/kp1"),
+             deal(HOMEND_TITLE, "6.619", "Kupon: HB250", "https://app.hb.biz/kp2")),
+            (deal(HOMEND_TITLE, "6.619",
+                  "https://www.amazon.com.tr/dp/B0DGLLJP1M?psc=1&tag=indirimalarmi-21"),
+             deal(HOMEND_TITLE, "6.619",
+                  "https://www.amazon.com.tr/dp/B0ZZZ99999?tag=indirimgeldi-21")),
+        ]
+        for first, second in cases:
+            with self.subTest(first=first, second=second):
+                self.assertPings(first, second, 1)
 
     def test_restart_preload_with_redirect_link_suppresses_second_channel_different_url(self):
         history = (
@@ -351,8 +309,35 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
         self.assertEqual(bot.STATS["deduped"], 1)
 
 
+    def test_iffalcon_50u65_editorial_titles_at_same_price_merge(self):
+        titles = [
+            "iFFALCON 50U65 50 İnç Smart TV 4K UHD HDR 10 Gaming Google TV, "
+            "Dinamik Renk Geliştirme, Dolby Audio, MEMC, İnce Tasarımlı Game Master (2026 Modeli)",
+            "iFFALCON 50U65 4K Ultra HD 50” 127 Ekran Uydu Alıcılı Google Smart LED TV",
+            "iFFALCON 50U65 50 inch 4K UHD HDR10 Google Smart TV Game Master",
+            "iFFALCON 50U65 UHD Smart TV 50 inç, Google TV ve Dolby Audio",
+        ]
+        for title in titles[1:]:
+            with self.subTest(title=title):
+                self.assertTrue(bot.titles_match_product(titles[0], title))
+
+        client = self.start()
+        items = []
+        extra = ["Prime", "Ücretsiz kargo", "Kupon: TEST", "2. el"]
+        links = ["https://www.amazon.com.tr/dp/B0AAAA0001", "https://ty.gl/iffalcon1",
+                 "https://magaza.example/urun-a", "https://magaza.example/urun-b"]
+        for index, title in enumerate(titles):
+            items.append((self.first_id if index % 2 == 0 else SECOND_CHANNEL_ID,
+                          701 + index,
+                          deal(title, "14.999", extra[index], links[index])))
+        self.offers(client, items)
+        self.assertEqual(len(self.ping_calls), 1)
+        self.assertEqual(bot.STATS["deduped"], 3)
+
+
+
 class TitleMatcherUnitTests(unittest.TestCase):
-    """Başlık normalizasyonu, birim eşdeğerliği ve mağaza çıkarımı birim testleri."""
+    """Başlık normalizasyonu ve model kodu birim testleri."""
 
     def test_unit_and_turkish_character_normalization_matches(self):
         self.assertTrue(bot.titles_match_product(
@@ -382,17 +367,6 @@ class TitleMatcherUnitTests(unittest.TestCase):
             "Samsung Galaxy S24 256 GB Siyah Ekran Koruyucu",
         ))
 
-    def test_text_store_fallback_separates_linkless_cross_store_offers(self):
-        hb_text = f"🛍️ {HOMEND_TITLE}\n🛍 Hepsiburada\n💰 Fiyat: 6.619 TL"
-        ty_text = f"🛍️ {HOMEND_TITLE}\n🛍 Trendyol\n💰 Fiyat: 6.619 TL"
-        hb_stores = bot.extract_offer_stores(hb_text, HOMEND_TITLE, links=frozenset())
-        ty_stores = bot.extract_offer_stores(ty_text, HOMEND_TITLE, links=frozenset())
-        self.assertEqual(hb_stores, frozenset({"hepsiburada"}))
-        self.assertEqual(ty_stores, frozenset({"trendyol"}))
-        self.assertTrue(bot._offer_link_conflict(
-            HOMEND_TITLE, frozenset(), hb_stores,
-            HOMEND_TITLE, frozenset(), ty_stores,
-        ))
 
 
 if __name__ == "__main__":

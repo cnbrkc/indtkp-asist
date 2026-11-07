@@ -60,7 +60,7 @@ def strike_spans_from_entities(text: str, entities: Iterable[Any] | None) -> lis
 # --------------------------------------------------------------------------
 
 _CUR = r"(?:TL|₺|TRY|YTL)"
-_NUM = r"\d{1,3}(?:[.\u00a0\u202f,]\d{3})+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?"
+_NUM = r"(?:\d{1,3}\s+bin(?:\s+\d{1,3})?|\d{1,3}(?:[.\u00a0\u202f, \t]\d{3})+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?)"
 _LETTER = "A-Za-zÇĞİÖŞÜçğıöşü"
 # Bozuk sayının başını fiyat sayma (1..299 / 1,2,3); tek son noktalama serbest.
 _AMOUNT_END = r"(?!\d|[.,][\d.,])"
@@ -75,8 +75,8 @@ PRICE_RE = re.compile(
 
 # "Fiyat: 1299", "💰 1.299" gibi para birimi yazılmayan etiketli tutarlar
 LABELED_RE = re.compile(
-    rf"(?:fiyat\w*|price|sepette|net)\s*[:=\-–]?\s*(?P<a>{_NUM}){_AMOUNT_END}(?![\d.,]*\s*"
-    rf"(?:%|gb|tb|mb|mah|w\b|inç|inch|cm|mm|ml|lt\b|l\b|kg|gr\b|g\b|adet|hz|mp|ay\b|gün|saat))",
+    rf"(?:fiyat\w*|price|sepette|net)\s*[:=\-–]?\s*(?P<a>{_NUM}){_AMOUNT_END}"
+    rf"(?=\s*(?:{_CUR}|lira(?![{_LETTER}])|$|[!?,;:)\]])|\.(?![{_LETTER}]))",
     re.IGNORECASE,
 )
 EMOJI_LINE_RE = re.compile(
@@ -86,7 +86,14 @@ EMOJI_LINE_RE = re.compile(
 
 def parse_amount(raw: str) -> float | None:
     """'1.299,90' / '1,299.90' / '1299' / '129,9' → float."""
-    text = (raw or "").replace("\u00a0", "").replace("\u202f", "").strip()
+    text = (raw or "").strip()
+    bins = re.fullmatch(r"(\d{1,3})\s+bin(?:\s+(\d{1,3}))?", text, re.IGNORECASE)
+    if bins:
+        tail = int(bins.group(2) or 0)
+        if tail >= 1000:
+            return None
+        return float(int(bins.group(1)) * 1000 + tail)
+    text = re.sub(r"[\s\u00a0\u202f]+", "", text)
     if not text or not re.fullmatch(r"[\d.,]+", text):
         return None
     has_dot, has_comma = "." in text, "," in text
@@ -288,6 +295,11 @@ def _classify(line: str, start: int, end: int, abs_start: int, strike: Sequence[
     if _THRESHOLD_DATIVE_RE.match(norm(after_clean)):
         return "other", False
     if _DATIVE_RE.match(after_clean):
+        following = _tokens(_DATIVE_RE.sub("", after_clean, count=1))[:1]
+        if following and following[0].startswith(("çıkmış", "cikmis", "yükselmiş", "yukselmis")):
+            return "old", False                       # "422 TL'ye çıkmıştı, tekrar 199 TL"
+        if re.search(r"\b(?:kargo|teslimat|gönderim|gonderim)\b", norm(before_raw[-64:])):
+            return "other", False                     # e.g. fee for a multi-use shipping pack
         return "price", True                           # "1.199 TL'ye düştü"
     if _ABLATIVE_RE.match(after_clean):
         rest = _tokens(_ABLATIVE_RE.sub("", after_clean, count=1))[:1]
@@ -386,6 +398,8 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
             continue
         if re.match(r"^[’'](?:ye|ya|e|a)\s+\d[\d.,]*\s*(?:tl|₺|try)\s*(?:kupon|indirim)", after):
             c.cls, c.role = "other", "threshold"
+        elif re.search(r"(?:kupon|kod)\s+(?:uygulayınca|uygulandığında|uygulandiginda)\s*$", before) and c.cls == "other":
+            c.cls, c.role, c.strong = "price", "discounted", True
         elif re.match(r"^(?:ve\s+)?(?:üzeri|uzeri|üstü|ustu|alışveriş|harcama)", after):
             c.cls, c.role = "other", "threshold"
         elif re.match(r"^(?:kupon|indirim|kod)", after) or re.search(r"(?:kupon|indirim)\s*[:=]?\s*$", before):
@@ -415,11 +429,29 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
             elif multi or unit:
                 c.cls, c.role = "cond", "multi_unit" if multi else "unit"
                 c.strong = bool(unit)  # açık tanesi/adet başı; yalın alımda kalıbından farklı
-            elif re.search(r"kupon(?:la|uyla)|kupon ile|koduyla|kodla", clause):
+            elif re.search(r"kupon(?:la|uyla|\s+uygulayınca|\s+uygulandığında)|kupon ile|koduyla|kodla", clause):
                 c.role = "product_coupon" if re.search(r"ürün alt", clause) else "basket_coupon" if "sepette" in clause else "discounted"
                 c.strong = True
             elif re.search(r"(?:yeni|net|nihai|indirimli|sepette)\s*[:=]?\s*$", clause):
                 c.role = "discounted"
+        c.reason = c.role
+
+    # Refine the old catch-all role without changing which amounts are price candidates.
+    for c in candidates:
+        line = lines[c.line]
+        if c.role == "normal" and any(
+            unit.role == "unit" and unit.line == c.line and unit.start > c.end
+            for unit in candidates
+        ):
+            c.role = "pack_total"
+        elif c.role == "unrelated":
+            context = norm(line[max(0, c.start - 32):min(len(line), c.end + 32)])
+            if re.search(r"kargo|teslimat|gönderim|gonderim", context):
+                c.role = "shipping"
+            elif re.search(r"cashback|nakit\s+iade|puan|bonus", context):
+                c.role = "cashback"
+            elif re.search(r"taksit|aylık|aylik", context):
+                c.role = "installment"
         c.reason = c.role
 
 
@@ -471,8 +503,51 @@ def has_campaign_marker(text: str) -> bool:
     return any(c.cls == "campaign" for c in find_candidates(text))
 
 
+_PRODUCT_HEADER_RE = re.compile(r"(?<!\w)\d+\s*\.\s*ürün\s*[:：]", re.IGNORECASE)
+_FEATURED_PRODUCT_RE = re.compile(r"\b(?:öne\s+çıkan|önerilen|seçili|ana)\s+ürün\b\s*[:：-]", re.IGNORECASE)
+
+
+def _numbered_product_blocks(text: str) -> list[tuple[int, str]]:
+    """Explicit ``1. ürün:`` labels delimit products; ordinary campaign text does not."""
+    matches = list(_PRODUCT_HEADER_RE.finditer(text or ""))
+    if len(matches) < 2:
+        return []
+    return [(match.start(), (text or "")[match.start():matches[i + 1].start() if i + 1 < len(matches) else len(text)])
+            for i, match in enumerate(matches)]
+
+
+def _selected_product_block(text: str, strike: Sequence[tuple[int, int]] = ()) -> tuple[str, list[tuple[int, str]]] | None:
+    """Select one explicitly featured or uniquely priced product block, never cross-pair."""
+    blocks = _numbered_product_blocks(text)
+    if not blocks:
+        return None
+    priced: list[tuple[int, str, PriceInfo]] = []
+    for start, block in blocks:
+        local_strike = [(max(0, a - start), min(len(block), b - start))
+                        for a, b in strike if a < start + len(block) and b > start]
+        info = extract_price(block, local_strike)
+        if info.value is not None and info.confidence in {"high", "medium"}:
+            priced.append((start, block, info))
+    featured = [(start, block, info) for start, block, info in priced
+                if _FEATURED_PRODUCT_RE.search(block)]
+    if len(featured) == 1:
+        return featured[0][1], blocks
+    if len(featured) > 1 or len(priced) != 1:
+        return "", blocks
+    return priced[0][1], blocks
+
+
 def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInfo:
     """Mesajdaki ürün fiyatını seç. ``confidence`` 'low' ise filtre kullanmaz."""
+    selected = _selected_product_block(text or "", strike)
+    if selected is not None:
+        block, _ = selected
+        if not block:
+            return PriceInfo(None, "", "none", "birden fazla ürün bloğu: seçim belirsiz")
+        start = (text or "").find(block)
+        local_strike = [(max(0, a - start), min(len(block), b - start))
+                        for a, b in strike if a < start + len(block) and b > start]
+        return extract_price(block, local_strike)
     lines = (text or "").split("\n")
     unsure = {index for index, line in enumerate(lines) if ambiguous_campaign_line(line)}
     if unsure:
@@ -499,8 +574,14 @@ def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInf
         values = {c.value for c in pool}
         best = pool[0] if pool else units[0]
         ambiguous = len(values) > 1 or (not pool and bool(units) and not best.strong)
+        # A plain unit price ("tanesi 30 TL") must not replace a stated pack
+        # total. Explicit multi-buy prices retain the established offer behavior.
         for c in units:
-            if c.value < best.value:
+            if c.role == "multi_unit" and c.value < best.value:
+                best = c
+            elif c.role == "unit" and c.value < best.value and c.line not in {p.line for p in pool}:
+                # A separately stated per-unit price remains eligible. A parenthetical
+                # unit breakdown beside a pack total does not replace that total.
                 best = c
         # İlişkisiz farklı fiyatlarda min() ile güvenli fiyat uydurma.
         confidence = "low" if ambiguous else "medium" if best.cls == "cond" or not best.strong else "high"
@@ -553,7 +634,7 @@ _TITLE_LABELS = frozenset({"ürün", "ürün adı", "ürün ismi", "başlık", "
 _META_WORDS_RE = re.compile(
     r"kupon|\bkod\b|kodu|taksit|kargo|satıcı|satici|stok|geçerli|gecerli|tarihine kadar|"
     r"fiyat geçmişi|fiyat gecmisi|en düşük|en dusuk|ortalama|yorum|puan|değerlendirme|"
-    r"(?<![\w-])link(?![\w-])|tıkla|tikla|sepette|iade|teslimat|ilk \d+|adet ile sınırlı|ödeme|odeme|mağaza|magaza|medyan|gerçek fırsat|gercek firsat|taraf satıcı|taraf satici|fiyat\w*\s*:|fark\s*:|son fiyat|kontrol edin",
+    r"(?<![\w-])link(?![\w-])|tıkla|tikla|sepette|iade|teslimat|ilk \d+|adet ile sınırlı|ödeme|odeme|mağaza|magaza|medyan|gerçek fırsat|gercek firsat|taraf satıcı|taraf satici|fiyat\w*\s*:|fark\s*:|son fiyat|kontrol edin|tanesi|uygula\w*|yerine|(?:adet|birim|tane)\s*(?:baş[ıi]|fiyat[ıi])",
     re.IGNORECASE,
 )
 
@@ -588,8 +669,18 @@ _MODEL_RE = re.compile(r"\b(?=[A-Za-z0-9\-/]*[A-Za-z])(?=[A-Za-z0-9\-/]*\d)[A-Za
 def _remove_noise(line: str) -> str:
     line = _URL_RE.sub(" ", line)
     line = _MENTION_RE.sub(" ", line)
-    line = _PERCENT_RE.sub(" ", line)
     line = _SYMBOL_RE.sub(" ", line)
+
+    def keep_product_percentage(match: re.Match[str]) -> str:
+        suffix = norm(line[match.end():])
+        # Leading composition/feature percentages (e.g. "%0 Yağlı Yoğurt") are
+        # part of a product name; discount/statistic percentages remain noise.
+        if not line[:match.start()].strip() and re.search(r"[^\W\d_]", suffix) \
+                and not re.search(r"indirim|altında|fark|tasarruf", suffix):
+            return match.group()
+        return " "
+
+    line = _PERCENT_RE.sub(keep_product_percentage, line)
     line = _LABEL_PREFIX_RE.sub("", line)
     return " ".join(line.split())
 
@@ -645,7 +736,8 @@ def _trim_edges(line: str) -> str:
         if stripped != current:
             words, changed = stripped.split(), True
             continue
-        if bare(words[0]) in DEAL_WORDS or not bare(words[0]):
+        preserve_descriptor = bare(words[0]) in {"yeni", "super", "ilk"} and len(words) >= 3
+        if (bare(words[0]) in DEAL_WORDS and not preserve_descriptor) or not bare(words[0]):
             words.pop(0)
             changed = True
         elif bare(words[-1]) in DEAL_WORDS or bare(words[-1]) in STORES or not bare(words[-1]):
@@ -665,6 +757,7 @@ def _segments(line: str) -> list[str]:
 _GENERIC_TITLE_RE = re.compile(
     r"^(?:durum\s*:|takip\s+kuponu\b|kampanya(?:lar)?\s*(?::|\d)|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
     r"(?:anlık|anlik) indirim|bildirimlerinizi|\d+\s+adet kaldı|"
+    r"(?:başlangıç|baslangic|bitiş|bitis|tarih)\s*:|"
     r"(?:amazon|n11|trendyol|hepsiburada)\s+indirim kuponu\s*$)",
     re.IGNORECASE,
 )
@@ -683,6 +776,11 @@ def is_generic_title(text: str) -> bool:
     """
     plain = norm(_remove_noise(text)).strip(" ()[]{}.,:;!-")
     if not plain or plain in STORES or _GENERIC_TITLE_RE.search(plain):
+        return True
+    if re.search(r"\bseçili ürünlerde\b.*\b(?:indirim|kupon|kampanya)\b", plain):
+        return True
+    if re.search(r"\b(?:çıkmıştı|cikmisti|tekrar)\b", plain) \
+            and re.search(r"\b(?:sepette|kargo|teslimat|paket\w*|ödemek|alabilirsiniz)\b", plain):
         return True
     if "bildirimlerinizi aç" in plain or "bildirimlerinizi ac" in plain:
         return True
@@ -747,6 +845,14 @@ def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str], le
 
 def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str:
     """Mesajdan ürün başlığını seç. Bulamazsa boş döner."""
+    selected = _selected_product_block(text or "")
+    if selected is not None:
+        block, _ = selected
+        if not block:
+            return ""
+        block = _PRODUCT_HEADER_RE.sub("", block, count=1)
+        block = _FEATURED_PRODUCT_RE.sub("", block, count=1)
+        return extract_title(block, hints, limit)
     hint_tokens: set[str] = set()
     for hint in hints or ():
         hint_tokens.update(norm(w) for w in _TOKEN_RE.findall(hint or ""))
@@ -758,8 +864,12 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
             continue
         pieces = _segments(raw)
         best: tuple[float, str] | None = None
-        for piece in pieces:
+        for piece_index, piece in enumerate(pieces):
             cleaned = _trim_edges(_remove_noise(piece))
+            if piece_index and _UNIT_RE.search(cleaned):
+                prefix = _trim_edges(_remove_noise(pieces[piece_index - 1]))
+                if prefix and not _is_noise(prefix) and not _META_WORDS_RE.search(norm(prefix)):
+                    cleaned = f"{prefix} – {cleaned}"
             if is_generic_title(piece) or _is_noise(cleaned):
                 continue
             score = _score_line(raw, cleaned, position, hint_tokens, bool(_PRODUCT_EMOJI_RE.match(raw)))
@@ -783,13 +893,15 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
             if cleaned and not _is_noise(cleaned) and not _META_WORDS_RE.search(norm(nxt)) \
                     and not _META_LABEL_RE.match(nxt) and len(cleaned.split()) <= 12:
                 title = f"{title} {cleaned}"
-    elif index > 0 and re.match(r"[a-zçğıöşü\d]", title) and lines[index - 1].strip():
+    elif index > 0 and (re.match(r"[a-zçğıöşü\d]", title) or title.lstrip().startswith(("+", "&"))
+                        or lines[index].lstrip().startswith(("+", "&"))) and lines[index - 1].strip():
         prev = lines[index - 1]
         cleaned = _trim_edges(_remove_noise(prev))
+        continuation = re.sub(r"^[+&]\s*", "", title)
         if cleaned and len(cleaned.split()) <= 2 and not _is_noise(cleaned) \
                 and not _META_WORDS_RE.search(norm(prev)) and not _META_LABEL_RE.match(prev) \
                 and not cleaned.endswith(":"):
-            title = f"{cleaned} {title}"
+            title = f"{cleaned} {continuation}"
     title = " ".join(title.split())
     if len(title) > limit:
         cut = title[:limit].rsplit(" ", 1)[0].rstrip(" ,.-–|")
