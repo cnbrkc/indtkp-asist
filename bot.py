@@ -2740,15 +2740,21 @@ def dedup_badge(
     """
     if count < 2:
         return ""
-    names = ", ".join(
+    unique_names = list(
         dict.fromkeys(str(name).strip() for name in (sources or []) if str(name).strip())
     )
+    names = ", ".join(unique_names)
     if short:
         names = ""
     head = "📌" if count < 5 else "🚨"
     line = f"{head} {count} kere paylaşıldı"
     if names:
         line += f": {names}"
+        if len(unique_names) == 1:
+            # Sayaç paylaşım adedini, liste kaynak adlarını tekil tutar. Aynı
+            # gruptaki ikinci paylaşımda ikinci bir grup adı uydurmak yerine
+            # tek grup olduğunu açıkça belirt.
+            line += " · tek grup"
     if count >= 5:
         line += " — KAÇIRMA!"
     return line
@@ -2766,7 +2772,7 @@ def dedup_badge_sources(content: str | None) -> list[str]:
     if not DEDUP_BADGE_RE.match(line):
         return []
     _, _, names = line.partition(":")
-    names = names.replace("— KAÇIRMA!", " ")
+    names = names.replace("— KAÇIRMA!", " ").replace("· tek grup", " ")
     return [name.strip() for name in names.split(",") if name.strip()]
 
 
@@ -3228,6 +3234,45 @@ def _title_capacities(profile: dict[str, Any]) -> set[str]:
     }
 
 
+def _ordered_title_prefix_match(pa: dict[str, Any], pb: dict[str, Any]) -> bool:
+    """Uzun katalog adının, kırılmış kısa adın güvenli devamı olup olmadığını sına.
+
+    Sıralı en az 10 kelimelik önek ve sayısal/model kimliği şarttır. Son kelime
+    ``Kapan`` → ``Kapanma`` gibi kırılmış olabilir. Uzun taraftaki ek sayılar
+    yalnız açık model koduna (``DST7030/20``) ait olabilir; yeni kapasite,
+    ölçü, yıl veya başka sayısal varyantlar bu yolla birleştirilmez.
+    """
+    words_a, words_b = pa["words"], pb["words"]
+    if len(words_a) == len(words_b):
+        return False
+    short, long = (words_a, words_b) if len(words_a) < len(words_b) else (words_b, words_a)
+    short_profile = pa if len(words_a) < len(words_b) else pb
+    if len(short) < 10 or not (short_profile["specs"] or short_profile["has_model_code"]):
+        return False
+    boundary = len(short) - 1
+    if short[:boundary] != long[:boundary]:
+        return False
+    short_last, long_last = short[-1], long[boundary]
+    if short_last != long_last and (
+        len(short_last) < 4 or not short_last.isalpha()
+        or not long_last.startswith(short_last)
+    ):
+        return False
+    suffix = long[len(short):]
+    if not suffix:
+        return False
+    model_codes = _title_model_codes({"words": suffix})
+    for index, word in enumerate(suffix):
+        if not any(char.isdigit() for char in word):
+            continue
+        if word in model_codes:
+            continue
+        if word.isdigit() and index > 0 and suffix[index - 1] in model_codes:
+            continue  # ``DST7030/20`` kodunun ``20`` parçası
+        return False
+    return True
+
+
 def titles_match_product(title_a: str | None, title_b: str | None) -> bool:
     """Başlıkları karşılaştır: aynı model kodu yeterli güçlü eşleşmedir.
 
@@ -3266,6 +3311,11 @@ def titles_match_product(title_a: str | None, title_b: str | None) -> bool:
     capacities_a, capacities_b = _title_capacities(pa), _title_capacities(pb)
     if capacities_a and capacities_b and capacities_a != capacities_b:
         return False
+    if _ordered_title_prefix_match(pa, pb):
+        # Genel spec-set karşılaştırması, uzun addaki ``DST7030/20`` kodunu
+        # ürün farkı sanıyordu. Yukarıdaki sıralı önek ve varyant kontrolleri
+        # geçildiyse model koduna ait bu ek değerler artık çelişki değildir.
+        return True
     specs_a = set(pa["specs"])
     specs_b = set(pb["specs"])
     if specs_a and specs_b and specs_a != specs_b:
@@ -3290,6 +3340,24 @@ def _find_matching_dedup_key(
         if rank > best_rank:
             best_rank, best_key = rank, cand_key
     return best_key
+
+
+def _keep_detailed_prefix_title(entry: dict[str, Any], candidate: str) -> None:
+    """Güvenli uzun-adevamı eşleşmesinde model kodlu zengin adı kayda taşı.
+
+    Kısa ad kayıtta bırakılırsa iki farklı uzun model, aynı kısa ad üzerinden
+    zincirleme biçimde tek fırsata birleşebilir. Yalnız doğrulanmış sıralı
+    önek eşleşmesinde ve aday gerçekten daha ayrıntılıysa başlığı zenginleştir;
+    dedup anahtarını, sayacı veya gönderilmiş bildirimi değiştirme.
+    """
+    existing = entry.get("title")
+    if not isinstance(existing, str) or not candidate or existing == candidate:
+        return
+    pa, pb = _title_profile(existing), _title_profile(candidate)
+    if not pa or not pb or len(pb["words"]) <= len(pa["words"]):
+        return
+    if titles_match_product(existing, candidate) and _ordered_title_prefix_match(pa, pb):
+        entry["title"] = candidate
 
 
 def _dedup_whole_tl(value: Any) -> int | None:
@@ -6468,6 +6536,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     DEDUP_CACHE[target_key] = entry
                     return "send", token, target_key
                 if not entry.get("pending"):
+                    _keep_detailed_prefix_title(entry, title)
                     entry["count"] += 1
                     entry["last_seen"] = time.time()
                     note_dedup_source(entry, source_name)

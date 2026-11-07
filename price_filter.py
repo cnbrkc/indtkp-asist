@@ -396,7 +396,15 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
         if c.cls in {"old", "history"}:
             c.reason = c.role
             continue
-        if re.match(r"^[’'](?:ye|ya|e|a)\s+\d[\d.,]*\s*(?:tl|₺|try)\s*(?:kupon|indirim)", after):
+        if c.cls in {"price", "cond", "other"} and re.fullmatch(
+            r"sepette[*_~`\s.!]*", after,
+        ):
+            # ``Sepette 43.728 TL`` ile ``43.728 TL sepette`` aynı açık
+            # sepet fiyatıdır. Yalnız satırın tamamındaki yalın ``sepette``
+            # kuyruğu kabul edilir; ``… TL sepette indirim`` gibi indirim
+            # tutarları ve kupon/kargo açıklamaları bu kurala girmez.
+            c.cls, c.role, c.strong = "price", "discounted", True
+        elif re.match(r"^[’'](?:ye|ya|e|a)\s+\d[\d.,]*\s*(?:tl|₺|try)\s*(?:kupon|indirim)", after):
             c.cls, c.role = "other", "threshold"
         elif re.search(r"(?:kupon|kod)\s+(?:uygulayınca|uygulandığında|uygulandiginda)\s*$", before) and c.cls == "other":
             c.cls, c.role, c.strong = "price", "discounted", True
@@ -784,7 +792,9 @@ _GENERIC_TITLE_RE = re.compile(
     r"ürün\s+altından\s+(?:aktif|etkinleştir)\w*|"
     r"(?:sepete\s+)?\d+\s+adet(?:\s+sepete)?\s+ekle\w*|"
     r"(?:başlangıç|baslangic|bitiş|bitis|tarih)\s*:|"
-    r"(?:amazon|n11|trendyol|hepsiburada)\s+indirim kuponu\s*$)",
+    r"(?:amazon|n11|trendyol|hepsiburada)\s+indirim kuponu\s*$|"
+    r"[a-z0-9][a-z0-9_-]*\s+(?:koduyla|kodla|kuponuyla|kuponla)"
+    r"(?:\s+(?:fiyat\w*\s*)?(?:\d[\d.,]*\s*(?:tl|₺|try)|₺\s*\d[\d.,]*))?\s*$)",
     re.IGNORECASE,
 )
 _CONDITION_WORDS = frozenset(
@@ -802,6 +812,12 @@ def is_generic_title(text: str) -> bool:
     """
     plain = norm(_remove_noise(text)).strip(" ()[]{}.,:;!-")
     if not plain or plain in STORES or _GENERIC_TITLE_RE.search(plain):
+        return True
+    first_word = plain.split(maxsplit=1)[0] if plain else ""
+    if first_word in STORES and re.search(r"\btanıtım\b", plain):
+        # ``Amazon tanıtım @kanal GOOGLE`` ve ``n11 (Satıcı: n11)
+        # Tanıtım`` mağaza/kanal metadata'sıdır; başındaki 🛍️ ve içindeki
+        # sayısal mağaza adı bunları gerçek ürün adından daha yüksek puanlayabiliyordu.
         return True
     if re.search(r"\bseçili ürünlerde\b.*\b(?:indirim|kupon|kampanya)\b", plain):
         return True
@@ -901,13 +917,21 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
         best: tuple[float, str] | None = None
         for piece_index, piece in enumerate(pieces):
             cleaned = _trim_edges(_remove_noise(piece))
+            combined_prefix = ""
             if piece_index and _UNIT_RE.search(cleaned):
                 prefix = _trim_edges(_remove_noise(pieces[piece_index - 1]))
                 if prefix and not _is_noise(prefix) and not _META_WORDS_RE.search(norm(prefix)):
+                    combined_prefix = prefix
                     cleaned = f"{prefix} – {cleaned}"
             if is_generic_title(piece) or _is_noise(cleaned):
                 continue
             score = _score_line(raw, cleaned, position, hint_tokens, bool(_PRODUCT_EMOJI_RE.match(raw)))
+            if combined_prefix and not _MODEL_RE.search(combined_prefix) \
+                    and _MODEL_RE.search(cleaned[len(combined_prefix):]):
+                # ``Ütü – 2400W … (DST5010/10)``: birleşik ad, tire sonrası
+                # model/birim kimliğini korur. Uzunluğun genel puan cezası,
+                # yalnız ``Philips 5000 Serisi Buharlı Ütü`` önekini seçtirmemeli.
+                score += 1.0
             if best is None or score > best[0]:
                 best = (score, cleaned)
         if best is not None:
@@ -939,8 +963,15 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
             title = f"{cleaned} {continuation}"
     title = " ".join(title.split())
     if len(title) > limit:
-        cut = title[:limit].rsplit(" ", 1)[0].rstrip(" ,.-–|")
-        title = cut + "…"
+        # Katalog adının sonundaki açık model kodunu kırpıp atmak, ürün
+        # kimliğini ve dedup eşleşmesini zayıflatır. Yalnız model kodu sınırın
+        # ötesinde kalan makul uzunluktaki adlara, çağıran daha dar bir limit
+        # istemediyse 80 karakter ek alan ver; diğer uzun başlıklar mevcut
+        # 160 karakter görünümünü korur.
+        model_beyond_cut = limit >= 160 and bool(_MODEL_RE.search(title[limit:]))
+        if not model_beyond_cut or len(title) > limit + 80:
+            cut = title[:limit].rsplit(" ", 1)[0].rstrip(" ,.-–|")
+            title = cut + "…"
     return title
 
 

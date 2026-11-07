@@ -2732,6 +2732,19 @@ class DedupBadgeTest(unittest.TestCase):
         self.assertEqual(bot.dedup_badge(2, sources=["A", "A", "B"]),
                          "📌 2 kere paylaşıldı: A, B")
 
+    def test_single_group_repeat_is_explicit_without_changing_share_count(self):
+        badge = bot.dedup_badge(2, sources=["Fırsatlar (Sadece Paylaşım)"])
+        self.assertEqual(
+            badge,
+            "📌 2 kere paylaşıldı: Fırsatlar (Sadece Paylaşım) · tek grup",
+        )
+        self.assertEqual(bot.dedup_badge_sources(badge), ["Fırsatlar (Sadece Paylaşım)"])
+        count, base = bot.strip_dedup_badge(f"Karcher\n\n{badge}")
+        self.assertEqual((count, base), (2, "Karcher"))
+        multiple = bot.dedup_badge(2, sources=["Fırsatlar", "Özel Fırsatlar"])
+        self.assertNotIn("tek grup", multiple)
+        self.assertEqual(bot.dedup_badge_sources(multiple), ["Fırsatlar", "Özel Fırsatlar"])
+
     def test_badge_sources_are_read_back(self):
         badge = bot.dedup_badge(4, sources=["FirsatZ", "İndirimde Al"])
         self.assertEqual(bot.dedup_badge_sources(badge), ["FirsatZ", "İndirimde Al"])

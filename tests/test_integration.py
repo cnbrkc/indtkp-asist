@@ -2305,7 +2305,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         blocks = text.split("\n\n")
         self.assertEqual(blocks[0], "Sıcak ÇAY")
         self.assertEqual(blocks[1], "Sıcak ÇAY 5 TL", "mesaj aynen korunur")
-        badge_head = "📌 2 kere paylaşıldı: firsatz"
+        badge_head = "📌 2 kere paylaşıldı: firsatz · tek grup"
         self.assertEqual(blocks[-1], badge_head,
                          "çoklu paylaşım notu, grup adının yerinde mesajı kapatır")
         self.assertTrue(text.endswith(badge_head), text)
@@ -2358,7 +2358,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         blocks = text.split("\n\n")
         self.assertEqual(blocks[0], "Sıcak ÇAY")
         self.assertEqual(blocks[1], "Sıcak ÇAY 5 TL", "mesaj aynen korunur")
-        self.assertTrue(text.endswith("📌 3 kere paylaşıldı: firsatz"), text)
+        self.assertTrue(text.endswith("📌 3 kere paylaşıldı: firsatz · tek grup"), text)
         self.assertNotIn("2 kere paylaşıldı", text, "eski not yenisiyle değişmeli")
 
     def test_badge_lists_the_source_names_in_the_last_block(self):
@@ -2369,7 +2369,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         blocks = text.split("\n\n")
         self.assertTrue(blocks[0].startswith("Sıcak ÇAY"))
         self.assertEqual(blocks[1], "Sıcak ÇAY 5 TL", "mesaj aynen korunur")
-        self.assertEqual(blocks[-1], "📌 2 kere paylaşıldı: firsatz",
+        self.assertEqual(blocks[-1], "📌 2 kere paylaşıldı: firsatz · tek grup",
                          "not, grup adının yerinde tek blok olarak mesajı kapatır")
         self.assertNotIn("\n\nfirsatz", text, "grup adı satırı kaldırılır")
         self.assertNotIn("Kaynaklar:", text)
@@ -2391,7 +2391,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(len(client.delivered), 1)
         self.assertEqual(bot.STATS["deduped"], 1)
         text = client.edited[0][2]
-        self.assertTrue(text.endswith("📌 2 kere paylaşıldı: firsatz"), text)
+        self.assertTrue(text.endswith("📌 2 kere paylaşıldı: firsatz · tek grup"), text)
         self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", text)
 
     def test_different_titles_send_separately(self):
@@ -2487,7 +2487,7 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.STATS["deduped"], 1)
         self.assertEqual(len(client.edited), 1)
         self.assertEqual(client.edited[0][1], 777, "not eski mesaja işlenmeli")
-        self.assertTrue(client.edited[0][2].endswith("📌 2 kere paylaşıldı: firsatz"),
+        self.assertTrue(client.edited[0][2].endswith("📌 2 kere paylaşıldı: firsatz · tek grup"),
                         client.edited[0][2])
         self.assertNotIn("\n\nfirsatz", client.edited[0][2],
                          "tekrarda grup adı satırı kaldırılır")
@@ -2507,7 +2507,7 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
         self.assertEqual(len(client.edited), 1)
         self.assertEqual(client.edited[0][1], 778, "not eski mesaja işlenmeli")
         self.assertIn("💰Fiyat: 5 TL", client.edited[0][2])
-        self.assertTrue(client.edited[0][2].endswith("📌 2 kere paylaşıldı: firsatz"),
+        self.assertTrue(client.edited[0][2].endswith("📌 2 kere paylaşıldı: firsatz · tek grup"),
                         client.edited[0][2])
         self.assertNotIn("\n\nfirsatz", client.edited[0][2],
                          "tekrarda grup adı satırı kaldırılır")
@@ -2553,7 +2553,7 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
         self.assertEqual(client.delivered, [])
         text = client.edited[-1][2]
         self.assertTrue(text.startswith("Çay 5 TL"), text)
-        self.assertTrue(text.endswith("📌 4 kere paylaşıldı: firsatz"), text)
+        self.assertTrue(text.endswith("📌 4 kere paylaşıldı: firsatz · tek grup"), text)
         self.assertNotIn("🔥🔥 4 kaynakta", text, "eski rozet yeni biçime taşınır")
 
 
@@ -2661,7 +2661,7 @@ class DedupBotBadgeTest(unittest.TestCase):
         caption_blocks = call["caption"].split("\n\n")
         self.assertEqual(caption_blocks[0], "Çay", "başlık en üstte")
         self.assertEqual(caption_blocks[1], "Çay fırsatı", "mesaj aynen korunur")
-        badge = "📌 2 kere paylaşıldı: firsatz"
+        badge = "📌 2 kere paylaşıldı: firsatz · tek grup"
         self.assertTrue(call["caption"].endswith(badge), call["caption"])
         self.assertEqual(caption_blocks[-1], badge,
                          "çoklu paylaşım notu grup adının yerine geçer")
@@ -2684,8 +2684,8 @@ class DedupBotBadgeTest(unittest.TestCase):
         text_blocks = call["text"].split("\n\n")
         self.assertEqual(text_blocks[0], "Çay", "başlık en üstte")
         self.assertEqual(text_blocks[1], "Çay fırsatı", "mesaj aynen korunur")
-        self.assertTrue(call["text"].endswith("📌 2 kere paylaşıldı: firsatz"), call["text"])
-        self.assertEqual(text_blocks[-1], "📌 2 kere paylaşıldı: firsatz",
+        self.assertTrue(call["text"].endswith("📌 2 kere paylaşıldı: firsatz · tek grup"), call["text"])
+        self.assertEqual(text_blocks[-1], "📌 2 kere paylaşıldı: firsatz · tek grup",
                          "not, grup adının yerine geçer")
         self.assertNotIn("\n\nfirsatz", call["text"], "grup adı satırı kaldırılır")
 
@@ -2701,7 +2701,7 @@ class DedupBotBadgeTest(unittest.TestCase):
         self.assertEqual(edited.count("https://amzn.to/urun"), 1,
                          "ayrı ürün linki satırı rozette de belirmez")
         self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", edited)
-        self.assertTrue(edited.endswith("📌 2 kere paylaşıldı: firsatz"), edited)
+        self.assertTrue(edited.endswith("📌 2 kere paylaşıldı: firsatz · tek grup"), edited)
 
     def test_third_copy_updates_bot_badge(self):
         client = self._run()
@@ -2715,7 +2715,7 @@ class DedupBotBadgeTest(unittest.TestCase):
         text_blocks = text.split("\n\n")
         self.assertEqual(text_blocks[0], "Çay", "başlık en üstte")
         self.assertEqual(text_blocks[1], "Çay fırsatı", "mesaj aynen korunur")
-        self.assertTrue(text.endswith("📌 3 kere paylaşıldı: firsatz"), text)
+        self.assertTrue(text.endswith("📌 3 kere paylaşıldı: firsatz · tek grup"), text)
         self.assertNotIn("2 kere paylaşıldı", text, "eski not yeni notla değiştirilir")
 
 
