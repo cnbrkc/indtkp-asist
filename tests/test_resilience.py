@@ -54,22 +54,19 @@ class IncompletePriceTests(unittest.TestCase):
                     self.assertFalse(pf.price_matches(text, value - 0.01)[0])
                     self.assertEqual(bot.offer_terms(text)[0], value)
 
-    def test_coupon_newlines_indentation_and_explanations(self):
+    def test_coupon_newlines_do_not_change_title_price_identity(self):
         for newline in ['\n', '\r\n', '\n\n', '\r\n\r\n']:
             for explanation in ['', ' (ürün altından etkinleştirin)', ' — son gün',
                                 newline + 'Açıklama: Sepette uygulayın']:
-                terms = []
+                keys = []
                 for code in ['KOD10', 'KOD20']:
                     text = ('Pamuk Havlu' + newline + 'Fiyat: 300 TL' + newline +
                             '\t Kupon: ' + code + explanation)
                     with self.subTest(newline=newline, explanation=explanation, code=code):
-                        offer = bot.offer_terms(text)
-                        self.assertEqual(offer[0], 300)
-                        self.assertIn('kupon: ' + code.lower(), offer[1])
-                        self.assertNotIn('300 tl kupon', offer[1])
-                        terms.append(offer)
-                self.assertNotEqual(bot.dedup_offer_key('Pamuk Havlu', terms[0]),
-                                    bot.dedup_offer_key('Pamuk Havlu', terms[1]))
+                        terms = bot.offer_terms(text)
+                        self.assertEqual(terms, (300, ''))
+                        keys.append(bot.dedup_offer_key('Pamuk Havlu', terms))
+                self.assertEqual(keys[0], keys[1])
 
     def test_missing_threshold_and_percent_only(self):
         for text in ['', 'Fiyat: TL', 'Yalnız %15 indirim',
@@ -87,14 +84,13 @@ class IncompletePriceTests(unittest.TestCase):
                 self.assertEqual(pf.extract_price(text).value, value)
                 self.assertIn(pf.extract_price(text).confidence, {'medium', 'high'})
 
-    def test_coupon_code_is_not_consumed_by_previous_price_line(self):
+    def test_coupon_text_does_not_replace_or_split_price(self):
         for space in [' ', '\u00a0', '\u202f']:
             for code in ['KOD10', 'KOD20']:
                 text = ('Pamuk Havlu\nFiyat: 300 TL\nKupon: ' + code).replace(' ', space)
-                terms = bot.offer_terms(text)
-                self.assertIn('kupon: ' + code.lower(), terms[1])
-                self.assertNotIn('300 tl kupon', terms[1])
-        self.assertIn('100 tl kupon', bot.offer_terms('Pamuk Havlu\n300 TL / 100 TL kupon')[1])
+                self.assertEqual(pf.extract_price(text).value, 300)
+                self.assertEqual(bot.offer_terms(text), (300, ''))
+        self.assertEqual(pf.extract_price('Pamuk Havlu\n300 TL / 100 TL kupon').value, 300)
 
     def test_multiple_products_are_not_split_and_can_be_ambiguous(self):
         text = 'Pamuk Havlu\n100 TL\nCam Bardak\n200 TL'
@@ -155,13 +151,14 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
         asyncio.run(run())
         self.assertEqual(len(self.client.delivered), 1)
 
-    def test_changed_coupon_condition_is_a_separate_offer(self):
+    def test_changed_coupon_condition_is_same_title_price_offer(self):
         async def run():
             await self.send(self.event(self.TITLE + '\nFiyat: 300 TL\nKupon: KOD10', 1))
             await self.send(self.event(self.TITLE + '\nFiyat: 300 TL\nKupon: KOD20', 2))
         asyncio.run(run())
-        self.assertEqual(len(self.client.delivered), 2)
-        self.assertEqual(len(bot.DEDUP_CACHE), 2)
+        self.assertEqual(len(self.client.delivered), 1)
+        self.assertEqual(len(bot.DEDUP_CACHE), 1)
+        self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['count'], 2)
 
     def test_poll_live_order_and_concurrent_same_source_claim(self):
         async def run():
@@ -268,22 +265,22 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
                 await self.send(self.event(copy, 2))
                 entry = next(iter(bot.DEDUP_CACHE.values()))
                 self.assertEqual(entry['offer'], original_offer)
-                self.assertIn('durum:ikinci el yeni gibi', entry['offer'][1])
-                self.assertIn('kupon: kod10', entry['offer'][1])
+                self.assertEqual(entry['offer'], (300, ''))
                 self.assertIn(text, entry['text'])
                 self.assertEqual(entry['count'], 2)
         asyncio.run(run())
         self.assertEqual(len(self.client.delivered), 1)
 
 
-    def test_coupon_code_changes_with_crlf_and_details_send_separately(self):
+    def test_coupon_code_changes_with_crlf_merge_and_preserve_first_body(self):
         async def run():
             for mid, code, ending in [(1, 'KOD10', ' (ürün altından etkinleştirin)'),
                                       (2, 'KOD20', '\r\nAçıklama: Sepette uygulayın')]:
                 text = self.TITLE + '\r\nFiyat: 300 TL\r\n\r\n\tKupon: ' + code + ending
                 await self.send(self.event(text, mid, mid == 1))
         asyncio.run(run())
-        self.assertEqual(len(self.client.delivered), 2)
-        self.assertEqual(len(bot.DEDUP_CACHE), 2)
-        self.assertEqual({entry['offer'][1] for entry in bot.DEDUP_CACHE.values()},
-                         {'kupon: kod10', 'kupon: kod20'})
+        self.assertEqual(len(self.client.delivered), 1)
+        self.assertEqual(len(bot.DEDUP_CACHE), 1)
+        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertEqual(entry['offer'], (300, ''))
+        self.assertIn('Kupon: KOD10', entry['text'])

@@ -173,11 +173,10 @@ class SameOfferTest(Harness, unittest.TestCase):
         self.assertPings(
             with_lines("https://www.amazon.com.tr/dp/B0ABC12345?utm_source=firsatz"),
             with_lines("https://www.amazon.com.tr/gp/product/B0ABC12345?linkCode=ll1&tag=a-21"), 1)
-        # Belirsiz arama/gezinme parametreleri (qid, sr, pd_rd_*) kimlikte kalır: resmî
-        # kaynakta ürün bilgisi taşımadığı doğrulanmadı. Bu bağlantı ayrı kalır (P4).
+        # Farklı Amazon URL parametreleri aynı başlık/fiyattaki ürünü bölmez.
         self.assertPings(
             with_lines("https://www.amazon.com.tr/dp/B0ABC12345/ref=sr_1_1?qid=1&sr=8-1&pd_rd_r=x"),
-            with_lines(amazon()), 2, "belirsiz gezinme parametresi kimlikte kalır")
+            with_lines(amazon()), 1, "URL parametreleri kimlik değildir")
 
     def test_restart_history_and_second_channel_share_one_entry(self):
         # Yeniden başlatmada önceki bildirim geçmişten yüklenir; ikinci kanal aynı kaydı kullanmalı.
@@ -198,104 +197,51 @@ class SameOfferTest(Harness, unittest.TestCase):
 
 
 class DifferentOfferTest(Harness, unittest.TestCase):
-    """Gerçek fark: varyant, fiyat, kampanya, kondisyon, kargo, ürün bağlantısı. Birleşmez."""
+    """Başlık ve fiyat belirler; koşul ve URL farkları ürün kimliği değildir."""
 
-    def test_variant_or_different_asin_is_new_notification(self):
+    def test_title_variant_and_real_price_drop_are_new_notifications(self):
         self.assertPings(offer(), offer("Nivea Fresh Cherry Kadın Sprey Deodorant, 250 ml"), 2)
-        self.assertPings(with_lines("https://www.amazon.com.tr/dp/B0ABC12345"),
-                         with_lines("https://www.amazon.com.tr/dp/B0ZZZ99999"), 2)
-        self.assertPings(with_lines(amazon(extra="th=1")), with_lines(amazon()), 2,
-                         "varyant parametresi kimliktedir")
-        self.assertPings(with_lines(amazon(extra="smid=A1XYZ")), with_lines(amazon()), 2,
-                         "satıcı parametresi kimliktedir")
-
-    def test_psc_difference_does_not_hide_real_offer_differences(self):
-        first = with_lines(amazon(extra="psc=1"))
-        plain_link = amazon()
-        self.assertPings(first, with_lines(plain_link, body=offer(
-            "Nivea Fresh Cherry Kadın Sprey Deodorant, 250 ml")), 2)
-        self.assertPings(first, with_lines("Açık kutu ürün", plain_link), 2)
-        self.assertPings(first, with_lines(plain_link, body=offer(price="79,90")), 2)
-        self.assertPings(first, with_lines(
-            "https://www.amazon.com.tr/dp/B0ZZZ99999"), 2)
-
-    def test_campaign_and_coupon_difference_is_new_notification(self):
-        self.assertPings(offer(), offer(campaign="2 al 1 öde"), 2)
-        self.assertPings(offer(), offer() + "\n\nKupon: CAY10", 2)
-
-    def test_real_price_drop_is_new_notification(self):
         self.assertPings(offer(), offer(price="79,90"), 2)
-        self.assertPings(with_lines(amazon("firsatz-21")),
-                         with_lines(amazon("tayfa-21"), body=offer(price="79,90")), 2,
-                         "tag farklıyken gerçek düşüş")
 
-    def test_condition_one_side_is_new_notification(self):
-        # Kondisyon yalnız bir mesajda: aynı link olsa da (tag farklı olsa da) ayrı bildirim.
-        for line in ["Amazon Depo", "Amazon Warehouse", "Açık kutu ürün", "Kutusuz",
-                     "Outlet fiyatı", "2. el", "İkinci el"]:
-            with self.subTest(condition=line):
-                self.assertPings(with_lines(line, PRODUCT_LINK), with_lines(PRODUCT_LINK), 2)
-        self.assertPings(with_lines("Amazon Depo", amazon("firsatz-21")),
-                         with_lines(amazon("tayfa-21")), 2, "tag farklı + kondisyon tek taraf")
+    def test_campaign_coupon_shipping_and_condition_do_not_change_identity(self):
+        variants = [
+            offer(campaign="2 al 1 öde"), offer() + "\n\nKupon: CAY10",
+            with_lines("Kargo ücretsiz"), with_lines("Kargo 29,90 TL"),
+            with_lines("Amazon Depo"), with_lines("Açık kutu ürün"),
+        ]
+        for second in variants:
+            with self.subTest(second=second):
+                self.assertPings(offer(), second, 1)
 
-    def test_same_condition_on_both_sides_one_notification(self):
-        self.assertPings(with_lines("Amazon Depo", amazon("firsatz-21")),
-                         with_lines("Amazon Depo", amazon("tayfa-21")), 1)
+    def test_different_product_links_do_not_split_same_title(self):
+        links = [PRODUCT_LINK, "https://www.trendyol.com/nivea/cherry-150ml-p-123456",
+                 "https://www.amazon.de/dp/B0ABC12345", NIVEA_LINK + "?sku=150A",
+                 NIVEA_LINK + "?sku=150B", "https://amzn.to/3abcXYZ", "https://amzn.to/3defUVW"]
+        for url in links:
+            with self.subTest(url=url):
+                self.assertPings(with_lines(PRODUCT_LINK), with_lines(url), 1)
 
-    def test_shipping_difference_is_new_notification_same_shipping_merges(self):
-        self.assertPings(with_lines("Kargo ücretsiz", PRODUCT_LINK),
-                         with_lines("Kargo 29,90 TL", PRODUCT_LINK), 2)
-        self.assertPings(with_lines("Kargo bedava", NIVEA_LINK),
-                         with_lines("Ücretsiz kargo", NIVEA_LINK), 1, "aynı kargo, farklı yazım")
+    def test_link_difference_is_ignored_in_preload_and_fast_poll(self):
+        self.assertPings(with_lines(PRODUCT_LINK), with_lines("https://ty.gl/other"), 1)
 
-    def test_different_product_links_stay_separate_p4(self):
-        # Mağaza ayrımı, farklı Amazon alan adı ve açık varyant/SKU çelişkisi
-        # ayrı bildirim üretmeye devam eder.
-        separate_cases = {
-            "farklı mağaza": (NIVEA_LINK, "https://www.trendyol.com/nivea/cherry-150ml-p-123456"),
-            "aynı ASIN, farklı Amazon alan adı": (PRODUCT_LINK, "https://www.amazon.de/dp/B0ABC12345"),
-            "açık SKU/varyant parametresi farklı": (NIVEA_LINK + "?sku=150A", NIVEA_LINK + "?sku=150B"),
-        }
-        for name, (first, second) in separate_cases.items():
-            with self.subTest(name):
-                self.assertPings(with_lines(first), with_lines(second), 2)
+    def test_source_promo_and_search_buttons_do_not_split_product(self):
+        self.assertPings(
+            with_lines(PRODUCT_LINK + " " + WHATSAPP_FIRST.replace("💚", "")),
+            with_lines("https://www.trendyol.com/nivea/x-p-123456 " + WHATSAPP_SECOND.replace("💚", "")),
+            1, first_buttons=[GOOGLE_FIRST], second_buttons=[GOOGLE_SECOND],
+        )
 
-        # Politika güncellendi: güçlü ürün başlığı + aynı fiyat + aynı mağazada
-        # salt kanal referans parametresi (?ref=...) veya farklı amzn.to kısa
-        # affiliate linkleri tek başına yeni ürün sayılmaz (önceki beklenti: 2).
-        merged_affiliate_cases = {
-            "ref farklı (genel parametre)": (NIVEA_LINK + "?ref=firsatz", NIVEA_LINK + "?ref=tayfa"),
-            "parametre yalnız bir tarafta": (NIVEA_LINK, NIVEA_LINK + "?ref=tayfa"),
-            "farklı kısa linkler": ("https://amzn.to/3abcXYZ", "https://amzn.to/3defUVW"),
-        }
-        for name, (first, second) in merged_affiliate_cases.items():
-            with self.subTest(name):
-                self.assertPings(with_lines(first), with_lines(second), 1)
+    def test_unknown_price_then_known_price_remains_a_new_notification(self):
+        self.assertPings(
+            with_lines(WHATSAPP_FIRST, body=f"{BASE_TITLE}\n1 TL 2. ürün 49,90 TL"),
+            with_lines(WHATSAPP_SECOND, body=offer()), 2,
+            first_buttons=[GOOGLE_FIRST], second_buttons=[GOOGLE_SECOND],
+        )
 
-        # Zayıf/kısa başlıkta (< 3 anlamlı kelime) katı link çelişkisi korunur.
-        self.assertPings("Çay\n104 TL\nhttps://amzn.to/3abcXYZ",
-                         "Çay\n104 TL\nhttps://amzn.to/3defUVW", 2,
-                         "zayıf başlıkta farklı kısa linkler hâlâ ayrı kalmalı")
-
-    def test_cross_store_with_promo_and_search_buttons_stays_separate_p4(self):
-        self.assertPings(with_lines(PRODUCT_LINK + " " + WHATSAPP_FIRST.replace("💚", "")),
-                         with_lines("https://www.trendyol.com/nivea/x-p-123456 "
-                                    + WHATSAPP_SECOND.replace("💚", "")),
-                         2, first_buttons=[GOOGLE_FIRST], second_buttons=[GOOGLE_SECOND])
-
-    def test_amazon_tag_whatsapp_and_google_together_one_notification(self):
-        self.assertPings(with_lines(amazon("firsatz-21"), WHATSAPP_FIRST),
-                         with_lines(amazon("tayfa-21"), WHATSAPP_SECOND), 1,
-                         first_buttons=[GOOGLE_FIRST], second_buttons=[GOOGLE_SECOND])
-
-    def test_seller_name_is_policy_not_identity(self):
-        # Politika (kullanıcı onayı bekliyor): satıcı adı kimlik/kondisyon sayılmaz.
-        self.assertPings(with_lines("Satıcı: Amazon", PRODUCT_LINK),
-                         with_lines(PRODUCT_LINK), 1)
+    def test_same_seller_metadata_merges(self):
+        self.assertPings(with_lines("Satıcı: Amazon", PRODUCT_LINK), with_lines(PRODUCT_LINK), 1)
         self.assertPings(with_lines("Satıcı: Amazon", amazon("firsatz-21")),
-                         with_lines("Satıcı: XYZ", amazon("tayfa-21")), 1,
-                         "bilinen risk: satıcı + tag farkı birleşir")
-
+                         with_lines("Satıcı: XYZ", amazon("tayfa-21")), 1)
 
 
 class CampaignPriceDedupTest(Harness, unittest.TestCase):
@@ -326,83 +272,17 @@ class CampaignPriceDedupTest(Harness, unittest.TestCase):
                          first_buttons=[GOOGLE_FIRST], second_buttons=[GOOGLE_SECOND])
 
 
-class ConditionMarkerTest(unittest.TestCase):
-    """Kondisyon/kargo işaretleri yalnızca kısa, ilgili satırlardan çıkarılır."""
+class TitlePriceOnlyIdentityTest(Harness, unittest.TestCase):
+    def test_same_title_and_price_merge_across_conditions_and_links(self):
+        self.assertPings(
+            with_lines("Kargo ücretsiz", PRODUCT_LINK),
+            with_lines("İkinci El: Yeni Gibi", "Kupon: TEST", "https://magaza.example/urun"),
+            1,
+        )
 
-    def test_short_lines_yield_condition_markers(self):
-        for line, marker in {
-            "📦 Amazon Depo ürünü": "durum:depo",
-            "Amazon Warehouse": "durum:depo",
-            "Açık kutu ürün": "durum:açık kutu",
-            "Kutusuz": "durum:kutusuz",
-            "Outlet fiyatı": "durum:outlet",
-            "2. el": "durum:ikinci el",
-        }.items():
-            with self.subTest(line=line):
-                self.assertIn(marker, bot._offer_marker_terms(line))
-
-    def test_long_sentences_urls_and_seller_lines_are_not_sources(self):
-        for text in [
-            "Bu ürünü depo stoklarımızdan hızlıca gönderiyoruz ve kargo ücretsizdir",
-            "https://www.depo.example/urun?kutusuz=1",
-            "Satıcı: Amazon Depo",
-        ]:
-            with self.subTest(text=text):
-                self.assertEqual([m for m in bot._offer_marker_terms(text) if m.startswith("durum:")], [])
-
-    def test_shipping_markers_and_plain_offer(self):
-        self.assertEqual(bot._offer_marker_terms("Kargo bedava"), bot._offer_marker_terms("Ücretsiz kargo"))
-        self.assertNotEqual(bot._offer_marker_terms("Kargo 29,90 TL"), bot._offer_marker_terms("Kargo bedava"))
-        self.assertEqual(bot._offer_marker_terms(offer()), [])
-
-
-class LinkIdentityTest(unittest.TestCase):
-    """Ürün kimliği yalnızca ürün bağlantılarını taşır (P4 güvenliği dahil)."""
-
-    def keys(self, text: str) -> frozenset[str]:
-        return bot.product_link_keys(_event(text))
-
-    def test_source_whatsapp_and_search_links_are_not_identity(self):
-        for url in ["https://t.me/firsatz/130652", "https://whatsapp.com/channel/firsatzKANAL",
-                    "https://chat.whatsapp.com/abc", "https://wa.link/firsatz",
-                    "https://www.google.com.tr/search?q=nivea", "https://tr.shopping.google.com/search?q=nivea",
-                    "https://www.google.com./search?q=nivea", "https://www.akakce.com/ara/?q=cay",
-                    "https://www.cimri.com/arama?q=cay"]:
-            with self.subTest(url=url):
-                self.assertEqual(self.keys(f"Çay 5 TL {url}"), frozenset())
-
-    def test_lookalike_hosts_are_product_links(self):
-        for url in ["https://google.evil.example/urun", "https://google.com.attacker.net/urun",
-                    "https://mygoogle.com/urun", "https://notakakce.com/urun",
-                    "https://whatsapp.com.evil.example/x", "https://notwhatsapp.com/x"]:
-            with self.subTest(url=url):
-                self.assertTrue(self.keys(f"Çay 5 TL {url}"))
-
-    def test_amazon_identity_needs_exact_host_and_uppercase_asin(self):
-        self.assertEqual(self.keys("Çay 5 TL https://m.amazon.com.tr/dp/B0ABC12345?tag=x"),
-                         frozenset({"amazon.com.tr#B0ABC12345"}))
-        for url in ["https://amazon.com.tr.evil.example/dp/B0ABC12345",
-                    "https://notamazon.com.tr/dp/B0ABC12345",
-                    "https://smile.amazon.com.tr/dp/B0ABC12345",
-                    "https://www.amazon.de/dp/B0ABC12345",
-                    "https://amazon.com.tr/dp/B0ABC1234",     # geçersiz ASIN uzunluğu
-                    "https://amazon.com.tr/dp/b0abc12345"]:   # küçük harf: kural yok (fail-open)
-            with self.subTest(url=url):
-                self.assertFalse(any("#" in key for key in self.keys(f"Çay 5 TL {url}")))
-
-    def test_amazon_only_psc_one_is_ignored_other_parameters_remain(self):
-        base = "https://www.amazon.com.tr/dp/B0DGLLJP1M"
-        key = self.keys(base)
-        self.assertEqual(self.keys(base + "?psc=1&tag=indirimalarmi-21"), key)
-        for query in ("psc=0", "psc=2", "psc=", "psc=1&th=1", "psc=1&smid=A1"):
-            with self.subTest(query=query):
-                self.assertTrue(bot._link_conflict(key, self.keys(base + "?" + query)))
-        self.assertTrue(bot._link_conflict(key, self.keys(
-            "https://www.amazon.com.tr/dp/B0ZZZ99999?psc=1")))
-
-    def test_real_product_links_keep_their_params(self):
-        keys = self.keys("Çay 5 TL https://www.nivea.com.tr/urun?sku=1 https://t.me/firsatz/1")
-        self.assertEqual(keys, frozenset({"www.nivea.com.tr/urun?sku=1"}))
+    def test_different_title_or_price_still_matters(self):
+        self.assertPings(offer(), offer("Nivea Fresh Cherry 250 ml"), 2)
+        self.assertPings(offer(), offer(price="79,90"), 2)
 
 
 class FastPollTest(Harness, unittest.TestCase):
@@ -478,7 +358,7 @@ class FastPollTest(Harness, unittest.TestCase):
         cases = {
             "aynı teklif, farklı kaynak": (with_lines("Kaynak mesaj: https://t.me/firsatz/1"),
                                            with_lines("Kaynak mesaj: https://t.me/firsattayfa/2"), 1),
-            "farklı ürün bağlantısı": (with_lines(NIVEA_LINK), with_lines("https://www.trendyol.com/x-p-1"), 2),
+            "farklı ürün bağlantısı": (with_lines(NIVEA_LINK), with_lines("https://www.trendyol.com/x-p-1"), 1),
         }
         for name, (first, second, expected) in cases.items():
             with self.subTest(name):

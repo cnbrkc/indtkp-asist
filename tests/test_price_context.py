@@ -67,7 +67,7 @@ class OfferContextTests(unittest.TestCase):
     def test_old_shipping_and_unit_roles(self):
         text = 'Eski 900 TL / Yeni 700 TL\nKargo: 30 TL\nAdet başı 80 TL'
         cs = pf.find_candidates(text)
-        self.assertEqual([c.role for c in cs], ['old', 'discounted', 'unrelated', 'unit'])
+        self.assertEqual([c.role for c in cs], ['old', 'discounted', 'shipping', 'unit'])
         self.assertEqual(pf.extract_price(text).value, 80)
         text = '🎯 900 TL / 700 TL'
         self.assertEqual(pf.find_candidates(text, [(2, 8)])[0].role, 'old')
@@ -96,7 +96,7 @@ class OfferContextTests(unittest.TestCase):
         self.assertEqual(pf.extract_price(text).value, 450)
         self.assertEqual([c.role for c in pf.find_candidates(text)],
                          ['old', 'normal', 'discount_amount', 'basket_coupon',
-                          'discount_amount', 'multi_unit', 'threshold', 'discount_amount', 'unrelated'])
+                          'discount_amount', 'multi_unit', 'threshold', 'discount_amount', 'shipping'])
         self.assertFalse(pf.price_matches(text, 449)[0])
         self.assertTrue(pf.price_matches(text, 450)[0])
 

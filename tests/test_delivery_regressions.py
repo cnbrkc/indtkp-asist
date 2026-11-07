@@ -90,7 +90,8 @@ class ProductIdentityRegressionTest(unittest.TestCase):
         self.assertTrue(bot.better_or_different_offer(terms("Stanley IceFlow 1322 TL"), terms("Stanley IceFlow 1135 TL")))
         self.assertFalse(bot.better_or_different_offer(terms("Stanley IceFlow 1135 TL"), terms("Stanley IceFlow 1322 TL")))
         self.assertTrue(bot.better_or_different_offer(terms("Bingo 2000 ml 285 TL"), terms("Bingo 2000 ml 159 TL")))
-        self.assertTrue(bot.better_or_different_offer(terms("Bingo 2000 ml 285 TL"), terms("Bingo 2000 ml\n3 adet alımda 159 TL")))
+        self.assertIsNone(terms("Bingo 2000 ml\n3 adet alımda 159 TL")[0])
+        self.assertFalse(bot.better_or_different_offer(terms("Bingo 2000 ml 285 TL"), terms("Bingo 2000 ml\n3 adet alımda 159 TL")))
         a = terms("Bref WC\nFiyat: 97 TL / 2 adet alımda 48 TL")
         b = terms("Bref WC\nFiyat: 97 TL / 2 adet alımda 40 TL")
         self.assertEqual(a[0], 48)
@@ -305,8 +306,11 @@ class DeliveryRegressionTest(unittest.TestCase):
     def test_basic_group_history_does_not_suppress_price_drop(self):
         self._assert_new_offer_after_basic_history("Çay 4 TL")
 
-    def test_basic_group_history_does_not_suppress_condition_change(self):
-        self._assert_new_offer_after_basic_history("Çay 5 TL\nPrime üyelerine özel")
+    def test_basic_group_history_ignores_condition_change(self):
+        client = self._basic_history_client()
+        self._send(client, "Çay 5 TL\nPrime üyelerine özel", media=False)
+        self.assertEqual(len(self.ping_calls), 0)
+        self.assertEqual(bot.STATS["deduped"], 1)
 
     def test_basic_group_history_does_not_suppress_variant(self):
         self._assert_new_offer_after_basic_history("Çay Demlik Poşet 5 TL")
@@ -323,14 +327,13 @@ class DeliveryRegressionTest(unittest.TestCase):
         self.assertEqual(len(self.ping_calls), 0)
         self.assertEqual(bot.STATS["deduped"], 1)
 
-    def test_basic_group_history_different_link_does_not_suppress(self):
-        # Bağlantı çelişkisi: geçmiş kayıt ile canlı mesajın ürün bağlantıları
-        # örtüşmüyorsa aynı ürün kanıtlanamaz; geçmiş kaydı fırsatı bastıramaz.
+    def test_basic_group_history_different_link_still_suppresses(self):
+        # Link ürün adı/fiyat kimliğini değiştirmez.
         client = self._basic_history_client(
             "Çay\n\nÇay 5 TL https://ornek.example/urun-a\n\n🔗 Mesajı Gör: https://t.me/firsatz/9")
         self._send(client, "Çay 5 TL https://ornek.example/urun-b", media=False)
-        self.assertEqual(len(self.ping_calls), 1)
-        self.assertEqual(bot.STATS["deduped"], 0)
+        self.assertEqual(len(self.ping_calls), 0)
+        self.assertEqual(bot.STATS["deduped"], 1)
 
     def test_basic_group_history_same_link_suppresses(self):
         client = self._basic_history_client(
@@ -339,33 +342,23 @@ class DeliveryRegressionTest(unittest.TestCase):
         self.assertEqual(len(self.ping_calls), 0)
         self.assertEqual(bot.STATS["deduped"], 1)
 
-    def test_basic_group_history_without_link_does_not_suppress_linked_live(self):
-        # Belirsiz geçmiş kaydı: geçmişte ürün bağlantısı yok ama canlı
-        # mesajda varsa, kaydın aynı ürün olduğu doğrulanamaz; bastırma yok.
+    def test_basic_group_history_without_link_suppresses_linked_live(self):
+        # Aynı ürün adı/fiyat geçmişte varsa canlı link farkı önemsizdir.
         client = self._basic_history_client()
         self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
-        self.assertEqual(len(self.ping_calls), 1)
+        self.assertEqual(len(self.ping_calls), 0)
+        self.assertEqual(bot.STATS["deduped"], 1)
 
-    def test_preload_record_is_taken_over_by_first_linked_live_offer(self):
-        # Yaşam döngüsü: linksiz preload kaydı bastıramaz; ilk linkli canlı
-        # mesaj gönderilir ve kaydı devralır (preload işareti düşer, link
-        # kümesi canlınınki olur). Sonrasında aynı link birleşir, farklı
-        # link yeni fırsat olarak ayrıca gider.
+    def test_preload_record_is_not_split_by_live_link(self):
         client = self._basic_history_client()
         entry = next(iter(bot.DEDUP_CACHE.values()))
         self.assertTrue(entry["preload"])
+        self.assertNotIn("links", entry)
         self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
-        self.assertEqual(len(self.ping_calls), 1)
-        entry = next(iter(bot.DEDUP_CACHE.values()))
-        self.assertFalse(entry["preload"])
-        self.assertEqual(entry["links"], {"ornek.example/urun-a"})
-        # Aynı canlı mesajın kaynak kimliğiyle tekrarı ayrı sayılmaz; aynı
-        # ürünün aynı linkle yeni paylaşımı dedup'a düşer.
-        self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
-        self.assertEqual(len(self.ping_calls), 1)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(len(self.ping_calls), 0)
         self._send(client, "Çay 5 TL https://ornek.example/urun-b", media=False)
-        self.assertEqual(len(self.ping_calls), 2)
+        self.assertEqual(len(self.ping_calls), 0)
+        self.assertEqual(bot.STATS["deduped"], 2)
 
     def test_failed_takeover_drops_preload_record_without_suppressing_retry(self):
         # Devralma gönderimi başarısızsa kayıt düşer: sonraki tekrar ne
@@ -373,28 +366,27 @@ class DeliveryRegressionTest(unittest.TestCase):
         client = self._basic_history_client()
         with mock.patch.object(bot, "send_bot_ping",
                                new=mock.AsyncMock(return_value=(False, "Forbidden"))):
-            self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
+            self._send(client, "Çay 4 TL https://ornek.example/urun-a", media=False)
         self.assertTrue(client.delivered, "hesap yedeği iletmiş olmalı")
         self.assertFalse(bot.DEDUP_CACHE)
-        self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
+        self._send(client, "Çay 4 TL https://ornek.example/urun-a", media=False)
         self.assertEqual(len(self.ping_calls), 1)
 
-    def test_live_same_product_different_store_link_is_not_suppressed(self):
-        # Canlı dedup ile preload aynı kuralı kullanır: bağlantı çelişkisi
-        # fail-open'dır (aynı ürün farklı mağaza da olabilir; fırsatı
-        # kaybetmektense ayrı bildirim). Bağlantısız tekrarlar birleşir.
+    def test_live_same_product_different_store_link_is_suppressed(self):
+        # Mağaza/link farkı başlık ve fiyat eşleşmesini değiştirmez.
         client = self._run(fast_notify=True)
         self._send(client, "Çay 5 TL https://magaza-a.example/urun", media=False)
         self._send(client, "Çay 5 TL https://magaza-b.example/urun", media=False)
-        self.assertEqual(len(self.ping_calls), 2)
+        self.assertEqual(len(self.ping_calls), 1)
         self._send(client, "Çay 5 TL https://magaza-b.example/urun", media=False)
-        self.assertEqual(len(self.ping_calls), 2)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(len(self.ping_calls), 1)
+        self.assertEqual(bot.STATS["deduped"], 2)
 
-    def test_basic_group_history_does_not_suppress_new_coupon(self):
+    def test_basic_group_history_ignores_new_coupon(self):
         client = self._basic_history_client()
         self._send(client, "Çay 5 TL\nKupon: CAY10", media=False)
-        self.assertEqual(len(self.ping_calls), 1)
+        self.assertEqual(len(self.ping_calls), 0)
+        self.assertEqual(bot.STATS["deduped"], 1)
 
     def test_basic_group_history_with_unknown_price_does_not_suppress_known_price(self):
         # Geçmiş kaydın fiyatı güvenilir çıkarılamıyorsa (None) canlı mesajın
@@ -650,9 +642,9 @@ class DeliveryRegressionTest(unittest.TestCase):
         client = self._run(fast_notify=True)
         for condition in ["2 adet alımda", "3 adet alımda", "2 adet alımda", "3 adet alımda"]:
             self._send(client, f"Çay\n{condition} 50 TL", media=False)
-        self.assertEqual(len(self.ping_calls), 2)
-        self.assertEqual(bot.STATS["deduped"], 2)
-        self.assertEqual(len(bot.DEDUP_CACHE), 2)
+        self.assertEqual(len(self.ping_calls), 1)
+        self.assertEqual(bot.STATS["deduped"], 3)
+        self.assertEqual(len(bot.DEDUP_CACHE), 1)
 
 
     def test_supergroup_preload_restores_lower_price_notification(self):

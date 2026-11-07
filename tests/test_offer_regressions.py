@@ -130,7 +130,7 @@ class DedupIdentityRegressions(unittest.TestCase):
         # birleştirilir. Tam TL'si de düşen fiyat yeni fırsat olmayı sürdürür.
         for a, b in [(13485, 13400), (10, 9.1), (200, 199), (13485.92, 13484.5)]:
             self.assertTrue(bot.better_or_different_offer((a, ''), (b, '')))
-        self.assertTrue(bot.better_or_different_offer((13485, ''), (13485, 'prime')))
+        self.assertFalse(bot.better_or_different_offer((13485, ''), (13485, 'prime')))  # non-price metadata ignored
 
     def test_metadata_and_punctuation_do_not_change_title(self):
         base = self.TITLE + '\nFiyat: 13.485,92 TL'
@@ -139,14 +139,14 @@ class DedupIdentityRegressions(unittest.TestCase):
                              bot.dedup_key(bot.smart_dedup_title(base + extra)))
         self.assertEqual(bot.dedup_key(self.TITLE), bot.dedup_key(self.TITLE.replace('-', ' ')))
 
-    def test_variants_and_explicit_product_conditions_remain_distinct(self):
+    def test_title_variants_remain_distinct_but_offer_conditions_do_not(self):
         for title in [self.TITLE.replace('55GFSG8', '55GFSG9'), self.TITLE.replace('55" 140', '65" 165'),
                       self.TITLE + ' Beyaz', self.TITLE + ' Siyah', self.TITLE + ' 128 GB', self.TITLE + ' 256 GB']:
             self.assertNotEqual(bot.dedup_key(self.TITLE), bot.dedup_key(title))
         base = self.TITLE + '\nFiyat: 13.485 TL'
         keys = [bot.dedup_offer_key(self.TITLE, bot.offer_terms(base + extra)) for extra in
                 ['', '\nÜrün durumu: İkinci el', '\nÜrün durumu: İkinci el yeni gibi', '\nÜrün durumu: Yenilenmiş']]
-        self.assertEqual(len(set(keys)), 4)
+        self.assertEqual(len(set(keys)), 1)
 
     def test_history_source_name_is_not_product_condition(self):
         title = self.TITLE
@@ -210,7 +210,7 @@ class DedupIdentityRegressions(unittest.TestCase):
         self.assertEqual(bot._dedup_whole_tl(0.90), 0)
         self.assertEqual(bot._dedup_whole_tl(1299.90), 1299)
         # Koşul değişimi kuruş normalleştirmesini aşar: yine yeni fırsattır.
-        self.assertTrue(bot.better_or_different_offer((1299.90, ''), (1299, 'prime')))
+        self.assertFalse(bot.better_or_different_offer((1299.90, ''), (1299, 'prime')))
 
     def test_real_price_survives_kurus_comparison_policy(self):
         # Karşılaştırma değeri yalnızca dedup katmanında yaşar: çıkarım ve
@@ -223,49 +223,14 @@ class DedupIdentityRegressions(unittest.TestCase):
         event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
         self.assertEqual(bot.offer_terms(event)[0], 1299.90)
 
-    def test_product_link_keys_normalize_and_exclude_non_product_links(self):
-        def event(text, url=None):
-            entities = [SimpleNamespace(url=url, offset=0, length=3)] if url else []
-            return SimpleNamespace(message=text, raw_text=text, entities=entities,
-                                   media=None, reply_markup=None)
-
-        keys = bot.product_link_keys(event(
-            "Çay https://ornek.example/urun-a/?utm_source=kanal#bolum "
-            "https://t.me/firsatz/9 https://www.akakce.com/ara/?q=cay"))
-        self.assertEqual(keys, frozenset({"ornek.example/urun-a"}))
-        # Gizli bağlantı da kimliğe girer; takip parametresi farkı çelişki değildir.
-        hidden = bot.product_link_keys(event("Çay", url="https://ornek.example/urun-a/?utm_medium=paylasim"))
-        self.assertEqual(hidden, keys)
-        self.assertTrue(bot._link_conflict(keys, frozenset({"baska.example/urun"})))
-        self.assertFalse(bot._link_conflict(keys, hidden))
-        self.assertFalse(bot._link_conflict(frozenset(), keys))
-        # Anlamlı parametreler (varyant/kupon/sku taşıyabilir) atılmaz:
-        # yalnızca bunlarla ayrışan bağlantılar aynı ürün sayılmaz.
-        for left, right in [
-            ("https://ornek.example/urun?sku=1", "https://ornek.example/urun?sku=2"),
-            ("https://ornek.example/urun?renk=mavi", "https://ornek.example/urun?renk=kirmizi"),
-            ("https://ornek.example/urun?kampanya=CAY10", "https://ornek.example/urun"),
-            ("https://ornek.example/urun?ref=a", "https://ornek.example/urun?ref=b"),
-        ]:
-            with self.subTest(left=left, right=right):
-                self.assertTrue(bot._link_conflict(
-                    bot.product_link_keys(event("Çay", url=left)),
-                    bot.product_link_keys(event("Çay", url=right))))
-
-    def test_unknown_status_is_absence_of_evidence_not_new(self):
+    def test_offer_conditions_do_not_change_dedup_identity(self):
         base = self.TITLE + '\nFiyat: 13.485 TL'
-        unknown = bot.offer_terms(base)
-        like_new = bot.offer_terms(base + '\nİkinci El: Yeni Gibi')
-        refurbished = bot.offer_terms(base + '\nÜrün durumu: Yenilenmiş')
-        self.assertNotIn('durum:', unknown[1])
-        self.assertIn('durum:ikinci el yeni gibi', like_new[1])
-        self.assertIn('durum:yenilenmiş', refurbished[1])
-        self.assertNotEqual(like_new[1], refurbished[1])
-        # Satıcı adı tek başına ürün durumunun kanıtı değildir.
-        self.assertEqual(bot.offer_terms(base + '\nSatıcı: Amazon Depo'), unknown)
-        # Aynı başlık/fiyat iki farklı satış ilanı da olabilir: wildcard eşleşmesi yok.
-        self.assertNotEqual(bot.dedup_offer_key(self.TITLE, unknown),
-                            bot.dedup_offer_key(self.TITLE, like_new))
+        variants = [base, base + '\nİkinci El: Yeni Gibi', base + '\nÜrün durumu: Yenilenmiş',
+                    base + '\nKargo ücretsiz\nKupon: KOD10', base + '\nPrime']
+        keys = [bot.dedup_offer_key(self.TITLE, bot.offer_terms(text)) for text in variants]
+        self.assertEqual(len(set(keys)), 1)
+        for terms in map(bot.offer_terms, variants):
+            self.assertEqual(terms, (13485, ''))
 
     def test_seller_metadata_policy_and_state_match(self):
         base = self.TITLE + '\nFiyat: 13.485 TL'
