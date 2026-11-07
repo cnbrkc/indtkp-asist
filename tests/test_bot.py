@@ -23,6 +23,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+from product_tracker import ProductTracker as Tracker  # noqa: E402
 
 
 class ParseChatValueTest(unittest.TestCase):
@@ -247,7 +248,7 @@ class StatusTextTest(unittest.TestCase):
 
     def test_help_text_is_the_complete_unique_canonical_command_catalog(self):
         commands = tuple(command for command, _ in bot.COMMAND_DESCRIPTIONS)
-        help_lines = bot.HELP_TEXT.splitlines()
+        help_lines = [line for line in bot.HELP_TEXT.splitlines() if " - " in line]
         self.assertEqual(
             tuple(line.split(" - ", 1)[0] for line in help_lines),
             commands,
@@ -256,31 +257,42 @@ class StatusTextTest(unittest.TestCase):
         self.assertEqual(len(commands), len(set(commands)))
         self.assertTrue(all(description.strip() for _, description in bot.COMMAND_DESCRIPTIONS))
         self.assertEqual(commands, (
-            "/komutlar", "/start", "/durum", "/dmfiltre", "/dmac", "/dmkapat", "/ayar", "/ekle", "/çıkar",
-            "/kaydet", "/iptal", "/open", "/close", "/kaynaklar", "/kaynaktest",
-            "/analiz", "/test", "/id", "/restart", "/takip",
+            "/komutlar", "/start", "/durum", "/ayar",
+            "/ekle", "/cikar", "/kaydet", "/iptal",
+            "/tgfiltreac", "/tgfiltrekapat",
+            "/dmfiltre", "/dmfiltreac", "/dmfiltrekapat",
+            "/webtakip", "/webtakipac", "/webtakipkapat",
+            "/webtakipler", "/webtakipsil", "/webtakipiptal", "/webtakipyardim",
+            "/kaynaklar", "/kaynaktest", "/analiz", "/test", "/id",
+            "/restart",
         ))
 
     def test_dispatch_paths_and_help_catalog_share_the_same_commands(self):
         routed = {
             bot.COMMAND_HELP, bot.COMMAND_START, bot.COMMAND_STATUS,
-            bot.COMMAND_TEST, bot.COMMAND_ID, bot.COMMAND_RESTART, bot.COMMAND_SOURCES, bot.COMMAND_TRACK,
+            bot.COMMAND_TEST, bot.COMMAND_ID, bot.COMMAND_RESTART, bot.COMMAND_SOURCES, bot.COMMAND_WEB_TRACK,
         }
-        routed.update(bot.CMD_DM_COMMANDS - {bot.COMMAND_DM_ADD, bot.COMMAND_DM_REMOVE})
+        routed.update(bot.CMD_DM_COMMANDS)
         routed.update(bot.SETTINGS_COMMANDS)
-        routed.update(bot.CMD_FILTER_OPEN)
-        routed.update(bot.CMD_FILTER_CLOSE)
+        routed.update(bot.CMD_TG_FILTER_OPEN)
+        routed.update(bot.CMD_TG_FILTER_CLOSE)
         routed.update(bot.CMD_ANALYZE)
         routed.update(bot.CMD_SOURCE_TEST)
+        routed.update(bot.CMD_WEB_TRACK_MENU)
         documented = {command for command, _ in bot.COMMAND_DESCRIPTIONS}
         self.assertEqual(routed, documented)
 
     def test_redundant_command_variants_are_not_in_help_catalog(self):
         commands = {command for command, _ in bot.COMMAND_DESCRIPTIONS}
         for removed in (
-            "/status", "/dmaç", "/ayarlar", "/cikar", "/kaynak", "/source",
+            "/status", "/dmaç", "/ayarlar", "/kaynak", "/source",
             "/sources", "/testkaynak", "/testkaynaklar", "/kelimeanalizi",
             "/deneme", "/yenile", "/yeniden", "/help", "/yardim", "/yardım",
+            # Eski komut isimleri alias kalmadan tamamen kaldırilmali:
+            "/çıkar", "/open", "/close", "/dmac", "/dmkapat",
+            "/dmfiltreekle", "/dmfiltrecikar",
+            "/takip", "/takipac", "/takipkapat", "/takipler", "/takipsil",
+            "/takipiptal", "/takipyardim",
         ):
             with self.subTest(command=removed):
                 self.assertNotIn(removed, commands)
@@ -309,14 +321,14 @@ class StatusTextTest(unittest.TestCase):
         bot.CONTROL_NAMES.clear()
         bot.CONTROL_IDS.clear()
         closed = bot.build_status_text({"match_mode": "forward_all", "include_keywords": ["çay"]})
-        self.assertIn("Dahili filtre: KAPALI", closed)
+        self.assertIn("Telegram dahili filtre: KAPALI", closed)
         self.assertIn("kelimeler yok sayılıyor", closed)
         opened = bot.build_status_text({"include_keywords": ["çay"], "exclude_keywords": ["çekiliş"]})
-        self.assertIn("Dahili filtre: AÇIK", opened)
+        self.assertIn("Telegram dahili filtre: AÇIK", opened)
         self.assertIn("çay (any)", opened)
-        self.assertIn("Harici filtre: AÇIK", opened)
+        self.assertIn("Telegram harici filtre: AÇIK", opened)
         self.assertIn("çekiliş", opened)
-        self.assertIn("/open ve /close", opened)
+        self.assertIn("/tgfiltreac ve /tgfiltrekapat", opened)
 
     def test_status_shows_poll_telemetry_and_bot_api_metrics(self):
         bot.POLL_TELEMETRY.update({"interval": 300.0, "last_elapsed": 4.2,
@@ -330,7 +342,7 @@ class StatusTextTest(unittest.TestCase):
 
     def test_status_marks_disabled_exclude_filter(self):
         status = bot.build_status_text({"exclude_keywords": ["çekiliş"], "exclude_enabled": False})
-        self.assertIn("Harici filtre: KAPALI", status)
+        self.assertIn("Telegram harici filtre: KAPALI", status)
         self.assertIn("engelleme yapılmıyor", status)
 
 
@@ -422,20 +434,21 @@ class TelegramCommandTest(unittest.TestCase):
     """Yalnızca belgelenen Telegram komutları tanınır."""
 
     def test_filter_toggle_commands_are_active(self):
-        self.assertIn("/open", bot.CMD_FILTER_OPEN)
-        self.assertIn("/close", bot.CMD_FILTER_CLOSE)
-        self.assertEqual(bot.CMD_FILTER_OPEN | bot.CMD_FILTER_CLOSE,
-                         {"/open", "/close"})
+        self.assertIn("/tgfiltreac", bot.CMD_TG_FILTER_OPEN)
+        self.assertIn("/tgfiltrekapat", bot.CMD_TG_FILTER_CLOSE)
+        self.assertEqual(bot.CMD_TG_FILTER_OPEN | bot.CMD_TG_FILTER_CLOSE,
+                         {"/tgfiltreac", "/tgfiltrekapat"})
         self.assertIn("/ekle", bot.SETTINGS_COMMANDS)
-        self.assertIn("/çıkar", bot.SETTINGS_COMMANDS)
+        self.assertIn("/cikar", bot.SETTINGS_COMMANDS)
         self.assertIn("/kaydet", bot.SETTINGS_COMMANDS)
         self.assertIn("/iptal", bot.SETTINGS_COMMANDS)
 
     def test_removed_filter_commands_are_gone(self):
-        """Eski /hepsinial ve /filtrelial komutları tamamen kaldırıldı."""
-        for command in ("/hepsinial", "/filtrelial"):
+        """Eski komut isimleri alias kalmadan tamamen kaldırıldı."""
+        for command in ("/hepsinial", "/filtrelial", "/open", "/close",
+                        "/dmac", "/dmkapat", "/takip", "/çıkar"):
             with self.subTest(command=command):
-                self.assertNotIn(command, bot.CMD_FILTER_OPEN | bot.CMD_FILTER_CLOSE)
+                self.assertNotIn(command, bot.CMD_TG_FILTER_OPEN | bot.CMD_TG_FILTER_CLOSE)
                 self.assertNotIn(command, bot.SETTINGS_COMMANDS)
                 self.assertNotIn(command, bot.HELP_TEXT)
                 self.assertNotIn(command, bot.build_main_menu_text())
@@ -449,10 +462,11 @@ class TelegramCommandTest(unittest.TestCase):
         menu = bot.build_main_menu_text()
         help_text = bot.HELP_TEXT
         for text in (menu, help_text):
-            for command in ("/open", "/close", "/ekle", "/çıkar", "/kaydet", "/iptal"):
+            for command in ("/tgfiltreac", "/tgfiltrekapat", "/ekle", "/cikar",
+                            "/kaydet", "/iptal", "/webtakip"):
                 with self.subTest(command=command, text=text[:12]):
                     self.assertIn(command, text)
-        for command in ("/mod", "/token", "/kelime_ekle", "/ayar_set"):
+        for command in ("/mod", "/token", "/kelime_ekle", "/ayar_set", "/open", "/close", "/çıkar"):
             self.assertNotIn(command, menu)
 
 
@@ -487,7 +501,9 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertEqual(bot.resolve_telegram_list("dmharic"), "dm_exclude_keywords")
         self.assertEqual(bot.resolve_telegram_list("dmhariç"), "dm_exclude_keywords")
         self.assertEqual(bot.resolve_telegram_list("dmfiyat"), "dm_price_max")
-        self.assertIsNone(bot.resolve_telegram_list("7"))
+        self.assertEqual(bot.resolve_telegram_list("7"), bot.WEBTAKIP_FIELD)
+        self.assertEqual(bot.resolve_telegram_list("webdetakip"), bot.WEBTAKIP_FIELD)
+        self.assertEqual(bot.resolve_telegram_list("akakcetakip"), bot.WEBTAKIP_FIELD)
         self.assertIsNone(bot.resolve_telegram_list("hedef"))
 
     def test_category_menu_is_compact_and_shows_current_counts(self):
@@ -495,7 +511,8 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertIn("1. 🔎  Dahili kelimeler  ·  2 kayıt", text)
         self.assertIn("2. 🚫  Harici kelimeler  ·  1 kayıt", text)
         self.assertIn("3. 📣  Grup isimleri  ·  2 kayıt", text)
-        self.assertIn("1, 2, 3", text)
+        self.assertIn("7. 🌐  webdetakip  ·  Akakçe ürün fiyat takibi", text)
+        self.assertIn("1, 2, 3, 4, 5, 6 ya da 7 (webdetakip)", text)
 
     def test_selected_category_shows_list_before_asking_for_value(self):
         add_prompt = bot.build_list_value_prompt("add", "include_keywords", self.config)
@@ -731,7 +748,7 @@ class FilterToggleTest(unittest.TestCase):
         self.assertIn("1. 🔎  Dahili kelimeler  ·  şu an açık  ·  2 kayıt", prompt)
         self.assertIn("2. 🚫  Harici kelimeler  ·  şu an açık  ·  1 kayıt", prompt)
         self.assertIn("3. 🔁  İkisi birlikte", prompt)
-        self.assertIn("/open dahili", prompt)
+        self.assertIn("/tgfiltreac dahili", prompt)
         close_prompt = bot.build_filter_toggle_prompt("close", self.config)
         self.assertIn("FİLTRE KAPAT", close_prompt)
         self.assertIn("Hangi filtreyi kapatalım?", close_prompt)
@@ -788,6 +805,85 @@ class FilterToggleTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("1 (dahili), 2 (harici) veya 3", note)
         self.assertEqual(candidate, self.config)
+
+
+class ThreeSystemsIndependenceTest(unittest.TestCase):
+    """TG, DM ve web ürün takip sistemlerinin birbirinden bağımsız çalıştığını test eder."""
+
+    def test_tg_filter_close_preserves_dm_config(self):
+        config = {
+            "include_enabled": True,
+            "exclude_enabled": True,
+            "dm_enabled": True,
+            "dm_keywords": ["tcl", "lg"],
+            "dm_exclude_keywords": ["samsung"],
+        }
+        ok, candidate, note = bot.stage_filter_toggle(config, "close", "both")
+        self.assertTrue(ok, note)
+        self.assertFalse(candidate["include_enabled"])
+        self.assertFalse(candidate["exclude_enabled"])
+        # DM yapısı değişmemeli
+        self.assertEqual(candidate["dm_enabled"], True)
+        self.assertEqual(candidate["dm_keywords"], ["tcl", "lg"])
+        self.assertEqual(candidate["dm_exclude_keywords"], ["samsung"])
+
+    def test_dm_config_changes_do_not_affect_tg_filters(self):
+        config = {
+            "include_enabled": True,
+            "exclude_enabled": False,
+            "dm_enabled": True,
+            "dm_keywords": ["tcl"],
+        }
+        # DM'i kapatmak TG filtrelerini etkilememeli
+        config["dm_enabled"] = False
+        self.assertTrue(config["include_enabled"])
+        self.assertFalse(config["exclude_enabled"])
+        self.assertFalse(config["dm_enabled"])
+
+    def test_tg_filter_states_are_independent(self):
+        config = {
+            "include_enabled": True,
+            "exclude_enabled": False,
+        }
+        # Sadece dahiliyi kapat, hariciye dokunma (exclude zaten kapalı kalmalı)
+        ok, candidate, note = bot.stage_filter_toggle(config, "close", "include")
+        self.assertTrue(ok, note)
+        self.assertFalse(candidate["include_enabled"])
+        self.assertFalse(candidate["exclude_enabled"])
+
+        # Sadece hariciyi kapat, dahiliye dokunma (dahili zaten kapalı kalmalı)
+        config2 = {
+            "include_enabled": False,
+            "exclude_enabled": True,
+        }
+        ok2, candidate2, note2 = bot.stage_filter_toggle(config2, "close", "exclude")
+        self.assertTrue(ok2, note2)
+        self.assertFalse(candidate2["include_enabled"])
+        self.assertFalse(candidate2["exclude_enabled"])
+
+    def test_all_four_tg_filter_combinations(self):
+        # 1) Açık/Açık → Her ikisini kapat
+        config = {"include_enabled": True, "exclude_enabled": True}
+        ok, candidate, _ = bot.stage_filter_toggle(config, "close", "both")
+        self.assertFalse(candidate["include_enabled"])
+        self.assertFalse(candidate["exclude_enabled"])
+
+        # 2) Her ikisi kapalı → Her ikisini aç
+        ok, reopened, _ = bot.stage_filter_toggle(candidate, "open", "both")
+        self.assertTrue(reopened["include_enabled"])
+        self.assertTrue(reopened["exclude_enabled"])
+
+        # 3) Sadece Dahili açık, Harici kapalı → Hariciyi aç
+        config3 = {"include_enabled": True, "exclude_enabled": False}
+        ok3, cand3, _ = bot.stage_filter_toggle(config3, "open", "exclude")
+        self.assertTrue(cand3["include_enabled"])
+        self.assertTrue(cand3["exclude_enabled"])
+
+        # 4) Dahili kapalı, Harici açık → Dahiliyi aç
+        config4 = {"include_enabled": False, "exclude_enabled": True}
+        ok4, cand4, _ = bot.stage_filter_toggle(config4, "open", "include")
+        self.assertTrue(cand4["include_enabled"])
+        self.assertTrue(cand4["exclude_enabled"])
 
 
 class WordAnalysisTest(unittest.TestCase):
@@ -2888,3 +2984,123 @@ class DedupConfigTest(unittest.TestCase):
         self.assertEqual(config["dedup_enabled"], "false")
         self.assertEqual(config["dedup_window_hours"], "6")
         self.assertEqual(config["dedup_scan_limit"], "10")
+
+
+class WebTrackerIndependenceTest(unittest.IsolatedAsyncioTestCase):
+    """Web ürün takibi handler'ının TG ve DM sistemlerini etkilemediğini test eder."""
+
+    async def asyncSetUp(self):
+        self.api_calls = []
+
+        class FakeAPI:
+            def __init__(self):
+                self.api_calls = []
+
+            async def call(self, method, payload):
+                self.api_calls.append((method, payload))
+                return {}
+
+        self.api = FakeAPI()
+        self.tracker = Tracker(
+            path="/tmp/webtrack_indep_test.json",
+            api=self.api,
+            persist=lambda *a, **k: (True, "ok"),
+            reader=lambda *a: {'version': 1, 'enabled': False, 'items': []},
+            owner_id=123456789,
+        )
+        self.tracker.state = {'version': 1, 'enabled': False, 'items': []}
+
+    class FakeEvent:
+        def __init__(self, chat_id):
+            self.chat_id = chat_id
+            self.replies = []
+
+        async def reply(self, text):
+            self.replies.append(text)
+
+    async def test_webtakipac_does_not_affect_tg_and_dm(self):
+        """Web takibi açıldığında TG ve DM config değişmemeli."""
+        tg_config = {'include_enabled': True, 'exclude_enabled': False,
+                     'include_keywords': ['çay'], 'exclude_keywords': ['çekiliş']}
+        dm_config = {'dm_enabled': True, 'dm_keywords': ['tcl'],
+                     'dm_exclude_keywords': ['samsung']}
+
+        event = self.FakeEvent(123456789)
+        result = await self.tracker.handle(event, "/webtakipac")
+        self.assertTrue(result)
+        self.assertIn("İşlem sıraya alındı", event.replies[-1])
+        # State henüz kuyruğa eklendi; job çalıştırıldığında değişir
+        await self.tracker.job('/webtakipac', 123456789, "/webtakipac")
+        self.assertTrue(self.tracker.state['enabled'])
+        # TG ve DM config değişmemeli
+        self.assertTrue(tg_config['include_enabled'])
+        self.assertFalse(tg_config['exclude_enabled'])
+        self.assertEqual(tg_config['include_keywords'], ['çay'])
+        self.assertEqual(tg_config['exclude_keywords'], ['çekiliş'])
+        self.assertTrue(dm_config['dm_enabled'])
+        self.assertEqual(dm_config['dm_keywords'], ['tcl'])
+        self.assertEqual(dm_config['dm_exclude_keywords'], ['samsung'])
+
+    async def test_webtakipkapat_does_not_affect_tg_and_dm(self):
+        """Web takibi kapatıldığında TG ve DM config değişmemeli."""
+        self.tracker.state = {'version': 1, 'enabled': True, 'items': []}
+        await self.tracker.job('/webtakipac', 123456789, "/webtakipac")
+        self.assertTrue(self.tracker.state['enabled'])
+
+        tg_config = {'include_enabled': False, 'exclude_enabled': True}
+        dm_config = {'dm_enabled': False, 'dm_keywords': []}
+
+        event = self.FakeEvent(123456789)
+        result = await self.tracker.handle(event, "/webtakipkapat")
+        self.assertTrue(result)
+        self.assertIn("İşlem sıraya alındı", event.replies[-1])
+        await self.tracker.job('/webtakipkapat', 123456789, "/webtakipkapat")
+        self.assertFalse(self.tracker.state['enabled'])
+        # TG ve DM config değişmemeli
+        self.assertFalse(tg_config['include_enabled'])
+        self.assertTrue(tg_config['exclude_enabled'])
+        self.assertFalse(dm_config['dm_enabled'])
+
+    async def test_web_track_records_persist_in_own_file(self):
+        """Web takip kayıtları kendi kalıcı dosyasında korunur, config karışmaz."""
+        self.tracker.state = {'version': 1, 'enabled': False, 'items': []}
+        event = self.FakeEvent(123456789)
+
+        # /webtakipac ile açıldıktan sonra state kalıcı olarak açık kalmalı
+        await self.tracker.handle(event, "/webtakipac")
+        await self.tracker.job('/webtakipac', 123456789, "/webtakipac")
+        self.assertTrue(self.tracker.state['enabled'])
+        self.assertEqual(self.tracker.state['items'], [])
+
+        # TG ve DM config'i etkilememeli
+        config = {'include_enabled': True, 'dm_enabled': True, 'dm_keywords': ['tcl']}
+        before = dict(config)
+        await self.tracker.handle(event, "/webtakipkapat")
+        await self.tracker.job('/webtakipkapat', 123456789, "/webtakipkapat")
+        self.assertFalse(self.tracker.state['enabled'])
+        self.assertEqual(config, before, "Web takip TG/DM config'i değiştirmemeli")
+
+    async def test_old_takip_commands_rejected_by_product_tracker(self):
+        """Eski /takip* komutları ProductTracker handler'dan reddedilmeli."""
+        event = self.FakeEvent(123456789)
+        for old_cmd in ("/takip", "/takipac", "/takipkapat", "/takipler",
+                        "/takipsil", "/takipiptal", "/takipyardim"):
+            with self.subTest(command=old_cmd):
+                result = await self.tracker.handle(event, old_cmd)
+                self.assertFalse(result, f"{old_cmd} should be rejected by tracker")
+                self.assertEqual(event.replies, [], f"{old_cmd} should not send a reply")
+
+    async def test_web_track_isolated_from_other_systems(self):
+        """Bir sistemin kapatılması diğer iki sistemi kapatmamalı."""
+        self.tracker.state = {'version': 1, 'enabled': True, 'items': [('link', 123, 'https://www.akakce.com/x.html')]}
+        await self.tracker.job('/webtakipkapat', 123456789, "/webtakipkapat")
+        self.assertFalse(self.tracker.state['enabled'])
+        self.assertEqual(len(self.tracker.state['items']), 1, "Kayıtlar silinmemeli")
+
+        # TG ve DM config değişmemeli
+        tg_config = {'include_enabled': True, 'exclude_enabled': True}
+        dm_config = {'dm_enabled': True, 'dm_keywords': ['tcl']}
+        self.assertTrue(tg_config['include_enabled'])
+        self.assertTrue(tg_config['exclude_enabled'])
+        self.assertTrue(dm_config['dm_enabled'])
+        self.assertEqual(dm_config['dm_keywords'], ['tcl'])

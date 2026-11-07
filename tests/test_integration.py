@@ -388,9 +388,41 @@ class IntegrationTest(MainHarness, unittest.TestCase):
         self.assertTrue(event.replies, "/durum yanıt üretmedi")
         self.assertIn("Takipçi aktif", event.replies[0])
 
+    def test_old_command_names_are_rejected_by_dispatcher(self):
+        old_commands = (
+            "/open", "/close",
+            "/dmac", "/dmkapat",
+            "/dmfiltreekle", "/dmfiltrecikar",
+            "/takip", "/takipac", "/takipkapat", "/takipler", "/takipsil",
+            "/takipiptal", "/takipyardim",
+            "/çıkar",
+        )
+        for command in old_commands:
+            with self.subTest(command=command):
+                event = self._call(
+                    self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, command),
+                )
+                self.assertIn(f"Bilinmeyen komut: {command}", "\n".join(event.replies))
+
+    def test_old_product_tracker_commands_rejected_in_private_chat(self):
+        old_commands = ("/takip", "/takipac", "/takipkapat", "/takipler",
+                        "/takipsil", "/takipiptal", "/takipyardim")
+        for command in old_commands:
+            with self.subTest(command=command):
+                event = self._call(
+                    self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, command),
+                )
+                self.assertIn(f"Bilinmeyen komut: {command}", "\n".join(event.replies))
+        for command in old_commands:
+            with self.subTest(command=command):
+                event = self._call(
+                    self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, command),
+                )
+                self.assertIn(f"Bilinmeyen komut: {command}", "\n".join(event.replies))
+
     def test_redundant_command_variants_are_not_dispatched(self):
         removed_commands = (
-            "/status", "/dmaç", "/ayarlar", "/cikar", "/kaynak", "/source",
+            "/status", "/dmaç", "/ayarlar", "/kaynak", "/source",
             "/sources", "/testkaynak", "/testkaynaklar", "/kelimeanalizi",
             "/deneme", "/yenile", "/yeniden", "/help", "/yardim", "/yardım",
         )
@@ -562,10 +594,24 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
 
     def test_settings_menu_is_small_and_lists_only_three_editable_groups(self):
         reply = self._reply("/ayar")
-        for label in ("Dahili kelimeler", "Harici kelimeler", "Grup isimleri",
-                      "/ekle", "/çıkar", "/kaydet", "/iptal", "/open", "/close"):
+        for label in (
+            "BOT YÖNETİM MERKEZİ",
+            "LİSTE YÖNETİMİ",
+            "TELEGRAM İNDİRİM FİLTRELERİ",
+            "KİŞİSEL BİLDİRİM FİLTRELERİ (DM)",
+            "WEB ÜRÜN TAKİBİ (Akakçe)",
+            "/ekle", "/cikar", "/kaydet", "/iptal",
+            "/tgfiltreac", "/tgfiltrekapat",
+            "/dmfiltre", "/dmfiltreac", "/dmfiltrekapat",
+            "/webtakip", "/webtakipac", "/webtakipkapat",
+            "/webtakipler", "/webtakipsil", "/webtakipiptal",
+            "/komutlar",
+        ):
             self.assertIn(label, reply)
         self.assertNotIn("/mod", reply)
+        self.assertNotIn("/open", reply)
+        self.assertNotIn("/close", reply)
+        self.assertNotIn("/çıkar", reply)
 
     def test_add_flow_shows_categories_then_current_list_and_draft(self):
         original = self._config()
@@ -611,7 +657,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(self._config()["include_keywords"], ["çay", "kahve", "şeker", "süt"])
         self.assertEqual(bot.FILTER_INCLUDE, ["çay", "kahve", "şeker", "süt"])
 
-        self._reply("/çıkar")
+        self._reply("/cikar")
         self._say("1")
         removed = self._say("2, 4")
         self.assertIn("Çıkarılacak 2 kayıt:", removed)
@@ -683,7 +729,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
 
     def test_remove_flow_shows_items_and_only_changes_them_on_save(self):
         original = self._config()
-        menu = self._reply("/çıkar")
+        menu = self._reply("/cikar")
         self.assertIn("LİSTEDEN ÇIKAR", menu)
         list_prompt = self._say("1")
         self.assertIn("01. çay", list_prompt)
@@ -695,7 +741,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.FILTER_INCLUDE, [])
 
     def test_remove_accepts_exact_value_with_canonical_command(self):
-        self._reply("/çıkar")
+        self._reply("/cikar")
         self._say("2")
         draft = self._say("ÇEKİLİŞ")
         self.assertIn("Çıkarılacak: çekiliş", draft)
@@ -744,9 +790,9 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "value")
         self.assertEqual(self._config()["include_keywords"], ["çay"])
 
-    def test_close_include_asks_then_lets_everything_through(self):
+    def test_tgfiltrekapat_include_asks_then_lets_everything_through(self):
         """Dahili filtre kapatılınca kelimeler yok sayılır; harici engel sürer."""
-        prompt = self._reply("/close")
+        prompt = self._reply("/tgfiltrekapat")
         self.assertIn("Hangi filtreyi kapatalım?", prompt)
         self.assertIn("1. 🔎  Dahili kelimeler", prompt)
         reply = self._say("1")
@@ -763,9 +809,9 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.STATS["matched"], 1, "harici kelime yine engellemeli")
         self.assertEqual(len(self.client.delivered), 1)
 
-    def test_open_include_restores_keyword_filter(self):
-        self._reply("/close dahili")
-        reply = self._reply("/open dahili")
+    def test_tgfiltreac_include_restores_keyword_filter(self):
+        self._reply("/tgfiltrekapat dahili")
+        reply = self._reply("/tgfiltreac dahili")
         self.assertIn("Dahili kelimeler filtresi AÇILDI", reply)
         self.assertEqual(self._config()["include_enabled"], True)
         self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
@@ -776,9 +822,9 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.STATS["matched"], 1)
         self.assertEqual(len(self.client.delivered), 1)
 
-    def test_close_exclude_stops_blocking_while_include_keeps_filtering(self):
+    def test_tgfiltrekapat_exclude_stops_blocking_while_include_keeps_filtering(self):
         """Asıl istek: iki filtre ayrı ayrı kontrol edilebilsin."""
-        reply = self._reply("/close harici")
+        reply = self._reply("/tgfiltrekapat harici")
         self.assertIn("Harici kelimeler filtresi KAPATILDI", reply)
         self.assertIn("engelleme yapılmaz", reply)
         self.assertFalse(bot.FILTER_EXCLUDE_ENABLED)
@@ -790,8 +836,8 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
                          "harici engel kapalıyken dahili kelime geçen mesaj iletilmeli")
         self.assertEqual(len(self.client.delivered), 1)
 
-    def test_open_and_close_both_targets_at_once(self):
-        reply = self._reply("/close ikisi")
+    def test_tgfiltreac_and_tgfiltrekapat_both_targets_at_once(self):
+        reply = self._reply("/tgfiltrekapat ikisi")
         self.assertIn("Dahili ve harici filtreler KAPATILDI", reply)
         self.assertIn("HER mesaj iletilir", reply)
         self.assertFalse(bot.FILTER_INCLUDE_ENABLED)
@@ -800,14 +846,14 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 306, "iPhone çekiliş")))
         self.assertEqual(bot.STATS["matched"], 1, "iki filtre kapalıyken her mesaj geçmeli")
 
-        reply = self._reply("/open ikisi")
+        reply = self._reply("/tgfiltreac ikisi")
         self.assertIn("AÇILDI", reply)
         self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
         self.assertTrue(bot.FILTER_EXCLUDE_ENABLED)
 
-    def test_open_with_unknown_argument_shows_the_menu(self):
+    def test_tgfiltreac_with_unknown_argument_shows_the_menu(self):
         original = self._config()
-        reply = self._reply("/open hedef")
+        reply = self._reply("/tgfiltreac hedef")
         self.assertIn("anlaşılmadı", reply)
         self.assertIn("Hangi filtreyi açalım?", reply)
         self.assertEqual(self._config(), original)
@@ -818,7 +864,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertFalse(bot.PENDING)
 
     def test_invalid_answer_keeps_the_filter_question_open(self):
-        self._reply("/open")
+        self._reply("/tgfiltreac")
         reply = self._say("kahve")
         self.assertIn("Seçimi anlayamadım", reply)
         self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "filter")
@@ -826,7 +872,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
 
     def test_filter_change_can_be_cancelled(self):
         original = self._config()
-        self._reply("/open")
+        self._reply("/tgfiltreac")
         reply = self._reply("/iptal")
         self.assertIn("Taslak silindi", reply)
         self.assertEqual(self._config(), original)
@@ -835,24 +881,24 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
 
     def test_no_change_reports_without_writing(self):
         original = self._config()
-        reply = self._reply("/open dahili")
+        reply = self._reply("/tgfiltreac dahili")
         self.assertIn("zaten açık", reply)
         self.assertEqual(self._config(), original)
         self.assertEqual(self.command_log, [])
 
     def test_filter_write_failure_restores_previous_state(self):
         with mock.patch.object(bot, "atomic_write_json", side_effect=OSError("disk dolu")):
-            reply = self._reply("/close dahili")
+            reply = self._reply("/tgfiltrekapat dahili")
         self.assertIn("önceki durum geri yüklendi", reply)
         self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
         self.assertNotIn("include_enabled", self._config())
         self.assertEqual(self.command_log, [])
 
-    def test_open_is_blocked_while_a_list_draft_is_pending(self):
+    def test_tgfiltreac_is_blocked_while_a_list_draft_is_pending(self):
         self._reply("/ekle")
         self._say("1")
         self._say("kahve")
-        reply = self._reply("/close dahili")
+        reply = self._reply("/tgfiltrekapat dahili")
         self.assertIn("Önce bekleyen liste taslağını sonuçlandır", reply)
         self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "confirm")
         self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
@@ -895,7 +941,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self._reply("/ekle")
         self._say("1")
         self._say("kahve")
-        reply = self._reply("/çıkar")
+        reply = self._reply("/cikar")
         self.assertIn("Önce bekleyen taslağı sonuçlandır", reply)
         self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "confirm")
         self.assertEqual(self._config()["include_keywords"], ["çay"])

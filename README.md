@@ -22,7 +22,7 @@ Eski kurulumlarda yeni alan yoksa önceki grup kontrol davranışı korunur.
 2. Mevcut `NOTIFY_BOT_TOKEN` secret'ının tanımlı olduğundan emin ol; yeni bot veya yeni
    token gerekmez. Botun gruptaki üyeliğini/yetkilerini değiştirme.
 3. Botun özel sohbetini aç. Takipçi hazır olduktan sonra `/start`, ardından `/durum` gönder.
-4. `/ayar`, `/ekle`, `/çıkar`, `/kaydet`, `/iptal`, `/open`, `/close`, `/kaynaklar`,
+4. `/ayar`, `/ekle`, `/cikar`, `/kaydet`, `/iptal`, `/tgfiltreac`, `/tgfiltrekapat`, `/kaynaklar`,
    `/kaynaktest`, `/analiz`, `/restart` aynı işlevleri özel sohbetten yerine getirir.
    `/test` denemeyi hâlâ **hedef gruba** gönderir; sonucu özelden yanıtlar.
 5. Botla özel sohbet geçmişi silinmez. Eski `clean_commands` davranışı yalnızca
@@ -38,12 +38,22 @@ cevap gelmediyse bot hazır olduktan sonra tekrar `/start` gönder.
 
 Yeni kurulumlarda varsayılan `dm_enabled: false`, `dm_keywords: []` ve
 `dm_exclude_keywords: []` olur. **Mevcut kayıtlı DM kelimeleri korunur.** Hesap sahibi
-botun özel sohbetinde, diğer listelerle aynı ekle/çıkar akışını kullanır:
+botun özel sohbetinde, diğer listelerle aynı ekle/cikar akışını kullanır:
 
 ```text
 Sen: /ekle
-Bot: 1. Dahili · 2. Harici · 3. Grup · 4. dmdahil · 5. dmharic
-Sen: dmdahil
+Bot: 1. Dahili · 2. Harici · 3. Grup · 4. dmdahil · 5. dmharic · 6. dmfiyat · 7. webdetakip
+Sen: webdetakip
+Bot: Akakçe ürün detay linkini gönder (…akakce.com/…-fiyati,ID.html).
+Sen: https://www.akakce.com/…-fiyati,123456789.html
+Bot: …Hangi fiyatın altına düşerse haber vereyim? Örnek: 6500…
+Sen: 6500
+Bot: ✅ Kalıcı kaydedildi. (product_watches.json; ayrı /kaydet adımı yok)
+Sen: /ekle
+Sen: dmharic
+Sen: tcl 65t6d
+Sen: /kaydet
+```
 Bot: Mevcut liste... Eklenecek kelimeleri gönder.
 Sen: tcl 65, lg 75
 Bot: Değişiklik taslağı... /kaydet veya /iptal
@@ -55,9 +65,10 @@ Sen: tcl 65t6d
 Sen: /kaydet
 ```
 
-Çıkarmak için `/çıkar` → `dmdahil` veya `dmharic` → listedeki numara/tam ifade →
-`/kaydet`. Menüde `4` ve `5` de kullanılabilir. Birden çok kaydı virgül, noktalı virgül
-veya yeni satırla ayır; ifadenin içindeki boşluklar kelimeleri ayrı filtrelere bölmez.
+Çıkarmak için `/cikar` → `dmdahil` veya `dmharic` → listedeki numara/tam ifade →
+`/kaydet`. Menüde `4`, `5`, `6` ve `7` de kullanılabilir; `7` (webdetakip) seçimi
+`/webtakip` ile aynı akışı başlatır (ekle: link → hedef fiyat; çıkar: /webtakipler numarasıyla silme).
+Birden çok kaydı virgül, noktalı virgül veya yeni satırla ayır; ifadenin içindeki boşluklar kelimeleri ayrı filtrelere bölmez.
 Ekleme mevcut listeyi korur, tekrarları atlar; çıkarma numara veya listedeki tam değerle
 yapılır. Diğer listelerdeki gibi geçersiz/bulunamayan kayıtlar uyarıda gösterilir,
 geçerli kayıtlar taslağa alınır. Her iki DM listesi en fazla 100 ifade içerir.
@@ -67,9 +78,10 @@ Değişiklik **`/kaydet` öncesinde aktif değildir**; `/iptal` taslağı siler.
 kapalı filtreyi açmaz. `dmharic` düzenlemek DM'in açık/kapalı durumunu değiştirmez.
 `/dmfiltre` dahil/hariç listelerini, açık/kapalı durumunu ve sayaçları salt okunur gösterir.
 
-Eski `/dmfiltreekle` ve `/dmfiltrecikar` yalnızca geriye uyumluluk için çalışmaya devam
-eder (eski, anında kayıt davranışıyla); `/komutlar` ve menülerde artık ayrı komut olarak
-yer almaz. Yeni kullanımda her iki DM listesini de `/ekle` ve `/çıkar` ile yönet.
+DM listesini `/ekle` → `dmdahil` / `dmharic` ve `/cikar` → `dmdahil` / `dmharic` ile yönetin;
+`/kaydet` ile taslağı uygulayın. Eski `/dmfiltreekle` ve `/dmfiltrecikar` isimleri
+alias kalmadan tamamen kaldırıldı; yalnızca `/komutlar` katalogunda yeni karşılıkları
+görünür.
 
 Ayarlar `config.json`'a ve mevcut GitHub kayıt yöntemiyle depoya yazılır; gönderilen
 kayıt raporunu kontrol et. Yerel dosyaya yazma başarısızsa eski ayar geri yüklenir.
@@ -80,13 +92,14 @@ aktarılmayabilir. **Özel kelimeler gizli değildir; config ve Git geçmişinde
 |---|---|
 | `/dmfiltre` | Mevcut kelimeler, açık/kapalı durumu, bu oturumun gönderim/hata/kuyruk sayaçları; salt okunur |
 | `/ekle` → `dmdahil` / `dmharic` | Listeye ekleme taslağı; `/kaydet` ile uygulanır |
-| `/çıkar` → `dmdahil` / `dmharic` | Listeden çıkarma taslağı; `/kaydet` ile uygulanır |
-| `/dmkapat` | Listeyi koruyarak özel fırsatları kapatır; henüz gönderilmeyen kuyruk kayıtları da atlanır |
-| `/dmac` | Kayıtlı listeyle tekrar açar; boş listeyi açmaz |
+| `/cikar` → `dmdahil` / `dmharic` | Listeden çıkarma taslağı; `/kaydet` ile uygulanır |
+| `/dmfiltrekapat` | Listeyi koruyarak özel fırsatları kapatır; henüz gönderilmeyen kuyruk kayıtları da atlanır |
+| `/dmfiltreac` | Kayıtlı listeyle tekrar açar; boş listeyi açmaz |
 | `/komutlar` | Her desteklenen komutu ve açıklamasını tek kez listeler |
 
-`/start` yanıtında `/komutlar` hatırlatılır. Yardım listesi başlıksız, maddesiz ve
-her satırda tek canonical komut olacak şekilde üretilir.
+`/start` yanıtında `/komutlar` hatırlatılır. `/komutlar` yedi başlıkla kategorik
+olarak üretilir: Temel komutlar, Liste yönetimi, Telegram indirim filtreleri,
+Kişisel bildirim filtreleri (DM), Web ürün takibi, Gelişmiş araçlar ve Yönetim.
 
 Bu kişisel ayarlar ve alıcı **yalnızca hesabın sahibine** aittir; başka bir admin
 kişisel alıcıyı kendisine çeviremez. Çok kullanıcılı abonelik sistemi değildir.
@@ -341,9 +354,9 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `destination` | sayı / `"me"` | Filtrelenen mesajların gideceği sohbet. `me` = Kayıtlı Mesajlar (**bildirim gelmez**); grup ID'si yazarsan oraya düşer. |
 | `include_keywords` | liste | Aranacak kelimeler. Büyük/küçük harf farkı yoktur; `İ`/`I` doğru indirgenir. |
 | `exclude_keywords` | liste | Bunlardan biri geçerse mesaj atlanır (harici filtre **açıkken**). |
-| `include_enabled` | `true` / `false` | 🔎 **Dahili kelime filtresi açık mı?** `false` ise `include_keywords` yok sayılır. `/open` ve `/close` ile değiştirilir. Varsayılan `true`. |
-| `exclude_enabled` | `true` / `false` | 🚫 **Harici kelime filtresi açık mı?** `false` ise hiçbir mesaj harici kelimelerle engellenmez. `/open` ve `/close` ile değiştirilir. Varsayılan `true`. |
-| `match_mode` | `any` / `all` | Dahili kelimeler nasıl eşleşsin: `any` = biri yeterli, `all` = hepsi aynı mesajda. (Eski `forward_all` değeri hâlâ okunur: dahili filtre kapalı demektir; `/open dahili` yazınca `any`'ye döner.) |
+| `include_enabled` | `true` / `false` | 🔎 **Dahili kelime filtresi açık mı?** `false` ise `include_keywords` yok sayılır. `/tgfiltreac` ve `/tgfiltrekapat` ile değiştirilir. Varsayılan `true`. |
+| `exclude_enabled` | `true` / `false` | 🚫 **Harici kelime filtresi açık mı?** `false` ise hiçbir mesaj harici kelimelerle engellenmez. `/tgfiltreac` ve `/tgfiltrekapat` ile değiştirilir. Varsayılan `true`. |
+| `match_mode` | `any` / `all` | Dahili kelimeler nasıl eşleşsin: `any` = biri yeterli, `all` = hepsi aynı mesajda. (Eski `forward_all` değeri hâlâ okunur: dahili filtre kapalı demektir; `/tgfiltreac dahili` yazınca `any`'ye döner.) |
 | `copy_mode` | `forward` / `copy` | Eski alan. `delivery_modes` yoksa ilk denenecek yolu belirler. |
 | `delivery_modes` | liste | Korumalı kanallarda sırayla denenecek iletim yolları: `forward → copy → media → text → link` ([7. bölüm](#7-iletim-zinciri-korumalı-kanallar)). |
 | `max_media_mb` | sayı | `media` yolunda indirilecek en büyük medya (varsayılan 25, `0` = sınırsız). |
@@ -359,8 +372,8 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `control_chat` | sayı / `"me"` | Eski kontrol sohbeti; `private_control: true` iken yalnızca Kayıtlı Mesajlar yedeği aktiftir. |
 | `private_control` | `true` / `false` | Komutları bildirim botunun özel sohbetinden al; grup komutlarını kapat. Bu depoda `true`; alan yoksa eski davranış. `NOTIFY_BOT_TOKEN` gerekir. |
 | `dm_enabled` | `true` / `false` | Hesap sahibine kişisel fırsat kopyaları. Başlangıçta `false`. |
-| `dm_keywords` | metin listesi | DM dahil ifadeleri; boş liste eşleşmez. `/ekle` / `/çıkar` → `dmdahil` → `/kaydet` ile düzenlenir; grup listesinden bağımsızdır. |
-| `dm_exclude_keywords` | metin listesi | DM hariç ifadeleri; varsayılan boş liste. `/ekle` / `/çıkar` → `dmharic` → `/kaydet`; yalnızca özel kopyayı engeller. |
+| `dm_keywords` | metin listesi | DM dahil ifadeleri; boş liste eşleşmez. `/ekle` / `/cikar` → `dmdahil` → `/kaydet` ile düzenlenir; grup listesinden bağımsızdır. |
+| `dm_exclude_keywords` | metin listesi | DM hariç ifadeleri; varsayılan boş liste. `/ekle` / `/cikar` → `dmharic` → `/kaydet`; yalnızca özel kopyayı engeller. |
 | `admin_user_id` | sayı / liste | `control_chat` bir grupsa **zorunlu**: komutları yalnızca bu ID'ler çalıştırabilir. |
 | `auto_restart` | `true` / `false` | `GH_PAT` varsa yenileme zincirini açar (bir sonraki açılışta geçerli). |
 | `notify_on_start` | `true` / `false` | Eski uyumluluk alanı; artık dikkate alınmaz. Açılış/otomatik yenileme sessizdir; `/durum` ile kontrol et. |
@@ -386,16 +399,16 @@ yazarsa bot nedenini, o kişinin kullanıcı ID'sini ve nasıl yetki alacağın�
 
 ```text
 Kaynak mesajlarını hedef gruba iletir.
-/open — Filtre aç (sorar: dahili, harici veya ikisi).
-/close — Filtre kapat (sorar: dahili, harici veya ikisi).
-/ayar, /ekle, /çıkar — kelime ve kaynak listelerini yönetir.
+/tgfiltreac — Filtre aç (sorar: dahili, harici veya ikisi).
+/tgfiltrekapat — Filtre kapat (sorar: dahili, harici veya ikisi).
+/ayar, /ekle, /cikar — kelime ve kaynak listelerini yönetir.
 /kaydet, /iptal — taslağı kaydet / iptal et.
 /analiz — Geçmiş başlıklarını tarar; en çok geçen kelimeleri istatistik olarak verir.
 /kaynaktest — Kaynaklardan son mesajı okuyarak erişimi sınar.
 /durum, /kaynaklar, /test, /id, /restart, /komutlar — durum ve araçlar.
 ```
 
-`/open` ve `/close` anında uygulanır ve kaydedilir; tüm liste düzenlemeleri (DM dahil/hariç
+`/tgfiltreac` ve `/tgfiltrekapat` anında uygulanır ve kaydedilir; tüm liste düzenlemeleri (DM dahil/hariç
 dahil) `/kaydet` seçilene kadar taslakta kalır. `/restart` için
 `GH_PAT` gerekir. Türkçe `I`/`İ` büyük harf yazımları (`/ANALİZ`, `/Iptal` gibi) otomatik eşleşir.
 
@@ -420,32 +433,38 @@ dahil) `/kaydet` seçilene kadar taslakta kalır. `/restart` için
 
 | Komut | Açıklama |
 |---|---|
-| `/komutlar` | Tüm desteklenen komutları ve açıklamalarını listeler. |
+| `/komutlar` | Tüm desteklenen komutları ve açıklamalarını kategoriler halinde listeler. |
 | `/start` | Özel sohbet kullanımını açıklar; fırsat hedefini değiştirmez. |
 | `/durum` | Takipçinin dinleme durumunu, hedefini, sayaçlarını ve filtre durumunu gösterir. |
-| `/dmfiltre` | DM dahil/hariç listelerini, açık/kapalı durumunu ve sayaçlarını gösterir. |
-| `/dmac` | Kayıtlı kişisel filtreyi açar; boş listeyi açmaz. |
-| `/dmkapat` | Kelimeleri koruyarak kişisel fırsat gönderimini kapatır. |
-| `/ayar` | Dahil, hariç, grup, dmdahil ve dmharic listelerinin menüsünü gösterir. |
-| `/ekle` | Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic). |
-| `/çıkar` | Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic). |
+| `/ayar` | Bot yönetim merkezi: liste, TG filtre, DM filtre ve web ürün takibi bölümlerini gösterir. |
+| `/ekle` | Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat/web ürün takibi). |
+| `/cikar` | Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat/web ürün takibi). |
 | `/kaydet` | Bekleyen liste taslağını kaydeder (DM listeleri dahil). |
-| `/iptal` | Bekleyen ekleme/çıkarma veya filtre seçimini iptal eder. |
-| `/open` | Grup filtresini açar; dahili, harici veya ikisi seçilebilir. |
-| `/close` | Grup filtresini kapatır; dahili, harici veya ikisi seçilebilir. |
+| `/iptal` | Bekleyen ekleme veya çıkarma işlemini iptal eder. |
+| `/tgfiltreac` | Telegram indirim akışında dahili, harici veya iki filtreyi açar. |
+| `/tgfiltrekapat` | Telegram indirim akışında dahili, harici veya iki filtreyi kapatır. |
+| `/dmfiltre` | Kişisel bildirim filtresinin durumunu, dahil/hariç listesini ve fiyat sınırını gösterir. |
+| `/dmfiltreac` | Kişisel bildirim filtresini açar. |
+| `/dmfiltrekapat` | Kişisel bildirim filtresini kapatır; kelime listeleri korunur. |
+| `/webtakip` | Akakçe ürün takip menüsünü açar; Akakçe linkini gönderip hedef fiyatı belirlersin. |
+| `/webtakipac` | Web ürün fiyat takibini etkinleştirir. |
+| `/webtakipkapat` | Web ürün fiyat takibini durdurur; ana Telegram indirim akışını durdurmaz. |
+| `/webtakipler` | Takip edilen web ürünlerini, hedeflerini ve son kontrol durumunu listeler. |
+| `/webtakipsil` | Numarayla takip edilen web ürününü siler. |
+| `/webtakipiptal` | Bekleyen web ürün takip işlemini iptal eder. |
+| `/webtakipyardim` | Web ürün takibinin ayrıntılı kullanımını gösterir. |
 | `/kaynaklar` | İzlenen kaynakları ve çözülemeyenleri listeler. |
 | `/kaynaktest` | Her kaynağın son ham mesajını ve yerel işlem yolunu denetler; canlı event sayısını raporlar. |
 | `/analiz` | Kaynak geçmişindeki başlıkları analiz eder; örnek: /analiz 100 tümü veya /analiz 1000 tcl 65 (eşleşen ürünleri 'ürün adı - fiyat' olarak listeler). |
 | `/test` | Hedef gruba deneme mesajı gönderir; sonucu komut sohbetinde bildirir. |
 | `/id` | Bulunduğun sohbetin ve kullanıcının kimliğini gösterir. |
 | `/restart` | Yeni takipçi çalışması başlatır; GH_PAT gerekir. |
-| `/takip` | Özel sohbette ürün takip menüsünü açar. |
 
 **Tamamı virgülle ayrılmış hâli** (BotFather açıklamasına, sabitlenmiş mesaja ya da
 grubun komut menüsüne doğrudan yapıştırabilirsin):
 
 ```text
-/komutlar, /start, /durum, /dmfiltre, /dmac, /dmkapat, /ayar, /ekle, /çıkar, /kaydet, /iptal, /open, /close, /kaynaklar, /kaynaktest, /analiz, /test, /id, /restart, /takip
+/komutlar, /start, /durum, /ayar, /ekle, /cikar, /kaydet, /iptal, /tgfiltreac, /tgfiltrekapat, /dmfiltre, /dmfiltreac, /dmfiltrekapat, /webtakip, /webtakipac, /webtakipkapat, /webtakipler, /webtakipsil, /webtakipiptal, /webtakipyardim, /kaynaklar, /kaynaktest, /analiz, /test, /id, /restart
 ```
 
 #### Kaynak mesaj erişimini test etme
@@ -469,7 +488,7 @@ grubun komut menüsüne doğrudan yapıştırabilirsin):
 ## 5. Ayarları Telegram'dan düzenleme
 
 Telegram akışını bilerek sade tuttuk: sohbetten şu beş liste düzenlenebilir, iki grup filtresi de
-`/open` ve `/close` ile bağımsız açılıp kapatılır; diğer teknik ayarlar config/kod üzerinden yönetilir.
+`/tgfiltreac` ve `/tgfiltrekapat` ile bağımsız açılıp kapatılır; diğer teknik ayarlar config/kod üzerinden yönetilir.
 
 | Menüde görünen ad | `config.json` alanı | Ne işe yarar |
 |---|---|---|
@@ -479,10 +498,10 @@ Telegram akışını bilerek sade tuttuk: sohbetten şu beş liste düzenlenebil
 | 🎯 dmdahil | `dm_keywords` | Özel kopyada blok halinde aranan ifadeler |
 | 🔕 dmharic | `dm_exclude_keywords` | Özel kopyayı engelleyen ifadeler |
 
-DM listeleri yalnızca hesap sahibinin botla özel sohbetinden düzenlenir. `/open` ve
-`/close` grup filtrelerine aittir; DM gönderimi `/dmac` / `/dmkapat` ile yönetilir.
+DM listeleri yalnızca hesap sahibinin botla özel sohbetinden düzenlenir. `/tgfiltreac` ve
+`/tgfiltrekapat` grup filtrelerine aittir; DM gönderimi `/dmfiltreac` / `/dmfiltrekapat` ile yönetilir.
 
-#### Filtreler: `/open` ve `/close`
+#### Filtreler: `/tgfiltreac` ve `/tgfiltrekapat`
 
 İki filtre **birbirinden bağımsızdır**; hangisinin çalışacağına tam olarak sen karar verirsin:
 
@@ -492,13 +511,13 @@ DM listeleri yalnızca hesap sahibinin botla özel sohbetinden düzenlenir. `/op
 | 🚫 Harici kelimeler | `exclude_enabled` | Bu kelimelerden biri geçen mesaj engellenir | Hiç engelleme yapılmaz |
 
 ```text
-/open              → "Hangi filtreyi açalım?" diye sorar
-/open dahili       → yalnızca dahili kelime filtresini açar
-/open harici       → yalnızca harici engeli açar
-/open ikisi        → ikisini birlikte açar
-/close dahili      → dahili filtreyi kapatır (harici engel çalışmaya devam eder)
-/close harici      → engellemeyi kapatır (dahili kelimeler aranmaya devam eder)
-/close ikisi       → ikisini de kapatır: kaynaklardaki HER mesaj iletilir
+/tgfiltreac              → "Hangi filtreyi açalım?" diye sorar
+/tgfiltreac dahili       → yalnızca dahili kelime filtresini açar
+/tgfiltreac harici       → yalnızca harici engeli açar
+/tgfiltreac ikisi        → ikisini birlikte açar
+/tgfiltrekapat dahili      → dahili filtreyi kapatır (harici engel çalışmaya devam eder)
+/tgfiltrekapat harici      → engellemeyi kapatır (dahili kelimeler aranmaya devam eder)
+/tgfiltrekapat ikesi       → ikisini de kapatır: kaynaklardaki HER mesaj iletilir
 ```
 
 Menüden seçim yaparken `1` (dahili), `2` (harici), `3` (ikisi) yazabilirsin; filtre
@@ -542,7 +561,7 @@ hesabın kanaldan son mesajı okuyabildiğini ve üyelik durumunu kontrol et.
 
 ### Çıkarma
 
-1. **`/çıkar`** yaz.
+1. **`/cikar`** yaz.
 2. Kategoriyi seç; bot güncel listeyi numaralı olarak gösterir.
 3. Çıkarmak istediğin kayıtların numaralarını veya listedeki tam değerlerini gönder;
    birden çok kayıt için virgülle ayır: `1, 3, çekiliş`
@@ -601,7 +620,7 @@ iki istatistik verilir:
   hepsini görmek için `/analiz tümü` kullan.
 - Harici listende olan kelimeler `🚫`, dahili listende olanlar `🔎` ile işaretlenir.
 - Çıkan listeden istemediğin kelimeleri doğrudan harici listeye ekle:
-  `/çıkar` → `2` (Harici kelimeler) → `bebek, oyuncak, kitap`.
+  `/cikar` → `2` (Harici kelimeler) → `bebek, oyuncak, kitap`.
 - Tarama uzun sürebilir; **"🔎 Analiz başladı"** mesajı gelir ve her kaynak
   bitince aynı mesaj güncellenir (`12/23 kaynak · 4 eşleşme`). Rapor gelince bu
   mesaj silinir, ekranda yalnızca sonuç kalır. Okunamayan kaynak olursa tarama
@@ -979,9 +998,9 @@ Dosyalar: `bot.py` (tüm mantık), `config.json` (ayarlar), `generate_session.py
 
 ## 14. Bu güncellemeden sonra yapılacaklar
 
-Bu sürüm beş liste düzenlemesini ve iki filtre komutunu sunar: `/ekle` veya `/çıkar` →
-seçim → değer (virgülle birden çok) → `/kaydet` ya da `/iptal`; filtreler için `/open` ve
-`/close`; geçmiş istatistiği için `/analiz`.
+Bu sürüm beş liste düzenlemesini ve iki filtre komutunu sunar: `/ekle` veya `/cikar` →
+seçim → değer (virgülle birden çok) → `/kaydet` ya da `/iptal`; filtreler için `/tgfiltreac` ve
+`/tgfiltrekapat`; geçmiş istatistiği için `/analiz`.
 Diğer teknik ayarlar `config.json` üzerinden yönetilir. Ayrıntılar [4. bölümde](#4-telegram-komutları)
 ve [5. bölümde](#5-ayarları-telegramdan-düzenleme).
 
@@ -1107,20 +1126,20 @@ Kontrol sohbetinde yeni akışı doğrula:
 
 ```text
 /ayar       → beş liste ve filtre kısayolları gösterilmeli
-/close      → menü sormalı: 1 dahili · 2 harici · 3 ikisi
+/tgfiltrekapat      → menü sormalı: 1 dahili · 2 harici · 3 ikisi
 1           → dahili filtre kapanmalı, harici engel sürmeli
-/open dahili→ dahili filtre geri açılmalı (anında kaydeder)
-/close ikisi→ iki filtre de kapanmalı; her mesaj iletilmeli
-/open ikisi → ikisi birden açılmalı
+/tgfiltreac dahili→ dahili filtre geri açılmalı (anında kaydeder)
+/tgfiltrekapat ikisi→ iki filtre de kapanmalı; her mesaj iletilmeli
+/tgfiltreac ikisi → ikisi birden açılmalı
 /ekle       → beş liste seçimi, ardından mevcut liste
 kahve, şeker, süt → taslakta üçü görünmeli; henüz kaydedilmemeli
 /kaydet     → config.json yazılmalı ve GitHub sonucu görünmeli
-/çıkar      → liste seçimi ve mevcut kayıtlar gösterilmeli
+/cikar      → liste seçimi ve mevcut kayıtlar gösterilmeli
 1, 3        → iki kayıt birden çıkarılmalı
 /iptal      → bekleyen taslak silinmeli; ayar değişmemeli
 /analiz     → "🔎 Analiz başladı" mesajı gelmeli ve kaynak kaynak güncellenmeli
             → iki istatistik (25 kelime + 25 ilk kelime) gelmeli
-            → beğenmediğin kelimeyi /çıkar → 2 ile harici listeye ekle
+            → beğenmediğin kelimeyi /cikar → 2 ile harici listeye ekle
 /analiz 1000 tcl 65 → her satır `ürün adı (tam) - fiyat` olmalı; model kodu
             görünmeli ve eski/taksitli fiyat değil indirimli fiyat yazılmalı
 ```
@@ -1137,9 +1156,9 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 - [ ] Güncel PR'ı `main`'e merge et
 - [ ] Actions'tan workflow'u bir kez elle başlat
 - [ ] `/ayar` → sade menü geliyor mu?
-- [ ] `/open` ve `/close` → menü soruyor mu? Dahili/harici filtre ayrı ayrı kapanıyor mu?
+- [ ] `/tgfiltreac` ve `/tgfiltrekapat` → menü soruyor mu? Dahili/harici filtre ayrı ayrı kapanıyor mu?
 - [ ] `/ekle` → kategori seç → `a, b, c` gönder → `/kaydet` ile GitHub'a yaz
-- [ ] `/çıkar` → listeyi gösteriyor mu? `1, 3` gibi çoklu çıkarma çalışıyor mu?
+- [ ] `/cikar` → listeyi gösteriyor mu? `1, 3` gibi çoklu çıkarma çalışıyor mu?
 - [ ] `/analiz` → "🔎 Analiz başladı" mesajı ve iki istatistik geliyor mu? Kelimeleri
       harici listeye ekleyebiliyor musun?
 - [ ] `/analiz 1000 tcl 65` → satırlar `ürün adı (tam) - fiyat` mı? Model kodu (ör.
@@ -1156,7 +1175,7 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 
 **DM maksimum fiyat (`dmfiyat`)** — kelime filtrelerinden tamamen bağımsız ayrı bir kuraldır.
 - Telegram'da `/ekle` → `dmfiyat` → tutar (örn. `10000`) → `/kaydet`. Bu tutar ve altındaki fiyatlar özel kopya olarak DM'e düşer. `0` yazarsan yalnızca 0 TL / ücretsiz / bedava olanlar düşer.
-- Kapatmak için `/çıkar` → `dmfiyat` → `1` → `/kaydet`.
+- Kapatmak için `/cikar` → `dmfiyat` → `1` → `/kaydet`.
 - Karar: `kelime kuralı VEYA fiyat kuralı`. Fiyat kuralı DM hariç listesine bakmaz; kelime kuralı fiyata bakmaz. Kelime + fiyat birlikte (VE) kuralı sonraki aşamadır.
 - Fiyat bulunamazsa ya da yalnızca kupon/indirim/taksit/eski fiyat bulunursa DM gönderilmez (yanlış alarm yok).
 - Config anahtarı: `dm_price_max` (`["10000"]`; anahtar yoksa kural kapalı).
@@ -1305,21 +1324,21 @@ Bu komutlar ancak PR birleştirilip **güncel ana bot başladıktan sonra** kull
 PR kontrolü tek başına çalışan botu güncellemez. Merge sonrasında mevcut botun
 özel sohbetine `/restart` gönderip yenilemenin tamamlanmasını bekleyebilirsin
 (mevcut GH_PAT gerekir); bu komutun mevcut workflow yenileme yolu değiştirilmedi.
-Yenilenen bot hazır olunca `/takip` menüyü göstermelidir. Aynı bot token'ıyla
+Yenilenen bot hazır olunca `/webtakip` menüyü göstermelidir. Aynı bot token'ıyla
 ikinci bir bağımsız Telegram dinleyicisi başlatma.
 
 Botla özel sohbetinde sırayla:
 
 1. `/durum` — mevcut dinleyicinin yanıt verdiğini kontrol et.
-2. `/takip` — alt komutların kısa menüsünü açar.
-3. `/takipac` — **Kalıcı kaydedildi** yanıtını bekle.
+2. `/webtakip` — alt komutların kısa menüsünü açar.
+3. `/webtakipac` — **Kalıcı kaydedildi** yanıtını bekle.
 4. Takip edeceğin Akakçe **ürün detay linkini** gönder.
 5. Bot ürünü ve okuduğu fiyatı gösterip hedefi sorunca, test için gördüğün güncel
    fiyatın biraz **üstünde** hedef yaz. Örneğin fiyat hâlâ 6.839,05 TL ise `7000`.
 6. Kalıcı kayıt onayını bekle. İlk başarılı periyodik okumada yukarıdaki biçimde
    özel mesaj beklenir. Boş kuyrukta genellikle sonraki kontrolde gelir; host
    beklemesi, ağ hatası veya yoğunlukta gecikebilir. Saniyesi garanti değildir.
-7. `/takipler` — hedefi ve son kontrol durumunu gör. `/durum` ile eski dinleyiciyi
+7. `/webtakipler` — hedefi ve son kontrol durumunu gör. `/durum` ile eski dinleyiciyi
    tekrar kontrol et. Mevcut kanal fırsatları aynı hedefe gelmeye devam etmeli.
 8. Test bitince **aynı Akakçe linkini tekrar gönder**, sorulduğunda gerçek hedefini
    yaz (örneğin `6500`). Bu işlem o ürünün hedefini günceller ve alarm kaydını sıfırlar.
@@ -1333,31 +1352,31 @@ hedef gruba test gönderir, Akakçe alarmını sınamaz.
 
 | Komut | İşlev |
 |---|---|
-| `/takip` | Kısa menü ve komut kopyalama düğmeleri |
-| `/takipac` | Ürün kontrollerini açar, GitHub'a kaydeder |
-| `/takipkapat` | Takip listesini koruyarak kontrolleri kapatır |
-| `/takipler` | Ürün numarası, hedef ve bu oturumun kontrol durumu |
-| `/takipsil 1` | Listedeki numarayla ürün siler |
-| `/takipiptal` | Hedef fiyat taslağını iptal eder |
-| `/takipyardim` | Kısa kullanım |
+| `/webtakip` | Kısa menü ve komut kopyalama düğmeleri |
+| `/webtakipac` | Ürün kontrollerini açar, GitHub'a kaydeder |
+| `/webtakipkapat` | Takip listesini koruyarak kontrolleri kapatır |
+| `/webtakipler` | Ürün numarası, hedef ve bu oturumun kontrol durumu |
+| `/webtakipsil 1` | Listedeki numarayla ürün siler |
+| `/webtakipiptal` | Hedef fiyat taslağını iptal eder |
+| `/webtakipyardim` | Kısa kullanım |
 
-Yalnız **`/takip`** komutunu hatırlaman yeterli. Menüde her alt komutun yanında
+Yalnız **`/webtakip`** komutunu hatırlaman yeterli. Menüde her alt komutun yanında
 2–4 kelimelik açıklama ve komutu panoya kopyalayan düğmeler vardır. Düğmeye basmak
 komutu çalıştırmaz; kopyalananı yazı alanına yapıştırıp gönderirsin. Telegram bot
-mesajları yazı alanını doğrudan dolduramaz. `/takipsil` kopyalanınca ürün numarasını
+mesajları yazı alanını doğrudan dolduramaz. `/webtakipsil` kopyalanınca ürün numarasını
 sen eklersin. Kopyalama düğmelerini desteklemeyen istemcide düz komutları kullan.
-Eski alt komutlar çalışmayı sürdürür; `/takipyardim` ayrıntılı yardım olarak kalır.
+Yeni komutlar tek ve kanonik kaynaktır; eski `/takip*` isimleri alias kalmadan kaldırıldı. `/webtakipyardim` ayrıntılı yardım olarak kalır.
 Menüyü açmak bekleyen hedef/filtre taslağını bozmaz veya takibi açıp kapatmaz.
 
 Mevcut filtre düzenleme taslağı açıksa önce `/kaydet` veya `/iptal` ile bitir.
 Hedef taslağı 10 dakika sonra geçersiz olur. Bir ürün okuması sıradaysa komut sonucu
 ayrıca bildirilir; yalnız "sıraya alındı" yanıtı kalıcı kayıt onayı değildir.
-`/takipkapat` için de tamamlanma onayını bekle.
+`/webtakipkapat` için de tamamlanma onayını bekle.
 
 ### Saatler ve "son kontrol" ne zaman güncellenir
 
 Tüm saatler **TSİ** etiketiyle yazılır. GitHub Actions runner'ları UTC çalıştığı için
-eski sürümde `/takipler` "Son kontrol: 10:44" diyordu; bu aslında **13:44 TSİ** idi ve
+eski sürümde `/webtakipler` "Son kontrol: 10:44" diyordu; bu aslında **13:44 TSİ** idi ve
 üç saat geride kalmış gibi görünüyordu (saat dilimi etiketi yoktu). Artık zaman damgası
 epoch olarak tutulur ve `06.11 13:44 TSİ (6 dk önce)` biçiminde yazılır; satır ayrıca
 hedefe olan farkı (`hedefin 10.928,75 TL üzerinde`) ve sıradaki kontrolün saatini
@@ -1377,7 +1396,7 @@ tarayıcı oturumunun belleğinde tutar (`product_watches.json` içine yazılmaz
 
 **Nereden anlarım: kontrol ediyor mu, yoksa saat dondu mu?**
 
-- `/takipler` satırındaki `(6 dk önce)` ifadesi canlıdır. Bekleyip tekrar
+- `/webtakipler` satırındaki `(6 dk önce)` ifadesi canlıdır. Bekleyip tekrar
   baktığında büyüyorsa okuma olmuyor; küçülüp tazeleniyorsa kontrol çalışıyor.
 - `sıradaki kontrol: ~14:13 TSİ` süresi geçtiği hâlde okuma yoksa satır
   `⏳ gecikti` yazar (kuyrukta iş var, ağ/engel geciktiriyor ya da runner kapandı).
@@ -1419,9 +1438,9 @@ mutlak izolasyon/kesintisiz çalışma garantisi yoktur. Actions geçişinde fı
 kaçabilir. Telegram gönderimi ile GitHub kaydı atomik değildir; ani kesintide
 tekrar alarm mümkündür. Bozuk takip dosyası yalnız bu özelliği devre dışı bırakır.
 
-Kalıcı kayıt testi için doğal runner yenilenmesinden sonra `/takipler` gönder:
+Kalıcı kayıt testi için doğal runner yenilenmesinden sonra `/webtakipler` gönder:
 ürün/hedef korunmalı, aynı fiyattan gönderilmiş alarm normalde tekrar etmemeli.
-Geri dönüş için `/takipkapat` yazıp kalıcı kayıt onayını bekle; mevcut kanal takibi sürer.
+Geri dönüş için `/webtakipkapat` yazıp kalıcı kayıt onayını bekle; mevcut kanal takibi sürer.
 
 ### Geçici erişim testi kaldırıldı
 
@@ -1430,7 +1449,7 @@ Geliştirme sırasında kullanılan `Akakçe erişim testi` workflow'u son PR'da
 üreten bir iş artık yok. Önceden tamamlanan çalışmalar Actions geçmişinde
 görünebilir; bu, yeniden çalıştıkları anlamına gelmez. Normal `Testler` workflow'u
 kod regresyonlarını, `Telegram indirim takipçisi` ise asıl botu çalıştırmaya devam eder.
-Akakçe takibi ayrıca bir workflow açmaz; ana botta `/takipac` ile açılır.
+Akakçe takibi ayrıca bir workflow açmaz; ana botta `/webtakipac` ile açılır.
 
 Actions ekranındaki eski `Gecici push testi` de ayrı bir tarihsel teşhis kaydıdır:
 6 Ekim 2026'da eski `arena/61a972b6-indtkp-asist` dalında push kimlik doğrulamasını
@@ -1441,5 +1460,5 @@ testi → ⋯ → Disable workflow ile kaydı devre dışı bırakabilir. Geçmi
 listede kalabilir. Botun `commit_and_push` / `push_branch` kodu gerçek ayar kaydı için
 kullanılır, bu tarihsel testin parçası sayılıp kaldırılmamalıdır.
 
-Deneme raporu: bildirim ekran görüntüsü, `/takipler` çıktısı, kayıt onayı/uyarıları ve
+Deneme raporu: bildirim ekran görüntüsü, `/webtakipler` çıktısı, kayıt onayı/uyarıları ve
 mevcut kanal dinleyicisinin çalışıp çalışmadığını paylaş. Cookie/token/secret paylaşma.
