@@ -388,6 +388,22 @@ class IntegrationTest(MainHarness, unittest.TestCase):
         self.assertTrue(event.replies, "/durum yanıt üretmedi")
         self.assertIn("Takipçi aktif", event.replies[0])
 
+    def test_old_command_names_are_rejected_by_dispatcher(self):
+        old_commands = (
+            "/open", "/close",
+            "/dmac", "/dmkapat",
+            "/dmfiltreekle", "/dmfiltrecikar",
+            "/takip", "/takipac", "/takipkapat", "/takipler", "/takipsil",
+            "/takipiptal", "/takipyardim",
+            "/çıkar",
+        )
+        for command in old_commands:
+            with self.subTest(command=command):
+                event = self._call(
+                    self.client.handlers[0][1], FakeEvent(GROUP_ID, ADMIN_ID, command),
+                )
+                self.assertIn(f"Bilinmeyen komut: {command}", "\n".join(event.replies))
+
     def test_redundant_command_variants_are_not_dispatched(self):
         removed_commands = (
             "/status", "/dmaç", "/ayarlar", "/kaynak", "/source",

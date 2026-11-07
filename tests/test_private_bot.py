@@ -1027,10 +1027,11 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
         async def scenario():
             await self.command("/komutlar")
             self.assertEqual(self.api.calls[-1][1]["text"], bot.HELP_TEXT)
-            for line in bot.HELP_TEXT.splitlines():
+            help_lines = [line for line in bot.HELP_TEXT.splitlines() if " - " in line]
+            for line in help_lines:
                 self.assertRegex(line, r"^/\S+ - \S.*$")
             self.assertLess(len(bot.HELP_TEXT), 3500)
-            commands = [line.split(" - ", 1)[0] for line in bot.HELP_TEXT.splitlines()]
+            commands = [line.split(" - ", 1)[0] for line in help_lines]
             self.assertEqual(commands, [name for name, _ in bot.COMMAND_DESCRIPTIONS])
             self.assertIn("/kaynaktest", commands)
             self.assertIn("/start", commands)

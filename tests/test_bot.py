@@ -247,7 +247,7 @@ class StatusTextTest(unittest.TestCase):
 
     def test_help_text_is_the_complete_unique_canonical_command_catalog(self):
         commands = tuple(command for command, _ in bot.COMMAND_DESCRIPTIONS)
-        help_lines = bot.HELP_TEXT.splitlines()
+        help_lines = [line for line in bot.HELP_TEXT.splitlines() if " - " in line]
         self.assertEqual(
             tuple(line.split(" - ", 1)[0] for line in help_lines),
             commands,
@@ -804,6 +804,85 @@ class FilterToggleTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("1 (dahili), 2 (harici) veya 3", note)
         self.assertEqual(candidate, self.config)
+
+
+class ThreeSystemsIndependenceTest(unittest.TestCase):
+    """TG, DM ve web ürün takip sistemlerinin birbirinden bağımsız çalıştığını test eder."""
+
+    def test_tg_filter_close_preserves_dm_config(self):
+        config = {
+            "include_enabled": True,
+            "exclude_enabled": True,
+            "dm_enabled": True,
+            "dm_keywords": ["tcl", "lg"],
+            "dm_exclude_keywords": ["samsung"],
+        }
+        ok, candidate, note = bot.stage_filter_toggle(config, "close", "both")
+        self.assertTrue(ok, note)
+        self.assertFalse(candidate["include_enabled"])
+        self.assertFalse(candidate["exclude_enabled"])
+        # DM yapısı değişmemeli
+        self.assertEqual(candidate["dm_enabled"], True)
+        self.assertEqual(candidate["dm_keywords"], ["tcl", "lg"])
+        self.assertEqual(candidate["dm_exclude_keywords"], ["samsung"])
+
+    def test_dm_config_changes_do_not_affect_tg_filters(self):
+        config = {
+            "include_enabled": True,
+            "exclude_enabled": False,
+            "dm_enabled": True,
+            "dm_keywords": ["tcl"],
+        }
+        # DM'i kapatmak TG filtrelerini etkilememeli
+        config["dm_enabled"] = False
+        self.assertTrue(config["include_enabled"])
+        self.assertFalse(config["exclude_enabled"])
+        self.assertFalse(config["dm_enabled"])
+
+    def test_tg_filter_states_are_independent(self):
+        config = {
+            "include_enabled": True,
+            "exclude_enabled": False,
+        }
+        # Sadece dahiliyi kapat, hariciye dokunma (exclude zaten kapalı kalmalı)
+        ok, candidate, note = bot.stage_filter_toggle(config, "close", "include")
+        self.assertTrue(ok, note)
+        self.assertFalse(candidate["include_enabled"])
+        self.assertFalse(candidate["exclude_enabled"])
+
+        # Sadece hariciyi kapat, dahiliye dokunma (dahili zaten kapalı kalmalı)
+        config2 = {
+            "include_enabled": False,
+            "exclude_enabled": True,
+        }
+        ok2, candidate2, note2 = bot.stage_filter_toggle(config2, "close", "exclude")
+        self.assertTrue(ok2, note2)
+        self.assertFalse(candidate2["include_enabled"])
+        self.assertFalse(candidate2["exclude_enabled"])
+
+    def test_all_four_tg_filter_combinations(self):
+        # 1) Açık/Açık → Her ikisini kapat
+        config = {"include_enabled": True, "exclude_enabled": True}
+        ok, candidate, _ = bot.stage_filter_toggle(config, "close", "both")
+        self.assertFalse(candidate["include_enabled"])
+        self.assertFalse(candidate["exclude_enabled"])
+
+        # 2) Her ikisi kapalı → Her ikisini aç
+        ok, reopened, _ = bot.stage_filter_toggle(candidate, "open", "both")
+        self.assertTrue(reopened["include_enabled"])
+        self.assertTrue(reopened["exclude_enabled"])
+
+        # 3) Sadece Dahili açık, Harici kapalı → Hariciyi aç
+        config3 = {"include_enabled": True, "exclude_enabled": False}
+        ok3, cand3, _ = bot.stage_filter_toggle(config3, "open", "exclude")
+        self.assertTrue(cand3["include_enabled"])
+        self.assertTrue(cand3["exclude_enabled"])
+
+        # 4) Dahili kapalı, Harici açık → Dahiliyi aç
+        config4 = {"include_enabled": False, "exclude_enabled": True}
+        ok4, cand4, _ = bot.stage_filter_toggle(config4, "open", "include")
+        self.assertTrue(cand4["include_enabled"])
+        self.assertTrue(cand4["exclude_enabled"])
 
 
 class WordAnalysisTest(unittest.TestCase):

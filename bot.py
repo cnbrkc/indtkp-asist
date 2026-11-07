@@ -3834,7 +3834,24 @@ COMMAND_DESCRIPTIONS = (
     # --- 7) Yönetim ---
     (COMMAND_RESTART, "Yeni takipçi çalışması başlatır; GH_PAT gerekir."),
 )
-HELP_TEXT = "\n".join(f"{command} - {description}" for command, description in COMMAND_DESCRIPTIONS)
+_HELP_CATEGORIES = (
+    ("**📋 Temel komutlar**", {COMMAND_HELP, COMMAND_START, COMMAND_STATUS, COMMAND_SETTINGS_MENU}),
+    ("**📝 Liste yönetimi**", {COMMAND_SETTINGS_ADD, COMMAND_SETTINGS_REMOVE, COMMAND_SETTINGS_SAVE, COMMAND_SETTINGS_REVERT}),
+    ("**🔎 Telegram indirim filtreleri**", {COMMAND_TG_FILTER_OPEN, COMMAND_TG_FILTER_CLOSE}),
+    ("**📩 Kişisel bildirim filtreleri (DM)**", {COMMAND_DM_STATUS, COMMAND_DM_FILTER_OPEN, COMMAND_DM_FILTER_CLOSE}),
+    ("**🌐 Web ürün takibi**", {COMMAND_WEB_TRACK, "/webtakipac", "/webtakipkapat", "/webtakipler", "/webtakipsil", "/webtakipiptal", "/webtakipyardim"}),
+    ("**🛠️ Gelişmiş araçlar**", {COMMAND_SOURCES, COMMAND_SOURCE_TEST, COMMAND_ANALYZE, COMMAND_TEST, COMMAND_ID}),
+    ("**⚙️ Yönetim**", {COMMAND_RESTART}),
+)
+
+_HELP_LINES: list[str] = []
+for _category_title, _category_commands in _HELP_CATEGORIES:
+    _HELP_LINES.append("")
+    _HELP_LINES.append(_category_title)
+    for _command, _description in COMMAND_DESCRIPTIONS:
+        if _command in _category_commands:
+            _HELP_LINES.append(f"{_command} - {_description}")
+HELP_TEXT = "\n".join(_HELP_LINES)
 
 
 def _bot_api_stats_line() -> str:
