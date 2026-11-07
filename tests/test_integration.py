@@ -2755,13 +2755,13 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.STATS['deduped'], 1)
         self.assertEqual(client.edited[-1][1], 777)
 
-    def test_explicit_used_condition_kept_separate_without_listing_evidence(self):
+    def test_explicit_used_condition_does_not_split_title_price_identity(self):
         client = self.start()
         source = next(iter(bot.SOURCE_IDS))
         self.dispatch(client, [(source, 1, self.TITLE + '\nFiyat: 13.485 TL', False),
                                (source, 2, self.TITLE + '\nFiyat: 13.485 TL\nÜrün durumu: İkinci el yeni gibi', True)])
-        self.assertEqual(len(client.delivered), 2)
-        self.assertEqual(bot.STATS['deduped'], 0)
+        self.assertEqual(len(client.delivered), 1)
+        self.assertEqual(bot.STATS['deduped'], 1)
 
     def test_different_model_and_real_price_drop_are_not_suppressed(self):
         client = self.start()
@@ -2808,7 +2808,7 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
                 self.assertEqual(bot.STATS['deduped'], 1)
                 self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['offer'][0], 1298)
 
-    def test_same_state_merges_but_explicit_conflict_and_variant_do_not(self):
+    def test_conditions_merge_but_explicit_title_variant_does_not(self):
         client = self.start()
         source = next(iter(bot.SOURCE_IDS))
         self.dispatch(client, [
@@ -2817,8 +2817,8 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
             (source, 3, self.TITLE + '\nFiyat: 13.485 TL\nÜrün durumu: Yenilenmiş', False),
             (source, 4, self.TITLE + ' Siyah\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi', True),
         ])
-        self.assertEqual(len(client.delivered), 3)
-        self.assertEqual(bot.STATS['deduped'], 1)
+        self.assertEqual(len(client.delivered), 2)
+        self.assertEqual(bot.STATS['deduped'], 2)
 
     def test_same_source_identity_is_not_recounted_when_state_is_missing(self):
         # Kesin kaynak kimliği, yalnız başlık/fiyattan daha güçlü kanıttır.

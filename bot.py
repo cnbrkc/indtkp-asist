@@ -2152,8 +2152,19 @@ def smart_dedup_title(event: Any) -> str:
     düzenine geçmek tekrar (dedup) anahtarlarını değiştirmez.
     """
     cleaned = sanitize_message(event)
+    text = message_text(cleaned)
+    # If the source's first line already contains "price - product name",
+    # keep that product name; otherwise a following Prime/shipping line can be
+    # mistaken for the title by generic title extraction.
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    header_price, header_title = split_header_line(first_line)
+    if header_price and header_title and not price_filter.is_generic_title(header_title):
+        return header_title
+    first_title, first_price = price_filter.analyze(first_line)
+    if first_price.value is not None and first_price.confidence in {"high", "medium"} and first_title:
+        return first_title
     # Display headers may be truncated; dedup must retain model/size suffixes.
-    title = price_filter.extract_title(message_text(cleaned), _webpage_hints(event), limit=MESSAGE_LIMIT)
+    title = price_filter.extract_title(text, _webpage_hints(event), limit=MESSAGE_LIMIT)
     fallback = _search_query(cleaned, limit=MESSAGE_LIMIT)
     return title or (fallback if not price_filter.is_generic_title(fallback) else "")
 
@@ -2204,7 +2215,14 @@ def compose_message(
     quote_body = False
     if SMART_HEADER:
         smart_title, smart_price = smart_header_info(obj, cleaned_obj, source_body)
-        product_title = smart_title or product_title
+        if smart_price.reason == "birden fazla ürün bloğu: seçim belirsiz":
+            # Never let the generic search fallback pair one product's name with
+            # another product's price; the original multi-product body follows.
+            product_title = "Birden fazla ürün"
+        else:
+            product_title = smart_title or (
+                product_title if not price_filter.is_generic_title(product_title) else ""
+            )
         if smart_price.value is not None and smart_price.confidence in {"high", "medium"}:
             # Yalnızca high/medium: low/none fiyat üst satıra TAŞINMAZ (❓ kalır).
             price_text = header_price_text(smart_price.value)
@@ -2986,162 +3004,17 @@ def recover_poll_interval(current: float, base: float) -> float:
 
 
 def offer_terms(obj: Any) -> tuple[float | None, str]:
-    """Conservative price/condition identity; never compare pack and unit prices blindly."""
+    """Güvenilir ürün fiyatını döndür; koşul, mağaza ve bağlantılar kimlik değildir."""
     text = message_text(obj)
     strike = price_filter.strike_spans_from_entities(text, entities_for_text(obj, text))
     info = price_filter.extract_price(text, strike)
-    # Ayrıştırıcının güven/rol kararını adaylardan yeniden fiyat türeterek aşma.
-    # Özellikle belirsiz birim/toplam ve low sonuçlar fiyat düşüşü değildir.
     value = info.value if info.confidence in {"high", "medium"} else None
-    # Different purchase requirements are separate offers, not a price drop.
-    conditions = re.findall(
-        r"\d+\s*(?:adet|ürün|urun)\s*alımda|\d+\s*al\s*[,;]?\s*\d+|"
-        r"(?:kupon|kod)\s*[:=]\s*[\w-]+|(?:ilk alışveriş|prime|abonelik)|"
-        r"(?:birim fiyat|adet fiyatı|/\s*adet)|\d[\d.,]*\s*tl[^\S\r\n]*(?:kupon|ve üzeri)",
-        normalize(text),
-    )
-    # Satıcı/kaynak adı kimlik değildir; açık ürün durumu ise anlamlıdır.
-    # Durum yoksa "sıfır" varsayılmaz. Farklı kaynak ilanlarını eşitleyecek
-    # kanıt taşımayan bu imzada bilinmeyen durum wildcard olarak kullanılmaz.
-    status_text = strip_dedup_badge(text)[1]
-    footer = dedup_footer_name(status_text)
-    if footer:
-        status_text = status_text.rsplit(footer, 1)[0]
-    status = normalize(status_text)
-    if re.search(r"ikinci el|kullanılmış|kullanilmis|yenilenmiş|yenilenmis", status):
-        conditions.append("durum:yenilenmiş" if re.search(r"yenilenmiş|yenilenmis", status)
-                          else "durum:ikinci el yeni gibi" if "yeni gibi" in status else "durum:ikinci el")
-    conditions.extend(_offer_marker_terms(status_text))
-    return value, "|".join(sorted(set(" ".join(c.split()) for c in conditions)))
-
-
-# Teklif koşulu işaretleri (depo/warehouse, açık kutu, kutusuz, outlet, 2. el) ve
-# kargo. Yalnızca kısa satırlarda aranır (en fazla _OFFER_SHORT_LINE_WORDS kelime);
-# URL'ler ve uzun açıklama cümleleri taranmaz; satıcı satırları (``Satıcı: ...``)
-# kondisyon sayılmaz. Bir mesajda görünen işaret teklifi farklı kılar: otomatik
-# birleştirme yok (güvenli yön: ayrı bildirim).
-_OFFER_URL_RE = re.compile(r"https?://\S+|www\.\S+|\S+\.(?:com|net|org)(?:\.tr)?/\S*")
-_OFFER_SHORT_LINE_WORDS = 6
-_OFFER_SELLER_LINE_RE = re.compile(r"^[^\w]*(?:satıcı|satici|mağaza|magaza)\b")
-_OFFER_CONDITION_RULES = (
-    ("depo", re.compile(r"\bdepo\b|\bwarehouse\b")),
-    ("açık kutu", re.compile(r"açık kutu|acik kutu|open box")),
-    ("kutusuz", re.compile(r"\bkutusuz\b")),
-    ("outlet", re.compile(r"\boutlet\b")),
-    ("ikinci el", re.compile(r"(?<![\d.,])2\s*\.?\s*el\b")),
-)
-
-
-def _offer_marker_terms(text: str) -> list[str]:
-    markers: list[str] = []
-    for raw_line in _OFFER_URL_RE.sub(" ", normalize(text)).splitlines():
-        line = " ".join(raw_line.split())
-        if not line or len(re.findall(r"\w+", line)) > _OFFER_SHORT_LINE_WORDS:
-            continue
-        if _OFFER_SELLER_LINE_RE.match(line):
-            continue
-        markers.extend(f"durum:{name}" for name, pattern in _OFFER_CONDITION_RULES
-                       if pattern.search(line))
-        if re.search(r"\bkargo\b", line):
-            free = re.search(r"ücretsiz|ucretsiz|bedava", line)
-            markers.append("kargo:ücretsiz" if free else "kargo:" + line)
-    return markers
+    return value, ""
 
 
 def dedup_offer_key(title: str, offer: tuple[float | None, str]) -> str | None:
-    key = dedup_key(title)
-    if key and offer[1]:
-        return key + "\x1f" + offer[1]
-    return key
-
-
-# Dedup bağlantı kimliğinden çıkarılan alanlar: kaynak (t.me) linkleri, kanalın
-# WhatsApp tanıtım linkleri ve bildirim botunun ürettiği arama düğmeleri
-# (Google/Akakçe/Cimri) ürün bağlantısı değildir; kanala özgüdürler. Genel kural:
-# yalnızca utm_* takip parametresi kimliği değiştirmez, diğer parametreler
-# kimliktedir (fail-open: farklı çıkarsa çelişki sayılır, bastırılmaz).
-_LINK_IDENTITY_EXCLUDED_HOSTS = {"t.me", "telegram.me", "wa.me", "www.wa.me"}
-# google.com, www.google.com.tr, akakce.com, cimri.com (alt alan adlarıyla).
-_LINK_SEARCH_DOMAIN_RE = re.compile(
-    r"(?:^|\.)(?:google\.(?:(?:com|co)(?:\.[a-z]{2})?|[a-z]{2})|akakce\.com|cimri\.com)$"
-)
-
-# Amazon ürün kimliği: yalnızca amazon.com.tr, ürün ASIN'i (büyük harf, 10 karakter)
-# /dp/ veya /gp/product/ yolunda (resmî Associates biçimi: dp/ASIN/ref=nosim?tag=...).
-# Yalnızca ürün bilgisi taşımadığı doğrulanmış parametreler kimlikten çıkarılır:
-# tag (ilişkilendirme kimliği), ref/ref_ (yönlendirme izi), linkCode/linkId/ascsubtag
-# (ilişkilendirme bağlantı kimlikleri). Emin olunmayan her parametre kimlikte kalır:
-# qid, sr, keywords, sprefix, crid, pd_rd_*, pf_rd_*, camp, creative, creativeASIN,
-# th, psc=1 dışındaki psc değerleri, smid, ... (P4 korunur). Yalnızca
-# psc=1, aynı ASIN için isteğe bağlı ürün sayfası işareti olarak ele alınır;
-# başka parametreler, varyant başlığı ve teklif koşulları korunur.
-_AMAZON_PRODUCT_RE = re.compile(r"/(?:dp|gp/product)/([A-Z0-9]{10})(?=[/?#]|$)")
-_AMAZON_TRACKING_PARAMS = frozenset({"tag", "ref", "ref_", "linkcode", "linkid", "ascsubtag"})
-_AMAZON_TRACKING_PREFIXES = ("utm_",)
-
-
-def _amazon_product_identity(host: str, path: str, query: Sequence[tuple[str, str]]) -> str | None:
-    """amazon.com.tr ürün bağlantısının kimliği; uygulanmazsa ``None`` (genel kimlik)."""
-    if re.sub(r"^(?:www|m)\.", "", host) != "amazon.com.tr":
-        return None
-    match = _AMAZON_PRODUCT_RE.search(path or "")
-    if not match:
-        return None
-    kept = sorted(
-        (name, value) for name, value in query
-        if not name.lower().startswith(_AMAZON_TRACKING_PREFIXES)
-        and name.lower() not in _AMAZON_TRACKING_PARAMS
-        and not (name.lower() == "psc" and value == "1")
-    )
-    identity = f"amazon.com.tr#{match.group(1)}"
-    if kept:
-        identity += "?" + urllib.parse.urlencode(kept)
-    return identity
-
-
-def product_link_keys(obj: Any) -> frozenset[str]:
-    """Ürün bağlantılarının normalize kimlik kümesi (yalnızca dedup için).
-
-    Dönüş; gösterime, arama sorgularına ve mesaj içeriğine girmez. Aynı ürün
-    farklı mağaza bağlantısıyla gelebilir: bu küme tek başına kimlik
-    değildir, ``dedup_before_send`` içinde yalnızca *çelişki* kanıtı olarak
-    kullanılır (iki tarafın da bağlantısı var ve hiçbiri örtüşmüyorsa
-    bastırma yapılmaz — fırsatı kaybetmektense fazladan bildirim).
-    """
-    keys: set[str] = set()
-    for item in extract_links(obj):
-        try:
-            parsed = urllib.parse.urlsplit(item["url"])
-        except ValueError:
-            continue
-        host = (parsed.hostname or "").lower()
-        if not host or host in _LINK_IDENTITY_EXCLUDED_HOSTS:
-            continue
-        if is_whatsapp_url(item["url"]):
-            continue  # kanal tanıtımı: kaynak kanala özgü, ürün değil
-        if _LINK_SEARCH_DOMAIN_RE.search(host.rstrip(".")):
-            continue
-        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        store_identity = _amazon_product_identity(host.rstrip("."), parsed.path or "", query)
-        if store_identity:
-            keys.add(store_identity)
-            continue
-        kept = sorted(
-            (name, value) for name, value in query
-            if not name.lower().startswith("utm_")
-        )
-        normalized = host + (parsed.path or "").rstrip("/")
-        if kept:
-            normalized += "?" + urllib.parse.urlencode(kept)
-        keys.add(normalized)
-    return frozenset(keys)
-
-
-def _link_conflict(entry_links: Any, links: Any) -> bool:
-    """İki tarafın da ürün bağlantısı var ve hiçbiri örtüşmüyor mu?"""
-    old = set(entry_links or ())
-    new = set(links or ())
-    return bool(old and new and old.isdisjoint(new))
+    """Tekrar anahtarı ürün adıdır; fiyat yalnızca aynı ürünün fiyat değişimini denetler."""
+    return dedup_key(title)
 
 
 _TITLE_STOPWORDS = frozenset({"ve", "ile", "icin", "olan"})
@@ -3282,350 +3155,84 @@ def _title_has_strong_identity(title: str | None) -> bool:
     return bool(prof and len(prof["stems"]) >= 3)
 
 
-def titles_match_product(title_a: str | None, title_b: str | None) -> bool:
-    """İki başlığın aynı ürünü temsil edip etmediğini sıkı koruma kurallarıyla denetle.
+def _title_model_codes(profile: dict[str, Any]) -> set[str]:
+    """Model kodları ölçü/kapasite token'larından ayır."""
+    return {
+        word for word in profile["words"]
+        if len(word) >= 4 and any(ch.isalpha() for ch in word) and any(ch.isdigit() for ch in word)
+        and not _MEASUREMENT_TOKEN_RE.fullmatch(word)
+    }
 
-    1) Birebir normalize anahtar eşleşmesi en yüksek önceliğe sahiptir.
-    2) Yakın başlıklarda en az 3 anlamlı kelime, aynı marka (ilk kelime), aynı
-       ilk-3-kelime kümesi ve birebir aynı model/kapasite/boyut/renk/varyant
-       nitelikleri zorunludur; ilk 3 kelime tek başına asla birleştirme yapmaz.
+
+def _title_capacities(profile: dict[str, Any]) -> set[str]:
+    """Açık kapasite farkları (128 GB/256 GB, 150 ml/250 ml) ürün varyantıdır."""
+    return {
+        word for word in profile["words"]
+        if re.fullmatch(r"\d+(?:\.\d+)?(?:gb|tb|ml|cl|mah|wh|kg|g|adet)", word)
+    }
+
+
+def titles_match_product(title_a: str | None, title_b: str | None) -> bool:
+    """Başlıkları karşılaştır: aynı model kodu yeterli güçlü eşleşmedir.
+
+    Mağaza, bağlantı, Prime/kargo/kupon koşulları ürün adını geçersiz kılamaz.
+    Açık renk, kapasite ve ürün-varyant çelişkileri ise korunur.
     """
-    key_a = dedup_key(title_a)
-    key_b = dedup_key(title_b)
+    key_a, key_b = dedup_key(title_a), dedup_key(title_b)
     if not key_a or not key_b:
         return False
     if key_a == key_b:
         return True
-    pa = _title_profile(title_a)
-    pb = _title_profile(title_b)
-    if not pa or not pb:
+    pa, pb = _title_profile(title_a), _title_profile(title_b)
+    if not pa or not pb or pa["words"][0] != pb["words"][0]:
         return False
-    stems_a = pa["stems"]
-    stems_b = pb["stems"]
-    if len(stems_a) < 3 or len(stems_b) < 3:
+
+    # A shared explicit model code bridges editorial title variations such as
+    # inch/cm descriptions and optional feature lists.
+    shared_codes = _title_model_codes(pa) & _title_model_codes(pb)
+    if shared_codes:
+        critical_variants = _TITLE_VARIANT_WORDS - {"ultra"}
+        variants_a = pa["variants"] & critical_variants
+        variants_b = pb["variants"] & critical_variants
+        return (pa["colors"] == pb["colors"]
+                and variants_a == variants_b
+                and _title_capacities(pa) == _title_capacities(pb))
+
+    codes_a, codes_b = _title_model_codes(pa), _title_model_codes(pb)
+    if codes_a and codes_b and codes_a.isdisjoint(codes_b):
         return False
-    if stems_a[0] != stems_b[0] or set(stems_a[:3]) != set(stems_b[:3]):
+
+    # With no shared model code, allow only close same-brand title variants. Exact
+    # model/spec, color and product-type conflicts still prevent a merge.
+    if (pa["colors"] != pb["colors"] or pa["variants"] != pb["variants"]
+            or (("+" in pa["words"]) != ("+" in pb["words"]))):
         return False
-    if (
-        pa["specs"] != pb["specs"]
-        or pa["colors"] != pb["colors"]
-        or pa["variants"] != pb["variants"]
-    ):
+    capacities_a, capacities_b = _title_capacities(pa), _title_capacities(pb)
+    if capacities_a and capacities_b and capacities_a != capacities_b:
         return False
-    sa = pa["stem_set"]
-    sb = pb["stem_set"]
-    if sa == sb:
-        return True
-    only_a = sa - sb
-    only_b = sb - sa
-    if not only_a or not only_b:
-        extra = only_b or only_a
-        if extra <= _TITLE_BENIGN_EXTRA_WORDS:
-            return True
-        return bool(len(extra) <= 2 and pa["has_model_code"] and pb["has_model_code"])
-    return bool(only_a <= _TITLE_BENIGN_EXTRA_WORDS and only_b <= _TITLE_BENIGN_EXTRA_WORDS)
-
-
-_KNOWN_STORE_DOMAINS: dict[str, str] = {
-    "amazon.com.tr": "amazon.com.tr",
-    "amzn.to": "amazon.com.tr",
-    "amzn.eu": "amazon.com.tr",
-    "a.co": "amazon.com.tr",
-    "hepsiburada.com": "hepsiburada",
-    "hb.biz": "hepsiburada",
-    "hepsiburada.adj.st": "hepsiburada",
-    "trendyol.com": "trendyol",
-    "trendyol-milla.com": "trendyol",
-    "ty.gl": "trendyol",
-    "tyml.gl": "trendyol",
-    "trg.li": "trendyol",
-    "n11.com": "n11",
-    "pazarama.com": "pazarama",
-    "ciceksepeti.com": "ciceksepeti",
-    "mediamarkt.com.tr": "mediamarkt",
-    "teknosa.com": "teknosa",
-    "vatanbilgisayar.com": "vatan",
-    "pttavm.com": "pttavm",
-    "itopya.com": "itopya",
-    "incehesap.com": "incehesap",
-    "a101.com.tr": "a101",
-    "bim.com.tr": "bim",
-    "sokmarket.com.tr": "sok",
-    "migros.com.tr": "migros",
-    "carrefoursa.com": "carrefour",
-    "decathlon.com.tr": "decathlon",
-    "ikea.com.tr": "ikea",
-    "koctas.com.tr": "koctas",
-    "lcw.com": "lcw",
-    "lcwaikiki.com": "lcw",
-    "defacto.com.tr": "defacto",
-    "boyner.com.tr": "boyner",
-    "morhipo.com": "morhipo",
-    "idefix.com": "idefix",
-    "dr.com.tr": "dr",
-    "kitapyurdu.com": "kitapyurdu",
-    "aliexpress.com": "aliexpress",
-    "temu.com": "temu",
-    "ebay.com": "ebay",
-    "steampowered.com": "steam",
-    "epicgames.com": "epic",
-}
-
-_TEXT_STORE_ALIASES: dict[str, str] = {
-    "amazon": "amazon.com.tr",
-    "amazon.com.tr": "amazon.com.tr",
-    "amazon tr": "amazon.com.tr",
-    "amazon turkiye": "amazon.com.tr",
-    "hepsiburada": "hepsiburada",
-    "trendyol": "trendyol",
-    "n11": "n11",
-    "pazarama": "pazarama",
-    "ciceksepeti": "ciceksepeti",
-    "mediamarkt": "mediamarkt",
-    "media markt": "mediamarkt",
-    "teknosa": "teknosa",
-    "vatan": "vatan",
-    "vatan bilgisayar": "vatan",
-    "pttavm": "pttavm",
-    "itopya": "itopya",
-    "incehesap": "incehesap",
-    "a101": "a101",
-    "bim": "bim",
-    "sok": "sok",
-    "migros": "migros",
-    "carrefoursa": "carrefour",
-    "decathlon": "decathlon",
-    "ikea": "ikea",
-    "koctas": "koctas",
-    "lcw": "lcw",
-    "lc waikiki": "lcw",
-    "defacto": "defacto",
-    "boyner": "boyner",
-    "idefix": "idefix",
-}
-
-_HB_PRODUCT_ID_RE = re.compile(r"-(?:p|pm)-(hb[a-z0-9]{6,20})(?=[/?#]|$)", re.IGNORECASE)
-_TY_PRODUCT_ID_RE = re.compile(r"-p-(\d{5,})(?=[/?#]|$)")
-_OTHER_AMAZON_HOST_RE = re.compile(r"^(?:[a-z0-9-]+\.)*(amazon\.[a-z.]{2,6})$")
-_OTHER_AMAZON_ASIN_RE = re.compile(
-    r"/(?:dp|gp/product|gp/aw/d)/([A-Z0-9]{10})(?=[/?#]|$)", re.IGNORECASE,
-)
-_EXPLICIT_VARIANT_QUERY_KEYS = frozenset({
-    "sku", "product_id", "productid", "urun_id",
-    "variant", "varyant", "renk", "color", "beden", "size",
-})
-_TEXT_STORE_LINE_RE = re.compile(r"^(?:magaza\s*[:=-]\s*)?([a-z0-9.]+(?:\s+[a-z0-9.]+)?)$")
-
-
-def _host_store_name(host: str, brand_token: str = "") -> str | None:
-    host = host.strip(".").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    if not host:
-        return None
-    for domain, canonical in _KNOWN_STORE_DOMAINS.items():
-        if host == domain or host.endswith("." + domain):
-            return canonical
-    m_amz = _OTHER_AMAZON_HOST_RE.match(host)
-    if m_amz:
-        return m_amz.group(1)
-    if len(brand_token) >= 3:
-        labels = host.split(".")
-        if brand_token in labels:
-            if len(labels) >= 3 and labels[-2] in {"com", "co", "org", "net"}:
-                return ".".join(labels[-3:])
-            if len(labels) >= 2:
-                return ".".join(labels[-2:])
-    return None
-
-
-def _analyze_single_url_for_offer(
-    raw_url: str,
-    brand_token: str,
-    stores: set[str],
-    product_ids: dict[str, set[str]],
-    variant_params: dict[tuple[str, str], set[str]],
-    depth: int = 0,
-) -> None:
-    if depth > 2 or not raw_url:
-        return
-    try:
-        parts = urllib.parse.urlsplit(raw_url)
-    except ValueError:
-        return
-    host = (parts.hostname or "").strip(".").lower()
-    if not host:
-        return
-    query_pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
-    # GelirOrtakları / Admitad / Adjust gibi sarmalayıcıların hedef URL parametresi
-    embedded = [
-        val for _, val in query_pairs
-        if val.startswith(("https://", "http://"))
-    ]
-    if embedded and _host_store_name(host, brand_token) is None:
-        for target_url in embedded:
-            _analyze_single_url_for_offer(
-                target_url, brand_token, stores, product_ids, variant_params, depth + 1,
-            )
-        return
-
-    amz_identity = _amazon_product_identity(host, parts.path, parts.query)
-    if amz_identity:
-        stores.add("amazon.com.tr")
-        product_ids.setdefault("amazon.com.tr", set()).add(amz_identity)
-        return
-
-    store = _host_store_name(host, brand_token)
-    if store:
-        stores.add(store)
-        if store == "hepsiburada":
-            m_hb = _HB_PRODUCT_ID_RE.search(parts.path or "")
-            if m_hb:
-                product_ids.setdefault(store, set()).add(m_hb.group(1).upper())
-        elif store == "trendyol":
-            m_ty = _TY_PRODUCT_ID_RE.search(parts.path or "")
-            if m_ty:
-                product_ids.setdefault(store, set()).add(m_ty.group(1))
-        elif store.startswith("amazon."):
-            m_asin = _OTHER_AMAZON_ASIN_RE.search(parts.path or "")
-            if m_asin:
-                product_ids.setdefault(store, set()).add(m_asin.group(1).upper())
-
-    norm_host = host[4:] if host.startswith("www.") else host
-    norm_path = re.sub(r"/+", "/", parts.path or "/").rstrip("/") or "/"
-    for k, v in query_pairs:
-        kl = k.lower()
-        vv = v.strip().lower()
-        if kl in _EXPLICIT_VARIANT_QUERY_KEYS and vv:
-            variant_params.setdefault((f"{norm_host}{norm_path}", kl), set()).add(vv)
-
-
-def _analyze_offer_links(
-    links: Any, brand_token: str = "",
-) -> tuple[set[str], dict[str, set[str]], dict[tuple[str, str], set[str]]]:
-    stores: set[str] = set()
-    product_ids: dict[str, set[str]] = {}
-    variant_params: dict[tuple[str, str], set[str]] = {}
-    for link_key in (links or ()):
-        if not isinstance(link_key, str) or not link_key:
-            continue
-        if link_key.startswith("amazon.com.tr#"):
-            stores.add("amazon.com.tr")
-            product_ids.setdefault("amazon.com.tr", set()).add(link_key)
-            continue
-        _analyze_single_url_for_offer(
-            "https://" + link_key, brand_token, stores, product_ids, variant_params,
-        )
-    return stores, product_ids, variant_params
-
-
-def extract_offer_stores(obj: Any, title: str | None = None, links: Any = None) -> frozenset[str]:
-    """İletinin kanonik mağaza kümesini bağlantılardan (yoksa yalın mağaza satırından) çıkar."""
-    resolved_links = product_link_keys(obj) if links is None else links
-    prof = _title_profile(title)
-    brand_token = prof["words"][0] if prof and prof["words"] else ""
-    url_stores, _, _ = _analyze_offer_links(resolved_links, brand_token)
-    if url_stores:
-        return frozenset(url_stores)
-    raw_text = message_text(obj) if not isinstance(obj, str) else obj
-    if not raw_text:
-        return frozenset()
-    _, body = strip_dedup_badge(raw_text)
-    footer = dedup_footer_name(body)
-    if footer:
-        body = body.rsplit(footer, 1)[0]
-    found: set[str] = set()
-    for raw_line in body.splitlines():
-        folded = exclusion_normalize(raw_line).replace("ı", "i")
-        cleaned = re.sub(r"[^a-z0-9.:\s=-]+", " ", folded)
-        cleaned = " ".join(cleaned.split())
-        if not cleaned:
-            continue
-        m = _TEXT_STORE_LINE_RE.match(cleaned)
-        if not m:
-            continue
-        alias = m.group(1).strip()
-        canonical = _TEXT_STORE_ALIASES.get(alias)
-        if canonical:
-            found.add(canonical)
-    return frozenset(found)
-
-
-def _offer_link_conflict(
-    entry_title: str | None,
-    entry_links: Any,
-    entry_stores: Any,
-    title: str | None,
-    links: Any,
-    stores: Any,
-) -> bool:
-    """Başlık tabanlı dedup için mağaza ve kanonik ürün kimliği çelişkisini denetle.
-
-    - Zayıf/kısa başlıklarda (< 3 anlamlı kelime, örn. ``Çay``) mevcut katı
-      ``_link_conflict`` davranışı aynen korunur.
-    - Güçlü ürün başlıklarında ise salt yönlendirme/affiliate/Paylaş Kazan URL
-      farklılığı çelişki sayılmaz; ancak farklı mağazalar, farklı ASIN/HB-SKU/
-      Trendyol-p kimlikleri, korunan Amazon varyant parametreleri (``th=``,
-      ``smid=`` vb.) veya açık varyant sorgu parametreleri çelişki üretir.
-    """
-    if not _title_has_strong_identity(entry_title) or not _title_has_strong_identity(title):
-        return _link_conflict(entry_links, links)
-
-    pa = _title_profile(entry_title)
-    pb = _title_profile(title)
-    brand_a = pa["words"][0] if pa and pa["words"] else ""
-    brand_b = pb["words"][0] if pb and pb["words"] else ""
-
-    url_stores_a, pids_a, vparams_a = _analyze_offer_links(entry_links, brand_a)
-    url_stores_b, pids_b, vparams_b = _analyze_offer_links(links, brand_b)
-
-    eff_stores_a = set(entry_stores or ()) | url_stores_a
-    eff_stores_b = set(stores or ()) | url_stores_b
-    if eff_stores_a and eff_stores_b and eff_stores_a.isdisjoint(eff_stores_b):
-        return True
-
-    for shared_store in pids_a.keys() & pids_b.keys():
-        if pids_a[shared_store] and pids_b[shared_store] and pids_a[shared_store].isdisjoint(pids_b[shared_store]):
-            return True
-
-    for shared_param in vparams_a.keys() & vparams_b.keys():
-        if vparams_a[shared_param] and vparams_b[shared_param] and vparams_a[shared_param].isdisjoint(vparams_b[shared_param]):
-            return True
-
-    return False
+    specs_a = set(pa["specs"])
+    specs_b = set(pb["specs"])
+    if specs_a and specs_b and specs_a != specs_b:
+        return False
+    words_a, words_b = pa["stem_set"], pb["stem_set"]
+    overlap = len(words_a & words_b)
+    return overlap >= 4 and overlap / min(len(words_a), len(words_b)) >= 0.7
 
 
 def _find_matching_dedup_key(
-    cache: dict[str, dict[str, Any]],
-    title: str | None,
-    offer: tuple | None,
-    links: Any,
-    stores: Any,
+    cache: dict[str, dict[str, Any]], title: str | None,
 ) -> str | None:
-    """Önbellekte birebir anahtarı olmayan yakın başlıklı aynı ürün kaydını bul."""
+    """Başlık anahtarı farklıysa aynı ürün model koduyla önceki kaydı bul."""
     if not _title_has_strong_identity(title):
         return None
-    cond = (offer or (None, ""))[1]
     best_key: str | None = None
     best_rank: tuple[int, float] = (-1, -1.0)
     for cand_key, cand_entry in cache.items():
-        if cand_entry.get("failed"):
-            continue
-        cand_offer = cand_entry.get("offer")
-        if cand_offer is not None and cand_offer[1] != cond:
-            continue
-        cand_title = cand_entry.get("title")
-        if not titles_match_product(cand_title, title):
-            continue
-        if _offer_link_conflict(
-            cand_title, cand_entry.get("links"), cand_entry.get("stores"),
-            title, links, stores,
-        ):
+        if cand_entry.get("failed") or not titles_match_product(cand_entry.get("title"), title):
             continue
         rank = (0 if cand_entry.get("pending") else 1, float(cand_entry.get("last_seen", 0.0)))
         if rank > best_rank:
-            best_rank = rank
-            best_key = cand_key
+            best_rank, best_key = rank, cand_key
     return best_key
 
 
@@ -3648,8 +3255,6 @@ def _dedup_whole_tl(value: Any) -> int | None:
 def better_or_different_offer(old: tuple | None, new: tuple | None) -> bool:
     if old is None or new is None:
         return False
-    if old[1] != new[1]:
-        return True
     if new[0] is None:
         return False
     if old[0] is None:
@@ -3671,8 +3276,7 @@ def better_or_different_offer(old: tuple | None, new: tuple | None) -> bool:
 
 def new_dedup_entry(title: str, token: Any, source_name: str | None = None,
                     footer_name: str | None = None,
-                    links: Any = None, preload: bool = False,
-                    stores: Any = None) -> dict[str, Any]:
+                    preload: bool = False) -> dict[str, Any]:
     """Gönderim rezervasyonu konmuş yeni önbellek kaydı (``pending=True``).
 
     ``sources`` ilk kopyayı paylaşan grupları tutar; çoklu paylaşım notu
@@ -3686,8 +3290,6 @@ def new_dedup_entry(title: str, token: Any, source_name: str | None = None,
     name = (source_name or "").strip()
     return {
         "title": title,
-        "links": set(links or ()),    # ilk kopyanın ürün bağlantı kimliği
-        "stores": set(stores or ()),  # ilk kopyanın kanonik mağaza kimliği
         "preload": bool(preload),     # kayıt açılış taramasından mı geldi?
         "sources": [name] if name else [],
         "footer_name": (footer_name or "").strip(),
@@ -6781,8 +6383,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
         key: str, title: str, source_name: str | None = None,
         footer_name: str | None = None,
         offer: tuple[float | None, str] | None = None,
-        links: Any = None,
-        stores: Any = None,
     ) -> tuple[str, Any, str]:
         """Karar ver: ``("send", token, hedef_anahtar)`` yeni gönderim, ``("dup", None, hedef_anahtar)`` tekrar.
 
@@ -6798,34 +6398,15 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 prune_dedup_cache(DEDUP_CACHE, time.time(), DEDUP_WINDOW_SECONDS, DEDUP_MAX_ENTRIES)
                 active_key = (
                     key if key in DEDUP_CACHE
-                    else (_find_matching_dedup_key(DEDUP_CACHE, title, offer, links, stores) or key)
+                    else (_find_matching_dedup_key(DEDUP_CACHE, title) or key)
                 )
                 entry = DEDUP_CACHE.get(active_key)
-                # Bağlantı ve mağaza çelişkisi: güçlü başlıklarda yalnızca mağaza
-                # veya kanonik ürün/varyant kimliği çelişirse ayrı tutulur; zayıf
-                # başlıklarda mevcut katı ``_link_conflict`` uygulanır. Preload
-                # kaydında hiç ürün bağlantısı yoksa canlı bağlantılı fırsat yutulmaz.
-                unverified_preload = bool(
-                    entry is not None and entry.get("preload") and links
-                    and not entry.get("links")
-                )
-                link_or_store_conflict = (
-                    entry is not None
-                    and _offer_link_conflict(
-                        entry.get("title"), entry.get("links"), entry.get("stores"),
-                        title, links, stores,
-                    )
-                )
                 if entry is None or entry.get("failed") or (
                     not entry.get("pending")
-                    and (better_or_different_offer(entry.get("offer"), offer)
-                         or link_or_store_conflict
-                         or unverified_preload)
+                    and better_or_different_offer(entry.get("offer"), offer)
                 ):
-                    target_key = active_key if (entry is not None and not link_or_store_conflict) else key
-                    entry = new_dedup_entry(
-                        title, token, source_name, footer_name, links=links, stores=stores,
-                    )
+                    target_key = active_key
+                    entry = new_dedup_entry(title, token, source_name, footer_name)
                     entry["owner"] = asyncio.current_task()
                     entry["offer"] = offer
                     DEDUP_CACHE[target_key] = entry
@@ -6858,7 +6439,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         current["ready"].set()
                         token = object()
                         DEDUP_CACHE[active_key] = new_dedup_entry(
-                            title, token, source_name, footer_name, links=links, stores=stores,
+                            title, token, source_name, footer_name,
                         )
                         DEDUP_CACHE[active_key]["owner"] = asyncio.current_task()
                         DEDUP_CACHE[active_key]["offer"] = offer
@@ -7183,30 +6764,16 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 media = getattr(message, "media", None)
                 is_media = bool(media) and not isinstance(media, types.MessageMediaWebPage)
                 raw_entities = list(getattr(message, "entities", None) or [])
-                msg_links = product_link_keys(message)
-                msg_stores = extract_offer_stores(message, title, links=msg_links)
                 async with DEDUP_LOCK:
                     target_key = (
                         key if key in DEDUP_CACHE
-                        else (_find_matching_dedup_key(DEDUP_CACHE, title, terms, msg_links, msg_stores) or key)
+                        else (_find_matching_dedup_key(DEDUP_CACHE, title) or key)
                     )
                     existing = DEDUP_CACHE.get(target_key)
-                    existing_conflict = (
-                        existing is not None
-                        and _offer_link_conflict(
-                            existing.get("title"), existing.get("links"), existing.get("stores"),
-                            title, msg_links, msg_stores,
-                        )
-                    )
-                    if existing is None or (
-                        not existing_conflict
-                        and better_or_different_offer(existing.get("offer"), terms)
-                    ):
+                    if existing is None or better_or_different_offer(existing.get("offer"), terms):
                         # A newer/lower-price notification supersedes the old one;
                         # do not restore the expensive message after a restart.
-                        record = new_dedup_entry(
-                            title, object(), links=msg_links, preload=True, stores=msg_stores,
-                        )
+                        record = new_dedup_entry(title, object(), preload=True)
                         record["pending"] = False
                         record["failed"] = False
                         record["ready"].set()
@@ -7659,7 +7226,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
         # Tekrar birleştirme: aynı ürün sorgusu pencere içindeyse gruba yeni mesaj
         # ATILMAZ; ilk mesaja rozet işlenir. Kayıp hedefte yeni bildirim gönderilir.
         # Ürün sorgusu aynı temizlenmiş/gönderilecek içerikten ayıklanır.
-        dedup_title = smart_dedup_title(event) if SMART_HEADER else _search_query(sanitize_message(event))
+        # Product identity must not vary with the optional display-header setting.
+        dedup_title = smart_dedup_title(event)
         terms = offer_terms(event) if DEDUP_ENABLED else (None, "")
         dedup_id = dedup_offer_key(dedup_title, terms) if DEDUP_ENABLED else None
         if not dedup_id:
@@ -7668,17 +7236,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 LIVE_SEEN.pop((event.chat_id, event.id), None)
                 POLL_DISPATCHED.pop((event.chat_id, event.id), None)
             return
-        event_links = product_link_keys(event) if DEDUP_ENABLED else None
-        event_stores = (
-            extract_offer_stores(event, dedup_title, links=event_links)
-            if DEDUP_ENABLED else None
-        )
         decision, token, effective_dedup_id = await dedup_before_send(
             dedup_id, dedup_title, source_name,
             footer_name=source_name if SOURCE_FOOTER else None,
             offer=terms,
-            links=event_links,
-            stores=event_stores,
         )
         if decision == "dup":
             STATS["deduped"] += 1
