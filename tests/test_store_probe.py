@@ -419,3 +419,18 @@ class ProbeRunTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class EpeyHostTests(unittest.TestCase):
+    """2026-11-08 canlı doğrulama: Epey linki için teşhis gerekli."""
+
+    def test_epey_is_allowed_and_marked_aggregator(self):
+        self.assertIn('www.epey.com', probe.ALLOWED_HOSTS)
+        self.assertEqual(probe.SITE_KIND['www.epey.com'], 'aggregator')
+        self.assertEqual(probe.validate_url('https://www.epey.com/televizyon/tcl-65c6k.html'),
+                         'https://www.epey.com/televizyon/tcl-65c6k.html')
+
+    def test_epey_policy_matches_tracker_policy(self):
+        import product_tracker
+        self.assertEqual(probe.ALLOWED_HOSTS['www.epey.com']['min_gap'],
+                         product_tracker.SITE_POLICY['epey']['min_gap'])
