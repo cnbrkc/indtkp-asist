@@ -1,0 +1,77 @@
+name: Toplayıcı teşhisi (Cimri/Epey)
+
+# Yalnız elle çalıştırılır. Secret yok, Telegram yok, zamanlanmış görev yok.
+# Amaç: "Epey okunamadı" gibi bir hatanın NEDENİNİ görmek. Worker ne görüyorsa
+# (HTTP kodu, boyut, engel işareti, yönlendirme) burada aynısı raporlanır.
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: >
+          Ürün URL'leri (tek satır; boşluk veya virgülle ayır).
+          Ör. "https://www.epey.com/televizyon/tcl-65c6k.html https://www.cimri.com/..."
+        required: true
+        type: string
+      attempts:
+        description: Her URL için kaç istek (aralarda 12 sn bekleme)
+        required: false
+        default: "1"
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: aggregator-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Teşhis
+        env:
+          URLS: ${{ inputs.urls }}
+          ATTEMPTS: ${{ inputs.attempts }}
+        run: |
+          set -euo pipefail
+          python - "$URLS" "$ATTEMPTS" <<'PY'
+          import json, subprocess, sys, time
+
+          raw, attempts = sys.argv[1], max(1, min(3, int(sys.argv[2] or 1)))
+          urls = [u for u in raw.replace(',', ' ').split() if u.startswith('http')]
+
+          for url in urls:
+              print(f'\n## {url}', flush=True)
+              for attempt in range(1, attempts + 1):
+                  # Worker'ın gerçek sözleşmesi: izole süreç, JSON çıktı.
+                  started = time.monotonic()
+                  proc = subprocess.run([sys.executable, '-I', 'aggregator_worker.py', url],
+                                        capture_output=True, text=True, timeout=60)
+                  elapsed = int((time.monotonic() - started) * 1000)
+                  payload = proc.stdout.strip() or '(çıktı yok)'
+                  print(f'  deneme {attempt}: {elapsed} ms · çıkış={proc.returncode}', flush=True)
+                  print(f'  {payload[:400]}', flush=True)
+                  if proc.stderr.strip():
+                      print(f'  stderr: {proc.stderr.strip()[:300]}', flush=True)
+                  # Worker neyi gördüğünü söyleyemiyorsa ham HTTP'ye bak.
+                  if not payload.startswith('{"ok": true'):
+                      print('  --- ham HTTP ---', flush=True)
+                      probe = subprocess.run(
+                          [sys.executable, '-I', 'tools/store_probe.py', '--url', url,
+                           '--out', '/tmp/probe'], capture_output=True, text=True, timeout=120)
+                      print((probe.stdout or '')[-1500:], flush=True)
+                      if probe.stderr.strip():
+                          print('  probe stderr:', probe.stderr.strip()[:400], flush=True)
+                  else:
+                      print('  ✅ okundu', flush=True)
+                  if attempt < attempts:
+                      time.sleep(12)
+          PY
+      - name: Özet
+        if: always()
+        run: echo "Teşhis tamam. Ayrıntı yukarıdaki log'da." >> "$GITHUB_STEP_SUMMARY"

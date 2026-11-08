@@ -50,12 +50,15 @@ ALLOWED_HOSTS = {
     'www.akakce.com': {'min_gap': 10, 'concurrency': 1},
     # Aggregators. Stores behind them are reached by the aggregator, not by us.
     'www.cimri.com': {'min_gap': 10, 'concurrency': 1},
+    # Epey: robots.txt AI botlarına açıkça Allow: /, Crawl-delay yok (2026-11-08).
+    'www.epey.com': {'min_gap': 12, 'concurrency': 1},
 }
 
 # "store" pages are read directly; "aggregator" pages carry per-merchant rows and
 # are the only realistic way to see stores that refuse datacenter IPs (F1 result:
 # 5 of 7 stores answered 403 from GitHub Actions).
-SITE_KIND = {'www.cimri.com': 'aggregator', 'www.akakce.com': 'aggregator'}
+SITE_KIND = {'www.cimri.com': 'aggregator', 'www.akakce.com': 'aggregator',
+             'www.epey.com': 'aggregator'}
 
 MAX_BODY = 3_000_000
 HTTP_TIMEOUT = 15
