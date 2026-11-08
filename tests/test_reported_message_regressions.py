@@ -138,6 +138,36 @@ BOYNER_BOGO = (
     "https://app.hb.biz/qbRcRZ2m9A5G\n\n"
     "🔗 Mesajı Gör: https://t.me/indirimalarmigrup/528059"
 )
+LENOVO_TITLE = "Lenovo Thinkplus Live LP80 PRO Tws Bluetooth 5.3 Kablosuz Kulakiçi Kulaklık"
+LENOVO_LP80 = (
+    f"🛒 {LENOVO_TITLE}\n\n"
+    "🎯 499 TL / Tık hızında 175 TL kuponla 3 adet alımda tanesi 440 TL 🚚 Kargo Bedava\n\n"
+    "🛍️ https://sl.n11.com/n/vAk2s0n"
+)
+LENOVO_LP80_NOTIFICATION = (
+    f"₺440 — {LENOVO_TITLE}\n\n{LENOVO_LP80}\n\n"
+    "🔗 Mesajı Gör: https://t.me/indirimalarmigrup/528179\n\n"
+    "indirimalarmi Sıcak Fırsatlar"
+)
+MAYI_PAYMENT = (
+    "🛍️ Mayi Tuz Mayi İyotlu Öğütülmüş Sofra Tuzu 2 kg – 2'li Fırsat Paket\n\n"
+    "💰 Fiyat : 600 TL / ödeme aşamasında 454  TL\n"
+    "🗓️ 60 Günün En Düşük Fiyatı\n\n"
+    "🛒 https://link.amazon/B00MrDi3m"
+)
+COLINS_PLUS = (
+    "🛒 Colin's Yeşil Erkek Sweatshirt\n\n"
+    "🎯 222 TL / Plus Üyelere Özel 211 TL\n\n"
+    "🛍️ https://publicis.link/pazarama-37360-9bsitwt"
+)
+SUDOCREM_SHIPPING = (
+    "Sudocrem Bebek Bakım Pişik Kremi 250 G\n\n"
+    "🏷️ 217 TL (Kargo Bedava)\n"
+    "💬 2.000+ yorum\n"
+    "📂 Kozmetik, Kişisel Bakım\n"
+    "🛍️ n11\n"
+    "🔗 https://onu.al/fixu"
+)
 
 
 class ReportedMessageRegressions(unittest.TestCase):
@@ -405,6 +435,66 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertEqual(bot.smart_dedup_title(event), "")
         real_free = pf.extract_price("Kalem Seti bedava")
         self.assertEqual((real_free.value, real_free.confidence), (0, "medium"))
+
+    def test_lenovo_composed_history_keeps_the_same_offer_for_dedup(self):
+        live = SimpleNamespace(message=LENOVO_LP80, raw_text=LENOVO_LP80, entities=[], media=None)
+        history = SimpleNamespace(
+            message=LENOVO_LP80_NOTIFICATION, raw_text=LENOVO_LP80_NOTIFICATION, entities=[], media=None,
+        )
+        info = pf.extract_price(LENOVO_LP80)
+        self.assertEqual((info.value, info.confidence, info.reason), (440, "medium", "multi_unit"))
+        self.assertEqual(bot.offer_terms(live), (440, ""))
+        history_terms = bot.offer_terms(history, prefer_header=True)
+        self.assertEqual(history_terms, (440, ""))
+        self.assertEqual(bot.smart_dedup_title(history), LENOVO_TITLE)
+        self.assertEqual(
+            bot.dedup_offer_key(bot.smart_dedup_title(live), bot.offer_terms(live)),
+            bot.dedup_offer_key(bot.smart_dedup_title(history), history_terms),
+        )
+        self.assertFalse(bot.better_or_different_offer(history_terms, bot.offer_terms(live)))
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(live)["header"], f"₺440 — {LENOVO_TITLE}")
+
+    def test_payment_stage_price_without_discount_amount_selects_final_price(self):
+        title = "Mayi Tuz Mayi İyotlu Öğütülmüş Sofra Tuzu 2 kg"
+        info = pf.extract_price(MAYI_PAYMENT)
+        self.assertEqual((info.value, info.confidence, info.reason), (454, "high", "discounted"))
+        self.assertEqual([c.role for c in pf.find_candidates(MAYI_PAYMENT)], ["normal", "discounted"])
+        self.assertTrue(pf.price_matches(MAYI_PAYMENT, 454)[0])
+        self.assertFalse(pf.price_matches(MAYI_PAYMENT, 453)[0])
+        self.assertNotEqual(pf.extract_price("600 TL / ödeme aşamasında 454 TL kargo").value, 454)
+        event = SimpleNamespace(message=MAYI_PAYMENT, raw_text=MAYI_PAYMENT, entities=[], media=None)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(event)["header"], f"₺454 — {title}")
+
+    def test_explicit_plus_member_price_wins_without_relaxing_plain_ambiguity(self):
+        title = "Colin's Yeşil Erkek Sweatshirt"
+        info = pf.extract_price(COLINS_PLUS)
+        self.assertEqual((info.value, info.confidence, info.reason), (211, "high", "member_price"))
+        self.assertEqual([c.role for c in pf.find_candidates(COLINS_PLUS)], ["normal", "member_price"])
+        self.assertTrue(pf.price_matches(COLINS_PLUS, 211)[0])
+        self.assertFalse(pf.price_matches(COLINS_PLUS, 210)[0])
+        self.assertNotEqual(pf.extract_price("222 TL / Plus Üyelere Özel 211 TL kargo").value, 211)
+        event = SimpleNamespace(message=COLINS_PLUS, raw_text=COLINS_PLUS, entities=[], media=None)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(event)["header"], f"₺211 — {title}")
+        plain = "Colin's Yeşil Erkek Sweatshirt\n222 TL / 211 TL"
+        self.assertEqual(pf.extract_price(plain).confidence, "low")
+        conflicting = COLINS_PLUS + " / Plus Üyelere Özel 209 TL"
+        self.assertEqual(pf.extract_price(conflicting).confidence, "low")
+        self.assertIsNone(bot.offer_terms(conflicting)[0])
+
+    def test_parenthesized_free_shipping_does_not_turn_price_into_shipping_fee(self):
+        title = "Sudocrem Bebek Bakım Pişik Kremi 250 G"
+        info = pf.extract_price(SUDOCREM_SHIPPING)
+        self.assertEqual((info.value, info.confidence, info.reason), (217, "high", "normal"))
+        self.assertEqual([c.role for c in pf.find_candidates(SUDOCREM_SHIPPING)], ["normal"])
+        self.assertTrue(pf.price_matches(SUDOCREM_SHIPPING, 217)[0])
+        self.assertFalse(pf.price_matches(SUDOCREM_SHIPPING, 216)[0])
+        event = SimpleNamespace(message=SUDOCREM_SHIPPING, raw_text=SUDOCREM_SHIPPING, entities=[], media=None)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(event)["header"], f"₺217 — {title}")
+        self.assertIsNone(pf.extract_price("Sudocrem Bebek Bakım Kremi\nKargo: 30 TL").value)
 
     def test_notification_header_uses_correct_or_unknown_amount(self):
         expected = [

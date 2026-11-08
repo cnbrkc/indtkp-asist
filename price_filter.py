@@ -425,6 +425,18 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
             # kuyruğu kabul edilir; ``… TL sepette indirim`` gibi indirim
             # tutarları ve kupon/kargo açıklamaları bu kurala girmez.
             c.cls, c.role, c.strong = "price", "discounted", True
+        elif c.cls == "other" and re.fullmatch(
+            r"\(\s*(?:kargo|teslimat|gönderim|gonderim)\s+(?:bedava|ücretsiz|ucretsiz)\s*\)[*_~`\s.!]*",
+            after,
+        ) and not re.search(r"(?:kargo|teslimat|gönderim|gonderim)\s*[:=]?\s*$", before):
+            # ``217 TL (Kargo Bedava)`` kargo ÜCRETİ değil, fiyatın yanında
+            # duran parantez içi kargo avantajıdır. ``Kargo: 30 TL`` ve
+            # parantezli ücret açıklamaları bu dar kuralın dışında kalır.
+            c.cls, c.role = "price", "normal"
+            c.strong = bool(
+                _PRICE_EMOJI_RE.search(line[:c.start])
+                or re.search(r"(?:fiyat\w*|price)\s*[:=]?\s*$", before)
+            )
         elif re.match(r"^[’'](?:ye|ya|e|a)\s+\d[\d.,]*\s*(?:tl|₺|try)\s*(?:kupon|indirim)", after):
             c.cls, c.role = "other", "threshold"
         elif re.search(r"(?:kupon|kod)\s+(?:uygulayınca|uygulandığında|uygulandiginda)\s*$", before) and c.cls == "other":
@@ -466,6 +478,20 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
             # filtresine takılmamalı. Yalnız aynı satırda, hemen önce açık bir
             # indirim tutarı bulunan ve satır sonunda duran nihai tutarı terfi et.
             c.cls, c.role, c.strong = "price", "discounted", True
+        elif c.cls in {"price", "cond", "other"} and not after.strip("*_~` \t.!") and re.search(
+            r"(?:ödeme|odeme)\s+(?:aşamasında|asamasinda)\s*[:=]?\s*$", before,
+        ):
+            # ``600 TL / ödeme aşamasında 454 TL``: ödeme adımındaki ikinci
+            # tutar açık nihai fiyattır. ``750 TL indirimle 13.500 TL`` içindeki
+            # 750 TL yukarıdaki discount_amount dalından buraya ulaşmaz.
+            c.cls, c.role, c.strong = "price", "discounted", True
+        elif c.cls in {"price", "cond", "other"} and not after.strip("*_~` \t.!") and re.search(
+            r"\b(?:plus|prime)\s+(?:üyelere|üyelerine|uyelere|uyelerine)\s+özel\s*[:=]?\s*$",
+            before,
+        ):
+            # Açık üyelik teklifi, yakın ama bağlamsız iki fiyatın genel
+            # belirsizliğini bozmadan güvenilir alternatif olarak ayrılır.
+            c.cls, c.role, c.strong = "price", "member_price", True
         elif c.cls == "other" and re.match(
             r"^[*_~`\s]*[—–-]\s*sepette\b[^/|]*\b(?:indirim\s+kod|kupon(?:la|uyla|\s+ile|\s+kod))", after,
         ) and (
@@ -562,7 +588,10 @@ def ambiguous_campaign_line(line: str) -> bool:
     return bool(plain) and not trusted
 
 
-_EXPLICIT_PRICE_ROLES = {"multi_unit", "unit", "discounted", "product_coupon", "basket_coupon", "condition_price"}
+_EXPLICIT_PRICE_ROLES = {
+    "multi_unit", "unit", "discounted", "product_coupon", "basket_coupon",
+    "condition_price", "member_price",
+}
 
 
 def campaign_plain_ambiguous(cands: Sequence[Candidate]) -> bool:
@@ -649,7 +678,10 @@ def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInf
         # Çok satırlı mesaj: kampanya tutarı + etiketsiz tutar, etiketli fiyat yok.
         # Hangisinin ürün fiyatı olduğu güvenilir değil: fiyat bilinmiyor (❓).
         return PriceInfo(None, "", "none", "kampanya tutarı ile etiketsiz tutar: belirsiz")
-    finals = [c for c in cands if c.role in {"discounted", "product_coupon", "basket_coupon", "condition_price"}]
+    finals = [
+        c for c in cands
+        if c.role in {"discounted", "product_coupon", "basket_coupon", "condition_price", "member_price"}
+    ]
     normal = [c for c in cands if c.cls == "price" and c not in finals]
     units = [c for c in cands if c.role in {"multi_unit", "unit"}]
     # Önce açık nihai fiyat; çoklu alım sadece bu teklife daha avantajlı bir
