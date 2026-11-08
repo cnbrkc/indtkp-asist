@@ -4,6 +4,12 @@ name: Toplayıcı teşhisi (Cimri/Epey)
 # Amaç: "Epey okunamadı" gibi bir hatanın NEDENİNİ görmek. Worker ne görüyorsa
 # (HTTP kodu, boyut, engel işareti, yönlendirme) burada aynısı raporlanır.
 on:
+  # PR tetikleyicisi: teşhis aracı değiştiğinde ölçüm kendiliğinden koşsun.
+  # Sadece bu iki dosya değişince ve yalnız 2 sabit URL ile — gürültü/ban yok.
+  pull_request:
+    paths:
+      - tools/aggregator_diag.py
+      - .github/workflows/aggregator-probe.yml
   workflow_dispatch:
     inputs:
       urls:
@@ -44,6 +50,14 @@ jobs:
 
           raw, attempts = sys.argv[1], max(1, min(3, int(sys.argv[2] or 1)))
           urls = [u for u in raw.replace(',', ' ').split() if u.startswith('http')]
+          if not urls:
+              # PR tetiklemesinde input yok: ölçüm için bilinen iki ürün.
+              urls = [
+                  'https://www.epey.com/televizyon/tcl-65c6k.html',
+                  'https://www.cimri.com/televizyonlar/en-ucuz-tcl-65c6k-65-inc-'
+                  '165-ekran-4k-ultra-hd-android-qd-miniled-tv-fiyatlari,2478359134',
+              ]
+              print('input yok → varsayılan 2 URL kullanılıyor', flush=True)
 
           for url in urls:
               print(f'\n## {url}', flush=True)
@@ -92,8 +106,14 @@ jobs:
           # Python tek satırlık komut (-c) YAML blok girintisini bozar; dosyaya yaz.
           python - <<'PY' > /tmp/diag_args.txt
           import os
-          urls = [u for u in os.environ['URLS'].replace(',', ' ').split()
+          urls = [u for u in os.environ.get('URLS', '').replace(',', ' ').split()
                   if u.startswith('http')]
+          if not urls:                       # PR tetiklemesi: varsayılan ürünler
+              urls = [
+                  'https://www.epey.com/televizyon/tcl-65c6k.html',
+                  'https://www.cimri.com/televizyonlar/en-ucuz-tcl-65c6k-65-inc-'
+                  '165-ekran-4k-ultra-hd-android-qd-miniled-tv-fiyatlari,2478359134',
+              ]
           print(' '.join(f'--url {u}' for u in urls))
           PY
           # ÖNEMLİ: annotation satırları (::notice/::warning) STDOUT'a gitmeli.
