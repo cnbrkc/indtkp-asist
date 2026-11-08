@@ -137,3 +137,47 @@ class CurlTests(unittest.TestCase):
             row = diag.attempt_curl('https://www.epey.com/x.html', diag.CURRENT_UA, {})
         self.assertEqual(row['status'], 403)
         self.assertEqual(row['bytes'], 0)
+
+
+class OutputRoutingTests(unittest.TestCase):
+    """Regresyon: annotation satırları dosyaya yönlendirilince GitHub hiç görmüyordu."""
+
+    def run_main(self, tmpdir, extra):
+        rows = [{'status': 403, 'ms': 140, 'bytes': 0}] * 6
+        out = tmpdir / 'summary.md'
+        js = tmpdir / 'diag.json'
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        argv = ['--url', 'https://www.epey.com/televizyon/x.html',
+                '--summary-out', str(out), '--json-out', str(js)] + extra
+        with mock.patch.object(diag, 'attempt', side_effect=rows), \
+             mock.patch.object(diag, 'attempt_curl', side_effect=rows), \
+             mock.patch.object(diag.time, 'sleep'), \
+             contextlib.redirect_stdout(buffer):
+            diag.main(argv)
+        return buffer.getvalue(), out, js
+
+    def test_annotations_go_to_stdout_while_table_goes_to_the_file(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            stdout, summary, js = self.run_main(tmpdir, ['--annotate'])
+            # Annotation STDOUT'ta olmalı.
+            self.assertIn('::warning title=www.epey.com::', stdout)
+            # Tablo dosyada olmalı, stdout'ta tablo satırı olmamalı.
+            self.assertIn('403', summary.read_text(encoding='utf-8'))
+            self.assertNotIn('403 ms', stdout)
+            self.assertTrue(js.exists())
+            self.assertIn('results', js.read_text(encoding='utf-8'))
+
+    def test_json_out_is_valid_json(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            _stdout, _summary, js = self.run_main(Path(tmp), [])
+            data = json.loads(js.read_text(encoding='utf-8'))
+            self.assertEqual(len(data['results']), 1)
+            self.assertIn('403', data['results'][0]['verdict'])
