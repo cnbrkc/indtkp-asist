@@ -1439,6 +1439,13 @@ katı** yavaşlar (2→4→8 kademe), ikinci hatada dip sınır da iki katına (
 okumada bir kademe geri gelir; ürün bazlı geri çekilme 4×/8×/16× (tavan 1 saat). Hangi fren
 devreye girerse girsin kontrol **30 dakikadan seyrek olmaz**. Siteler birbirini kilitlemez.
 
+**Önemli (2026-11-08 canlı ölçüm):** Cimri ve Epey, GitHub Actions IP'lerinden **HTTP 403**
+döndürüyor (3/3 deneme, 140–234 ms). Aynı linkler farklı ağdan açılıyor → engel **veri merkezi
+IP** kaynaklı, ayrıştırıcı hatası değil. Bu durumda bot artık doğru cümleyi yazar:
+*"Epey okunamadı: sunucu bu bağlantıyı reddetti (HTTP 403). Sayfa değişmedi; site veri merkezi
+IP'lerini engelliyor."* Ayrıntı ve seçenekler: `docs/aggregator-403-bulgusu.md`.
+Akakçe hattı bu engelden **etkilenmez**.
+
 Güvenlik kuralı: sayfanın yapısal fiyatı (JSON-LD) ile sayfada görünen mağaza
 satırlarının en düşüğü **aynı kuruş** olmalı. Tutmazsa fiyat gösterilmez, alarm
 kurulmaz — yanlış fiyat yerine "okunamadı" denir. Satıcı kilidi yoktur (kural `lowest`);

@@ -138,3 +138,24 @@ class FailClosedTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ErrorCodeTests(unittest.TestCase):
+    """2026-11-08 canlı doğrulaması: 403'te "sayfa değişti" deniyordu — yanlış teşhis."""
+
+    def test_403_is_reported_as_a_block_not_a_parse_error(self):
+        import io
+        import urllib.error
+        error = urllib.error.HTTPError('https://www.epey.com/x.html', 403, 'Forbidden', {}, io.BytesIO(b''))
+        self.assertEqual(aw.error_code(error), 'BLOCKED')
+        error = urllib.error.HTTPError('https://www.epey.com/x.html', 429, 'Too Many', {}, io.BytesIO(b''))
+        self.assertEqual(aw.error_code(error), 'RATE_LIMITED')
+        error = urllib.error.HTTPError('https://www.epey.com/x.html', 500, 'Oops', {}, io.BytesIO(b''))
+        self.assertEqual(aw.error_code(error), 'HTTP_500')
+
+    def test_network_and_parse_are_distinguished(self):
+        import urllib.error
+        self.assertEqual(aw.error_code(urllib.error.URLError('dns')), 'NETWORK')
+        self.assertEqual(aw.error_code(TimeoutError()), 'TIMEOUT')
+        self.assertEqual(aw.error_code(aw.Blocked('captcha')), 'BLOCKED')
+        self.assertEqual(aw.error_code(ValueError('JSON-LD yok')), 'PARSE')
