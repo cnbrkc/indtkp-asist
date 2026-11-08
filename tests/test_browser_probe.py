@@ -133,3 +133,30 @@ class ErrorDetailTests(unittest.TestCase):
 
     def test_long_message_is_capped(self):
         self.assertLessEqual(len(probe._detail(Exception('x' * 500))), 110)
+
+
+class VerdictMessageTests(unittest.TestCase):
+    """Rapor satırı, 'challenge kaldı' ile 'sayfa açıldı ama fiyat yok'u ayırmalı."""
+
+    def _run(self, row):
+        with mock.patch.object(probe, 'probe', return_value=row), \
+                mock.patch('builtins.print') as printed:
+            probe.main(['--url', 'https://www.epey.com/x.html'])
+        return ' '.join(str(call) for call in printed.call_args_list)
+
+    def test_challenge_kept_is_reported_as_blocked(self):
+        out = self._run({'challenged': True, 'title': 'Just a moment...',
+                         'readable': False, 'waited_s': 45.0, 'jsonld': False})
+        self.assertIn('challenge kalıcı', out)
+        self.assertIn('bekleme=45.0', out)
+
+    def test_readable_page_without_jsonld_is_distinguished(self):
+        out = self._run({'challenged': False, 'title': 'TCL 65C6K',
+                         'readable': False, 'waited_s': 3.0, 'jsonld': False})
+        self.assertIn('JSON-LD yok', out)
+        self.assertNotIn('challenge kalıcı', out)
+
+    def test_success_message_carries_price(self):
+        out = self._run({'challenged': False, 'readable': True, 'price': 42999.0})
+        self.assertIn('GEÇTİ', out)
+        self.assertIn('42999', out)

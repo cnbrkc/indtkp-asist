@@ -225,8 +225,17 @@ def main(argv=None):
                    f'{row.get("price", "okunamadı")}. GitHub Actions içinde ücretsiz yol var.')
         print(f'::notice title={urlsplit(args.url).hostname}::{verdict}')
     else:
-        verdict = ('TARAYICI DA GEÇEMEDİ — challenge kalıcı (muhtemelen etkileşimli '
-                   'doğrulama). Tek ücretsiz yol kullanıcının kendi ağı.')
+        # Kanıt satırı: başlık + bekleme. "Challenge kaldı" ile "sayfa açıldı ama
+        # JSON-LD yok" durumları aynı sonucu vermemeli.
+        evidence = (f'başlık="{row.get("title", "")[:50]}" · '
+                    f'bekleme={row.get("waited_s", "?")} sn · '
+                    f'JSON-LD={"var" if row.get("jsonld") else "yok"}')
+        if row.get('challenged'):
+            verdict = ('TARAYICI DA GEÇEMEDİ — challenge kalıcı (etkileşimli doğrulama '
+                       f'isteniyor). {evidence}')
+        else:
+            verdict = ('TARAYICI GEÇTİ ama sayfa okunamadı (JSON-LD yok) — fiyat '
+                       f'JSON-LD dışı bir yerden geliyor. {evidence}')
         print(f'::warning title={urlsplit(args.url).hostname}::{verdict}')
 
     if args.summary_out:
