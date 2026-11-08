@@ -167,7 +167,7 @@ Yönlendirme (~7213, owner-only blok): `pending_state = peek_pending(pending_key
 taslağı → `tracker.handle` → `handled` değilse `store_tracker.handle`.
 **Pending temizliği:** `handled` sonrası `stage == "webdetakip"` → `drop_pending` mantığı mağaza
 takipçisi handled olduğunda **da** çalışır. `/iptal` + `/magazatakipiptal`. `private_tasks`'a
-`store_tracker.run()`.
+`store_tracker.run()` — **ayrı workflow YOK**, aynı süreç (aksi halde Telegram 409 çakışması).
 **Test:** Akakçe linki eskisi gibi; mağaza linki `store_tracker`'a; bilinmeyen komut eskisi gibi;
 kurulum patlarsa tracker + kanal dinleme çalışıyor; iki taslak varken düz metin doğru yere;
 `/ekle` taslağı açık kalmıyor. **Ön koşul:** `handled=False` sonrası "bilinmeyen komut" cevabı bozulmuyor.
@@ -410,7 +410,66 @@ public.trendyol.com ve discovery-web-* resmî olmayan API'ler, RapidAPI/Bright D
 
 ---
 
-## 12. Onay
+
+## 13. Kapasite ve limitler — ölçülmüş (2026-11-08)
+
+**Kısa cevap:** Evet. Ama bu **yeni bir workflow/runner açmadan**, mevcut `bot.py` sürecinin
+içine bir `asyncio` görevi olarak eklenerek yapılır. Yeni süreç = yeni Actions dakikası,
+yeni Telegram poller'ı (= 409 çakışması) demek olurdu; planda **öyle değil**.
+
+### 13.1 Mevcut durum (koddan)
+`telegram-monitor.yml`: tek job, `timeout-minutes: 350`, `RESTART_AFTER_MINUTES: 330`,
+cron `7 */6 * * *`. Bot kendi kendini yeniden başlatıyor → **günde ~24 saat tek runner**.
+`bot.py:7558` → `private_tasks.append(asyncio.create_task(tracker.run()))`.
+Bizim `store_tracker.run()` de **aynı listeye** eklenecek (F4).
+
+### 13.2 Limit tablosu
+
+| Kaynak | Mevcut kullanım | Yeni plan sonrası | Limit | Durum |
+|---|---|---|---|---|
+| **Actions dakikası** | ~1.440 dk/gün (tek runner, 7/24) | **Değişmez** (yeni job yok) | Public repo → standart runner **ücretsiz/sınırsız** | ✅ |
+| **Telegram poller** | 1 süreç (`bot.py`) + `private_bot` | Değişmez | 409 çakışması yok | ✅ |
+| **Akakçe döngüsü** | 30 ürün × `HOST_GAP 10 sn` = **300 sn** / `INTERVAL 300` | **Değişmez** (dosyaya dokunulmuyor) | %100 dolu — **zaten sınırda** | ⚠️ mevcut |
+| **Mağaza döngüsü** | yok | 10 link × `HOST_GAP 20 sn` = **200 sn** / `INTERVAL 900` | %22 dolu → **~40 link** sığar | ✅ |
+| **Amazon alt sınırı** | — | ürün başına **4 istek/gün** (6 saatte 1) | günde ≤6 hedefi | ✅ |
+| **Günlük HTTP isteği** | 30 × 288 = 8.640 | +960 (10 link × 96) = **~9.600/gün** ≈ 0,11 istek/sn | site nezaket sınırları | ✅ |
+| **GitHub Contents API** | yalnız durum değişince (2 istek) | aynı | 5.000 istek/saat | ✅ |
+| **Disk/commit** | `product_watches.json` | +`store_watches.json` (~1-2 KB) | — | ✅ |
+| **Bellek** | — | +1 asyncio görevi, +10 kayıt | — | ✅ |
+| **Telegram mesaj** | yalnız alarm | +grup alarmı (F8: **tek** mesaj) | ~30 mesaj/sn | ✅ |
+
+### 13.3 Dört şart (bunlar sağlanmazsa "sınırsız" olmaz)
+
+1. **Repo public kalmalı.** Public → standart runner dakikaları ücretsiz ve sınırsız.
+   Repo private'a dönerse: ~1.440 dk/gün × 30 = **43.200 dk/ay**, Free planın 2.000 dk'lik
+   kotasını ~20 kat aşar (Linux $0.006/dk → ~$260/ay). **Bu planın gizli ön koşulu budur.**
+2. **Akakçe döngüsü dolu (%100).** 30 ürün × 10 sn = 300 sn, aralık da 300 sn. Yani Akakçe'yi
+   hızlandırmak mümkün değil; **yeni ürünler mağaza hattına gitmeli**, Akakçe'ye yığılmamalı.
+   Not: mağaza hattı 15 dk aralıkla çalıştığı için **Akakçe'den daha yavaş** olacak (5 dk değil).
+3. **Tek süreç, tek poller.** `store_tracker.run()` mevcut `private_tasks` listesine eklenir;
+   **ayrı workflow açılmaz**. Ayrı workflow açılırsa `private_bot`/`bot.py` ile 409 çakışır.
+4. **Tek dispatcher, iki taslak.** Aynı anda hem `/ekle` hem `/magazatakip` taslağı açık olabilir;
+   F4'teki öncelik kuralı (`existing_pending` aynı değeri iki takipçiye) bunu çözer.
+   Çözülmezse "mağaza linki Akakçe taslağına gider" hatası olur.
+
+### 13.4 Dürüst sınırlar (abartmıyoruz)
+
+- **Mağaza hattı 10 ürünle sınırlı** (F3). Teorik tavan ~40 link; pratikte 10'da tutuyoruz ki
+  döngü + jitter + geri çekilme rahat olsun. Dolarsa `/magazatakipsil` ile yer açılır.
+- **Akakçe hattı 30 ürün ve 5 dakika** — mevcut sınır, değişmiyor.
+- **Runner 5,5 saatte bir yeniden başlıyor** → yarıda kalan taslaklar (hedef fiyat sorulmuş ama
+  cevaplanmamış) kaybolur. Bugün de böyle; yeni bir risk değil.
+- **Yavaşlık:** mağaza hattı 15 dk'da bir okur. Akakçe 5 dk'da bir. Yani mağaza alarmı
+  Akakçe'den **daha geç** gelebilir; "daha taze" beklentisi 5 dk değil **15 dk** üzerinden kurulmalı.
+- **Amazon** en kısıtlı: 6 saatte 1 → bir günde en fazla 4 kez kontrol. Bu bilinçli (engellenmemek için).
+
+### 13.5 Bu tablo nereden geliyor (kanıt)
+`telegram-monitor.yml` (timeout 350, restart 330, cron 6 saat), `bot.py:7558`, `bot.py:5515`
+(`persist_products` → Contents API GET+PUT), `product_tracker.py:18-23`
+(`MAX_PRODUCTS 30`, `INTERVAL 300`, `SEND_TIMEOUT 45`, `HOST_GAP 10`),
+`product_tracker.py:156` (`save` yalnız durum değişiminde), `product_tracker.py:413` (`run` döngüsü).
+
+## 14. Onay
 
 **"F1'e başla"** → probeyi yazarım (7 mağaza, host allowlist, `NoRedirect`, gömülü JSON ölçümü),
 testleri koştururum (**904 + yeni**), sonucu raporlarım (değişen dosyalar, test sonucu, geri alma),
