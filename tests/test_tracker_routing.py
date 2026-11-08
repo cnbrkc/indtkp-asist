@@ -100,12 +100,22 @@ class WorkerChoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('doğrulanamadı', str(ctx.exception))
 
     async def test_aggregator_failure_names_the_site_and_reason(self):
-        body = {'ok': False, 'error': 'ValueError', 'reason': 'JSON-LD fiyatı uyuşmuyor.'}
+        body = {'ok': False, 'error': 'ValueError', 'code': 'PARSE',
+                'reason': 'JSON-LD fiyatı uyuşmuyor.'}
         with self.fake_process(body, returncode=1):
             with self.assertRaises(ValueError) as ctx:
                 await read_product(EPEY)
         self.assertIn('Epey okunamadı', str(ctx.exception))
         self.assertIn('uyuşmuyor', str(ctx.exception))
+
+    async def test_blocked_failure_does_not_blame_the_page(self):
+        body = {'ok': False, 'error': 'HTTPError', 'code': 'BLOCKED', 'http_status': 403}
+        with self.fake_process(body, returncode=1):
+            with self.assertRaises(ValueError) as ctx:
+                await read_product(EPEY)
+        message = str(ctx.exception)
+        self.assertIn('403', message)
+        self.assertNotIn('sayfa değişikliği', message.lower())
 
     async def test_aggregator_worker_body_is_not_trusted_for_negative_prices(self):
         with self.fake_process({'ok': True, 'result': aggregator_result(price=-1)}):

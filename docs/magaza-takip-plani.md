@@ -857,3 +857,21 @@ bir bakıyoruz, yani kullanıcının istediği "az link = sık kontrol" sağlan�
 `python -m unittest discover -s tests` → **999 OK** (+26 aralık testi:
 `tests/test_tracker_intervals.py`; yeni komut yok, yardım kataloğu değişmedi). Eski 5 dk sabitinin korunduğu tek yer `INTERVAL = 300`
 (sadece geriye dönük isim; 30 üründe Akakçe hâlâ tam 300 sn).
+
+---
+
+## 17. Canlı doğrulama sonucu: Cimri + Epey → HTTP 403 (2026-11-08)
+
+İlk gerçek deneme **başarısız**: iki site de GitHub Actions'tan **403** döndü (140–234 ms,
+sayfa hiç inmedi; 3/3 deneme). Aynı URL'ler farklı ağdan (`fetch_page`) sorunsuz açıldı.
+Teşhis: **veri merkezi IP engeli**, ayrıştırıcı hatası değil. Ayrıntı: `docs/aggregator-403-bulgusu.md`.
+
+Bu bulgudan çıkan **kalıcı** düzeltmeler (koda işlendi):
+
+- Worker artık hatanın sınıfını taşır: `BLOCKED` / `RATE_LIMITED` / `NETWORK` / `TIMEOUT` / `PARSE`.
+- Kullanıcıya yanlış teşhis ("sayfa değişikliği olabilir") yerine doğrusu yazılır.
+- `tools/aggregator_diag.py`: 4 başlık kümesiyle karşılaştırma → neden başlık mı, IP mi?
+- Teşhis işi (`aggregator-probe.yml`) bu testi de çalıştırır.
+
+**Kural hatırlatması:** proxy, çerez/oturum, CAPTCHA çözen araç yok. Yani IP engeli
+"aşılacak" bir engel değil; ya kabul edilir ya da okuma yolu değiştirilir. Karar kullanıcıda.

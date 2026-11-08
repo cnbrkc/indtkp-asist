@@ -72,6 +72,19 @@ jobs:
                   if attempt < attempts:
                       time.sleep(12)
           PY
+      - name: Başlık ve IP testi (403'ün nedeni)
+        if: always()
+        env:
+          URLS: ${{ inputs.urls }}
+        run: |
+          set -euo pipefail
+          echo "## Başlık / IP testi" >> "$GITHUB_STEP_SUMMARY"
+          python -I tools/aggregator_diag.py --url $(python -c "
+import os,sys
+urls=[u for u in os.environ['URLS'].replace(',',' ').split() if u.startswith('http')]
+print(' --url '.join(urls))
+") >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+
       - name: Özet
         if: always()
         run: echo "Teşhis tamam. Ayrıntı yukarıdaki log'da." >> "$GITHUB_STEP_SUMMARY"

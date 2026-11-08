@@ -252,6 +252,38 @@ def load_state(path):
     return data
 
 
+# Sunucu bizi tanıyıp kapıyı kapattığında "sayfa değişti" demek yanlış teşhis.
+# Kod → kullanıcıya söylenecek cümle (2026-11-08 canlı doğrulamasından sonra).
+READ_FAILURES = {
+    'BLOCKED': 'sunucu bu bağlantıyı reddetti (HTTP 403). Sayfa değişmedi; '
+               'site veri merkezi IP\'lerini engelliyor.',
+    'RATE_LIMITED': 'site hız sınırı koydu (HTTP 429). Kısa süre sonra tekrar denenecek.',
+    'NETWORK': 'bağlantı kurulamadı (ağ hatası).',
+    'TIMEOUT': 'site zamanında yanıt vermedi.',
+    'PARSE': 'sayfa indi ama fiyat doğrulanamadı; ayrıştırıcı uyumsuz olabilir.',
+}
+
+
+def read_failure_text(name, body):
+    """Worker'ın makine-okur `code` alanını sade bir cümleye çevirir."""
+    body = body if isinstance(body, dict) else {}
+    code = str(body.get('code') or '')
+    reason = body.get('reason')
+    status = body.get('http_status')
+    detail = READ_FAILURES.get(code)
+    if detail is None:
+        if isinstance(status, int):
+            detail = f'sunucu HTTP {status} döndürdü.'
+        elif code.startswith('HTTP_'):
+            detail = f'sunucu {code[5:]} döndürdü.'
+        else:
+            detail = 'sayfa okunamadı (engel veya biçim değişikliği).'
+    text = f'{name} okunamadı: {detail}'
+    if isinstance(reason, str) and reason and code == 'PARSE':
+        text += f' Ayrıntı: {reason}'
+    return text
+
+
 async def read_product(url):
     """One disposable process, no Telegram/GitHub credentials inherited."""
     site = aggregator_site(url)
@@ -269,10 +301,7 @@ async def read_product(url):
             raise ValueError('İşçi yanıtı çok büyük')
         body = json.loads(output)
         if process.returncode or not body.get('ok'):
-            name = site or 'Akakçe'
-            detail = body.get('reason') if isinstance(body, dict) else None
-            raise ValueError(f'{name} okunamadı; erişim engeli veya sayfa değişikliği olabilir'
-                             + (f' ({detail})' if site and isinstance(detail, str) else ''))
+            raise ValueError(read_failure_text(site or 'Akakçe', body))
         result = body['result']
         # Akakçe "minimum_verified", Cimri/Epey "jsonld_verified" alanını yazar:
         # ikisi de aynı soruyu yanıtlar — okunan fiyat doğrulandı mı?

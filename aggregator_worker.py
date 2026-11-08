@@ -276,11 +276,32 @@ def fetch(url):
     return parse(data.decode('utf-8', errors='replace'), url)
 
 
+def error_code(exc):
+    """Hatanın makine-okur sınıfı — kullanıcıya doğru cümleyi yazabilmek için.
+
+    2026-11-08 canlı doğrulama: iki toplayıcı da HTTP 403 döndürdü ve kullanıcıya
+    "sayfa değişikliği olabilir" dendi. Yanlış teşhis. Artık sınıf ayrı taşınır.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code in (401, 403):
+            return 'BLOCKED'
+        if exc.code == 429:
+            return 'RATE_LIMITED'
+        return f'HTTP_{exc.code}'
+    if isinstance(exc, Blocked):
+        return 'BLOCKED'
+    if isinstance(exc, urllib.error.URLError):
+        return 'NETWORK'
+    if isinstance(exc, TimeoutError):
+        return 'TIMEOUT'
+    return 'PARSE'
+
+
 if __name__ == '__main__':
     try:
         print(json.dumps({'ok': True, 'result': fetch(sys.argv[1])}, ensure_ascii=False))
     except Exception as exc:  # uzak içerik veya iç ayrıntı sızdırılmaz
-        report = {'ok': False, 'error': type(exc).__name__}
+        report = {'ok': False, 'error': type(exc).__name__, 'code': error_code(exc)}
         if isinstance(exc, urllib.error.HTTPError):
             report['http_status'] = exc.code
         elif isinstance(exc, (ValueError, Blocked)):
