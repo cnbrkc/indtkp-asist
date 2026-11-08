@@ -86,3 +86,32 @@ class SafetyTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class BrowserDiscoveryTests(unittest.TestCase):
+    """Runner'da Chrome yolu değişebilir; araç yol uydurmamalı."""
+
+    def test_missing_chrome_returns_none(self):
+        with mock.patch.object(probe, 'CHROME_PATHS', ()), \
+                mock.patch.dict('os.environ', {'PATH': '/nonexistent'}):
+            self.assertIsNone(probe.find_chrome())
+
+    def test_existing_path_is_used(self):
+        with mock.patch('os.path.exists', return_value=True):
+            self.assertEqual(probe.find_chrome(), probe.CHROME_PATHS[0])
+
+    def test_refusal_is_reported_when_start_fails(self):
+        class FakeNodriver:
+            @staticmethod
+            async def start(**kwargs):
+                raise Exception()
+
+        import asyncio
+        browser, failure = asyncio.run(probe._start_browser(FakeNodriver, '/usr/bin/google-chrome'))
+        self.assertIsNone(browser)
+        self.assertIn('--headless=new', failure)
+        self.assertIn('--headless=old', failure)
+
+    def test_launch_args_reduce_bot_signals(self):
+        self.assertIn('--disable-blink-features=AutomationControlled', probe.LAUNCH_ARGS)
+        self.assertIn('--no-sandbox', probe.LAUNCH_ARGS)

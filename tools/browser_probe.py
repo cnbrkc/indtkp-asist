@@ -90,6 +90,54 @@ def _to_number(text):
         return None
 
 
+# Runner'larda Chrome şu yollarda olur. İlk bulunan kullanılır.
+CHROME_PATHS = (
+    '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium', '/usr/bin/chromium-browser',
+    '/opt/google/chrome/chrome', '/snap/bin/chromium',
+)
+# Cloudflare "managed challenge"ı bot sinyallerini azaltarak denemek için.
+LAUNCH_ARGS = (
+    '--no-sandbox', '--disable-dev-shm-usage', '--disable-setuid-sandbox',
+    '--no-first-run', '--no-default-browser-check', '--disable-gpu',
+    '--disable-blink-features=AutomationControlled',
+    '--lang=tr-TR,tr', '--window-size=1366,900',
+)
+
+
+def find_chrome():
+    """Kurulu Chrome/Chromium yolunu bul. Yoksa None (uydurma yol yok)."""
+    import os
+    for path in CHROME_PATHS:
+        if os.path.exists(path):
+            return path
+    for name in ('google-chrome', 'chromium', 'chromium-browser', 'chrome'):
+        for directory in os.environ.get('PATH', '').split(os.pathsep):
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
+async def _start_browser(nodriver, executable):
+    """İki argüman kümesiyle dene: eski başsız mod ve yeni başsız mod."""
+    import os
+    import tempfile
+    attempts = []
+    for headless_mode, extra in (('--headless=new', ()), ('--headless=old', ())):
+        user_dir = tempfile.mkdtemp(prefix='nd-')
+        kwargs = {'browser_executable_path': executable,
+                  'browser_args': [headless_mode, *LAUNCH_ARGS, *extra,
+                                   f'--user-data-dir={user_dir}']}
+        try:
+            return await nodriver.start(**kwargs), None
+        except Exception as exc:                   # noqa: BLE001 - teşhis aracı
+            detail = str(exc).strip() or repr(exc)
+            attempts.append(f'{headless_mode}: {type(exc).__name__}: {detail[:90]}')
+            _ = os.path  # sessiz import uyarısını önle
+    return None, ' | '.join(attempts)
+
+
 async def _probe_nodriver(url, timeout):
     """nodriver (Chrome DevTools) ile sayfayı aç ve challenge'ın çözülmesini bekle."""
     try:
@@ -97,12 +145,12 @@ async def _probe_nodriver(url, timeout):
     except ImportError:
         return {'error': 'nodriver kurulu değil'}
 
-    browser = None
-    try:
-        browser = await nodriver.start(
-            headless=True, browser_args=['--no-sandbox', '--disable-dev-shm-usage'])
-    except Exception as exc:                       # noqa: BLE001 - teşhis aracı
-        return {'error': f'tarayıcı başlatılamadı: {type(exc).__name__}: {str(exc)[:120]}'}
+    executable = find_chrome()
+    if not executable:
+        return {'error': 'Chrome/Chromium bulunamadı'}
+    browser, failure = await _start_browser(nodriver, executable)
+    if browser is None:
+        return {'error': f'tarayıcı başlatılamadı: {failure}', 'chrome': executable}
 
     try:
         page = await browser.get(url, new_tab=False)
@@ -129,6 +177,7 @@ async def _probe_nodriver(url, timeout):
             browser.stop()
         except Exception:                          # noqa: BLE001 - kapanış
             pass
+        await asyncio.sleep(0.2)                   # olay döngüsü temiz kapansın
 
 
 def probe(url, timeout=45):
@@ -139,6 +188,10 @@ def probe(url, timeout=45):
         return asyncio.run(_probe_nodriver(url, timeout))
     except RuntimeError as exc:                    # zaten bir döngü var
         return {'error': f'olay döngüsü: {str(exc)[:100]}'}
+    except Exception as exc:                       # noqa: BLE001 - teşhis aracı
+        # Tarayıcı kapanırken oluşan gürültü (ör. "Event loop is closed") ölçümü
+        # düşürmemeli; sonuç yine dürüstçe raporlanır.
+        return {'error': f'{type(exc).__name__}: {str(exc).strip()[:120]}'}
 
 
 def main(argv=None):
