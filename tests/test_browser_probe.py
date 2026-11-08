@@ -115,3 +115,21 @@ class BrowserDiscoveryTests(unittest.TestCase):
     def test_launch_args_reduce_bot_signals(self):
         self.assertIn('--disable-blink-features=AutomationControlled', probe.LAUNCH_ARGS)
         self.assertIn('--no-sandbox', probe.LAUNCH_ARGS)
+
+
+class ErrorDetailTests(unittest.TestCase):
+    """Çok satırlı hatalarda sebep kaybolmamalı (nodriver traceback gönderir)."""
+
+    def test_traceback_separator_is_skipped(self):
+        exc = Exception('--------------------\n'
+                        'Could not connect to browser\n'
+                        '^^^^^^^^^^^^^^^^^^^^')
+        detail = probe._detail(exc)
+        self.assertIn('Could not connect', detail)
+        self.assertNotIn('----', detail)
+
+    def test_empty_message_falls_back_to_repr(self):
+        self.assertTrue(probe._detail(Exception()))
+
+    def test_long_message_is_capped(self):
+        self.assertLessEqual(len(probe._detail(Exception('x' * 500))), 110)

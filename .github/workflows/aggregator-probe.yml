@@ -125,6 +125,23 @@ jobs:
               < /tmp/diag_args.txt || true
           cat /tmp/diag.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
+      - name: Chrome kontrolü (tarayıcı gerçekten çalışıyor mu?)
+        if: always()
+        run: |
+          set -euo pipefail
+          # Ölçüm aracından ÖNCE tarayıcının kendisi sınanır: yoksa/hata
+          # veriyorsa 'challenge geçilemedi' sonucu yanıltıcı olurdu.
+          echo "## Chrome kontrolü" >> "$GITHUB_STEP_SUMMARY"
+          google-chrome --version 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          if timeout 90 google-chrome --headless=new --no-sandbox --disable-gpu \
+               --disable-dev-shm-usage --virtual-time-budget=8000 --dump-dom \
+               https://example.com > /tmp/dom.txt 2>/tmp/dom.err; then
+            echo "kontrol sayfası: $(grep -o '<title>[^<]*' /tmp/dom.txt | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Chrome kontrol sayfasını açamadı (tarayıcı sorunu, site sorunu değil)" | tee -a "$GITHUB_STEP_SUMMARY"
+            tail -5 /tmp/dom.err | tee -a "$GITHUB_STEP_SUMMARY" || true
+          fi
+
       - name: Gerçek tarayıcı testi (JS challenge'ı geçebiliyor mu?)
         if: always()
         env:

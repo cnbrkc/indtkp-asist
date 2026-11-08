@@ -105,6 +105,19 @@ LAUNCH_ARGS = (
 )
 
 
+def _detail(exc):
+    """Çok satırlı istisnaların ANLAMLI satırını seç.
+
+    nodriver başlatma hataları traceback metni taşır; ilk 90 karakter sadece
+    '--------------------' olur. Son anlamlı satır gerçek nedendir.
+    """
+    lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+    lines = [line for line in lines if set(line) - set('-^ ')]
+    if not lines:
+        return repr(exc)[:110]
+    return (' | '.join(lines[-2:]) if len(lines) > 1 else lines[0])[:110]
+
+
 def find_chrome():
     """Kurulu Chrome/Chromium yolunu bul. Yoksa None (uydurma yol yok)."""
     import os
@@ -132,8 +145,7 @@ async def _start_browser(nodriver, executable):
         try:
             return await nodriver.start(**kwargs), None
         except Exception as exc:                   # noqa: BLE001 - teşhis aracı
-            detail = str(exc).strip() or repr(exc)
-            attempts.append(f'{headless_mode}: {type(exc).__name__}: {detail[:90]}')
+            attempts.append(f'{headless_mode}: {type(exc).__name__}: {_detail(exc)}')
             _ = os.path  # sessiz import uyarısını önle
     return None, ' | '.join(attempts)
 
