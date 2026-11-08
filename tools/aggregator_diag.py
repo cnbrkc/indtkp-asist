@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import subprocess
 import sys
 import time
 import urllib.error
@@ -62,11 +63,16 @@ FULL_HEADERS = {
     'Connection': 'keep-alive',
 }
 
+# (ad, istemci, UA, başlıklar). "istemci" önemli: Python/urllib'in TLS parmak
+# izi birçok WAF tarafından ayrıca işaretlenir. curl farklı bir TLS yığını
+# kullanır; ikisi arasındaki fark "IP engeli" ile "istemci parmak izi"ni ayırır.
 VARIANTS = (
-    ('1 mevcut worker', CURRENT_UA, CURRENT_HEADERS),
-    ('2 tarayıcı UA', BROWSER_UA, CURRENT_HEADERS),
-    ('3 tarayıcı UA + tam başlık', BROWSER_UA, FULL_HEADERS),
-    ('4 mevcut UA + tam başlık', CURRENT_UA, FULL_HEADERS),
+    ('1 urllib · mevcut UA', 'urllib', CURRENT_UA, CURRENT_HEADERS),
+    ('2 urllib · tarayıcı UA', 'urllib', BROWSER_UA, CURRENT_HEADERS),
+    ('3 urllib · tarayıcı UA + tam başlık', 'urllib', BROWSER_UA, FULL_HEADERS),
+    ('4 urllib · mevcut UA + tam başlık', 'urllib', CURRENT_UA, FULL_HEADERS),
+    ('5 curl · mevcut UA', 'curl', CURRENT_UA, CURRENT_HEADERS),
+    ('6 curl · tarayıcı UA + tam başlık', 'curl', BROWSER_UA, FULL_HEADERS),
 )
 
 INTERESTING = ('server', 'cf-ray', 'cf-mitigated', 'x-served-by', 'x-cache',
@@ -127,18 +133,71 @@ def attempt(url, user_agent, headers):
                 'ms': int((time.monotonic() - started) * 1000)}
 
 
+def attempt_curl(url, user_agent, headers, workdir='/tmp'):
+    """curl ile tek istek. Yönlendirme TAKİP EDİLMEZ (-L yok).
+
+    Neden ayrı istemci: Python/urllib'in TLS parmak izi bilinen bir WAF
+    imzasıdır. curl farklı bir yığın kullanır. İkisinin farklı cevap vermesi
+    "IP engeli" değil "istemci parmak izi" demektir.
+    """
+    import os
+    import subprocess
+    body_path = os.path.join(workdir, 'diag_body.txt')
+    command = ['curl', '-sS', '--max-time', '20', '--max-filesize', str(MAX_BODY),
+               '-o', body_path, '-w', '%{http_code} %{size_download} %{time_total}',
+               '-A', user_agent]
+    for key, value in headers.items():
+        command += ['-H', f'{key}: {value}']
+    command.append(url)
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=40)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {'status': None, 'error': type(exc).__name__,
+                'ms': int((time.monotonic() - started) * 1000)}
+    if proc.returncode != 0:
+        return {'status': None, 'error': f'curl {proc.returncode}: {proc.stderr.strip()[:120]}',
+                'ms': int((time.monotonic() - started) * 1000)}
+    parts = (proc.stdout or '').split()
+    status = int(parts[0]) if parts and parts[0].isdigit() else None
+    row = {'status': status,
+           'ms': int((time.monotonic() - started) * 1000),
+           'bytes': int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0,
+           'client': 'curl'}
+    if status == 200:
+        try:
+            text = Path(body_path).read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            text = ''
+        row['title'] = (text.split('<title>', 1)[1].split('</title>', 1)[0].strip()
+                        if '<title>' in text else '')
+        row['jsonld'] = text.count('application/ld+json')
+    return row
+
+
+def run_variant(url, client, user_agent, headers):
+    if client == 'curl':
+        return attempt_curl(url, user_agent, headers)
+    return attempt(url, user_agent, headers)
+
+
 def verdict(rows):
     """Tablodan tek cümlelik sonuç."""
     by_name = {name: row.get('status') for name, row in rows}
     ok = [name for name, status in by_name.items() if status == 200]
+    curl_ok = [name for name in ok if name.startswith('5') or name.startswith('6')]
+    urllib_ok = [name for name in ok if name[:1] in '1234']
     if len(ok) == len(by_name):
         return 'HEPSİ OKUNDU — engel yok.'
+    if ok and curl_ok and not urllib_ok:
+        return ('İSTEMCİ FARKI: curl okudu, urllib okumadı → engel IP değil, '
+                'HTTP istemcisinin parmak izi. Worker curl ile okumaya geçirilebilir.')
     if ok:
         return (f'BAŞLIK FARKI: {", ".join(ok)} okundu → engel başlıktan kaynaklanıyor, '
                 'düzeltilebilir.')
     if all(status == 403 for status in by_name.values()):
-        return ('DÖRDÜ DE 403 → engel IP/veri merkezi kaynaklı görünüyor; bu makineden '
-                'okunamaz (başlıkla düzeltilemez).')
+        return ('HEPSİ 403 (iki istemci, dört başlık kümesi) → engel IP/veri merkezi '
+                'kaynaklı; başlıkla veya istemciyle düzeltilemez.')
     statuses = [row.get('status') for _, row in rows]
     return ('KARMA SONUÇ — dördü de okunamadı ama 403 de değil: '
             f'{statuses}. Ağ/başlık kombinasyonu denendi.')
@@ -161,8 +220,8 @@ def main(argv=None):
         url = check_url(raw)
         print(f'\n## {url}')
         rows = []
-        for name, agent, headers in VARIANTS:
-            row = attempt(url, agent, headers)
+        for name, client, agent, headers in VARIANTS:
+            row = run_variant(url, client, agent, headers)
             rows.append((name, row))
             print(f'  {name:<28} {str(row.get("status")):<5} '
                   f'{row.get("ms", 0):>5} ms  {row.get("bytes", "—")} bayt  '
