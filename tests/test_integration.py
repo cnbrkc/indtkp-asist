@@ -2779,6 +2779,19 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.STATS['deduped'], 1)
         self.assertEqual(client.edited[-1][1], 777)
 
+    def test_restart_campaign_header_offer_does_not_resend_identical_copy(self):
+        from test_reported_message_regressions import LENOVO_LP80, LENOVO_LP80_NOTIFICATION
+
+        old = (GROUP_ID, LENOVO_LP80_NOTIFICATION, ADMIN_ID, None, None, [], 528179)
+        client = self.start([old])
+        source = next(iter(bot.SOURCE_IDS))
+        self.dispatch(client, [(source, 528179, LENOVO_LP80, False)])
+        self.assertEqual(len(client.delivered), 0, "aynı ₺440 teklif restart sonrası yeniden gönderilmemeli")
+        self.assertEqual(bot.STATS['deduped'], 1)
+        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertEqual(entry['offer'], (440, ''))
+        self.assertEqual(entry['count'], 2)
+
     def test_explicit_used_condition_does_not_split_title_price_identity(self):
         client = self.start()
         source = next(iter(bot.SOURCE_IDS))

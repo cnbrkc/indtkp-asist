@@ -3066,9 +3066,25 @@ def recover_poll_interval(current: float, base: float) -> float:
     return max(base, current / 2)
 
 
-def offer_terms(obj: Any) -> tuple[float | None, str]:
-    """Güvenilir ürün fiyatını döndür; koşul, mağaza ve bağlantılar kimlik değildir."""
+def offer_terms(obj: Any, *, prefer_header: bool = False) -> tuple[float | None, str]:
+    """Güvenilir ürün fiyatını döndür; koşul, mağaza ve bağlantılar kimlik değildir.
+
+    ``prefer_header`` yalnız kendi composed bildirimlerimizi geçmişten yüklerken
+    kullanılır. Canlı kaynakta eski bir başlık ile daha düşük gövde fiyatı birlikte
+    bulunabilir; bu nedenle varsayılan davranış gövdeyi ayrıştırmaya devam eder.
+    """
     text = message_text(obj)
+    if prefer_header:
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        header_price, header_title = split_header_line(first_line)
+        if header_price and header_title and not price_filter.is_generic_title(header_title):
+            # Composed bildirimin fiyatı zaten canlı yolda doğrulanmıştır. Restart
+            # sonrası gövdedeki eski/kupon/kampanya tutarlarıyla yeniden belirsizlik
+            # üretmek, aynı teklifi ``None -> fiyat`` gibi gösterip ikinci bildirim
+            # attırıyordu. Başlık yoluyla aynı sözleşmeyi fiyat için de kullan.
+            header_info = price_filter.extract_price(header_price)
+            if header_info.value is not None and header_info.confidence in {"high", "medium"}:
+                return header_info.value, ""
     strike = price_filter.strike_spans_from_entities(text, entities_for_text(obj, text))
     info = price_filter.extract_price(text, strike)
     value = info.value if info.confidence in {"high", "medium"} else None
@@ -6870,7 +6886,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         title = history_title
                     elif first_line:
                         title = first_line   # başlığın tek başına üstte olduğu düzen
-                terms = offer_terms(message)
+                terms = offer_terms(message, prefer_header=True)
                 key = dedup_offer_key(title, terms)
                 if not key:
                     continue
