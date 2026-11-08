@@ -134,6 +134,30 @@ def validate_url(raw):
     return urlunsplit(('https', host, parts.path, parts.query, ''))
 
 
+
+URL_TOKEN = re.compile(r'https?://\S+')
+
+
+def split_entries(text):
+    """Recover URLs from a single line that GitHub's one-line input merged.
+
+    GitHub Actions `inputs` for a string input is a *single* line, so pasting
+    one URL per line collapses into "url1 url2 url3". Newlines, commas and
+    whitespace are all accepted as separators.
+    """
+    tokens = []
+    for chunk in re.split(r'[\s,;]+', text or ''):
+        chunk = chunk.strip().strip('<>"\'')
+        if chunk:
+            tokens.append(chunk)
+    # If a chunk is obviously several URLs glued together, split on the scheme.
+    recovered = []
+    for token in tokens:
+        pieces = [piece for piece in re.split(r'(?=https?://)', token) if piece]
+        recovered.extend(pieces if len(pieces) > 1 else [token])
+    return recovered
+
+
 # ---------------------------------------------------------------------------
 # Fetch
 # ---------------------------------------------------------------------------
@@ -503,6 +527,11 @@ def _row(record):
 
 
 def summary_markdown(records):
+    if not records:
+        return ('# F1 probe sonucu\n\n'
+                '**Hiçbir URL ölçülmedi.** `urls` alanı boş, örnek metin ya da izin '
+                'listesinde olmayan host olabilir. Birden fazla linki boşluk veya '
+                'virgülle ayırarak tek satırda yapıştır.\n')
     lines = ['# F1 probe sonucu', '',
              '| Host | Durum | HTTP | Gecikme (ms) | JSON-LD | Product | Satıcı fiyatı | '
              'Görünür fiyat | EAN | Engel |',
@@ -559,9 +588,12 @@ def main(argv=None):
     parser.add_argument('--no-wait', action='store_true', help='for tests only')
     args = parser.parse_args(argv)
 
-    raw_urls = list(args.url)
+    entries = list(args.url)
     if args.urls:
-        raw_urls += Path(args.urls).read_text(encoding='utf-8').splitlines()
+        entries.append(Path(args.urls).read_text(encoding='utf-8'))
+    raw_urls = []
+    for entry in entries:
+        raw_urls.extend(split_entries(entry))
 
     out = Path(args.out)
     (out / 'snippets').mkdir(parents=True, exist_ok=True)
@@ -595,6 +627,10 @@ def main(argv=None):
             json.dumps({'url': url, 'snippet': record.get('snippet', '')},
                        ensure_ascii=False, indent=2), encoding='utf-8')
         print(f"{host}: {_row(record)} (HTTP {record.get('status')})", flush=True)
+
+    if not records:
+        print('UYARI: hiçbir URL ölçülmedi. "urls" alanına ürün linki yapıştırdığından emin ol; '
+              'birden fazla link boşluk veya virgülle ayrılabilir.', file=sys.stderr)
 
     payload = {'generated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                'policy': ALLOWED_HOSTS, 'records': records, 'skipped': skipped}

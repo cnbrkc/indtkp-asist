@@ -232,6 +232,42 @@ class RowStateTests(unittest.TestCase):
             self.assertEqual(probe._row(record), expected, record)
 
 
+class SplitEntriesTests(unittest.TestCase):
+    def test_one_url_per_line(self):
+        text = 'https://www.teknosa.com/a-p-1\nhttps://www.n11.com/urun/b?magaza=c\n'
+        self.assertEqual(probe.split_entries(text),
+                         ['https://www.teknosa.com/a-p-1',
+                          'https://www.n11.com/urun/b?magaza=c'])
+
+    def test_github_single_line_input_merged_with_spaces(self):
+        # This is exactly what the first real probe run produced.
+        text = ('https://www.n11.com/urun/tcl-65c6k-91634106 '
+                'https://www.hepsiburada.com/tcl-65c6k-p-HBCV1')
+        self.assertEqual(probe.split_entries(text),
+                         ['https://www.n11.com/urun/tcl-65c6k-91634106',
+                          'https://www.hepsiburada.com/tcl-65c6k-p-HBCV1'])
+
+    def test_commas_and_newlines_and_blank_lines(self):
+        text = '\n\nhttps://www.teknosa.com/a, https://www.n11.com/b ;\n'
+        self.assertEqual(probe.split_entries(text),
+                         ['https://www.teknosa.com/a', 'https://www.n11.com/b'])
+
+    def test_glued_urls_without_separator(self):
+        text = 'https://www.teknosa.com/ahttps://www.n11.com/b'
+        self.assertEqual(probe.split_entries(text),
+                         ['https://www.teknosa.com/a', 'https://www.n11.com/b'])
+
+    def test_truncated_url_is_kept_so_the_run_reports_it(self):
+        # A cut-off path is still a well-formed URL shape: it must reach the
+        # fetch (and show up as HTTP 404), not vanish from the report.
+        tokens = probe.split_entries('https://www.hepsiburada.com/tcl-65c6k-')
+        self.assertEqual(tokens, ['https://www.hepsiburada.com/tcl-65c6k-'])
+        self.assertEqual(probe.validate_url(tokens[0]),
+                         'https://www.hepsiburada.com/tcl-65c6k-')
+        with self.assertRaises(ValueError):
+            probe.validate_url('https://www.hepsiburada.com')
+
+
 class ProbeRunTests(unittest.TestCase):
     def test_end_to_end_writes_outputs_and_rejects_unknown_host(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -261,6 +297,37 @@ class ProbeRunTests(unittest.TestCase):
             self.assertIn('mediamarkt.com.tr', summary)
             self.assertIn('okunabilir', summary)
             self.assertTrue((Path(tmp) / 'snippets' / 'www.mediamarkt.com.tr.json').exists())
+
+    def test_empty_input_reports_clearly_instead_of_silent_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            urls = Path(tmp) / 'urls.txt'
+            urls.write_text('', encoding='utf-8')
+            code = probe.main(['--urls', str(urls), '--out', tmp, '--rounds', '1', '--no-wait'])
+            self.assertEqual(code, 0)
+            summary = (Path(tmp) / 'summary.md').read_text(encoding='utf-8')
+            self.assertIn('Hiçbir URL ölçülmedi', summary)
+            data = json.loads((Path(tmp) / 'probe.json').read_text(encoding='utf-8'))
+            self.assertEqual(data['records'], [])
+
+    def test_space_separated_single_line_input_is_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            urls = Path(tmp) / 'urls.txt'
+            urls.write_text('https://www.teknosa.com/a-p-1 https://www.n11.com/b?magaza=c',
+                            encoding='utf-8')
+            seen = []
+            original = probe.fetch_once
+
+            def fake(url, opener=None):
+                seen.append(url)
+                return probe.FetchResult(status=200, body=JSONLD_PAGE, final_url=url,
+                                         size=len(JSONLD_PAGE), latency_ms=100)
+            probe.fetch_once = fake
+            try:
+                probe.main(['--urls', str(urls), '--out', tmp, '--rounds', '1', '--no-wait'])
+            finally:
+                probe.fetch_once = original
+            self.assertEqual(seen, ['https://www.teknosa.com/a-p-1',
+                                    'https://www.n11.com/b?magaza=c'])
 
     def test_failed_fetch_is_reported_without_body(self):
         with tempfile.TemporaryDirectory() as tmp:

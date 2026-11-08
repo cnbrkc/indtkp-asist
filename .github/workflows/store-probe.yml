@@ -7,8 +7,11 @@ on:
     inputs:
       urls:
         description: >
-          Ölçülecek ürün URL'leri (her satıra bir tane). Birden fazla satır
-          yazabilirsin; izin listesinde olmayan satırlar reddedilir.
+          Ölçülecek ürün URL'leri. Bu alan TEK SATIRDIR: birden fazla linki
+          boşluk veya virgülle ayırarak yapıştır (ör. "https://.../a https://.../b").
+          İzin listesinde olmayan host'lar reddedilir. 6 URL için de geniş
+          tutulması amacıyla alan uzun bırakılmalı; çok uzunsa urls.txt
+          olarak depoya ekleyip --urls ile okut.
         required: true
         type: string
       rounds:

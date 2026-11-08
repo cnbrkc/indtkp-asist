@@ -367,13 +367,16 @@ Fiyat kararı vermez, kayıt tutmaz.
 | Secret | **Yok** |
 
 **Nasıl çalıştırılır:** GitHub → Actions → **"Mağaza ölçümü (F1 probe)"** → *Run workflow*.
-`urls` alanına her satıra bir ürün linki yaz:
+`urls` alanı **tek satırdır**; birden fazla linki **boşluk veya virgülle** ayır
+(alt alta yapıştırırsan GitHub bunları tek satıra birleştirir — araç bunu artık ayırıyor,
+ama boşlukla ayırmak en güvenlisi). Örnek:
 
 ```
-https://www.mediamarkt.com.tr/tr/product/_ornek-1246642.html
-https://www.amazon.com.tr/dp/B0FBWJTCV6
-https://www.trendyol.com/tcl/ornek-p-855342638?merchantId=106394
+https://www.mediamarkt.com.tr/tr/product/_ornek-1246642.html https://www.amazon.com.tr/dp/B0FBWJTCV6 https://www.trendyol.com/tcl/ornek-p-855342638?merchantId=106394
 ```
+
+Çok sayıda URL için depoya `urls.txt` ekleyip yerelde `--urls urls.txt` ile çalıştırmak daha
+rahattır. Hiç URL ölçülemezse özet tablo bunu **açıkça** yazar (sessiz boş çıktı vermez).
 
 **Çıktı:** iş özetinde Markdown tablo (durum, HTTP, gecikme, JSON-LD, gömülü JSON'daki
 satıcı fiyatı sayısı, görünür fiyat adayları ve etiketleri, EAN, engel) + `store-probe-out`
