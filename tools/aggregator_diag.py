@@ -6,6 +6,11 @@ isteği reddetmesi. İki olası neden var ve çözümleri tamamen farklı:
 
     (A) başlıklar   → düzeltilebilir: düzgün Accept/Accept-Encoding/UA gönder.
     (B) veri merkezi IP'si → düzeltilemez: bu makineden o site okunamaz.
+    (C) istemcinin TLS parmak izi → curl_cffi (Chrome BoringSSL) düzeltir.
+
+Bu yüzden 8 varyant denenir: 4 başlık kümesi × urllib, 2 × düz curl,
+2 × curl_cffi (Chrome / Safari TLS taklidi). Son ikisi "TLS engeli"ni
+kesinleştirir; üçü de 403 ise engel IP itibarıdır.
 
 Bu araç aynı URL'yi 4 farklı başlık kümesiyle dener ve farkı tabloya yazar:
 
@@ -73,11 +78,51 @@ VARIANTS = (
     ('4 urllib · mevcut UA + tam başlık', 'urllib', CURRENT_UA, FULL_HEADERS),
     ('5 curl · mevcut UA', 'curl', CURRENT_UA, CURRENT_HEADERS),
     ('6 curl · tarayıcı UA + tam başlık', 'curl', BROWSER_UA, FULL_HEADERS),
+    # 7–8: Chrome'un GERÇEK TLS parmak izi (BoringSSL + HTTP/2 ayarları).
+    # Düz curl ve urllib "bot" TLS'i taşır; WAF yalnız TLS'e bakıp 403 veriyorsa
+    # bu iki varyant okur. Paket yoksa satır sessizce atlanmaz, "yok" yazar.
+    ('7 curl_cffi · chrome', 'cffi', BROWSER_UA, FULL_HEADERS),
+    ('8 curl_cffi · safari', 'cffi-safari', BROWSER_UA, FULL_HEADERS),
 )
+
+CFFI_PROFILES = {'cffi': 'chrome', 'cffi-safari': 'safari'}
 
 INTERESTING = ('server', 'cf-ray', 'cf-mitigated', 'x-served-by', 'x-cache',
                'via', 'x-azure-ref', 'x-amzn-waf-action', 'content-type',
                'content-length', 'set-cookie', 'retry-after')
+# 403 gövdesinin imzası: hangi WAF, hangi karar? "Blocked" = IP itibarı,
+# "Just a moment" = tarayıcı challenge'ı. Çözüm seçimi buna bağlı.
+WAF_SIGNATURES = {
+    'cloudflare_blocked': ('you have been blocked', 'attention required'),
+    'cloudflare_challenge': ('just a moment', 'cf-challenge', 'turnstile',
+                             'checking your browser'),
+    'cloudflare_bot_management': ('cf-mitigated', 'cloudflare ray id'),
+    'akamai': ('reference #', 'akamai'),
+    'incapsula': ('incapsula', '_incap_'),
+    'sucuri': ('sucuri', 'access denied - sucuri'),
+    'datadome': ('datadome', 'geo.captcha-delivery'),
+    'perimeterx': ('perimeterx', 'px-captcha', 'human challenge'),
+    'turkey_block_page': ('erişim engellendi', 'erişim yasak'),
+}
+BODY_SAMPLE = 4000
+
+
+def waf_signature(text):
+    """403 gövdesinden WAF + karar türünü çıkar (gizli veri yok, sayaç/kimlik yok)."""
+    low = (text or '').lower()
+    found = [name for name, needles in WAF_SIGNATURES.items()
+             if any(needle in low for needle in needles)]
+    import re as _re
+    title = _re.search(r'<title[^>]*>(.*?)</title>', text or '', _re.S | _re.I)
+    ray = _re.search(r'(?:ray id|cf-ray)[:\s]*([0-9a-f]{8,})', low)
+    return {
+        'waf': found or ['bilinmiyor'],
+        'title': ' '.join(title.group(1).split())[:80] if title else '',
+        'ray_present': bool(ray),
+        'blocked_vs_challenge': ('blocked' if 'cloudflare_blocked' in found else
+                                 'challenge' if 'cloudflare_challenge' in found else
+                                 'unknown'),
+    }
 
 
 def check_url(raw):
@@ -121,10 +166,17 @@ def attempt(url, user_agent, headers):
                             if k.lower() in INTERESTING},
             }
     except urllib.error.HTTPError as exc:
-        return {'status': exc.code,
-                'ms': int((time.monotonic() - started) * 1000),
-                'headers': {k: v for k, v in (exc.headers or {}).items()
-                            if k.lower() in INTERESTING}}
+        row = {'status': exc.code,
+               'ms': int((time.monotonic() - started) * 1000),
+               'headers': {k: v for k, v in (exc.headers or {}).items()
+                           if k.lower() in INTERESTING}}
+        try:                                   # 403'ün kimliği: gövde imzası
+            body = exc.read(BODY_SAMPLE).decode('utf-8', errors='replace')
+            row['bytes'] = len(body)
+            row['signature'] = waf_signature(body)
+        except Exception:                      # noqa: BLE001 - teşhis aracı
+            pass
+        return row
     except ValueError as exc:                      # NoRedirect 3xx
         return {'status': '3xx', 'error': 'yönlendirme reddedildi',
                 'ms': int((time.monotonic() - started) * 1000)}
@@ -164,20 +216,61 @@ def attempt_curl(url, user_agent, headers, workdir='/tmp'):
            'ms': int((time.monotonic() - started) * 1000),
            'bytes': int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0,
            'client': 'curl'}
+    try:
+        text = Path(body_path).read_text(encoding='utf-8', errors='replace')[:BODY_SAMPLE]
+    except OSError:
+        text = ''
     if status == 200:
-        try:
-            text = Path(body_path).read_text(encoding='utf-8', errors='replace')
-        except OSError:
-            text = ''
         row['title'] = (text.split('<title>', 1)[1].split('</title>', 1)[0].strip()
                         if '<title>' in text else '')
         row['jsonld'] = text.count('application/ld+json')
+    elif status is not None:
+        row['signature'] = waf_signature(text)     # 403'te de imza şart
+    return row
+
+
+def attempt_cffi(url, impersonate, user_agent, headers):
+    """Chrome/Safari TLS parmak izi taklidi (curl_cffi).
+
+    Neden: 1–6 arasındaki tüm varyantlar aynı TLS yığınını (Python ssl ya da
+    düz curl) kullanır; WAF bunları "bot" olarak tanır. curl_cffi, Chrome'un
+    BoringSSL'ini ve HTTP/2 ayarlarını birebir taklit eder. Ücretsiz, pip'ten
+    gelir, JS çalıştırmaz → yalnız "fingerprint" engelini çözer, challenge'ı
+    çözmez.
+    """
+    started = time.monotonic()
+    try:
+        from curl_cffi import requests as cffi_requests   # noqa: PLC0415
+    except Exception:                                      # noqa: BLE001
+        return {'status': None, 'error': 'curl_cffi kurulu değil',
+                'ms': int((time.monotonic() - started) * 1000), 'client': impersonate}
+    try:
+        response = cffi_requests.get(
+            url, impersonate=impersonate, headers=dict(headers, **{'User-Agent': user_agent}),
+            timeout=25, allow_redirects=False)
+    except Exception as exc:                               # noqa: BLE001 - teşhis aracı
+        # WAF TLS el sıkışmasını kapatırsa burası SSL hatası verir; bu da bir bulgudur.
+        return {'status': None, 'error': f'{type(exc).__name__}: {str(exc)[:110]}',
+                'ms': int((time.monotonic() - started) * 1000), 'client': impersonate}
+    text = (response.text or '')[:BODY_SAMPLE]
+    row = {'status': response.status_code,
+           'ms': int((time.monotonic() - started) * 1000),
+           'bytes': len(response.content or b''),
+           'client': impersonate}
+    if response.status_code == 200:
+        row['title'] = ' '.join((text.split('<title>', 1)[1].split('</title>', 1)[0].split())
+                                if '<title>' in text else '')[:80]
+        row['jsonld'] = text.count('application/ld+json')
+    else:
+        row['signature'] = waf_signature(text)
     return row
 
 
 def run_variant(url, client, user_agent, headers):
     if client == 'curl':
         return attempt_curl(url, user_agent, headers)
+    if client in CFFI_PROFILES:
+        return attempt_cffi(url, CFFI_PROFILES[client], user_agent, headers)
     return attempt(url, user_agent, headers)
 
 
@@ -185,8 +278,12 @@ def verdict(rows):
     """Tablodan tek cümlelik sonuç."""
     by_name = {name: row.get('status') for name, row in rows}
     ok = [name for name, status in by_name.items() if status == 200]
+    cffi_ok = [name for name in ok if name.startswith('7') or name.startswith('8')]
     curl_ok = [name for name in ok if name.startswith('5') or name.startswith('6')]
     urllib_ok = [name for name in ok if name[:1] in '1234']
+    if cffi_ok:
+        return ('TLS FARKI: Chrome parmak izi taklidi okudu → engel istemcinin TLS '
+                'imzasıydı. Worker curl_cffi ile okumaya geçirilebilir (ücretsiz).')
     if len(ok) == len(by_name):
         return 'HEPSİ OKUNDU — engel yok.'
     if ok and curl_ok and not urllib_ok:
@@ -195,9 +292,23 @@ def verdict(rows):
     if ok:
         return (f'BAŞLIK FARKI: {", ".join(ok)} okundu → engel başlıktan kaynaklanıyor, '
                 'düzeltilebilir.')
+    # TLS el sıkışmasını WAF kapatırsa status None döner (SSL hatası). Bu da
+    # "okunamadı" demektir; 'hepsi 403' kuralını bozup sonucu yanlışlıkla
+    # KARMA'ya düşürmemeli.
+    known = [status for status in by_name.values() if status is not None]
+    blocked_or_refused = known and all(status == 403 for status in known) and any(
+        status is None for status in by_name.values())
+    if blocked_or_refused:
+        return ('403 + TLS bağlantı reddi: sunucu Chrome parmak izini de kabul etmedi, '
+                'bağlantıyı el sıkışmada kapattı → engel IP/veri merkezi kaynaklı. '
+                'Başlıkla, istemciyle veya TLS taklidiyle düzeltilemez.')
     if all(status == 403 for status in by_name.values()):
-        return ('HEPSİ 403 (iki istemci, dört başlık kümesi) → engel IP/veri merkezi '
-                'kaynaklı; başlıkla veya istemciyle düzeltilemez.')
+        sig = next((row.get('signature') for _, row in rows if row.get('signature')), {}) or {}
+        if sig.get('blocked_vs_challenge') == 'challenge':
+            return ('HEPSİ 403, gövde "challenge" → JS doğrulaması; yalnız gerçek '
+                    'tarayıcı geçer, HTTP istemcisi asla.')
+        return ('HEPSİ 403 (urllib + düz curl + Chrome TLS taklidi) → engel IP/veri '
+                'merkezi kaynaklı; başlıkla, istemciyle veya TLS taklidiyle düzeltilemez.')
     statuses = [row.get('status') for _, row in rows]
     return ('KARMA SONUÇ — dördü de okunamadı ama 403 de değil: '
             f'{statuses}. Ağ/başlık kombinasyonu denendi.')
@@ -240,6 +351,10 @@ def main(argv=None):
                     print(f'      {" · ".join(f"{k}: {v}" for k, v in row["headers"].items())[:300]}')
                 if row.get('title'):
                     print(f'      başlık: {row["title"][:80]} · JSON-LD blok: {row["jsonld"]}')
+                if row.get('signature'):
+                    sig = row['signature']
+                    print(f'      WAF: {", ".join(sig["waf"])} · karar: '
+                          f'{sig["blocked_vs_challenge"]} · başlık: {sig["title"][:60]}')
                 time.sleep(args.gap)
             summary = verdict(rows)
             print(f'  → {summary}')
@@ -257,9 +372,13 @@ def main(argv=None):
         # Log arşivi bazen API'den okunamıyor; annotation check-run API'sinde kalır.
         for entry in report['results']:
             for name, row in entry['variants'].items():
+                sig = row.get('signature') or {}
                 print(f'::notice title={name}::HTTP {row.get("status")} · '
                       f'{row.get("ms")} ms · {row.get("bytes", "—")} bayt · '
-                      f'{entry["url"].split("/")[2]}')
+                      f'{entry["url"].split("/")[2]}'
+                      + (f' · WAF={",".join(sig.get("waf", []))}'
+                         f' karar={sig.get("blocked_vs_challenge")}'
+                         f' baslik={sig.get("title", "")[:40]}' if sig else ''))
             print(f'::warning title={entry["url"].split("/")[2]}::{entry["verdict"]}')
     return 0
 

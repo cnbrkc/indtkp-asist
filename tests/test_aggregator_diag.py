@@ -47,8 +47,8 @@ class VerdictTests(unittest.TestCase):
         agents = {agent for _, _, agent, _ in diag.VARIANTS}
         clients = {client for _, client, _, _ in diag.VARIANTS}
         self.assertEqual(agents, {diag.CURRENT_UA, diag.BROWSER_UA})
-        self.assertEqual(clients, {'urllib', 'curl'})
-        self.assertEqual(len(diag.VARIANTS), 6)
+        self.assertEqual(clients, {'urllib', 'curl', 'cffi', 'cffi-safari'})
+        self.assertEqual(len(diag.VARIANTS), 8)
 
     def test_client_difference_is_reported_as_such(self):
         """curl okur, urllib 403 alırsa engel IP değil istemci parmak izidir."""
@@ -181,3 +181,98 @@ class OutputRoutingTests(unittest.TestCase):
             data = json.loads(js.read_text(encoding='utf-8'))
             self.assertEqual(len(data['results']), 1)
             self.assertIn('403', data['results'][0]['verdict'])
+
+
+class WafSignatureTests(unittest.TestCase):
+    """403'ün kimliği: 'Blocked' (IP itibarı) mi, 'challenge' (tarayıcı) mı?
+
+    Çözüm seçimi buna bağlı: challenge ise gerçek tarayıcı işe yarar,
+    blocked ise tarayıcı da yaramaz — IP değişmedikçe.
+    """
+
+    def test_cloudflare_blocked_page(self):
+        html = ('<html><head><title>Attention Required! | Cloudflare</title></head>'
+                '<body>Why have I been blocked?</body></html>')
+        sig = diag.waf_signature(html)
+        self.assertIn('cloudflare_blocked', sig['waf'])
+        self.assertEqual(sig['blocked_vs_challenge'], 'blocked')
+
+    def test_cloudflare_challenge_page(self):
+        html = '<html><head><title>Just a moment...</title></head></html>'
+        sig = diag.waf_signature(html)
+        self.assertIn('cloudflare_challenge', sig['waf'])
+        self.assertEqual(sig['blocked_vs_challenge'], 'challenge')
+
+    def test_other_wafs_are_recognised(self):
+        self.assertIn('akamai', diag.waf_signature('Reference #18.abcd')['waf'])
+        self.assertIn('incapsula', diag.waf_signature('_Incapsula_Resource')['waf'])
+        self.assertIn('datadome', diag.waf_signature('geo.captcha-delivery.com')['waf'])
+        self.assertIn('perimeterx', diag.waf_signature('px-captcha')['waf'])
+
+    def test_unknown_body_is_honest(self):
+        sig = diag.waf_signature('<html><body>403</body></html>')
+        self.assertEqual(sig['waf'], ['bilinmiyor'])
+        self.assertEqual(sig['blocked_vs_challenge'], 'unknown')
+
+    def test_no_secrets_are_extracted(self):
+        """Ray ID gibi kimlikler yalnızca 'var mı' diye bakılır, değeri taşınmaz."""
+        sig = diag.waf_signature('Cloudflare Ray ID: 8f3a1b2c9d')
+        self.assertTrue(sig['ray_present'])
+        self.assertNotIn('8f3a1b2c9d', str(sig))
+
+
+class ChromeImpersonationVariantTests(unittest.TestCase):
+    """7-8. varyant: Chrome/Safari TLS parmak izi taklidi.
+
+    Bu, "403 IP kaynaklı mı, TLS parmak izi kaynaklı mı" ayrımını kesinleştiren
+    tek ücretsiz araçtır. Paket yoksa araç çökmemeli, dürüstçe söylemeli.
+    """
+
+    def test_two_impersonation_variants_exist(self):
+        names = [variant[0] for variant in diag.VARIANTS]
+        self.assertEqual(len(diag.VARIANTS), 8)
+        self.assertTrue(any('curl_cffi' in name and 'chrome' in name for name in names))
+        self.assertTrue(any('curl_cffi' in name and 'safari' in name for name in names))
+
+    def test_missing_package_is_reported_not_raised(self):
+        with mock.patch.dict(sys.modules, {'curl_cffi': None}):
+            row = diag.attempt_cffi('https://www.epey.com/x.html', 'chrome',
+                                    diag.BROWSER_UA, diag.FULL_HEADERS)
+        self.assertIsNone(row['status'])
+        self.assertIn('curl_cffi', row['error'])
+
+    def test_impersonation_success_verdict(self):
+        rows = [('1 urllib · mevcut UA', {'status': 403}),
+                ('7 curl_cffi · chrome', {'status': 200, 'jsonld': 1})]
+        self.assertIn('TLS FARKI', diag.verdict(rows))
+
+    def test_all_blocked_verdict_mentions_tls_attempt(self):
+        rows = [(variant[0], {'status': 403,
+                              'signature': {'blocked_vs_challenge': 'blocked'}})
+                for variant in diag.VARIANTS]
+        verdict = diag.verdict(rows)
+        self.assertIn('TLS taklidi', verdict)
+
+    def test_challenge_verdict_points_to_real_browser(self):
+        rows = [(variant[0], {'status': 403,
+                              'signature': {'blocked_vs_challenge': 'challenge'}})
+                for variant in diag.VARIANTS]
+        self.assertIn('tarayıcı', diag.verdict(rows))
+        self.assertIn('challenge', diag.verdict(rows))
+
+
+class TlsRefusalTests(unittest.TestCase):
+    """WAF TLS el sıkışmasını kapatırsa status None döner — bu da engildir."""
+
+    def test_tls_refusal_is_not_reported_as_mixed_result(self):
+        rows = [(variant[0], {'status': 403, 'signature': {'blocked_vs_challenge': 'blocked'}})
+                for variant in diag.VARIANTS[:6]]
+        rows += [('7 curl_cffi · chrome', {'status': None, 'error': 'SSLError'}),
+                 ('8 curl_cffi · safari', {'status': None, 'error': 'SSLError'})]
+        verdict = diag.verdict(rows)
+        self.assertNotIn('KARMA', verdict)
+        self.assertIn('IP', verdict)
+
+    def test_all_connections_refused_is_honest(self):
+        rows = [(variant[0], {'status': None, 'error': 'timeout'}) for variant in diag.VARIANTS]
+        self.assertTrue(diag.verdict(rows))

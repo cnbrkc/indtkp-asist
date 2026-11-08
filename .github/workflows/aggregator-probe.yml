@@ -72,6 +72,16 @@ jobs:
                   if attempt < attempts:
                       time.sleep(12)
           PY
+      - name: Chrome TLS taklidi için curl_cffi (ücretsiz, teşhis için)
+        if: always()
+        run: |
+          set -euo pipefail
+          # 7-8. varyantlar Chrome/Safari TLS parmak izini taklit eder. Paket
+          # kurulamazsa diag bunu "curl_cffi kurulu değil" diye dürüstçe yazar,
+          # iş başarısız olmaz — teşhis aracı asla koşuyu düşürmemeli.
+          python -m pip install --quiet --disable-pip-version-check curl_cffi \
+            || echo "::warning::curl_cffi kurulamadı; 7-8. varyant atlanacak"
+
       - name: Başlık ve IP testi (403'ün nedeni)
         if: always()
         env:

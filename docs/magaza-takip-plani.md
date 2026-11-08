@@ -909,3 +909,20 @@ ağında Cimri/Epey'i okur → `aggregator_feed.json`. Bot bu dosyayı okur, **a
   Olay döngüsünü bloklamadığı testle kilitli.
 - İstekler arası 45 sn, tur arası 10 dk (siteyi yormamak için).
 - Kurulum belgesi: `docs/cimri-epey-yerel-okuyucu.md`.
+
+### 17.2 Deep search: engeli ücretsiz aşmanın yolu var mı? (2026-11-08)
+
+Ayrıntı: `docs/engel-asma-arastirmasi.md`. Özet:
+
+- Cloudflare 403'ünün üç türü var: **blocked** (IP), **challenge** (tarayıcı), **TLS uyumsuzluğu**.
+  Çözümleri farklı.
+- Bugüne kadar denediklerimiz: farklı başlıklar (❌), **düz curl** (❌ — Chrome taklidi değil).
+- **Denenmemiş tek ücretsiz yol: `curl_cffi` / curl-impersonate** (Chrome BoringSSL + HTTP/2
+  parmak izi). Kaynaklarda TLS kaynaklı 403'leri 200'e çevirdiği ölçülmüş.
+- Challenge çıkarsa gerçek tarayıcı (nodriver/Camoufox) gerekir; ama GitHub Actions'ta ağır ve
+  Telegram döngüsüne risk → ancak "blocked değil, challenge" ölçülürse konuşulur.
+- Ücretsiz CORS proxy'leri, r.jina.ai, translate.goog, Wayback: **ölçüldü, hepsi kapalı**.
+- Apify scraper'ları çalışıyor ama **ücretli** → kural dışı.
+
+Karar: bir ölçüm daha yapılır (7. varyant + 403 imzası). Sonuç 200 ise yerel okuyucuya gerek
+kalmaz; 403 ise engel kesin IP itibarıdır ve tek ücretsiz çözüm yerel okuyucu kalır.
