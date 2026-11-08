@@ -117,6 +117,8 @@ Telegram yok) + `tools/store_probe.py` (tek dosya, stdlib).
 **gömülü JSON'dan çıkan satıcı sayısı + fiyat listesi**, görünen tüm fiyat adayları
 (ana fiyat / taksit / puan / garanti / **2. el**), hangisi JSON-LD ile eşleşiyor, **EAN var mı**.
 **Ek deneme:** Hepsiburada için `www.`li ve `www.`siz URL **ayrı ayrı** ölçülür (Akamai farkı).
+**Hız ölçümü:** her siteye **3 istek, aralarında 5 sn** → yanıt süreleri (ms) + `429/403` oranı
+kaydedilir. Bu veriyle **13.6.2'deki `min_gap` tablosu tahminden ölçüme** çevrilir.
 **Çıktı artefaktı:** `GITHUB_STEP_SUMMARY` tablosu + site başına ≤20 KB kırpılmış JSON/HTML →
 **F2/F5/F6/F7 fixture'larının tek kaynağı**.
 **Kabul:** 7 site tablosu dolu; Trendyol ya fiyat ya `country_wall`; Amazon ya **yeni** fiyat ya
@@ -501,13 +503,14 @@ Bizim `store_tracker.run()` de **aynı listeye** eklenecek (F4).
 
 **Kaldırılan:** tek `INTERVAL 900` ve tek `MAX 10`.
 **Gelen (F3/F5'e işlendi):** ürün başına `hız` alanı + host bazlı limiter + otomatik geri çekilme.
+**Ayrıntı ve site bazlı dip sınırlar → 13.6.**
 
 | Hız | Aralık | Ne zaman |
 |---|---|---|
 | `acil` | **5 dk** | Kampanya dönemi, hedefin çok yakınındasın |
 | `normal` (varsayılan) | **15 dk** | Genel kullanım |
 | `ekonomik` | **1 saat** | Uzak hedef, "acelesi yok" |
-| `otomatik` ✅ önerilen | **5 dk – 1 saat arası kendisi ayarlar** | Aşağıdaki kural |
+| `auto` ✅ önerilen | **5 dk – 1 saat** (site dip sınırına göre sınırlanır) | 13.6.3 formülü |
 
 **`otomatik` nasıl çalışır:**
 1. `fiyat, hedefin %5 yakınında` → **5 dk** (alarm anı yakın, hızlan)
@@ -550,6 +553,106 @@ engellenme değil, **kontrol sıklığı** düşüyor — doğru davranış bu. 
 - **Amazon** her modda en yavaş (1 saat en hızlısı, varsayılan 6 saat) — engellenmemek için.
 - **`acil` modu senin sorumluluğunda:** 30 ürün × 5 dk × tek site = günde 8.640 istek. Limiter
   korur ama "nezaket" sınırına yakın. Varsayılan `auto`.
+
+
+## 13.6 Eşzamanlı istek ve site bazlı dip sınır (2026-11-08 taraması)
+
+### 13.6.1 "Eşzamanlı istek atamıyor muyuz?" — Atabiliyoruz, ama mesele o değil
+
+**Gerçek referans değerler (Scrapy 2.19 dokümantasyonu):**
+
+| Ayar | Çerçeve varsayılanı | Proje şablonu (2.13.3+) | "Kibar" öneri | "Çok kibar" öneri | **Bizim mevcut** |
+|---|---|---|---|---|---|
+| Eşzamanlı istek / domain | **8** | 1 | 4 | 2 | **1** |
+| İstekler arası gecikme | 0 | 1 sn | 2 sn | 5 sn | **10 sn (Akakçe)** |
+
+Yani bizim ayarımız **"çok kibar" ayardan bile 2 kat yavaş**, çerçeve varsayılanından **8 kat az
+eşzamanlı**. Scrapy'nin kendi önerisi: *"Sorumlu tarama kutudan çıktığı gibi"* = 1 eşzamanlı + 1 sn.
+
+**İnsan analojisi — haklısın:** tarayıcı aynı siteye **6 paralel bağlantı** açar; insan 5–10 sn'de
+bir ürün sayfasına geçer. Yani gerçek bir insanın trafiği ≈ **birkaç saniyede birkaç istek**.
+Bizim 20 saniyede 1 istek insan davranışının çok altında.
+
+**Ama asıl teknik nokta:** eşzamanlılık, site zaten hız sınırlıysa **hız kazandırmaz**.
+- 10 paralel istek atarsın, site 5 isteği kabul edip 5'ini 429/403 ile reddeder → **net hız aynı,
+  risk daha yüksek** (burst = bot sinyali).
+- Doğru tasarım "her şeyi paralel yap" değil: **host başına token bucket (dip sınır) + sınırlı
+  eşzamanlılık**. Eşzamanlılık yalnız bucket'ın izin verdiği kadar açılır.
+
+### 13.6.2 Site bazlı **dip sınır** tablosu (senin dediğin gibi, her site kendi içinde)
+
+| Host | `min_gap` (dip) | Eşzamanlı | Gerekçe |
+|---|---|---|---|
+| `akakce.com` | **10 sn** | 1 | Mevcut, çalışıyor — **dokunmuyoruz** |
+| `www.mediamarkt.com.tr` | **5 sn** | 2 | robots AI botlarını **açıkça serbest bırakmış** (`ClaudeBot → Allow: /`) |
+| `www.teknosa.com` | **8 sn** | 1 | Fiyat oynak; F1 ölçümüyle kesinleşir |
+| `www.pazarama.com` | **8 sn** | 1 | Hafif site |
+| `www.trendyol.com` | **6 sn** | 1 | Coğrafya duvarı riski |
+| `www.n11.com` | **10 sn** | 1 | Geniş robots kısıtı + satıcı bazlı sayfa |
+| `www.hepsiburada.com` | **12 sn** | 1 | Akamai koruması |
+| `www.amazon.com.tr` | **60 sn** | 1 | `robots.txt` AI botlarını **ismen yasaklıyor**, ToS riski |
+
+Bu değerler **başlangıç**tır; F1'de ölçülür ve **adaptif olarak** güncellenir (13.6.4).
+
+### 13.6.3 Ürün sayısı artınca otomatik seyrelme — senin formülün
+
+Site başına: **`etkin_aralık = max(istenen_aralık, (N − 1) × min_gap)`**
+
+| Site | `min_gap` | 1 ürün | 10 ürün | 30 ürün | 60 ürün | 200 ürün |
+|---|---|---|---|---|---|---|
+| MediaMarkt | 5 sn | 5 dk | 5 dk | 5 dk | **5 dk** (59×5=295 sn) | **17 dk** |
+| n11 | 10 sn | 5 dk | 5 dk | **~5 dk** (29×10=290 sn) | **10 dk** | **33 dk** |
+| Amazon | 60 sn | 5 dk | **10 dk** | **30 dk** | **1 saat** | 3,3 saat |
+| **Akakçe (mevcut)** | 10 sn | 5 dk | 5 dk | **5 dk — TAM DOLU** | — | — |
+
+**Okunuşu:** 1 ürün varken istediğin hızda kontrol edilir; ürün sayısı artınca **site kendi dip
+sınırından dolayı** aralık kendiliğinden uzar. Ayrı bir "50 ürün sınırı" koymaya **gerek yok** —
+fizik onu kendisi dayatıyor. Akakçe satırı bunun kanıtı: 30 ürün × 10 sn = 300 sn = 5 dk aralık →
+döngü **tam dolu**, bu yüzden Akakçe'ye yeni ürün eklenemiyor.
+
+### 13.6.4 Adaptif hız — tahmin yerine sitenin kendi cevabı (AutoThrottle mantığı)
+
+1. **Yanıt süresi ölçülür:** `gap = max(min_gap, yanıt_süresi × 2)`.
+   Site yavaşladıysa biz de yavaşlarız (Scrapy AutoThrottle mantığı: delay = latency × hedef eşzamanlılık).
+2. **429 / 403 / CAPTCHA görülürse:** o host için `min_gap` **iki katına** (max 300 sn) +
+   **tek uyarı**; eşzamanlılık **1'e** düşer. **3 temiz okumadan sonra** çeyrek adım geri hızlanır.
+3. **F1 probe bunu ölçer:** her siteye **3 istek, aralarında 5 sn** → yanıt süreleri + 429/403 oranı.
+   Tablo **tahmin değil ölçüm** olur.
+
+### 13.6.5 Eşzamanlılığı neden 1–2'de tutuyoruz (dürüst gerekçe)
+
+- **Kazanç yok:** 30 ürün × 5–10 sn = 2,5–5 dk. İstediğimiz kontrol aralığı zaten 5–60 dk.
+  Yani seri okuma **fazlasıyla** yetiyor.
+- **Risk var:** paralel istek = ani burst = bot algılama sinyali (Scrapy dokümanı da bunu söylüyor).
+- **Karmaşıklık:** her okuma ayrı izole süreç. 30 ürün = 30 süreç açılışı → **tek süreçte batch**
+  modu ekliyoruz (`store_worker.py --batch`, satır başına 1 URL). Hız aynı, CPU daha az.
+- **Kapı açık:** `concurrency` alanı şemada duruyor; MediaMarkt'ta 2'ye çıkarmak **tek satır**.
+
+### 13.6.6 Şemaya eklenen alanlar
+
+`store_watches.json` item:
+```json
+{"url": "...", "store": "hepsiburada", "group": "tcl-65c7k",
+ "speed": "auto", "interval": 300, "next_check": 0,
+ "min_gap": 12, "concurrency": 1, "latency_ms": 840,
+ "fail_streak": 0, "throttle_until": 0}
+```
+**Politika tablosu kod içinde sabit** (`SITE_POLICY = {"hepsiburada": {...}}`) — `config.json`'a
+**dokunulmaz** (mevcut doğrulama bozulmasın).
+
+### 13.6.7 Yeni günlük istek hesabı (30 ürün, `auto`)
+
+| Site | 30 ürün için etkin aralık | İstek/gün |
+|---|---|---|
+| MediaMarkt (5 sn) | 5 dk | 30 × 288 = 8.640 |
+| n11 (10 sn) | ~5 dk (sınırda) | 8.640 |
+| Hepsiburada (12 sn) | ~6 dk | 7.200 |
+| Amazon (60 sn) | 30 dk | 1.440 |
+| **En kötü tek site senaryosu** | | **~8.640/gün ≈ 0,1 istek/sn** |
+
+Akakçe hattı zaten 8.640/gün. Toplam ≈ 17.000 istek/gün ≈ **0,2 istek/sn** — bir sitenin
+gördüğü **gerçek insan trafiğinin milyonda biri**. Yani sayı korkutucu değil; sorun sadece
+**aynı saniyeye yığmamak**, o da token bucket ile çözülüyor.
 
 ## 14. Onay
 
