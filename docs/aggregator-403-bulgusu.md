@@ -89,3 +89,43 @@ Karar mantığı:
 - curl 200, urllib 403 → **istemci parmak izi** → düzeltilebilir (worker curl'e geçer).
 - Hepsi 403 → **IP engeli** → bu makineden okunamaz; başlıkla/istemciyle aşılamaz.
 - Bazı urllib varyantları 200 → **başlık farkı** → tek satırlık düzeltme.
+
+---
+
+## KESİN SONUÇ — 2026-11-08 17:07 koşusu (6 varyant, iki istemci)
+
+| Site | urllib × 4 | curl × 2 | Karar |
+|---|---|---|---|
+| Cimri | 403, 86 ms | 403, 87 ms (14.591 bayt), 73 ms (9.241 bayt) | **engel** |
+| Epey | 403, 65–112 ms | 403, 51 ms (5.531 bayt), 103 ms (3.319 bayt) | **engel** |
+
+**Hepsi 403.** Başlıklar değişti (tarayıcı UA, tam başlık seti), istemci değişti (curl, farklı
+TLS yığını) — sonuç aynı. Yani engel **istek içeriğinden bağımsız**, **IP/veri merkezi**
+kaynaklı. Kodla aşılamaz.
+
+Not: 403 ile birlikte 3–15 KB'lık bir **engel sayfası** dönüyor (WAF'ın standart davranışı).
+Bu yüzden "403 ama gövde var" yanıltmasın; `code: BLOCKED` doğru sınıflandırma.
+
+### Kodda yapılan son değişiklik
+
+`PLATFORM_AGGREGATOR_BLOCKED = {'cimri', 'epey'}`: bu platformdan okunamadığı **ölçülmüş**
+siteler için link kuyruğa **hiç girmiyor**. Kullanıcı anında, doğru sebeple cevap alıyor:
+
+> Epey okunamadı: sunucu bu bağlantıyı reddetti (HTTP 403). Sayfa değişmedi; site veri
+> merkezi IP'lerini engelliyor.
+>
+> Epey linki kaydedilmedi; bu hâliyle takip edilemez. Akakçe linki kullanabilirsin.
+
+Akakçe hattı **hiç etkilenmiyor** (test: `test_akakce_is_completely_unaffected`).
+Daha önce kaydedilmiş Cimri/Epey kayıtları dosyada bozulmadan durur.
+
+### Ne yapılabilir, ne yapılamaz
+
+| Yaklaşım | Durum |
+|---|---|
+| Daha iyi başlıklar | ❌ ölçüldü, işe yaramadı |
+| curl / farklı TLS istemcisi | ❌ ölçüldü, işe yaramadı |
+| Daha yavaş/yavaş istek | ⛔ anlamsız: engel 403, hız sınırı 429 değil |
+| Proxy / VPN / tünel | ⛔ kural: "proxy yok" |
+| Çerez/oturum, CAPTCHA çözücü | ⛔ kural: C2 |
+| Farklı ağdan okuma (kullanıcının makinesi ya da dışarıdan bir okuyucu) | ⚠️ sınırda; kullanıcı kararı |

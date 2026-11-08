@@ -68,6 +68,12 @@ HOST_GAP = 10
 #   single     : tek ürün varken hedef aralık — kullanıcı isteği: az link = sık kontrol.
 #   max        : otomatik seyreltmenin üst sınırı.
 #   backoff    : engel/hata görülünce min_gap'in çarpılacağı tavan.
+# 2026-11-08 ölçümü (6 varyant: 4 urllib + 2 curl, iki sitede de HTTP 403):
+# bu iki site GitHub Actions IP aralığını tanıyıp reddediyor. Engel **başlıktan
+# veya istemciden bağımsız** → kodla aşılamaz. Aşağıdaki değerler kalıcı adres
+# / kullanıcı makinesi üzerinden okuma için geçerli ve platforma göre düzeltilir.
+PLATFORM_AGGREGATOR_BLOCKED = frozenset({'cimri', 'epey'})
+
 SITE_POLICY = {
     # Akakçe: 30 ürün × 10 sn = 300 sn => bugünkü döngü tam dolu. Bu yüzden
     # tek ürünü hızlandırmak EK yük getirmez, sadece 30 üründe eski hâline döner.
@@ -413,6 +419,14 @@ class ProductTracker:
         is_link = is_product_link(raw)
         if command not in COMMANDS and not is_link and not (draft and not command):
             return False
+        # Bu platformdan okunamadığı ÖLÇÜLMÜŞ siteler için kuyruğa hiç atmayız:
+        # anında, doğru sebeple cevap veririz. Sessiz yutma yok, yanlış teşhis yok.
+        if is_link and site_key(raw) in PLATFORM_AGGREGATOR_BLOCKED:
+            site = aggregator_site(raw)
+            await event.reply(read_failure_text(site, {'code': 'BLOCKED', 'http_status': 403})
+                              + f"\n\n{site} linki kaydedilmedi; bu hâliyle takip edilemez. "
+                              'Akakçe linki kullanabilirsin. Ayrıntı: docs/aggregator-403-bulgusu.md')
+            return True
         if command == '/webtakip':
             text, keyboard = tracking_menu(self.state['enabled'])
             text += '\n\n' + self.interval_text()

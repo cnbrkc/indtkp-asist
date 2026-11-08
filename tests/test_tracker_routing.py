@@ -171,15 +171,22 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.tmp.cleanup()
 
-    async def test_off_by_default_also_covers_cimri_links(self):
+    async def test_off_by_default_still_answers_with_the_real_reason(self):
+        """2026-11-08: Cimri/Epey bu platformdan okunamıyor; 'kapalı' demek yanıltıcı."""
         await self.tracker.handle(self.event, CIMRI)
         self.assertTrue(self.tracker.queue.empty())
-        self.assertIn('kapalı', self.replies[-1].lower())
+        self.assertIn('403', self.replies[-1])
 
-    async def test_cimri_link_is_queued_normalized(self):
+    async def test_cimri_link_is_refused_without_reaching_the_network(self):
         self.tracker.state['enabled'] = True
+
+        async def fail_if_called(url):
+            raise AssertionError('Cimri bu platformda okunamıyor; ağa çıkılmamalı')
+
+        self.tracker.reader = fail_if_called
         self.assertTrue(await self.tracker.handle(self.event, CIMRI + '?magaza=Amazon'))
-        self.assertEqual(self.tracker.queue.get_nowait(), ('link', 123, CIMRI))
+        self.assertTrue(self.tracker.queue.empty())
+        self.assertIn('Cimri okunamadı', self.replies[-1])
 
     async def test_add_stores_kind_and_site(self):
         await self.tracker.job('link', 123, EPEY)
@@ -225,3 +232,70 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PlatformBlockedSiteTests(unittest.IsolatedAsyncioTestCase):
+    """2026-11-08 ölçümü: Cimri ve Epey bu platformdan 403 (6/6 varyant).
+    Bu yüzden kuyruğa hiç girmemeli; anında ve doğru sebeple cevap verilmeli."""
+
+    async def asyncSetUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / 'watches.json'
+        self.sent = []
+
+        async def call(method, payload):
+            self.sent.append(payload)
+            return {'message_id': 1}
+
+        def persist(path, data):
+            path.write_text(json.dumps(data))
+            return True, 'test'
+
+        self.tracker = ProductTracker(self.path, SimpleNamespace(call=call), persist)
+        self.tracker.state['enabled'] = True
+        self.replies = []
+
+        async def reply(text):
+            self.replies.append(text)
+
+        self.event = SimpleNamespace(chat_id=123, reply=reply)
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    def test_policy_names_the_blocked_sites(self):
+        self.assertEqual(pt.PLATFORM_AGGREGATOR_BLOCKED, frozenset({'cimri', 'epey'}))
+
+    async def test_epey_link_is_refused_immediately_with_the_right_reason(self):
+        self.assertTrue(await self.tracker.handle(self.event, EPEY))
+        self.assertTrue(self.tracker.queue.empty(), 'kuyruğa girmemeli')
+        message = self.replies[-1]
+        self.assertIn('Epey okunamadı', message)
+        self.assertIn('403', message)
+        self.assertIn('kaydedilmedi', message)
+        self.assertIn('Akakçe', message)          # çözüm yolu gösteriliyor
+        self.assertNotIn('sayfa değişikliği', message.lower())
+
+    async def test_cimri_link_is_refused_immediately_too(self):
+        self.assertTrue(await self.tracker.handle(self.event, CIMRI))
+        self.assertTrue(self.tracker.queue.empty())
+        self.assertIn('Cimri okunamadı', self.replies[-1])
+
+    async def test_akakce_is_completely_unaffected(self):
+        self.assertTrue(await self.tracker.handle(self.event, AKAKCE))
+        self.assertEqual(self.tracker.queue.get_nowait(), ('link', 123, AKAKCE))
+
+    async def test_refusal_does_not_require_the_feature_to_be_enabled(self):
+        """Kapalıyken de doğru sebep söylenir: 'kapalı' demek yanıltıcı olurdu."""
+        self.tracker.state['enabled'] = False
+        self.assertTrue(await self.tracker.handle(self.event, EPEY))
+        self.assertIn('403', self.replies[-1])
+
+    async def test_existing_records_still_load_and_keep_their_urls(self):
+        """Daha önce kaydedilmiş Cimri/Epey kaydı varsa dosya bozulmasın."""
+        self.path.write_text(json.dumps({'version': 1, 'enabled': True, 'items': [
+            {'url': EPEY, 'target': 1000, 'chat_id': 1, 'title': 'TCL', 'kind': 'aggregator',
+             'site': 'Epey'}]}))
+        restored = load_state(self.path)
+        self.assertEqual(restored['items'][0]['url'], EPEY)

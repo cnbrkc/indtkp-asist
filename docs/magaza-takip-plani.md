@@ -873,5 +873,11 @@ Bu bulgudan çıkan **kalıcı** düzeltmeler (koda işlendi):
 - `tools/aggregator_diag.py`: 4 başlık kümesiyle karşılaştırma → neden başlık mı, IP mi?
 - Teşhis işi (`aggregator-probe.yml`) bu testi de çalıştırır.
 
-**Kural hatırlatması:** proxy, çerez/oturum, CAPTCHA çözen araç yok. Yani IP engeli
+**Kesinleşti (17:07 koşusu):** 6 varyantın **hepsi 403** (4 urllib + 2 curl, iki sitede de).
+Engel istek içeriğinden bağımsız → **IP/veri merkezi** kaynaklı, kodla aşılamaz.
+
+Bu yüzden kod artık dürüst: `PLATFORM_AGGREGATOR_BLOCKED = {'cimri', 'epey'}`. Bu sitelerin
+linki kuyruğa girmiyor, kullanıcı anında doğru sebebi görüyor. Akakçe hattı etkilenmiyor.
+
+**Kural hatırlatması:** proxy, çerez/oturum, CAPTCHA çözen araç yok. Yani bu engel
 "aşılacak" bir engel değil; ya kabul edilir ya da okuma yolu değiştirilir. Karar kullanıcıda.
