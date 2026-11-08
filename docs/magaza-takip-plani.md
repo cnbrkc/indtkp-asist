@@ -743,3 +743,103 @@ biçimi ve komut listesi değişmediği için geri alma veri kaybı bırakmaz.
 
 1. **Canlı doğrulama**: gerçek Cimri ve Epey linkleriyle tek tur (kullanıcı link verecek).
 2. Sonra mağaza fazları (Hepsiburada → …) — F2 bunlara bağlı değil.
+
+---
+
+## 16. Yenileme aralıkları — minimum / ideal / maksimum (2026-11-08 revizyonu)
+
+Kullanıcı notu: *"5 dk'da bir çok gereksiz katı bir süre gibi geldi bana… Linkimiz azken daha
+sık kontrol etmiş olur hem çoğalınca da zamanla süre artar. Blok yemeden yapalım bu işi."*
+Haklı: eski kodda **tek bir sabit** vardı (`INTERVAL = 300`), ürün sayısı 1 de olsa 30 da olsa
+her ürün 5 dakikada bir okunuyordu. Aşağıdaki tablo bu sabiti kaldırıp yerine **ölçüme dayalı**
+üç değerli politika koyuyor.
+
+### 16.1 Önce ölçüm — sınır neye dayanıyor?
+
+| Site | `robots.txt` `Crawl-delay` | Sayfa ağırlığı / yapı | Ölçülen gecikme | Girilen dip sınır |
+|---|---|---|---|---|
+| Akakçe | **YOK** | ~1–3 MB, JSON-LD + HTML liste | ~0,8–1,5 sn | **10 sn** |
+| Cimri | **YOK** | toplayıcı listesi, logo satırları | ~1 sn | **10 sn** |
+| Epey | **YOK** (AI botlarına açıkça `Allow: /`) | en ağır sayfa (9 chunk menü çöpü) | ~1 sn | **12 sn** |
+
+Yani **hiçbir site bize sayı dayatmıyor**; dip sınır tamamen bizim "ban yemeyelim + siteyi
+yormayalım" kuralımız. Bu yüzden 10–12 sn gibi insan tıklamasına yakın bir hız rahatça güvenli.
+
+Referans: bir insanın ürün sayfasını açma aralığı bile 10 saniyeden kısa değil; biz 30 ürünü
+gezerken **site başına dakikada ~6 istek** üretiyoruz. Bu, sitelerin gördüğü gerçek trafiğin
+milyonda biri (plan §13.6.7).
+
+### 16.2 Üç değer — her biri ne demek?
+
+| Değer | Akakçe | Cimri | Epey | Ne işe yarar |
+|---|---|---|---|---|
+| **Minimum** (dip sınır) | 10 sn | 10 sn | 12 sn | İki istek arası **asla** bunun altına inilmez |
+| **İdeal** (tek ürün) | **3 dk** | **3 dk** | **4 dk** | 1 ürün varken hedef aralık — eski 5 dk'dan **hızlı** |
+| **Otomatik tavan** | 30 dk | 30 dk | 30 dk | Ürün çoğalınca çıkılabilecek en yavaş aralık |
+| **Hata tavanı** | 120 sn | 120 sn | 120 sn | Engel görülünce dip sınırın çarpılacağı üst sınır |
+
+### 16.3 Otomatik seyrelme formülü — ve plandaki düzeltme
+
+**`etkin_aralık = max(ideal, N × dip_sınır)`**, tavan 30 dk.
+
+> **Düzeltme:** plan §13.6.3'te formül `(N − 1) × min_gap` yazıyordu. Kod yazılırken bunun
+> yanlış olduğu görüldü: `due` (sıradaki kontrol zamanı) **ürünün kendi** son okumasından
+> sayılıyor, turun başlangıcından değil. `(N−1)` ile 30 üründe aralık 290 sn çıkıyor, ama tur
+> 30 × 10 = 300 sn sürüyor → son ürünün süresi dolduğu hâlde sıra gelmiyor ve liste sürekli
+> **"⏳ gecikti"** gösteriyor. `N × min_gap` tam olarak eski 300 sn'ye oturuyor, yani
+> **Akakçe hattı bire bir korunuyor.**
+
+| Ürün (tek site) | Akakçe (10 sn) | Cimri (10 sn) | Epey (12 sn) | Eski sabit |
+|---|---|---|---|---|
+| 1 | **3 dk** | **3 dk** | **4 dk** | 5 dk |
+| 5 | 3 dk | 3 dk | 4 dk | 5 dk |
+| 10 | 3 dk | 3 dk | 4 dk | 5 dk |
+| 18 | 3 dk | 3 dk | 4 dk (18×12=216) | 5 dk |
+| 20 | 3 dk 20 sn | 3 dk 20 sn | 4 dk | 5 dk |
+| **30 (tavan ürün)** | **5 dk** (=eski davranış) | **5 dk** | **6 dk** | 5 dk |
+
+**Okunuşu:** 1–10 ürün arasında **eskisinden hızlı**, 20 üründen sonra yavaşlıyor, 30 üründe
+Akakçe tam eski hızına dönüyor. Yani "az link = sık kontrol, çok link = seyrek" kuralı
+kendiliğinden işliyor; ayrı bir ürün sayısı sınırı gerekmiyor (fizik dayatıyor).
+
+### 16.4 Blok yememe — üç bağımsız fren
+
+1. **Tur içi bekleme:** her istekten sonra `gap = max(dip_sınır, yanıt_süresi × 2)`.
+   Site yavaşlarsa biz de yavaşlarız (Scrapy AutoThrottle mantığı). Ölçüldüğü için tahmin yok.
+2. **Hata freni:** okuma başarısız olursa o site **120 sn** boyunca dip sınıra çekilir;
+   **ikinci üst üste hatada** dip sınır iki katına (max 300 sn).
+3. **Geri çekilme:** 2. hatada 4×, 3. hatada 8×, 4+ hatada 16× aralık (tavan 1 saat).
+   Engelin geçtiği ilk temiz okumada sayaç sıfırlanır.
+
+Ek olarak **siteler birbirini kilitlemez**: Akakçe'de engel olsa Cimri ve Epey kendi hızında
+devam eder (test: `test_sites_do_not_block_each_other`).
+
+### 16.5 Kontrol kimde? — yeni komut **yok**
+
+Aralık **tamamen otomatik**. `/webtakiparalik` diye bir komut **eklenmedi**: `tests/test_bot.py:259`
+her yeni komutun yardım kataloğuna girmesini şart koşuyor, yardım listesini büyütmemek de
+kullanıcının "yeni komut kalabalığı olmasın" kuralı. (Komut bir ara yazıldı, test kapısında
+geri alındı — kapı çalıştı.)
+
+- Varsayılan **otomatik**: az ürün = hızlı, çok ürün = kendiliğinden seyrek.
+- İstenirse `product_watches.json` içinde ürün başına `"interval_minutes": 5` ile
+  sabitlenebilir; bu değer de **dip sınırın altına inemez** (blok yemeyelim diye) ve dosya
+  biçimi aynı kalır (`version: 1`, alan opsiyonel) → eski kayıtlar bozulmaz.
+
+### 16.6 Günlük istek hesabı (yeni)
+
+| Senaryo | İstek/gün | Eski |
+|---|---|---|
+| 1 Akakçe ürünü | 480 (3 dk) | 288 (5 dk) |
+| 1 Cimri + 1 Epey | 480 + 360 = 840 | 576 |
+| 30 Akakçe ürünü | 8.640 (5 dk — değişmedi) | 8.640 |
+| **En yoğun gerçekçi durum** (10 Akakçe + 5 Cimri + 5 Epey) | 4.800 + 2.400 + 1.800 = **9.000** | 5.760 |
+
+Artış var ama tepe değer hâlâ **~0,1 istek/sn**. Asıl fark: artık tek ürün varken 3 dakikada
+bir bakıyoruz, yani kullanıcının istediği "az link = sık kontrol" sağlanıyor.
+
+### 16.7 Test kapısı
+
+`python -m unittest discover -s tests` → **997 OK** (+24 aralık testi:
+`tests/test_tracker_intervals.py`; yeni komut yok, yardım kataloğu değişmedi). Eski 5 dk sabitinin korunduğu tek yer `INTERVAL = 300`
+(sadece geriye dönük isim; 30 üründe Akakçe hâlâ tam 300 sn).

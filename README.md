@@ -1417,6 +1417,27 @@ En düşük fiyat: Trendyol
 https://www.epey.com/televizyon/tcl-65c6k.html
 ```
 
+### Kontrol sıklığı (2026-11-08 revizyonu — artık 5 dk sabit değil)
+
+| Ürün sayısı (site başına) | Akakçe | Cimri | Epey |
+|---|---|---|---|
+| 1–10 | **3 dk** | **3 dk** | **4 dk** |
+| 20 | 3 dk 20 sn | 3 dk 20 sn | 4 dk |
+| 30 | 5 dk | 5 dk | 6 dk |
+
+Formül: `max(ideal, ürün × dip_sınır)`, tavan 30 dk. Dip sınır Akakçe/Cimri **10 sn**,
+Epey **12 sn** (üç robots.txt'te de `Crawl-delay` **yok**; sayı bizim "ban yemeyelim" kuralımız).
+Ürün çoğaldıkça aralık kendiliğinden uzar; ayrı ürün sayısı sınırı yok.
+
+Sıklık **tamamen otomatik**: ürün sayısına ve sitenin kendi cevabına göre ayarlanır.
+Yeni komut eklenmez (yardım listesi aynı kalır). Gerekirse `product_watches.json` içinde
+ürün başına `"interval_minutes": 5` yazarak elle sabitlenebilir; bu değer de dip sınırın
+altına inemez (blok yemeyelim diye).
+
+Blok koruması üç katmanlı: her istekten sonra `max(dip, yanıt×2)` bekleme; hata görülen site
+120 sn dip sınıra çekilir, ikinci hatada dip sınır iki katına; 2/3/4+ hatada 4×/8×/16× geri
+çekilme (tavan 1 saat). Siteler birbirini kilitlemez.
+
 Güvenlik kuralı: sayfanın yapısal fiyatı (JSON-LD) ile sayfada görünen mağaza
 satırlarının en düşüğü **aynı kuruş** olmalı. Tutmazsa fiyat gösterilmez, alarm
 kurulmaz — yanlış fiyat yerine "okunamadı" denir. Satıcı kilidi yoktur (kural `lowest`);
