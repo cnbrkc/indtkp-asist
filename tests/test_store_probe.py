@@ -218,6 +218,77 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(analysis['visible_prices'][0]['cents'], 8_999_900)
 
 
+AMAZON_CHALLENGE = """<html><head><title>Amazon.com.tr</title>
+<script>var a={"price":"1.00","price":"2.00","price":"3.00"};</script>
+</head><body>Enter the characters you see below
+Type the characters you see in this image:</body></html>"""
+
+
+class BlockedPageTests(unittest.TestCase):
+    def test_challenge_page_is_not_analysed_for_prices(self):
+        # Amazon returns HTTP 200 with a challenge page: 42 bogus "price" keys.
+        analysis = probe.analyze(AMAZON_CHALLENGE, 200)
+        self.assertEqual(analysis['visible_price_count'], 0)
+        self.assertEqual(analysis['visible_prices'], [])
+        self.assertEqual(analysis['jsonld_prices'], [])
+        self.assertEqual(analysis['embedded']['price_fields'], 0)
+        self.assertEqual(analysis['analysis_skipped'], 'engel sayfası')
+
+    def test_block_body_is_kept_in_the_snippet(self):
+        snippet = probe._snippet(AMAZON_CHALLENGE)
+        self.assertIn('BLOCK_BODY', snippet)
+        self.assertIn('Enter the characters', snippet)
+
+    def test_403_body_is_kept_in_the_snippet(self):
+        snippet = probe._snippet('<html><body>Access Denied (Akamai)</body></html>')
+        self.assertIn('BLOCK_BODY', snippet)
+
+
+# Shape of a Cimri product page (measured 2026-11-08): one row per merchant with
+# a logo, a price, and "N dk önce güncellendi".
+CIMRI_PAGE = """<html><body>
+<h1>TCL T6D Televizyon</h1>
+<div>26 Fiyat Arasında En Ucuz</div><div>29.999 TL</div>
+<div>Mağazalar</div><div>Amazon (6)Hepsiburada (2)n11 (1)PttAVM (5)</div>
+<div><img src="https://cdn.cimri.io/pictures/merchant-logos/10725.png?v=1">Amazon-prime</div>
+<div>29.999 TL</div><div>12 dk önce güncellendi</div>
+<div><img src="https://cdn.cimri.io/pictures/merchant-logos/10370.png?v=1">Amazon</div>
+<div>30.045,02 TL</div><div>34 dk önce güncellendi</div>
+<div><img src="https://cdn.cimri.io/pictures/merchant-logos/1497.png?v=1">Hepsiburada</div>
+<div>31.200 TL</div><div>2 saat önce güncellendi</div>
+</body></html>"""
+
+
+class AggregatorTests(unittest.TestCase):
+    def test_merchant_rows_and_freshness(self):
+        agg = probe.aggregator_analysis(CIMRI_PAGE, 'www.cimri.com')
+        self.assertEqual(agg['distinct_merchant_logos'], 3)
+        self.assertEqual(agg['merchant_logo_rows'], 3)
+        self.assertIn('Amazon', agg['merchant_counts'])
+        self.assertEqual(agg['merchant_counts']['Amazon'], 6)
+        self.assertIn('12 dk', agg['freshness_samples'])
+        self.assertEqual(agg['min_price_hint'], '29.999')
+
+    def test_aggregator_section_only_for_aggregator_hosts(self):
+        store = probe.analyze('<div>₺ 89.999,–</div>', 200, 'www.mediamarkt.com.tr')
+        self.assertIsNone(store['aggregator'])
+        agg = probe.analyze(CIMRI_PAGE, 200, 'www.cimri.com')
+        self.assertEqual(agg['aggregator']['kind'], 'aggregator')
+
+    def test_cimri_url_is_allowed_and_classified(self):
+        url = 'https://www.cimri.com/televizyonlar/en-ucuz-tcl-t6d-televizyon-fiyatlari,a2582673366'
+        self.assertEqual(probe.validate_url(url), url)
+        self.assertEqual(probe.SITE_KIND['www.cimri.com'], 'aggregator')
+
+    def test_summary_has_aggregator_table(self):
+        record = {'host': 'www.cimri.com', 'status': 200, 'statuses': [200],
+                  'latency_ms': {'avg': 300}, 'visible_prices': [], 'block': {},
+                  'aggregator': probe.aggregator_analysis(CIMRI_PAGE, 'www.cimri.com')}
+        summary = probe.summary_markdown([record])
+        self.assertIn('Toplayıcı siteler', summary)
+        self.assertIn('Amazon (6)', summary)
+
+
 class RowStateTests(unittest.TestCase):
     def test_states(self):
         cases = [

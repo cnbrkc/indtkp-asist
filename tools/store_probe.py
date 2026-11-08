@@ -48,7 +48,14 @@ ALLOWED_HOSTS = {
     'www.amazon.com.tr': {'min_gap': 60, 'concurrency': 1},
     # Reference only: the Akakçe line already works and is not part of F2.
     'www.akakce.com': {'min_gap': 10, 'concurrency': 1},
+    # Aggregators. Stores behind them are reached by the aggregator, not by us.
+    'www.cimri.com': {'min_gap': 10, 'concurrency': 1},
 }
+
+# "store" pages are read directly; "aggregator" pages carry per-merchant rows and
+# are the only realistic way to see stores that refuse datacenter IPs (F1 result:
+# 5 of 7 stores answered 403 from GitHub Actions).
+SITE_KIND = {'www.cimri.com': 'aggregator', 'www.akakce.com': 'aggregator'}
 
 MAX_BODY = 3_000_000
 HTTP_TIMEOUT = 15
@@ -85,7 +92,10 @@ TR_FOLD = str.maketrans({'İ': 'i', 'I': 'i', 'ı': 'i', 'Ş': 's', 'ş': 's', '
                          'ğ': 'g', 'Ü': 'u', 'ü': 'u', 'Ö': 'o', 'ö': 'o', 'Ç': 'c', 'ç': 'c'})
 BLOCK_MARKERS = ('captcha', 'access denied', 'erişim engellendi', 'unusual traffic',
                  'request unsuccessful', 'are you a robot', 'bot kontrolü',
-                 'too many requests', 'rate limit')
+                 'too many requests', 'rate limit',
+                 # Amazon challenge page phrasing (measured: HTTP 200, 4 KB body)
+                 'enter the characters you see', 'type the characters you see',
+                 'characters you see in this image')
 COUNTRY_WALL = ('select your country', 'ülkenizi seçin', 'select-country')
 
 EMBEDDED_PATTERNS = {
@@ -391,6 +401,55 @@ def visible_prices(raw):
     return candidates
 
 
+
+# ---------------------------------------------------------------------------
+# Aggregator pages (Cimri / Akakçe style): per-merchant rows
+# ---------------------------------------------------------------------------
+
+MERCHANT_LOGO = re.compile(r'/merchant-logos/(\d+)\.png', re.I)
+MERCHANT_COUNT = re.compile(r'\b([A-ZÇĞİÖŞÜ][\wÇĞİÖŞÜçğıöşü.&\- ]{1,24})\s*\((\d{1,3})\)')
+FRESHNESS = re.compile(r'(\d{1,3})\s*(dk|dakika|saat|gün)\s*önce', re.I)
+OFFER_AROUND = re.compile(r'([A-ZÇĞİÖŞÜa-zçğıöşü0-9.&\- ]{2,28})\s*\(')
+MIN_HINT = re.compile(r'En Ucuz[^0-9]{0,40}(' + _NUMBER + r')', re.I)
+
+
+def aggregator_analysis(raw, host=None):
+    """What an aggregator page tells us about *other* stores.
+
+    A Cimri product page lists one row per merchant with its price and how long
+    ago it was refreshed, plus a "N fiyat arasında en ucuz" summary. That is the
+    same information Akakçe gives, but Cimri also lists stores Akakçe does not
+    (Amazon measured on 2026-11-08).
+    """
+    logos = MERCHANT_LOGO.findall(raw)
+    counts = {}
+    for name, number in MERCHANT_COUNT.findall(raw):
+        name = ' '.join(name.split())
+        if 1 <= len(name) <= 28 and not name.lower().startswith(('fiyat', 'taksit')):
+            counts[name] = max(int(number), counts.get(name, 0))
+    freshness = [(int(n), unit.lower()) for n, unit in FRESHNESS.findall(raw)]
+    hint = MIN_HINT.search(raw)
+    return {
+        'kind': 'aggregator',
+        'merchant_logo_rows': len(logos),
+        'distinct_merchant_logos': len(set(logos)),
+        'merchant_counts': dict(sorted(counts.items(), key=lambda kv: -kv[1])[:12]),
+        'freshness_samples': sorted({f'{n} {u}' for n, u in freshness})[:8],
+        'min_price_hint': hint.group(1) if hint else None,
+    }
+
+
+def _to_cents(value):
+    """JSON-LD prices are usually "66444.03"; some sites emit "66.444,03"."""
+    text = str(value).strip().replace('TL', '').replace('₺', '').strip()
+    if re.search(r',\d{1,2}$', text):
+        text = text.replace('.', '').replace(',', '.')
+    try:
+        return cents(text)
+    except ValueError:
+        return None
+
+
 def block_state(raw, status):
     low = raw.lower()
     markers = [m for m in BLOCK_MARKERS if m in low]
@@ -407,22 +466,44 @@ def ean_values(raw):
     return None
 
 
-def analyze(raw, status=None):
+def analyze(raw, status=None, host=None):
     products = jsonld_products(raw)
     prices = visible_prices(raw)
     jsonld_prices = [offer for product in products for offer in product['offers']
                      if offer.get('price') not in (None, '')]
     matches = []
     for offer in jsonld_prices:
-        try:
-            target = cents(str(offer['price']).replace(',', '.'))
-        except ValueError:
+        price = _to_cents(offer['price'])
+        if price is None:
             continue
         for candidate in prices:
-            if candidate['cents'] == target:
+            if candidate['cents'] == price:
                 matches.append({'jsonld': offer['price'], 'text': candidate['text'],
                                 'label': candidate['label']})
                 break
+    block = block_state(raw, status)
+    blocked = bool(block['captcha_or_block'] or block['country_wall'])
+    if blocked:
+        # A captcha/challenge page carries arbitrary JS with "price" keys
+        # (Amazon's challenge matched 42 of them). Analysing it would invent
+        # numbers, so only the block evidence is reported.
+        return {
+            'jsonld_blocks': len(jsonld_blocks(raw)),
+            'jsonld_products': len(products),
+            'jsonld_product_names': [],
+            'jsonld_prices': [],
+            'jsonld_currencies': [],
+            'jsonld_stock': [],
+            'jsonld_price_matches_visible': [],
+            'embedded': {'markers': {}, 'price_fields': 0, 'price_samples': [],
+                         'seller_prices': 0, 'seller_price_samples': []},
+            'visible_price_count': 0,
+            'visible_prices': [],
+            'label_counts': {},
+            'block': block,
+            'ean': None,
+            'analysis_skipped': 'engel sayfası',
+        }
     return {
         'jsonld_blocks': len(jsonld_blocks(raw)),
         'jsonld_products': len(products),
@@ -435,8 +516,11 @@ def analyze(raw, status=None):
         'visible_price_count': len(prices),
         'visible_prices': prices[:25],
         'label_counts': _counts(prices),
-        'block': block_state(raw, status),
+        'block': block,
         'ean': ean_values(raw),
+        'analysis_skipped': None,
+        'aggregator': (aggregator_analysis(raw, host)
+                       if SITE_KIND.get(host) == 'aggregator' else None),
     }
 
 
@@ -450,6 +534,7 @@ def _counts(prices):
 def probe_url(url, rounds=ROUNDS, gap=GAP_BETWEEN_URLS, sleep=time.sleep):
     """Fetch several times to measure latency and stability, analyse the last body."""
     record = {'url': url, 'host': urlsplit(url).hostname,
+              'kind': SITE_KIND.get(urlsplit(url).hostname, 'store'),
               'policy': ALLOWED_HOSTS.get(urlsplit(url).hostname, {}),
               'attempts': [], 'error': None}
     last = None
@@ -474,7 +559,7 @@ def probe_url(url, rounds=ROUNDS, gap=GAP_BETWEEN_URLS, sleep=time.sleep):
     record['bytes'] = last.bytes if last else 0
     record['redirected'] = any(a['redirected'] for a in record['attempts'])
     if last and last.body:
-        record.update(analyze(last.body, last.status))
+        record.update(analyze(last.body, last.status, record['host']))
         record['snippet'] = _snippet(last.body)
     else:
         record['error'] = last.error if last else 'okunamadı'
@@ -500,6 +585,10 @@ def _snippet(raw):
     for match in price_matches:
         parts.append('<!--PRICE_CONTEXT-->')
         parts.append(raw[max(0, match.start() - 600):match.end() + 600])
+    if not parts:
+        # Blocked pages have no JSON-LD and no price context; keep the first
+        # bytes so the WAF that refused us can be identified later.
+        return '<!--BLOCK_BODY-->\n' + raw[:2000]
     text = '\n'.join(parts)
     return text[:SNIPPET_LIMIT]
 
@@ -564,6 +653,20 @@ def summary_markdown(records):
         for item in record['visible_prices'][:10]:
             mark = '✅' if item['text'] in matched else ''
             lines.append(f"| `{item.get('raw', item['text'])}` | {item['cents']} | {item['label']} | {mark} |")
+        lines.append('')
+    aggregators = [r for r in records if (r.get('aggregator') or None)]
+    if aggregators:
+        lines += ['## Toplayıcı siteler — mağaza dağılımı', '']
+        lines.append('| Host | Mağaza sayısı | Mağaza (fiyat adedi) | En ucuz ipucu | Tazelik |')
+        lines.append('|---|---|---|---|---|')
+        for record in aggregators:
+            agg = record['aggregator']
+            pairs = ', '.join(f'{k} ({v})' for k, v in
+                              list(agg['merchant_counts'].items())[:8]) or '—'
+            lines.append('| {} | {} | {} | {} | {} |'.format(
+                record.get('host', '?'), agg['distinct_merchant_logos'], pairs,
+                agg.get('min_price_hint') or '—',
+                ', '.join(agg['freshness_samples'][:4]) or '—'))
         lines.append('')
     lines += ['## Gömülü JSON (fiyat merdiveni 2. kademe)', '']
     lines.append('| Host | İşaretler | `price` alanı | Satıcı fiyatı |')

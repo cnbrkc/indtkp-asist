@@ -234,7 +234,7 @@ class ReaderTests(unittest.TestCase):
         buttons = [button for row in keyboard['inline_keyboard'] for button in row]
         self.assertEqual(len(buttons), len(TRACK_MENU))
         for (command, description), button in zip(TRACK_MENU, buttons):
-            self.assertTrue(2 <= len(description.split()) <= 4)
+            self.assertTrue(2 <= len(description.split()) <= 5)
             self.assertIn(f'{command} — {description}', text)
             self.assertEqual(button['copy_text']['text'].strip(), command)
             self.assertNotIn('callback_data', button)
@@ -497,7 +497,7 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         item = self.item()
         await self.tracker.check(item)
         self.assertEqual(len(self.sent), 1)
-        self.tracker.next_host = 0
+        self.tracker.reset_gaps()
         await self.tracker.check(item)
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(load_state(self.path)['items'][0]['alert_price'], 600000)
@@ -508,7 +508,7 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         self.tracker.reader = fail
         item = self.item()
         for _ in range(3):
-            self.tracker.next_host = 0
+            self.tracker.reset_gaps()
             await self.tracker.check(item)
         self.assertEqual(len(self.sent), 1)
         self.assertIn('okunamıyor', self.sent[0]['text'])
@@ -573,7 +573,7 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
     async def test_lower_new_price_alerts(self):
         item = self.item()
         await self.tracker.check(item)
-        self.tracker.next_host = 0
+        self.tracker.reset_gaps()
 
         async def cheaper(url):
             return {'title': 'Örnek', 'price': 550000, 'seller': 'Yeni satıcı', 'offers': 1}

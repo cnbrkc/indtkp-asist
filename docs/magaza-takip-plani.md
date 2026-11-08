@@ -659,3 +659,201 @@ gördüğü **gerçek insan trafiğinin milyonda biri**. Yani sayı korkutucu de
 **"F1'e başla"** → probeyi yazarım (7 mağaza, host allowlist, `NoRedirect`, gömülü JSON ölçümü),
 testleri koştururum (**904 + yeni**), sonucu raporlarım (değişen dosyalar, test sonucu, geri alma),
 sonra F2'ye geçerim. Arada bekleme yok; tek kapı test.
+
+---
+
+## 15. F2 sonucu — Cimri + Epey entegre edildi (2026-11-08)
+
+Karar: **önce karşılaştırma siteleri**. Sebebi ölçüm: Akakçe'de Amazon/MediaMarkt/Vatan/A101
+**hiç yok**; Cimri ve Epey bu mağazaları zaten gezmiş olarak geliyor. Yani tek bir Cimri
+linki, ayrı ayrı mağaza entegrasyonundan daha çok mağaza kapsıyor.
+
+### 15.1 Ne yapıldı
+
+| Dosya | Durum | Ne yapar |
+|---|---|---|
+| `aggregator_worker.py` | **yeni** | Cimri/Epey ürün sayfasını okur, Akakçe ile **aynı JSON sözleşmesini** döndürür |
+| `product_tracker.py` | **değişti (davranış korunarak)** | Link hangi siteye aitse **doğru işçiye** yönlendirir; Akakçe yolu bire bir aynı kaldı |
+| `bot.py` | **değişti (2 satır)** | Link bekleme metni Akakçe+Cimri+Epey oldu; **yeni komut yok** |
+| `tests/test_aggregator_worker.py` | **yeni, 16 test** | Ayrıştırma, binlik-nokta tuzağı, fail-closed |
+| `tests/test_tracker_routing.py` | **yeni, 18 test** | Akakçe hattı bozulmadı mı, Cimri/Epey doğru işçiye mi gidiyor |
+
+### 15.2 Ürün linki biçimi (kullanıcı bu üçünü gönderebilir)
+
+| Site | Link biçimi | Örnek |
+|---|---|---|
+| Akakçe | `akakce.com/…-fiyati,ID.html` | (mevcut, değişmedi) |
+| Cimri | `cimri.com/<kategori>/en-ucuz-<ürün>-fiyatlari,a<ID>` | `…/televizyonlar/en-ucuz-tcl-65c6k-…-fiyatlari,a2582673366` |
+| Epey | `epey.com/<kategori>/<model>.html` | `epey.com/televizyon/tcl-65c6k.html` |
+
+`.html` **şart** (Epey'de uzantısız adres 404 veriyor — ölçüldü). Cimri'de `,a<ID>` eki şart;
+eksiz adres ürün değil **kategori** sayfası döndürüyor (ölçüldü).
+
+### 15.3 Fiyat güvenliği — neden yanlış fiyat gösteremez
+
+Üç kapı var, biri tutmazsa okuma **başarısız** olur ve bildirim gitmez:
+
+1. **Yapısal fiyat**: sayfanın JSON-LD `lowPrice` alanı.
+2. **Gözle görünen satırlar**: "Trendyol fiyatı 60.927,75 TL" gibi mağaza satırları
+   (Cimri'de mağaza adı logo satırından okunur).
+3. **Eşitlik**: (1) ile (2)'nin en düşüğü **aynı kuruş** olmalı. Tutmazsa `ValueError`.
+
+Ek olarak **Türkçe binlik nokta tuzağı** kapatıldı: `29.999` naif ayrıştırıcıda 29,999 TL
+olur; doğrusu 29.999 TL. Test `tests/test_aggregator_worker.py::PriceTrapTests`.
+
+Engel sayfası (`captcha`, `access denied`, …) gövdesi **hiç ayrıştırılmaz**.
+
+### 15.4 robots.txt durumu (ölçüldü, 2026-11-08)
+
+| Site | Durum |
+|---|---|
+| Epey | `Claude-User / ChatGPT-User / OAI-SearchBot / PerplexityBot → Allow: /`; **Crawl-delay yok** |
+| Cimri | Ürün sayfaları serbest; `?q=`, `?magaza=`, `/api/` yasak |
+
+Bu yüzden link doğrulaması `?magaza=…` gibi sorguları **atıyor** — hem robots uyumu hem de
+"tüm mağazalar görünsün" kuralı aynı anda sağlanıyor. Arama/karşılaştırma sayfaları
+(`/ara/`, `/karsilastir/…/farklari/`) reddediliyor.
+
+### 15.5 Kullanıcıya görünen fark
+
+Aynı komutlar, aynı menü (`/webtakipac`, `/webtakipler`, …). Sadece link üç siteden biri
+olabiliyor. Bildirimde en düşük fiyatın **hangi mağazada** olduğu ve kaç mağazanın
+karşılaştırıldığı yazıyor:
+
+```
+₺60.927 — TCL 65C6K Ultra HD (4K) TV
+Epey Takip Bildirimi
+En düşük fiyat: Trendyol
+5 mağaza fiyatı karşılaştırıldı
+https://www.epey.com/televizyon/tcl-65c6k.html
+```
+
+Akakçe bildirimi **bire bir aynı** kaldı (test: `test_akakce_notification_is_unchanged`).
+
+### 15.6 Test kapısı
+
+`python -m unittest discover -s tests` → **973 OK** (F1 sonu 955; +18 yönlendirme testi).
+
+### 15.7 Geri alma
+
+Tek komut: `git revert <commit>` — Akakçe hattı, `config.json`, `product_watches.json`
+biçimi ve komut listesi değişmediği için geri alma veri kaybı bırakmaz.
+
+### 15.8 Sırada ne var
+
+1. **Canlı doğrulama**: gerçek Cimri ve Epey linkleriyle tek tur (kullanıcı link verecek).
+2. Sonra mağaza fazları (Hepsiburada → …) — F2 bunlara bağlı değil.
+
+---
+
+## 16. Yenileme aralıkları — minimum / ideal / maksimum (2026-11-08 revizyonu)
+
+Kullanıcı notu: *"5 dk'da bir çok gereksiz katı bir süre gibi geldi bana… Linkimiz azken daha
+sık kontrol etmiş olur hem çoğalınca da zamanla süre artar. Blok yemeden yapalım bu işi."*
+Haklı: eski kodda **tek bir sabit** vardı (`INTERVAL = 300`), ürün sayısı 1 de olsa 30 da olsa
+her ürün 5 dakikada bir okunuyordu. Aşağıdaki tablo bu sabiti kaldırıp yerine **ölçüme dayalı**
+üç değerli politika koyuyor.
+
+### 16.1 Önce ölçüm — sınır neye dayanıyor?
+
+| Site | `robots.txt` `Crawl-delay` | Sayfa ağırlığı / yapı | Ölçülen gecikme | Girilen dip sınır |
+|---|---|---|---|---|
+| Akakçe | **YOK** | ~1–3 MB, JSON-LD + HTML liste | ~0,8–1,5 sn | **10 sn** |
+| Cimri | **YOK** | toplayıcı listesi, logo satırları | ~1 sn | **10 sn** |
+| Epey | **YOK** (AI botlarına açıkça `Allow: /`) | en ağır sayfa (9 chunk menü çöpü) | ~1 sn | **12 sn** |
+
+Yani **hiçbir site bize sayı dayatmıyor**; dip sınır tamamen bizim "ban yemeyelim + siteyi
+yormayalım" kuralımız. Bu yüzden 10–12 sn gibi insan tıklamasına yakın bir hız rahatça güvenli.
+
+Referans: bir insanın ürün sayfasını açma aralığı bile 10 saniyeden kısa değil; biz 30 ürünü
+gezerken **site başına dakikada ~6 istek** üretiyoruz. Bu, sitelerin gördüğü gerçek trafiğin
+milyonda biri (plan §13.6.7).
+
+### 16.2 Üç değer — her biri ne demek?
+
+| Değer | Akakçe | Cimri | Epey | Ne işe yarar |
+|---|---|---|---|---|
+| **Minimum** (dip sınır) | 10 sn | 10 sn | 12 sn | İki istek arası **asla** bunun altına inilmez |
+| **İdeal** (tek ürün) | **3 dk** | **3 dk** | **4 dk** | 1 ürün varken hedef aralık — eski 5 dk'dan **hızlı** |
+| **Otomatik tavan** | 30 dk | 30 dk | 30 dk | Ürün çoğalınca çıkılabilecek en yavaş aralık |
+| **Hata tavanı** | 120 sn | 120 sn | 120 sn | Engel görülünce dip sınırın çarpılacağı üst sınır |
+
+### 16.3 Otomatik seyrelme formülü — ve plandaki düzeltme
+
+**`etkin_aralık = max(ideal, N × dip_sınır)`**, tavan 30 dk.
+
+> **Düzeltme:** plan §13.6.3'te formül `(N − 1) × min_gap` yazıyordu. Kod yazılırken bunun
+> yanlış olduğu görüldü: `due` (sıradaki kontrol zamanı) **ürünün kendi** son okumasından
+> sayılıyor, turun başlangıcından değil. `(N−1)` ile 30 üründe aralık 290 sn çıkıyor, ama tur
+> 30 × 10 = 300 sn sürüyor → son ürünün süresi dolduğu hâlde sıra gelmiyor ve liste sürekli
+> **"⏳ gecikti"** gösteriyor. `N × min_gap` tam olarak eski 300 sn'ye oturuyor, yani
+> **Akakçe hattı bire bir korunuyor.**
+
+| Ürün (tek site) | Akakçe (10 sn) | Cimri (10 sn) | Epey (12 sn) | Eski sabit |
+|---|---|---|---|---|
+| 1 | **3 dk** | **3 dk** | **4 dk** | 5 dk |
+| 5 | 3 dk | 3 dk | 4 dk | 5 dk |
+| 10 | 3 dk | 3 dk | 4 dk | 5 dk |
+| 18 | 3 dk | 3 dk | 4 dk (18×12=216) | 5 dk |
+| 20 | 3 dk 20 sn | 3 dk 20 sn | 4 dk | 5 dk |
+| **30 (tavan ürün)** | **5 dk** (=eski davranış) | **5 dk** | **6 dk** | 5 dk |
+
+**Okunuşu:** 1–10 ürün arasında **eskisinden hızlı**, 20 üründen sonra yavaşlıyor, 30 üründe
+Akakçe tam eski hızına dönüyor. Yani "az link = sık kontrol, çok link = seyrek" kuralı
+kendiliğinden işliyor; ayrı bir ürün sayısı sınırı gerekmiyor (fizik dayatıyor).
+
+### 16.4 Blok yememe — üç bağımsız fren (birleştirme öncesi denetimde düzeltildi)
+
+1. **Tur içi bekleme:** her istekten sonra `gap = max(dip_sınır, istek_süresi × 2)`.
+   Site yavaşlarsa biz de yavaşlarız (Scrapy AutoThrottle mantığı).
+
+   > **Düzeltme (denetimde bulundu):** ilk sürümde sayaç bekleme **başlamadan** başlıyordu.
+   > 16 sn bekleyen bir tur "32 sn yavaş istek" sayılıp dip sınırı ikiye katlıyor, sonraki tur
+   > 32 sn bekliyor → 64 sn → … kendi kendini boğan bir sarmal. Artık sayaç bekleme
+   > **bittikten sonra** başlıyor; yalnız ağ süresi ölçülüyor.
+
+2. **Hata freni:** okuma başarısız olursa o sitenin aralığı **hemen 2 katına** çıkar
+   (2 → 4 → 8 kademe, tavan 8×); **ikinci üst üste hatada** ayrıca dip sınır iki katına
+   (max 300 sn). **3 temiz okumadan sonra** bir kademe geri hızlanır.
+
+   > **Düzeltme (denetimde bulundu):** ilk sürümde "temiz okuma sayısı ≥ 3 → aralık 2×"
+   > kuralı **sağlıklı sitede de** kalıcı yavaşlama yapıyordu (3. okumadan sonra sonsuza kadar
+   > 2 kat). Artık çarpan yalnız **hata sonrası** uygulanıyor.
+
+3. **Geri çekilme:** ürün bazlı; 2/3/4+ hatada 4×/8×/16× (tavan 1 saat), temiz okumada sıfırlanır.
+
+**Siteler birbirini kilitlemez**: Akakçe'de engel olsa Cimri ve Epey kendi hızında devam eder
+(test: `test_sites_do_not_block_each_other`).
+
+**Tavan kuralı:** hangi fren devreye girerse girsin kontrol **30 dakikadan seyrek olmaz**
+(test: `test_thirty_minutes_is_never_exceeded`) — kullanıcı fiyatı kaçırmasın.
+
+### 16.5 Kontrol kimde? — yeni komut **yok**
+
+Aralık **tamamen otomatik**. `/webtakiparalik` diye bir komut **eklenmedi**: `tests/test_bot.py:259`
+her yeni komutun yardım kataloğuna girmesini şart koşuyor, yardım listesini büyütmemek de
+kullanıcının "yeni komut kalabalığı olmasın" kuralı. (Komut bir ara yazıldı, test kapısında
+geri alındı — kapı çalıştı.)
+
+- Varsayılan **otomatik**: az ürün = hızlı, çok ürün = kendiliğinden seyrek.
+- İstenirse `product_watches.json` içinde ürün başına `"interval_minutes": 5` ile
+  sabitlenebilir; bu değer de **dip sınırın altına inemez** (blok yemeyelim diye) ve dosya
+  biçimi aynı kalır (`version: 1`, alan opsiyonel) → eski kayıtlar bozulmaz.
+
+### 16.6 Günlük istek hesabı (yeni)
+
+| Senaryo | İstek/gün | Eski |
+|---|---|---|
+| 1 Akakçe ürünü | 480 (3 dk) | 288 (5 dk) |
+| 1 Cimri + 1 Epey | 480 + 360 = 840 | 576 |
+| 30 Akakçe ürünü | 8.640 (5 dk — değişmedi) | 8.640 |
+| **En yoğun gerçekçi durum** (10 Akakçe + 5 Cimri + 5 Epey) | 4.800 + 2.400 + 1.800 = **9.000** | 5.760 |
+
+Artış var ama tepe değer hâlâ **~0,1 istek/sn**. Asıl fark: artık tek ürün varken 3 dakikada
+bir bakıyoruz, yani kullanıcının istediği "az link = sık kontrol" sağlanıyor.
+
+### 16.7 Test kapısı
+
+`python -m unittest discover -s tests` → **999 OK** (+26 aralık testi:
+`tests/test_tracker_intervals.py`; yeni komut yok, yardım kataloğu değişmedi). Eski 5 dk sabitinin korunduğu tek yer `INTERVAL = 300`
+(sadece geriye dönük isim; 30 üründe Akakçe hâlâ tam 300 sn).
