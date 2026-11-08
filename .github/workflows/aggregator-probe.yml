@@ -76,9 +76,9 @@ jobs:
         if: always()
         env:
           URLS: ${{ inputs.urls }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo "## Başlık / IP testi" >> "$GITHUB_STEP_SUMMARY"
           # Python tek satırlık komut (-c) YAML blok girintisini bozar; dosyaya yaz.
           python - <<'PY' > /tmp/diag_args.txt
           import os
@@ -86,20 +86,12 @@ jobs:
                   if u.startswith('http')]
           print(' '.join(f'--url {u}' for u in urls))
           PY
+          # ÖNEMLİ: annotation satırları (::notice/::warning) STDOUT'a gitmeli.
+          # Bir dosyaya yönlendirilirse GitHub onları hiç görmez (2026-11-08 dersi).
           xargs python -I tools/aggregator_diag.py --annotate \
-              < /tmp/diag_args.txt >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
-          # Özet tablosu check-run API'sinden de okunabilsin diye işaretle.
-          python -I tools/aggregator_diag.py --annotate --json \
-              $(cat /tmp/diag_args.txt) > /tmp/diag.json 2>/dev/null || true
-          python - <<'PY'
-          import json
-          try:
-              data = json.load(open('/tmp/diag.json'))
-          except Exception:
-              data = {'results': []}
-          for entry in data['results']:
-              print(f"::warning::{entry['url']} → {entry['verdict']}")
-          PY
+              --summary-out /tmp/diag.md --json-out /tmp/diag.json \
+              < /tmp/diag_args.txt || true
+          cat /tmp/diag.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
       - name: Özet
         if: always()

@@ -210,32 +210,47 @@ def main(argv=None):
                         help='istekler arası bekleme (sn), varsayılan 12')
     parser.add_argument('--json', action='store_true')
     parser.add_argument('--annotate', action='store_true',
-                        help='Sonucu GitHub annotation olarak yaz (log depolaması '
-                             'okunamasa da API\'den görünür)')
+                        help='Sonucu GitHub annotation olarak **stdout**a yaz. '
+                             'Bu satırlar dosyaya yönlendirilirse GitHub görmez.')
+    parser.add_argument('--summary-out', metavar='PATH',
+                        help='İnsan okur tabloyu bu dosyaya yaz (GITHUB_STEP_SUMMARY)')
+    parser.add_argument('--json-out', metavar='PATH',
+                        help='Makine okur sonucu bu dosyaya yaz')
     args = parser.parse_args(argv)
 
     report = {'generated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
               'results': []}
-    for raw in args.url:
-        url = check_url(raw)
-        print(f'\n## {url}')
-        rows = []
-        for name, client, agent, headers in VARIANTS:
-            row = run_variant(url, client, agent, headers)
-            rows.append((name, row))
-            print(f'  {name:<28} {str(row.get("status")):<5} '
-                  f'{row.get("ms", 0):>5} ms  {row.get("bytes", "—")} bayt  '
-                  f'{row.get("error", "")}')
-            if row.get('headers'):
-                print(f'      {" · ".join(f"{k}: {v}" for k, v in row["headers"].items())[:300]}')
-            if row.get('title'):
-                print(f'      başlık: {row["title"][:80]} · JSON-LD blok: {row["jsonld"]}')
-            time.sleep(args.gap)
-        summary = verdict(rows)
-        print(f'  → {summary}')
-        report['results'].append({'url': url, 'verdict': summary,
-                                  'variants': {name: row for name, row in rows}})
+    # `--summary-out` varsa tablo oraya, annotation satırları stdout'a gider.
+    import contextlib
+    import io
+    table = io.StringIO()
+    sink = contextlib.redirect_stdout(table) if args.summary_out else contextlib.nullcontext()
+    with sink:
+        for raw in args.url:
+            url = check_url(raw)
+            print(f'\n## {url}')
+            rows = []
+            for name, client, agent, headers in VARIANTS:
+                row = run_variant(url, client, agent, headers)
+                rows.append((name, row))
+                print(f'  {name:<36} {str(row.get("status")):<5} '
+                      f'{row.get("ms", 0):>5} ms  {row.get("bytes", "—")} bayt  '
+                      f'{row.get("error", "")}')
+                if row.get('headers'):
+                    print(f'      {" · ".join(f"{k}: {v}" for k, v in row["headers"].items())[:300]}')
+                if row.get('title'):
+                    print(f'      başlık: {row["title"][:80]} · JSON-LD blok: {row["jsonld"]}')
+                time.sleep(args.gap)
+            summary = verdict(rows)
+            print(f'  → {summary}')
+            report['results'].append({'url': url, 'verdict': summary,
+                                      'variants': {name: row for name, row in rows}})
 
+    if args.summary_out:
+        Path(args.summary_out).write_text(table.getvalue(), encoding='utf-8')
+    if args.json_out:
+        Path(args.json_out).write_text(json.dumps(report, ensure_ascii=False, indent=2),
+                                      encoding='utf-8')
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     if args.annotate:
