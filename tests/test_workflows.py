@@ -71,13 +71,33 @@ class WorkflowYamlTests(unittest.TestCase):
                         self.assertTrue(step['run'].strip(), 'boş run bloğu')
 
     def test_probe_workflow_is_manual_only_and_secret_free(self):
-        """Teşhis işleri elle tetiklenir: cron yok, secret yok."""
+        """Teşhis işlerinde cron yok, secret yok.
+
+        Toplayıcı teşhisi ayrıca pull_request ile koşabilir (token'ın
+        workflow_dispatch yetkisi yok). Bu serbest ama ŞARTLI: yalnız teşhis
+        dosyaları değişince ve yalnız sabit 2 URL ile — aksi halde her commit'te
+        siteye istek gider, ban riski doğar.
+        """
         for name in ('aggregator-probe.yml', 'store-probe.yml'):
             data = load(WORKFLOWS / name)
             trigger = data.get('on', data.get(True))
-            self.assertEqual(list(trigger), ['workflow_dispatch'], name)
+            self.assertNotIn('schedule', trigger, f'{name}: cron olmamalı')
+            self.assertIn('workflow_dispatch', trigger, name)
+            allowed = {'workflow_dispatch'}
+            if name == 'aggregator-probe.yml':
+                allowed.add('pull_request')
+                paths = trigger['pull_request']['paths']
+                self.assertEqual(sorted(paths), ['.github/workflows/aggregator-probe.yml',
+                                                 'tools/aggregator_diag.py'])
+            self.assertEqual(set(trigger), allowed, name)
             text = (WORKFLOWS / name).read_text(encoding='utf-8')
             self.assertNotIn('secrets.', text, f'{name}: secret kullanmamalı')
+
+    def test_probe_pr_trigger_uses_fixed_urls_only(self):
+        """PR tetiklemesi input alamaz; sabit iki ürüne düşmeli (keyfi URL yok)."""
+        text = (WORKFLOWS / 'aggregator-probe.yml').read_text(encoding='utf-8')
+        self.assertIn('https://www.epey.com/televizyon/tcl-65c6k.html', text)
+        self.assertIn('input yok', text)
 
     def test_test_workflow_runs_the_suite(self):
         data = load(WORKFLOWS / 'tests.yml')
