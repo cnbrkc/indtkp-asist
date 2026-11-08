@@ -1,14 +1,16 @@
 name: Toplayıcı teşhisi (Cimri/Epey)
 
-# Yalnız elle çalıştırılır. Secret yok, Telegram yok, zamanlanmış görev yok.
+# Elle veya teşhis dosyaları değişen PR'larda çalışır. Secret yok, Telegram
+# yok, zamanlanmış görev yok.
 # Amaç: "Epey okunamadı" gibi bir hatanın NEDENİNİ görmek. Worker ne görüyorsa
 # (HTTP kodu, boyut, engel işareti, yönlendirme) burada aynısı raporlanır.
 on:
   # PR tetikleyicisi: teşhis aracı değiştiğinde ölçüm kendiliğinden koşsun.
-  # Sadece bu iki dosya değişince ve yalnız 2 sabit URL ile — gürültü/ban yok.
+  # Yalnız teşhis dosyaları değişince ve yalnız 2 sabit URL ile — gürültü/ban yok.
   pull_request:
     paths:
       - tools/aggregator_diag.py
+      - tools/browser_probe.py
       - .github/workflows/aggregator-probe.yml
   workflow_dispatch:
     inputs:
@@ -122,6 +124,32 @@ jobs:
               --summary-out /tmp/diag.md --json-out /tmp/diag.json \
               < /tmp/diag_args.txt || true
           cat /tmp/diag.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+      - name: Gerçek tarayıcı testi (JS challenge'ı geçebiliyor mu?)
+        if: always()
+        env:
+          URLS: ${{ inputs.urls }}
+        run: |
+          set -euo pipefail
+          # Runner'da Chrome kurulu (google-chrome). Challenge'ı yalnız gerçek
+          # tarayıcı çözebilir; bu adım "veri merkezi IP'sinden geçilebiliyor mu"
+          # sorusunu kesin yanıtlar.
+          python -m pip install --quiet --disable-pip-version-check nodriver \
+            || echo "::warning::nodriver kurulamadı; tarayıcı testi atlanacak"
+          python - <<'PY' > /tmp/bp_args.txt
+          import os
+          urls = [u for u in os.environ.get('URLS', '').replace(',', ' ').split()
+                  if u.startswith('http')]
+          if not urls:
+              urls = [
+                  'https://www.epey.com/televizyon/tcl-65c6k.html',
+                  'https://www.cimri.com/televizyonlar/en-ucuz-tcl-65c6k-65-inc-'
+                  '165-ekran-4k-ultra-hd-android-qd-miniled-tv-fiyatlari,2478359134',
+              ]
+          print(' '.join(f'--url {u}' for u in urls))
+          PY
+          xargs python -I tools/browser_probe.py --timeout 45               --summary-out /tmp/browser.md < /tmp/bp_args.txt || true
+          cat /tmp/browser.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
       - name: Özet
         if: always()

@@ -88,7 +88,8 @@ class WorkflowYamlTests(unittest.TestCase):
                 allowed.add('pull_request')
                 paths = trigger['pull_request']['paths']
                 self.assertEqual(sorted(paths), ['.github/workflows/aggregator-probe.yml',
-                                                 'tools/aggregator_diag.py'])
+                                                 'tools/aggregator_diag.py',
+                                                 'tools/browser_probe.py'])
             self.assertEqual(set(trigger), allowed, name)
             text = (WORKFLOWS / name).read_text(encoding='utf-8')
             self.assertNotIn('secrets.', text, f'{name}: secret kullanmamalı')
@@ -98,6 +99,13 @@ class WorkflowYamlTests(unittest.TestCase):
         text = (WORKFLOWS / 'aggregator-probe.yml').read_text(encoding='utf-8')
         self.assertIn('https://www.epey.com/televizyon/tcl-65c6k.html', text)
         self.assertIn('input yok', text)
+
+    def test_probe_workflow_runs_real_browser_test(self):
+        """Challenge'ı yalnız gerçek tarayıcı çözer; adım var olmalı."""
+        text = (WORKFLOWS / 'aggregator-probe.yml').read_text(encoding='utf-8')
+        self.assertIn('tools/browser_probe.py', text)
+        self.assertIn('nodriver', text)
+        self.assertNotIn('secrets.', text)
 
     def test_test_workflow_runs_the_suite(self):
         data = load(WORKFLOWS / 'tests.yml')
