@@ -69,8 +69,8 @@ otomatik link çıkarma ürüne göre 4/4 ile 10/16 arasında değişiyor; senin
 | **n11** | ✅ Evet (`?magaza=` korunur) | `?magaza=hepsiphone` 49.750 ↔ `?magaza=markauygun` "SEPETTE 50.049,09" ↔ query'siz **fiyat yok** |
 | **Pazarama** | ✅ Evet | `15.499,00 TL` sunucu tarafında; robots `Allow: /*?magaza`; yapısal veri doğrulanmalı (probe) |
 | **Pttavm / idefix / Evkur** | 🟡 Sonra | Akakçe'de zaten listeleniyorlar; adaptör eklemek kolay ama öncelik değil |
-| **Trendyol** | ❌ **Doğrudan okunamıyor** | Bugün ürün sayfası `/en/select-country?cb=...` sayfasına düştü → ülke/çerez kapısı. Çerez kuralı gereği (C2) zorlanmaz. **Akakçe'nin Trendyol satırlarıyla takip edilir** |
-| **Amazon TR** | ❌ **Okunmuyor** | `robots.txt` AI botlarını **ismen yasaklıyor** (ChatGPT-User, ClaudeBot, PerplexityBot, GrokBot, Scrapy); satın alma kutusu yok, fiyat `a-offscreen`/JS'te, Prime/sepette indirim farkı. **Fiyat takibi yok** → yalnız hatırlatıcı modu (F9, opsiyonel) |
+| **Trendyol** | ✅ **Evet — F7'de kesin** | Ürün sayfası sunucu tarafında fiyat **veriyor** (açık kaynak kanıtı: `class="prc-dsc"` fiyat, `class="pr-new-br"` başlık — ismailcakmak/e-commerce-price-tracker). Engel **IP/coğrafya duvarı**: `/en/select-country?cb=…`. Duvar tespit edilirse Akakçe Trendyol satırına düşülür |
+| **Amazon TR** | ✅ **Evet — F9'da kesin (korumalı)** | **Bugün ölçtüm: `.com.tr` ürün sayfası fiyat veriyor** (`İkinci El :53.256,04 TL`, alternatif `30.999,00 TL`). `robots.txt`: `User-agent: *` için `/dp/` **yasak değil**; ama ClaudeBot/GPTBot/Scrapy **ismen** `Disallow: /`. AI botu gibi davranmayacağız (düz UA), yine de risk var → **sıkı hız sınırı + kullanılmış/2. el filtresi + kill switch** |
 
 **Kritik gerçek:** TCL 65C7K'da Akakçe **"4 satıcı içinde kargo dahil en ucuz"** diyor →
 n11, Pttavm, Hepsiburada, Pazarama. Trendyol/Amazon/idefix/Teknosa/MediaMarkt **o üründe yok**.
@@ -79,19 +79,19 @@ Yani "Akakçe'den 8 mağaza linki" hayal; **4/8** gerçek. Ama senin verdiğin l
 
 ---
 
-## 3. Yol haritası — 9 faz
+## 3. Yol haritası — 9 faz (hepsi kesin kapsamda)
 
 | Faz | Ad | Ne yapar | Telegram'da fark | Risk |
 |---|---|---|---|---|
-| **F1** | Probe | 6 mağazayı + MediaMarkt `?brand=` kategori sayfasını ölçer, **gerçek fixture üretir** | yok | **sıfır** |
+| **F1** | Probe | **7 mağaza** (Trendyol + Amazon dahil) + MediaMarkt `?brand=` kategori sayfası → **gerçek fixture** | yok | **sıfır** |
 | **F2** | Okuyucu | `store_worker.py`: Hepsiburada + MediaMarkt + Teknosa | yok | düşük |
 | **F3** | Takipçi | `store_tracker.py` + `store_watches.json` (boş dosya **commit'li**) | yok | orta |
 | **F4** | Bağlantı | `bot.py` ~20 satır | **LİNK YAPIŞTIR → TAKİP** | **yüksek** |
 | **F5** | Genişleme | n11 + Pazarama (`?magaza=` korunur, sepette fiyat, en düşük satıcı) | 5 mağaza | orta |
 | **F6** | Satıcı linkleri | `/magazatakipbul <akakçe linki>` → **satıcı linkleri listesi** | "bu üründeki linkler" | düşük |
-| **F7** | Trendyol | Ülke duvarı **tespiti** + Akakçe Trendyol satırından takip + net mesaj | Trendyol görünür | düşük |
+| **F7** | Trendyol (kesin) | Adaptör + coğrafya duvarı tespiti + Akakçe satırı yedeği | Trendyol **takip edilir** | orta |
 | **F8** | Çoklu seçim | `1,3,7` → sırayla hedef sor, `hepsi 55000` | 3 mağaza tek seferde | düşük |
-| **F9** | (opsiyonel) Amazon | Hatırlatıcı modu: link kaydı + haftalık "kontrol et" | **fiyat okumaz** | düşük |
+| **F9** | Amazon TR (kesin) | `.a-offscreen` fiyat + yeni/2. el filtresi + sıkı hız + kill switch | Amazon **takip edilir** (korumalı) | **orta-yüksek** |
 
 **Kural:** her faz **ayrı commit**, kendi testleriyle. Testler geçmeden sonraki faza geçilmez.
 **Bekleme yok** — "gün" ifadesi yok, fazlar sırayla tek akışta ilerler.
@@ -104,15 +104,17 @@ Yani "Akakçe'den 8 mağaza linki" hayal; **4/8** gerçek. Ama senin verdiğin l
 **Yapılır:** `.github/workflows/store-probe.yml` (yalnız `workflow_dispatch`, `permissions: {}`,
 secret yok, Telegram yok) + `tools/store_probe.py` (tek dosya, stdlib).
 **Güvenlik:** host allowlist (`www.mediamarkt.com.tr`, `www.teknosa.com`, `www.pazarama.com`,
-`www.n11.com`, `www.hepsiburada.com`, `www.amazon.com.tr`) + **https zorunlu** + `NoRedirect`;
+`www.n11.com`, `www.hepsiburada.com`, `www.trendyol.com`, `www.amazon.com.tr`) + **https zorunlu** + `NoRedirect`;
 allowlist dışı satır **reddedilir**. Siteler arası ≥5 sn, URL başına tek istek.
 **Çıktı (her URL için):** HTTP kodu, yönlendirme var mı, gövde boyutu, captcha/engel işareti,
 JSON-LD blok sayısı, Product sayısı, `offers.price` + `priceCurrency`, **görünen tüm fiyat
 adayları** (ana fiyat / taksit / puan / garanti) ve **hangisinin JSON-LD ile eşleştiği**.
 Ayrıca çıktı: `GITHUB_STEP_SUMMARY` tablosu + artifact (site başına ≤20 KB kırpılmış JSON-LD ve
 fiyat çevresi HTML). **Bu artifact F2 fixture'larının tek kaynağı.**
-**Kabul kriteri:** 6 site için tablo dolu; Trendyol/Amazon satırı "engelli/okunamadı" olarak
-**kanıtlı** görünüyor; MediaMarkt `?brand=TCL` kategori sayfası da ölçülmüş.
+**Kabul kriteri:** 7 site için tablo dolu. **Trendyol** satırı ya fiyat okumuş ya `country_wall`;
+**Amazon** satırı ya **yeni** fiyat okumuş ya `no_new_offer`/`blocked` — ikisi de kanıtlı.
+MediaMarkt `?brand=TCL` kategori sayfası da ölçülmüş. Trendyol/Amazon için **2. el ve
+taksit satırları ayrı ayrı** raporlanır (tuzağı görmek için).
 **Geri alma:** workflow dosyasını sil.
 
 ### F2 — Okuyucu (`store_worker.py`)
@@ -205,20 +207,30 @@ Bot: TCL 65C7K … Akakçe'de 4 satıcı, 4'ünde de link bulundu:
 **Test:** fixture × 2 (65C7K satıcı listesi + gürültülü örnek), linki olmayan satır "link yok"
 etiketi, aynı satıcının farklı pazaryerleri uyarısı.
 
-### F7 — Trendyol (en uygun yer: burada)
-**Gerçek:** ürün sayfası bugün `/en/select-country?cb=…` sayfasına düştü (ülke/çerez kapısı).
-Çerez kullanmadığımız için (C2) bu kapı zorlanmaz. Trendyol `robots.txt` zaten `?q=`, `/sr/`,
-`/pd?` yollarını yasaklıyor.
-**Yapılan (3 parça, kod maliyeti küçük):**
-1. **Ülke duvarı tespiti:** `store_worker` çıktısında `ok:false, reason:"country_wall"`.
-2. **Yönlendirme yok:** Trendyol linki `/magazatakip`'e verilirse bot **net** der:
-   > ❌ Trendyol'u doğrudan okuyamıyoruz (ülke seçim sayfasına yönlendiriyor).
-   > Trendyol'da fiyat Akakçe'nin Trendyol satırından takip edilir. Akakçe ürün linkini
-   > `/webtakip` ile gönder, ya da `/magazatakipbul <akakçe linki>` ile Trendyol satırını seç.
-3. **Akakçe Trendyol satırı:** `Akakçe'de Trendyol satırı varsa (ör. 65C6K'da 2 satıcı),
-   `/magazatakipbul` listesinde **[Trendyol · Akakçe üzerinden]** etiketiyle görünür** —
-   seçilirse **Akakçe ürün linki** takibe girer (mağaza adaptörü değil). Yani Trendyol
-   bilgisi tamamen kaybolmuyor.
+### F7 — Trendyol (kesin dahil)
+**Ölçüm (2026-11-08, iki deneme):** ürün sayfası `/en/select-country?cb=…` sayfasına düştü —
+bu bir **IP/coğrafya duvarı** (çerez kapısı değil). Aynı sayfa Türkiye IP'sinden normal açılıyor.
+**Sunucu tarafında fiyat var** (açık kaynak kanıtı: Trendyol HTML'inde fiyat `class="prc-dsc"`,
+başlık `class="pr-new-br"` — `ismailcakmak/e-commerce-price-tracker`; ayrıca
+`data-testid="price"` / `price-view-discounted` — `furkandlkdr/telegram-trendyol-bot`).
+Trendyol fiyatı **JS ile sonradan basmıyor**, HTML'de geliyor.
+
+**Yapılacak (4 parça):**
+1. **Adaptör:** `store_worker` içinde `trendyol.py` eşdeğeri; `product_url` kuralı
+   `/…-p-<id>` + `QUERY="keep"` (`merchantId=` satıcıyı belirler — atılırsa başka satıcı).
+   Fiyat sırası: JSON-LD `offers.price` → yoksa `data-testid="price"` bloğu →
+   `prc-dsc` sınıfı. Doğrulama (C4): JSON-LD fiyatı ile görünen fiyat aynı kuruşta olmalı.
+2. **Duvar tespiti:** dönen sayfada `select-country` / `Welcome to Trendyol` varsa veya
+   final URL `select-country` içeriyorsa → `ok:false, reason:"country_wall"`. **Alarm yok.**
+3. **Otomatik yedek (fallback):** duvar varsa aynı ürünün **Akakçe Trendyol satırı**
+   kullanılır (`/magazatakipbul` listesinde `[Trendyol · Akakçe üzerinden]` etiketiyle).
+   Seçilirse Akakçe ürün linki takibe girer → **Trendyol fiyatı yine izlenir, 15 dk gecikmeyle.**
+4. **Kullanıcıya net mesaj:** duvar sürerse "/magazatakipac Trendyol kapatıldı, Akakçe
+   satırından devam" bilgisi (sessiz düşüş yok).
+
+**Kabul kriteri:** F1 probe'unda Trendyol satırı ya "fiyat okundu" ya da "country_wall" olarak
+**kanıtlı** görünür. İkisi de kabul; belirsizlik kabul değil.
+**Geri alma:** adaptörü sil; Akakçe satırı yedeği zaten çalışıyor.
 
 ### F8 — Çoklu seçim kuyruğu (`1,3,7` / `hepsi 55000`)
 **Kanıt (kod):** `product_tracker.py:291` → `self.drafts[chat] = {...}` **tek yuva**, üzerine
@@ -233,14 +245,38 @@ Hedef fiyat mesajında sırayla `tracker.handle(url, existing_pending=False)` +
 Bu bilinçli: kalıcı yazmak `product_watches.json` şemasını bozardı.
 **Test:** 3 seçim + `hepsi 55000` → **3 kayıt**, 3 farklı hedef değil, tek oturum.
 
-### F9 — Amazon (opsiyonel, isteğe bağlı, fiyat okumaz)
-**Gerçek:** `robots.txt` AI botlarını ismen yasaklıyor (ChatGPT-User, ClaudeBot, PerplexityBot,
-GrokBot, Scrapy); satın alma kutusu yok; fiyat JS'te; Prime/sepette indirim farklı.
-**Yapılan:** `/magazatakipamazon <link>` → link **doğrulanıp** kaydedilir (ASIN regex), ürün adı
-**yazdığın metinden** alınır; fiyat okunmaz. Haftalık tek hatırlatma:
-> 🔔 Amazon kontrol: TCL 65C7K — istediğin ürün. Fiyatı sen kontrol et: <link>
-**Kabul:** Amazon'dan **hiç fiyat okunmaz**, alarm üretilmez, robots zorlanmaz.
-Karar senin: bu faz istenmezse plan F8'de biter.
+### F9 — Amazon TR (kesin dahil, korumalı)
+**Ölçüm (2026-11-08):** `amazon.com.tr` ürün sayfası **fiyat veriyor**:
+`Satın alın İkinci El : 53.256,04 TL`, alternatif kutu `30.999,00 TL`,
+`Yeni & İkinci El Ürün (2) başlangıç fiyatı: 53.256,04 TL`, `Kargo BEDAVA`.
+Fiyat HTML'de `a-offscreen` sınıfında (açık kaynak kanıtı: `metehanulusoy/price-tracker-bot`
+`.a-price-whole`; `ismailcakmak` `a-offscreen`; `ismailcakmak` ayrıca TR siteleri için tek
+dosyalık basit ayrıştırma kullanıyor).
+**robots.txt (bugün okundu):** `User-agent: *` bloğunda `/dp/` **yasak değil**; yalnız
+`/gp/offer-listing`, `/gp/cart`, `/ap/signin` gibi yollar yasak. **Ama** ClaudeBot, GPTBot,
+ChatGPT-User, PerplexityBot, GrokBot, Scrapy, Copilot… **ismen `Disallow: /`.**
+**Karar:** AI botu gibi davranmayız (düz, dürüst UA); robots'un `*` kuralına uyarız.
+Yine de Amazon ToS otomatik erişimi sınırlıyor → **risk kabul edilerek** dahil edilir.
+
+**Yapılacak (5 parça):**
+1. **ASIN doğrulama:** `/dp/<ASIN>` veya `/gp/product/<ASIN>`; https, host `www.amazon.com.tr`,
+   `NoRedirect`, tek `GET`, 3 MB.
+2. **Fiyat kaynakları:** `#corePrice_feature_div .a-offscreen` → yoksa
+   `#corePriceDisplay_desktop_feature_div` → yoksa JSON-LD `offers.price`.
+   **Çapraz doğrulama (C4):** bulunan değerler aynı kuruşta olmalı; tutmazsa `ok:false`.
+3. **Yeni/kullanılmış ayrımı (kritik):** yalnız **"Yeni"** fiyatı kabul edilir.
+   `İkinci El`, `Amazon Depo`, `Yenilenmiş`, `Kullanılmış`, `Yeni Gibi` etiketli fiyatlar
+   **reddedilir** (bugünkü örnekte görünen tek fiyat "İkinci El" idi — tuzak gerçek).
+   Yeni fiyat yoksa `ok:false, reason:"no_new_offer"`, alarm yok.
+4. **Sıkı hız sınırı + kill switch:** ürün başına **6 saatte 1 okuma** (≈4/gün),
+   toplam Amazon isteği **günde ≤6**; `403/503/CAPTCHA` görülürse adaptör **kendini kapatır**
+   (`enabled=false` + tek uyarı), Akakçe ve diğer mağazalar etkilenmez.
+5. **Yedek:** Amazon'da yeni teklif yoksa/engel varsa bot sana şunu der:
+   `🔔 Amazon: TCL 65Q6C — fiyat okunamadı (yalnız 2. el teklif var). Kontrol: <link>`
+
+**Kabul kriteri:** Amazon satırı ya "yeni fiyat okundu" ya da
+`no_new_offer` / `blocked` olarak **kanıtlı** görünür; **asla** 2. el fiyatıyla alarm üretmez.
+**Geri alma:** adaptörü sil + `store_watches.json`'dan amazon kayıtlarını çıkar.
 
 ---
 
@@ -275,8 +311,9 @@ Desteklenmeyen/okunamayan mağaza **sessizce yutulmaz**, açıkça söylenir.
 | Taksit/puan fiyat sanılır | **yüksek** | JSON-LD kuruş değeri ana blokta aynen geçmeli (MediaMarkt'ta gerçek tuzak: 22.499,75) |
 | n11'de yanlış satıcı | orta | `?magaza=` **korunur** |
 | Akakçe'nin listelemediği mağaza | düşük | Senin verdiğin link + F6 dürüst kapsam etiketi (`4/4`, `10/16`) |
-| Trendyol | — | Ülke duvarı tespiti + Akakçe satırı (F7) |
-| Amazon | — | Fiyat takibi yok; robots'a saygı (F9) |
+| Trendyol coğrafya duvarı (Actions IP'si) | orta | Duvar tespiti → **Akakçe Trendyol satırı** otomatik yedeğe düşer (15 dk gecikme), alarm yok |
+| Amazon 2. el fiyatını yeni fiyat sanmak | **yüksek** | `İkinci El/Amazon Depo/Yenilenmiş/Yeni Gibi` etiketli fiyat **reddedilir**; yeni teklif yoksa alarm yok |
+| Amazon CAPTCHA/403 (ToS + AI bot yasağı) | **yüksek** | Ürün başına 6 saatte 1, günde ≤6 istek; engelde adaptör **kendini kapatır**, tek uyarı |
 | Public repo'da fiyat geçmişi | orta | Geçmiş commit **edilmez**; `store_watches.json` yalnız hedef+url |
 | Actions maliyeti | düşük | Repo **public** → standart runner dakikaları ücretsiz; probe yalnız elle |
 | Test tabanı kayar | orta | Taban **904 test OK**; her fazda sayı düşerse faz kapanmaz |
@@ -320,8 +357,20 @@ Trendyol: doğrudan okunamıyor (ülke seçim sayfası: /en/select-country?cb=�
   Yapılacak: (1) store_worker'da reason:"country_wall", (2) kullanıcıya net mesaj + Akakçe
   yönlendirmesi, (3) Akakçe'nin Trendyol satırı /magazatakipbul listesinde
   "[Trendyol · Akakçe üzerinden]" etiketiyle → seçilirse Akakçe ürün linki takibe girer.
-Amazon: fiyat takibi YOK (robots AI botlarını ismen yasaklıyor; fiyat JS'te; Prime farkı).
-  Yalnız F9: link doğrula + kaydet + haftalık hatırlatma. F9 istenmezse plan F8'de biter.
+Trendyol (revize — ÖLÇÜLDÜ): ürün sayfası sunucu tarafında fiyat VERİYOR (fiyat class="prc-dsc",
+  başlık class="pr-new-br"; ayrıca data-testid="price"/price-view-discounted). Engel IP/coğrafya
+  duvarı: /en/select-country?cb=… F7 planı: adaptör (+QUERY="keep", merchantId korunur) +
+  duvar tespiti (reason:"country_wall") + otomatik yedek Akakçe Trendyol satırı +
+  kullanıcıya net mesaj. Trendyol ARTIK KESİN kapsamda.
+
+Amazon TR (revize — ÖLÇÜLDÜ): amazon.com.tr ürün sayfası fiyat veriyor
+  (İkinci El :53.256,04 TL, alternatif 30.999,00 TL). robots: User-agent * için /dp/ yasak değil;
+  ClaudeBot/GPTBot/Scrapy ismen Disallow: /. AI botu gibi davranmayacağız (düz UA), * kuralına
+  uyacağız. F9 planı: ASIN doğrulama + #corePrice_feature_div .a-offscreen → corePriceDisplay →
+  JSON-LD offers.price (aynı kuruşta) + YENİ/KULLANILMIŞ FİLTRESİ (İkinci El, Amazon Depo,
+  Yenilenmiş, Yeni Gibi → reddet; yeni yoksa ok:false reason:"no_new_offer") + ürün başına
+  6 saatte 1 okuma, günde ≤6 istek + 403/503/CAPTCHA'da adaptör kendini kapatır.
+  Amazon ARTIK KESİN kapsamda (korumalı).
 
 Düzeltmeler (v1'den, hepsi hâlâ geçerli):
 D1 -I gerekçesi: izole modda sys.path[0] stdlib zip olur; -E -s de devrede → worker kendi
@@ -356,6 +405,19 @@ N6 verify: liste ve sepette ikisi de > 0, aynı para birimi; sepette yoksa liste
 ```
 
 ---
+
+## 9b. Açık kaynak kaynakçası (bu plana girenler)
+
+| Depo | Ne aldık | Uyum |
+|---|---|---|
+| `ismailcakmak/e-commerce-price-tracker` | Trendyol fiyat `class="prc-dsc"`, başlık `pr-new-br`; Amazon `a-offscreen`; TR siteleri için basit tek dosya yaklaşımı | Fikir/ayrıştırma kaynağı — kod **kopyalanmadı**, seçici bilgisi doğrulama olarak kullanıldı |
+| `furkandlkdr/telegram-trendyol-bot` | `data-testid="price"` + `price-view-discounted` sırası; stok için "Sepete Ekle" kontrolü | Aynı: seçici bilgisi |
+| `metehanulusoy/price-tracker-bot` | Amazon `.a-price-whole`; **Playwright ile JS render** yaklaşımı | **Reddedildi** — tarayıcı bağımlılığı stdlib kuralına aykırı, ağır, izolasyonu bozar |
+| `omkarcloud/trendyol-scraper` | (RapidAPI üzerinden ücretli 3. taraf servis) | **Reddedildi** — proxy/3. taraf kapalı |
+
+**Sonuç:** hiçbir depodan kod alınmadı (lisans/itibar riski yok); yalnız **hangi HTML
+sınıflarının fiyat taşıdığı** bilgisi alındı ve kendi C1–C7 sözleşmelerimizle yeniden yazılacak.
+Playwright/Selenium tabanlı çözümler kural dışı olduğu için kullanılmıyor.
 
 ## 10. Komut listesi (yeni, hiçbiri yardım menüsüne eklenmez)
 
