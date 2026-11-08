@@ -85,7 +85,10 @@ TR_FOLD = str.maketrans({'İ': 'i', 'I': 'i', 'ı': 'i', 'Ş': 's', 'ş': 's', '
                          'ğ': 'g', 'Ü': 'u', 'ü': 'u', 'Ö': 'o', 'ö': 'o', 'Ç': 'c', 'ç': 'c'})
 BLOCK_MARKERS = ('captcha', 'access denied', 'erişim engellendi', 'unusual traffic',
                  'request unsuccessful', 'are you a robot', 'bot kontrolü',
-                 'too many requests', 'rate limit')
+                 'too many requests', 'rate limit',
+                 # Amazon challenge page phrasing (measured: HTTP 200, 4 KB body)
+                 'enter the characters you see', 'type the characters you see',
+                 'characters you see in this image')
 COUNTRY_WALL = ('select your country', 'ülkenizi seçin', 'select-country')
 
 EMBEDDED_PATTERNS = {
@@ -391,6 +394,17 @@ def visible_prices(raw):
     return candidates
 
 
+def _to_cents(value):
+    """JSON-LD prices are usually "66444.03"; some sites emit "66.444,03"."""
+    text = str(value).strip().replace('TL', '').replace('₺', '').strip()
+    if re.search(r',\d{1,2}$', text):
+        text = text.replace('.', '').replace(',', '.')
+    try:
+        return cents(text)
+    except ValueError:
+        return None
+
+
 def block_state(raw, status):
     low = raw.lower()
     markers = [m for m in BLOCK_MARKERS if m in low]
@@ -414,15 +428,37 @@ def analyze(raw, status=None):
                      if offer.get('price') not in (None, '')]
     matches = []
     for offer in jsonld_prices:
-        try:
-            target = cents(str(offer['price']).replace(',', '.'))
-        except ValueError:
+        price = _to_cents(offer['price'])
+        if price is None:
             continue
         for candidate in prices:
-            if candidate['cents'] == target:
+            if candidate['cents'] == price:
                 matches.append({'jsonld': offer['price'], 'text': candidate['text'],
                                 'label': candidate['label']})
                 break
+    block = block_state(raw, status)
+    blocked = bool(block['captcha_or_block'] or block['country_wall'])
+    if blocked:
+        # A captcha/challenge page carries arbitrary JS with "price" keys
+        # (Amazon's challenge matched 42 of them). Analysing it would invent
+        # numbers, so only the block evidence is reported.
+        return {
+            'jsonld_blocks': len(jsonld_blocks(raw)),
+            'jsonld_products': len(products),
+            'jsonld_product_names': [],
+            'jsonld_prices': [],
+            'jsonld_currencies': [],
+            'jsonld_stock': [],
+            'jsonld_price_matches_visible': [],
+            'embedded': {'markers': {}, 'price_fields': 0, 'price_samples': [],
+                         'seller_prices': 0, 'seller_price_samples': []},
+            'visible_price_count': 0,
+            'visible_prices': [],
+            'label_counts': {},
+            'block': block,
+            'ean': None,
+            'analysis_skipped': 'engel sayfası',
+        }
     return {
         'jsonld_blocks': len(jsonld_blocks(raw)),
         'jsonld_products': len(products),
@@ -435,8 +471,9 @@ def analyze(raw, status=None):
         'visible_price_count': len(prices),
         'visible_prices': prices[:25],
         'label_counts': _counts(prices),
-        'block': block_state(raw, status),
+        'block': block,
         'ean': ean_values(raw),
+        'analysis_skipped': None,
     }
 
 
@@ -500,6 +537,10 @@ def _snippet(raw):
     for match in price_matches:
         parts.append('<!--PRICE_CONTEXT-->')
         parts.append(raw[max(0, match.start() - 600):match.end() + 600])
+    if not parts:
+        # Blocked pages have no JSON-LD and no price context; keep the first
+        # bytes so the WAF that refused us can be identified later.
+        return '<!--BLOCK_BODY-->\n' + raw[:2000]
     text = '\n'.join(parts)
     return text[:SNIPPET_LIMIT]
 

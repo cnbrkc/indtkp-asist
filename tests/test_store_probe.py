@@ -218,6 +218,32 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(analysis['visible_prices'][0]['cents'], 8_999_900)
 
 
+AMAZON_CHALLENGE = """<html><head><title>Amazon.com.tr</title>
+<script>var a={"price":"1.00","price":"2.00","price":"3.00"};</script>
+</head><body>Enter the characters you see below
+Type the characters you see in this image:</body></html>"""
+
+
+class BlockedPageTests(unittest.TestCase):
+    def test_challenge_page_is_not_analysed_for_prices(self):
+        # Amazon returns HTTP 200 with a challenge page: 42 bogus "price" keys.
+        analysis = probe.analyze(AMAZON_CHALLENGE, 200)
+        self.assertEqual(analysis['visible_price_count'], 0)
+        self.assertEqual(analysis['visible_prices'], [])
+        self.assertEqual(analysis['jsonld_prices'], [])
+        self.assertEqual(analysis['embedded']['price_fields'], 0)
+        self.assertEqual(analysis['analysis_skipped'], 'engel sayfası')
+
+    def test_block_body_is_kept_in_the_snippet(self):
+        snippet = probe._snippet(AMAZON_CHALLENGE)
+        self.assertIn('BLOCK_BODY', snippet)
+        self.assertIn('Enter the characters', snippet)
+
+    def test_403_body_is_kept_in_the_snippet(self):
+        snippet = probe._snippet('<html><body>Access Denied (Akamai)</body></html>')
+        self.assertIn('BLOCK_BODY', snippet)
+
+
 class RowStateTests(unittest.TestCase):
     def test_states(self):
         cases = [
