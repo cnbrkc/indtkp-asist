@@ -16,6 +16,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install --disable-pip-version-check -r requirements.txt
+      # Workflow dosyaları da test edilir (bozuk YAML = GitHub işi hiç başlatmaz).
+      - run: pip install --disable-pip-version-check pyyaml
       - name: Birim ve uçtan uca testler
         env:
           PYTHONUNBUFFERED: "1"

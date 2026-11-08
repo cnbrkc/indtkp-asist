@@ -79,11 +79,15 @@ jobs:
         run: |
           set -euo pipefail
           echo "## Başlık / IP testi" >> "$GITHUB_STEP_SUMMARY"
-          python -I tools/aggregator_diag.py --url $(python -c "
-import os,sys
-urls=[u for u in os.environ['URLS'].replace(',',' ').split() if u.startswith('http')]
-print(' --url '.join(urls))
-") >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+          # Python tek satırlık komut (-c) YAML blok girintisini bozar; dosyaya yaz.
+          python - <<'PY' > /tmp/diag_args.txt
+          import os
+          urls = [u for u in os.environ['URLS'].replace(',', ' ').split()
+                  if u.startswith('http')]
+          print(' '.join(f'--url {u}' for u in urls))
+          PY
+          xargs python -I tools/aggregator_diag.py < /tmp/diag_args.txt \
+              >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
 
       - name: Özet
         if: always()
