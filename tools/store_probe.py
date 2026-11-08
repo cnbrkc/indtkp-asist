@@ -48,7 +48,14 @@ ALLOWED_HOSTS = {
     'www.amazon.com.tr': {'min_gap': 60, 'concurrency': 1},
     # Reference only: the Akakçe line already works and is not part of F2.
     'www.akakce.com': {'min_gap': 10, 'concurrency': 1},
+    # Aggregators. Stores behind them are reached by the aggregator, not by us.
+    'www.cimri.com': {'min_gap': 10, 'concurrency': 1},
 }
+
+# "store" pages are read directly; "aggregator" pages carry per-merchant rows and
+# are the only realistic way to see stores that refuse datacenter IPs (F1 result:
+# 5 of 7 stores answered 403 from GitHub Actions).
+SITE_KIND = {'www.cimri.com': 'aggregator', 'www.akakce.com': 'aggregator'}
 
 MAX_BODY = 3_000_000
 HTTP_TIMEOUT = 15
@@ -394,6 +401,44 @@ def visible_prices(raw):
     return candidates
 
 
+
+# ---------------------------------------------------------------------------
+# Aggregator pages (Cimri / Akakçe style): per-merchant rows
+# ---------------------------------------------------------------------------
+
+MERCHANT_LOGO = re.compile(r'/merchant-logos/(\d+)\.png', re.I)
+MERCHANT_COUNT = re.compile(r'\b([A-ZÇĞİÖŞÜ][\wÇĞİÖŞÜçğıöşü.&\- ]{1,24})\s*\((\d{1,3})\)')
+FRESHNESS = re.compile(r'(\d{1,3})\s*(dk|dakika|saat|gün)\s*önce', re.I)
+OFFER_AROUND = re.compile(r'([A-ZÇĞİÖŞÜa-zçğıöşü0-9.&\- ]{2,28})\s*\(')
+MIN_HINT = re.compile(r'En Ucuz[^0-9]{0,40}(' + _NUMBER + r')', re.I)
+
+
+def aggregator_analysis(raw, host=None):
+    """What an aggregator page tells us about *other* stores.
+
+    A Cimri product page lists one row per merchant with its price and how long
+    ago it was refreshed, plus a "N fiyat arasında en ucuz" summary. That is the
+    same information Akakçe gives, but Cimri also lists stores Akakçe does not
+    (Amazon measured on 2026-11-08).
+    """
+    logos = MERCHANT_LOGO.findall(raw)
+    counts = {}
+    for name, number in MERCHANT_COUNT.findall(raw):
+        name = ' '.join(name.split())
+        if 1 <= len(name) <= 28 and not name.lower().startswith(('fiyat', 'taksit')):
+            counts[name] = max(int(number), counts.get(name, 0))
+    freshness = [(int(n), unit.lower()) for n, unit in FRESHNESS.findall(raw)]
+    hint = MIN_HINT.search(raw)
+    return {
+        'kind': 'aggregator',
+        'merchant_logo_rows': len(logos),
+        'distinct_merchant_logos': len(set(logos)),
+        'merchant_counts': dict(sorted(counts.items(), key=lambda kv: -kv[1])[:12]),
+        'freshness_samples': sorted({f'{n} {u}' for n, u in freshness})[:8],
+        'min_price_hint': hint.group(1) if hint else None,
+    }
+
+
 def _to_cents(value):
     """JSON-LD prices are usually "66444.03"; some sites emit "66.444,03"."""
     text = str(value).strip().replace('TL', '').replace('₺', '').strip()
@@ -421,7 +466,7 @@ def ean_values(raw):
     return None
 
 
-def analyze(raw, status=None):
+def analyze(raw, status=None, host=None):
     products = jsonld_products(raw)
     prices = visible_prices(raw)
     jsonld_prices = [offer for product in products for offer in product['offers']
@@ -474,6 +519,8 @@ def analyze(raw, status=None):
         'block': block,
         'ean': ean_values(raw),
         'analysis_skipped': None,
+        'aggregator': (aggregator_analysis(raw, host)
+                       if SITE_KIND.get(host) == 'aggregator' else None),
     }
 
 
@@ -487,6 +534,7 @@ def _counts(prices):
 def probe_url(url, rounds=ROUNDS, gap=GAP_BETWEEN_URLS, sleep=time.sleep):
     """Fetch several times to measure latency and stability, analyse the last body."""
     record = {'url': url, 'host': urlsplit(url).hostname,
+              'kind': SITE_KIND.get(urlsplit(url).hostname, 'store'),
               'policy': ALLOWED_HOSTS.get(urlsplit(url).hostname, {}),
               'attempts': [], 'error': None}
     last = None
@@ -511,7 +559,7 @@ def probe_url(url, rounds=ROUNDS, gap=GAP_BETWEEN_URLS, sleep=time.sleep):
     record['bytes'] = last.bytes if last else 0
     record['redirected'] = any(a['redirected'] for a in record['attempts'])
     if last and last.body:
-        record.update(analyze(last.body, last.status))
+        record.update(analyze(last.body, last.status, record['host']))
         record['snippet'] = _snippet(last.body)
     else:
         record['error'] = last.error if last else 'okunamadı'
@@ -605,6 +653,20 @@ def summary_markdown(records):
         for item in record['visible_prices'][:10]:
             mark = '✅' if item['text'] in matched else ''
             lines.append(f"| `{item.get('raw', item['text'])}` | {item['cents']} | {item['label']} | {mark} |")
+        lines.append('')
+    aggregators = [r for r in records if (r.get('aggregator') or None)]
+    if aggregators:
+        lines += ['## Toplayıcı siteler — mağaza dağılımı', '']
+        lines.append('| Host | Mağaza sayısı | Mağaza (fiyat adedi) | En ucuz ipucu | Tazelik |')
+        lines.append('|---|---|---|---|---|')
+        for record in aggregators:
+            agg = record['aggregator']
+            pairs = ', '.join(f'{k} ({v})' for k, v in
+                              list(agg['merchant_counts'].items())[:8]) or '—'
+            lines.append('| {} | {} | {} | {} | {} |'.format(
+                record.get('host', '?'), agg['distinct_merchant_logos'], pairs,
+                agg.get('min_price_hint') or '—',
+                ', '.join(agg['freshness_samples'][:4]) or '—'))
         lines.append('')
     lines += ['## Gömülü JSON (fiyat merdiveni 2. kademe)', '']
     lines.append('| Host | İşaretler | `price` alanı | Satıcı fiyatı |')

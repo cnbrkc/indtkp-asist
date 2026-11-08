@@ -118,3 +118,63 @@ Bu üçü bir sonraki küçük PR'da düzeltilecek; sonra **A yolu** (Hepsiburad
 | F6/F7: Trendyol | Coğrafya duvarı **doğrulandı** → Akakçe Trendyol satırı yedeği zaten planda ✅ |
 | F9: Amazon | Captcha **doğrulandı** → fiyat takibi yok; hatırlatıcı modu zaten planda ✅ |
 | 13.6 `min_gap` tablosu | Hepsiburada için geçerli; diğerleri **erişim** engeli yüzünden devre dışı |
+
+---
+
+## 9. Cimri bulgusu (2026-11-08, aynı gün) — asıl çıkış yolu
+
+Sen "cimri falan ekleriz" dedin; ölçtüm ve **haklısın**. Cimri, Akakçe'nin kör noktasını kapatıyor.
+
+### 9.1 Cimri ne veriyor (ölçüldü)
+`https://www.cimri.com/televizyonlar/en-ucuz-tcl-t6d-televizyon-fiyatlari,a2582673366`
+
+| Kanıt | Değer |
+|---|---|
+| Sayfa başlığı | "TCL T6D Televizyon Fiyatları" — kategori değil, **ürün sayfası** |
+| "26 Fiyat Arasında En Ucuz" | **29.999 TL** |
+| Mağaza dağılımı | **`Amazon (6)` `Hepsiburada (2)` `n11 (1)` `PttAVM (5)`** |
+| Her satırda mağaza adı + fiyat + **tazelik** | `Amazon.com.tr 29.999 TL` · `12 dk önce güncellendi`, `34 dk önce` |
+| Kargo bilgisi | `Ücretsiz Kargo` |
+| Kategori sayfasında mağaza filtresi | Hepsiburada, PttAVM, n11, idefix, **Amazon**, A101, **Mediamarkt**, Amazon-prime, Evkur, jebinde |
+
+### 9.2 Neden bu Akakçe'den farklı
+| Konu | Akakçe | Cimri |
+|---|---|---|
+| Amazon | **YOK** (65C7K'da 4 satıcı: n11, Pttavm, Hepsiburada, Pazarama) | **VAR** — `Amazon (6)`, Amazon.com.tr satırı + fiyat |
+| MediaMarkt | genelde yok | kategori filtresinde **var** |
+| Tazelik bilgisi | "Son güncelleme: 12 dakika önce" | "12 dk önce güncellendi" (eşdeğer) |
+| Mağaza başına fiyat | var | var |
+
+### 9.3 Cimri robots.txt (ölçüldü — izin durumu)
+- **İZİNLİ:** `/televizyonlar/...-fiyatlari,a<id>` ürün sayfaları, `/marka/...`, kategori sayfaları.
+- **YASAK:** `/api/`, `?q=` ve `/arama`, `?magaza=`, `/offer/`, `/click?`, `*sort=*`, `*filtre=*`,
+  `/sepet-karsilastirma`, `/market/api/graphql`.
+- **`Crawl-delay` yok.** AI botları için **özel yasak yok** (yalnız Semrush/MJ12/BLEX gibi SEO
+  botları ve Adsbot-Google için `Allow: /`).
+
+### 9.4 Yeni mimari önerisi (F2 yönü değişiyor)
+
+```
+[Akakçe ürün sayfası]      → mevcut hat, DEĞİŞMİYOR (5 dk, 30 ürün)
+[Cimri ürün sayfası]       → YENİ: mağaza bazlı fiyat + tazelik (Amazon dahil)  ← F2a
+[Hepsiburada ürün sayfası] → YENİ: doğrudan okuma (F1'de tek çalışan site)      ← F2b
+[Diğer 5 mağaza]           → 403; yalnız self-hosted runner ile (opsiyonel, sonra)
+```
+
+**Cimri = "en düşük fiyat" motorunun taşıyıcısı.** Senin istediğin "tüm satıcılarda en uygun
+fiyat, tek alarm" hedefi için gereken mağaza listesini **Cimri** veriyor; 5 mağazayı tek tek
+okumaya gerek kalmıyor. Akakçe + Cimri birlikte: iki bağımsız toplayıcı, biri Amazon'u da görüyor.
+
+### 9.5 Yeni doğrulama ihtiyacı (bu yüzden probe güncellendi)
+Cimri'ye GitHub Actions IP'sinden gerçekten erişilebiliyor mu, **ölçülmedi**. Benim
+sandbox'ımdan açıldı; Actions IP'sinden 403 olabilir. Bu yüzden probe'a **Cimri** eklendi:
+- `www.cimri.com` allowlist'e girdi (min_gap 10 sn, concurrency 1, tür: **aggregator**)
+- Yeni analiz: **mağaza logo satırları**, `Mağaza (N)` dağılımı, `N dk önce güncellendi` tazelik,
+  "En Ucuz" ipucu
+- Özet tabloya **"Toplayıcı siteler — mağaza dağılımı"** bölümü
+
+### 9.6 Karar
+1. Probe'u bir kez daha çalıştır; **`cimri.com` satırı okunabilir çıkarsa** → **F2 = Cimri adaptörü**
+   (Amazon dahil tüm mağazalar tek sayfada, tek istek).
+2. Cimri de 403 verirse → **Akakçe + Hepsiburada** ile devam; self-hosted runner opsiyonu masada.
+3. Tek mağaza (yalnız Hepsiburada) senaryosu **artık geçersiz** — senin dediğin gibi değmez.

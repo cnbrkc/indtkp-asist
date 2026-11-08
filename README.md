@@ -359,11 +359,12 @@ Fiyat kararı vermez, kayıt tutmaz.
 
 | Konu | Kural |
 |---|---|
-| İzinli host'lar | mediamarkt, teknosa, pazarama, n11, hepsiburada, trendyol, amazon (`.com.tr`) + referans için akakce |
+| İzinli host'lar | mediamarkt, teknosa, pazarama, n11, hepsiburada, trendyol, amazon (`.com.tr`) + referans için akakce + **toplayıcı: cimri** |
 | Reddedilen | `http`, listede olmayan host, `userinfo`, özel port, `localhost`, IP adresi |
 | Yönlendirme | **Reddedilir** (`NoRedirect`); takip edilmez |
 | Sınırlar | 3 MB gövde, 15 sn HTTP, tek `GET`, giriş/çerez yok |
 | Hız | URL başına 3 istek, aralarında en az 5 sn; host politikasındaki `min_gap` uygulanır |
+| Toplayıcı sayfalar | `cimri.com` ve `akakce.com` **mağaza bazlı** analiz edilir: mağaza logo satırları, `Mağaza (N)` dağılımı, `N dk önce güncellendi` tazelik |
 | Secret | **Yok** |
 
 **Nasıl çalıştırılır:** GitHub → Actions → **"Mağaza ölçümü (F1 probe)"** → *Run workflow*.
