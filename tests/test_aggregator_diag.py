@@ -43,10 +43,24 @@ class VerdictTests(unittest.TestCase):
         # Hiçbiri okunmadı ve hepsi 403 değil → karma, dürüstçe söylenir.
         self.assertIn('KARMA', diag.verdict(self.rows(403, None, 0, 500)))
 
-    def test_variant_set_covers_both_user_agents(self):
-        agents = {agent for _, agent, _ in diag.VARIANTS}
+    def test_variant_set_covers_both_user_agents_and_both_clients(self):
+        agents = {agent for _, _, agent, _ in diag.VARIANTS}
+        clients = {client for _, client, _, _ in diag.VARIANTS}
         self.assertEqual(agents, {diag.CURRENT_UA, diag.BROWSER_UA})
-        self.assertEqual(len(diag.VARIANTS), 4)
+        self.assertEqual(clients, {'urllib', 'curl'})
+        self.assertEqual(len(diag.VARIANTS), 6)
+
+    def test_client_difference_is_reported_as_such(self):
+        """curl okur, urllib 403 alırsa engel IP değil istemci parmak izidir."""
+        rows = [('1 urllib · mevcut UA', {'status': 403}),
+                ('2 urllib · tarayıcı UA', {'status': 403}),
+                ('3 urllib · tarayıcı UA + tam başlık', {'status': 403}),
+                ('4 urllib · mevcut UA + tam başlık', {'status': 403}),
+                ('5 curl · mevcut UA', {'status': 200}),
+                ('6 curl · tarayıcı UA + tam başlık', {'status': 200})]
+        text = diag.verdict(rows)
+        self.assertIn('İSTEMCİ FARKI', text)
+        self.assertIn('curl', text)
 
 
 class AttemptTests(unittest.TestCase):
@@ -75,3 +89,51 @@ class AttemptTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class AnnotateTests(unittest.TestCase):
+    """Log arşivi API'den okunamadığında sonuç annotation'dan görünebilmeli."""
+
+    def test_annotate_prints_a_warning_with_the_verdict(self):
+        import contextlib
+        import io
+        rows = [{'status': 403, 'ms': 140, 'bytes': 0}] * 6
+        buffer = io.StringIO()
+        with mock.patch.object(diag, 'attempt', side_effect=rows), \
+             mock.patch.object(diag, 'attempt_curl', side_effect=rows), \
+             mock.patch.object(diag.time, 'sleep'), \
+             contextlib.redirect_stdout(buffer):
+            diag.main(['--url', 'https://www.epey.com/televizyon/x.html', '--annotate'])
+        output = buffer.getvalue()
+        self.assertIn('::warning title=www.epey.com::', output)
+        self.assertIn('::notice title=', output)
+        self.assertIn('HTTP 403', output)
+        self.assertIn('IP', output)
+
+    def test_verdict_names_the_mixed_statuses_instead_of_hiding_them(self):
+        text = diag.verdict([('a', {'status': 403}), ('b', {'status': 500}),
+                             ('c', {'status': None}), ('d', {'status': 0})])
+        self.assertIn('KARMA', text)
+        self.assertIn('500', text)
+
+
+class CurlTests(unittest.TestCase):
+    def test_curl_never_follows_redirects(self):
+        """-L kullanılmamalı: yönlendirme takibi tracker kuralına da aykırı."""
+        import inspect
+        source = inspect.getsource(diag.attempt_curl)
+        self.assertNotIn("'-L'", source)
+        self.assertIn('--max-time', source)
+
+    def test_curl_missing_binary_is_reported_not_raised(self):
+        with mock.patch.object(diag.subprocess, 'run', side_effect=FileNotFoundError()):
+            row = diag.attempt_curl('https://www.epey.com/x.html', diag.CURRENT_UA, {})
+        self.assertIsNone(row['status'])
+        self.assertEqual(row['error'], 'FileNotFoundError')
+
+    def test_curl_parses_status_and_size(self):
+        fake = SimpleNamespace(returncode=0, stdout='403 0 0.12', stderr='')
+        with mock.patch.object(diag.subprocess, 'run', return_value=fake):
+            row = diag.attempt_curl('https://www.epey.com/x.html', diag.CURRENT_UA, {})
+        self.assertEqual(row['status'], 403)
+        self.assertEqual(row['bytes'], 0)

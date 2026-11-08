@@ -56,3 +56,36 @@ engelleniyor**. Bu, "siteyi bozduk" değil, "site bu adresi tanıyor" demek.
 
 Not: Akakçe hattı bu bulgudan **etkilenmedi** — Akakçe Actions'tan okunabiliyor (ölçüldü,
 200/200/200).
+
+---
+
+## Güncelleme 2 — 6 varyantlı teşhis (2026-11-08 16:33 koşusu)
+
+İkinci koşu (YAML düzeltildikten sonra) sonucu:
+
+| Site | HTTP | Kod | Süre |
+|---|---|---|---|
+| Cimri | 403/403/403 | `BLOCKED` | 260 ms |
+| Epey | 403/403/403 | `BLOCKED` | 154 ms |
+
+Mesaj artık doğru: *"sunucu bu bağlantıyı reddetti (HTTP 403)"* — "sayfa değişti" demiyor.
+
+### Kalan tek soru: IP mi, istemci parmak izi mi?
+
+Python/urllib'in TLS parmak izi bilinen bir WAF imzasıdır. Bu yüzden teşhis aracı artık
+**6 varyant** deniyor:
+
+| # | İstemci | Başlıklar |
+|---|---|---|
+| 1 | urllib | mevcut worker başlıkları |
+| 2 | urllib | tarayıcı UA |
+| 3 | urllib | tarayıcı UA + tam başlık seti |
+| 4 | urllib | mevcut UA + tam başlık seti |
+| 5 | **curl** | mevcut UA |
+| 6 | **curl** | tarayıcı UA + tam başlık seti |
+
+Karar mantığı:
+
+- curl 200, urllib 403 → **istemci parmak izi** → düzeltilebilir (worker curl'e geçer).
+- Hepsi 403 → **IP engeli** → bu makineden okunamaz; başlıkla/istemciyle aşılamaz.
+- Bazı urllib varyantları 200 → **başlık farkı** → tek satırlık düzeltme.

@@ -86,8 +86,20 @@ jobs:
                   if u.startswith('http')]
           print(' '.join(f'--url {u}' for u in urls))
           PY
-          xargs python -I tools/aggregator_diag.py < /tmp/diag_args.txt \
-              >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+          xargs python -I tools/aggregator_diag.py --annotate \
+              < /tmp/diag_args.txt >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+          # Özet tablosu check-run API'sinden de okunabilsin diye işaretle.
+          python -I tools/aggregator_diag.py --annotate --json \
+              $(cat /tmp/diag_args.txt) > /tmp/diag.json 2>/dev/null || true
+          python - <<'PY'
+          import json
+          try:
+              data = json.load(open('/tmp/diag.json'))
+          except Exception:
+              data = {'results': []}
+          for entry in data['results']:
+              print(f"::warning::{entry['url']} → {entry['verdict']}")
+          PY
 
       - name: Özet
         if: always()
