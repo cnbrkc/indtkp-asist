@@ -1,20 +1,22 @@
-# MAĞAZA TAKİP PLANI — FİNAL (v3 son)
+# MAĞAZA TAKİP PLANI — FİNAL (v4)
 
 Repo: `cnbrkc/indtkp-asist` · Dal: `arena/4f0b6386-indtkp-asist` · Tarih: 2026-11-08
-Bu belge **tek plan**. Bu sohbette üretilen diğer tüm plan/denetim dosyaları silindi;
-içlerindeki değerli bilgiler (ölçümler, kararlar, düzeltmeler) buraya taşındı.
+Bu belge **tek plan**. Önceki tüm plan/denetim dosyaları silindi; değerli bilgiler buraya taşındı.
+**v4 farkı:** (1) Akakçe bulma işi en sona alındı, (2) "tüm sitelerdeki en uygun fiyat, tek alarm"
+özelliği ayrı faz oldu, (3) derin GitHub taramasından gelen **gömülü JSON** yöntemleri eklendi.
 
 ---
 
 ## 0. Tek cümlede plan
 
-> **Akakçe hattına dokunmadan**, mağazaların kendi ürün sayfalarını okuyan **ikinci bir takip
-> hattı** kurulur. Linkleri **sen verirsin** (motor önce), sonra Akakçe'nin satıcı listesinden
-> **link önerisi** gelir (kolaylık sonra). Her adım testlerle kapanır, varsayılan **kapalı** başlar,
-> patlarsa Akakçe takibi çalışmaya devam eder.
+> Akakçe hattına dokunmadan, **her mağazanın kendi ürün sayfasını** okuyan ikinci bir hat
+> kurulur. Sen linkleri verirsin, bot o linkleri **aynı anda ve sürekli** izler, **sayfadaki
+> satıcıların en uygun fiyatını** bulur ve **tek alarmla** haber verir. Akakçe'den otomatik
+> bulma (eski F6/F8) **en sonda** — istenirse.
 
-**Sıra mantığı:** motor → bağlantı → genişleme → bulucu. Sebep ölçümle sabit: Akakçe'den
-otomatik link çıkarma ürüne göre 4/4 ile 10/16 arasında değişiyor; senin verdiğin link **%100**.
+**Senin son sözün:** "Şu an nasıl Akakçe linki takip ettirebiliyorsam, bu sitelerin linklerini
+kendim verdiğimde **tüm satıcılardaki en uygun fiyatı** sürekli takip edebileyim, hepsini aynı
+anda." → Planın çekirdeği bu. Akakçe bulma = kolaylık, sonra.
 
 ---
 
@@ -22,38 +24,41 @@ otomatik link çıkarma ürüne göre 4/4 ile 10/16 arasında değişiyor; senin
 
 ### 1.1 Dokunulmazlar
 - `product_tracker.py`, `akakce_worker.py`, `product_watches.json` → **DEĞİŞMEZ** (yalnız import).
-- `config.json`'a **yeni anahtar yok** (mevcut doğrulama bozulmasın).
-- `COMMAND_DESCRIPTIONS` / `HELP_TEXT` → yeni komutlar **EKLENMEZ**
+- `config.json`'a **yeni anahtar yok**. `COMMAND_DESCRIPTIONS`/`HELP_TEXT`'e **yeni komut yok**
   (`tests/test_bot.py:259` kanonik komut demetini birebir karşılaştırıyor).
 - Stdlib dışı bağımlılık yok. Fiyat geçmişi **commit edilmez** (repo public).
 - Yeni özellik **varsayılan KAPALI**. Yeni kodun hatası kanal dinlemeyi ve Akakçe takibini
   **asla** durdurmaz (`try/except` + log).
 
-### 1.2 C1–C7 okuma sözleşmeleri (Akakçe'den miras, her mağazada aynı)
+### 1.2 C1–C7 okuma sözleşmeleri
 - **C1 İzolasyon:** okuma ayrı süreçte (`-I`), sırlar miras alınmaz (yalnız `PATH/LANG/SYSTEMROOT`).
+  Not: izole modda `sys.path[0]` **stdlib zip** olur, script klasörü eklenmez (`-E -s` devrede) →
+  worker kendi klasörünü `sys.path.insert(0, ...)` ile ekler.
 - **C2 Kimliksiz tek istek:** giriş yok, çerez yok, oturum yok, **yönlendirme reddi**
   (`NoRedirect`), tek `GET`, 3 MB gövde / 15 sn HTTP / 20 sn süreç.
-- **C3 Yapısal veri önceliği:** JSON-LD (schema.org) birinci kaynak, anlamlı DOM ikinci.
-  Otomatik üretilen CSS sınıflarına güvenilmez.
+- **C3 Yapısal veri önceliği:** JSON-LD → **gömülü JSON** (`__NEXT_DATA__`,
+  `__PRODUCT_DETAIL_APP_INITIAL_STATE__`, `__INITIAL_STATE__`) → anlamlı DOM.
+  Otomatik üretilen CSS sınıf adlarına güvenilmez.
 - **C4 Çapraz doğrulama:** iki bağımsız kaynak tutmazsa okuma **başarısız** (fail-closed).
 - **C5 Fail-closed + nezaket:** hata/engelde bildirim yok; host bazlı min aralık; üstel geri çekilme.
 - **C6 Idempotent alarm:** `alert_price` ile tekrar bastırma; kalıcı yazım başarısızsa RAM'de geri al.
-- **C7 Test disiplini:** gerçek sayfadan fixture (sentetik değil) + kısmi/bozuk JSON-LD +
+- **C7 Test disiplini:** gerçek sayfadan fixture (sentetik değil) + kısmi/bozuk JSON +
   "okundu ama doğrulanamadı" senaryosu.
 
 ### 1.3 İş kararları (senin verdiğin)
 | Konu | Karar |
 |---|---|
-| Fiyat | **Liste + sepette birlikte okunur**, bildirimde ikisi yazılır; **alarm sepette fiyata göre** |
-| Sepette okunamazsa | Liste fiyatı + "(sepette fiyat okunamadı)" notu (sessizce değiştirme yok) |
-| Pazaryeri satıcısı | Sayfadaki satıcılar içinde **en düşük fiyat**; satıcı kilidi yok |
+| Fiyat | **Liste + sepette birlikte** okunur, bildirimde ikisi yazılır; **alarm sepette fiyata göre** |
+| Sepette okunamazsa | Liste fiyatı + "(sepette fiyat okunamadı)" — sessizce değiştirme yok |
+| **Satıcı** | **Sayfadaki satıcıların en düşük fiyatı.** Satıcı kilidi yok; bildirimde satıcı adı yazılır |
+| Birden çok mağaza | **Aynı ürün, tüm mağazalar, tek alarm** (en uygun fiyat) — bkz. F8 |
 | n11 / Pazarama `?magaza=` | **KORUNUR** (fiyat satıcıya bağlı; atmak yanlış satıcıyı takip ettirir) |
 | MediaMarkt / Teknosa `?shopId=` | **ATILIR** (robots'ta yasak; yalnız mağazanın kendi satıcısı) |
+| Trendyol `?merchantId=` | **KORUNUR** (satıcıyı belirler) |
 | Otomatik kabul | **Yok.** Bot aday gösterir, **sen onaylarsın** |
-| Kargo | Mağaza hattı **kargo hariç** okur; bildirimde "kargo hariç" ibaresi **zorunlu** |
-| Ürün kimliği | Akakçe ürün ID + seri kodu jetonu; GTIN **zorunlu değil** (Akakçe'de yok) |
-| Fiyat geçmişi | Tutulmaz (Akakçe kendi geçmişini/alarmını veriyor; repo public) |
-| Aynı ürün iki hatta | İki ayrı kayıt (şema sade kalsın) |
+| Kargo | Mağaza hattı **kargo hariç**; bildirimde "kargo hariç" ibaresi **zorunlu** |
+| Ürün kimliği | Akakçe ürün ID + seri kodu; **EAN/GTIN bonus** (MediaMarkt veriyor — F1'de ölçülür) |
+| Fiyat geçmişi | Tutulmaz (Akakçe kendi geçmişini veriyor; repo public) |
 | Akakçe sınırı | 30 ürün / 300 sn (mevcut, değişmez) |
 | Mağaza sınırı | 10 ürün / 900 sn taban, ±45 sn jitter, `HOST_GAP 20 sn` |
 
@@ -61,243 +66,215 @@ otomatik link çıkarma ürüne göre 4/4 ile 10/16 arasında değişiyor; senin
 
 ## 2. Mağaza × yetenek matrisi (ölçülmüş, 2026-11-08)
 
-| Mağaza | Doğrudan takip | Not (kanıt) |
-|---|---|---|
-| **MediaMarkt** | ✅ **Evet** | JSON-LD `offers.price` + görünen `₺89.999,–`; taksit `Aylık ₺22.499,75` ve `+18.000 puan` **aynı sayfada** (D6 tuzağı). `?brand=TCL` kategori sayfası robots'ta serbest → keşif kanalı |
-| **Teknosa** | ✅ Evet | `89.999 TL` + JSON-LD; `?shopId=` yasak → yalnız Teknosa'nın kendi satıcısı; fiyat gün içinde oynak |
-| **Hepsiburada** | ✅ Evet, ama riskli | `SEPETTE 63.121,83` + liste `66.444,03` birlikte geliyor. Akamai: datacenter IP'de 403/503 riski |
-| **n11** | ✅ Evet (`?magaza=` korunur) | `?magaza=hepsiphone` 49.750 ↔ `?magaza=markauygun` "SEPETTE 50.049,09" ↔ query'siz **fiyat yok** |
-| **Pazarama** | ✅ Evet | `15.499,00 TL` sunucu tarafında; robots `Allow: /*?magaza`; yapısal veri doğrulanmalı (probe) |
-| **Pttavm / idefix / Evkur** | 🟡 Sonra | Akakçe'de zaten listeleniyorlar; adaptör eklemek kolay ama öncelik değil |
-| **Trendyol** | ✅ **Evet — F7'de kesin** | Ürün sayfası sunucu tarafında fiyat **veriyor** (açık kaynak kanıtı: `class="prc-dsc"` fiyat, `class="pr-new-br"` başlık — ismailcakmak/e-commerce-price-tracker). Engel **IP/coğrafya duvarı**: `/en/select-country?cb=…`. Duvar tespit edilirse Akakçe Trendyol satırına düşülür |
-| **Amazon TR** | ✅ **Evet — F9'da kesin (korumalı)** | **Bugün ölçtüm: `.com.tr` ürün sayfası fiyat veriyor** (`İkinci El :53.256,04 TL`, alternatif `30.999,00 TL`). `robots.txt`: `User-agent: *` için `/dp/` **yasak değil**; ama ClaudeBot/GPTBot/Scrapy **ismen** `Disallow: /`. AI botu gibi davranmayacağız (düz UA), yine de risk var → **sıkı hız sınırı + kullanılmış/2. el filtresi + kill switch** |
+| Mağaza | Doğrudan takip | Fiyat kaynağı (öncelik sırası) | Not |
+|---|---|---|---|
+| **MediaMarkt** | ✅ | JSON-LD `offers.price` → `[data-testid="price-current"]` / `.price-box` | Taksit `₺22.499,75` ve `+18.000 puan` **aynı sayfada** (D6 tuzağı). `?brand=TCL` kategori sayfası robots'ta serbest. **EAN değeri sayfada var** (kaynak: `2scraper/mediamarkt-scraper`) |
+| **Teknosa** | ✅ | JSON-LD → görünen `89.999 TL` | `?shopId=` yasak; fiyat gün içinde oynak |
+| **Hepsiburada** | ✅ (riskli) | **JSON-LD → `__INITIAL_STATE__` → meta** | **Önemli:** `www.` **olmadan** + `Referer: https://hepsiburada.com/` Akamai korumasını atlatıyor (kaynak: `kaanvp/fiyat-takip`) → F2'de böyle uygulanacak. `SEPETTE` + liste birlikte geliyor |
+| **n11** | ✅ | **JSON-LD → gömülü varyant JSON → meta → CSS** | Gömülü JSON'da **satıcı başına fiyat** var: `"outOfStock":false … "price":"… TL"` (kaynak: `kaanvp/fiyat-takip`) → **en düşük satıcı buradan çıkar** |
+| **Pazarama** | ✅ | JSON-LD → `[data-testid="price-current"]` / `.price-current` | robots `Allow: /*?magaza` |
+| **Trendyol** | ✅ (duvar riski) | **`__PRODUCT_DETAIL_APP_INITIAL_STATE__` gömülü JSON** (`product.price.discountedPrice.value` / `sellingPrice.value`) → `__NEXT_DATA__` → JSON-LD → CSS | Coğrafya duvarı (`/en/select-country?cb=…`) görülürse Akakçe Trendyol satırına düşülür. Kaynak: `kaanvp/fiyat-takip`, `msakirc/kutai` |
+| **Amazon TR** | ✅ (korumalı) | `#corePrice_feature_div .a-offscreen` → `#corePriceDisplay…` → JSON-LD `offers.price` | `.com.tr` fiyat veriyor (bugün ölçtüm). **2. el tuzağı:** görünen fiyat "İkinci El" idi → yeni/2. el filtresi şart. robots: `User-agent: *` için `/dp/` serbest, AI botları ismen yasak |
+| Pttavm / idefix / Evkur | 🟡 Sonra | JSON-LD | Akakçe'de zaten listeliler; adaptör kolay ama öncelik değil |
 
-**Kritik gerçek:** TCL 65C7K'da Akakçe **"4 satıcı içinde kargo dahil en ucuz"** diyor →
+**Kritik kapsam gerçeği:** TCL 65C7K'da Akakçe **"4 satıcı içinde kargo dahil en ucuz"** diyor →
 n11, Pttavm, Hepsiburada, Pazarama. Trendyol/Amazon/idefix/Teknosa/MediaMarkt **o üründe yok**.
-Yani "Akakçe'den 8 mağaza linki" hayal; **4/8** gerçek. Ama senin verdiğin linkte **8/8** mümkün
-(Amazon hariç fiyat okuması).
+Yani "Akakçe'den 8 mağaza linki" 4/8 çıkar; ama **senin verdiğin linkte 8/8** mümkün.
 
 ---
 
-## 3. Yol haritası — 9 faz (hepsi kesin kapsamda)
+## 3. Yol haritası — 10 faz (Akakçe bulma en sonda)
 
 | Faz | Ad | Ne yapar | Telegram'da fark | Risk |
 |---|---|---|---|---|
-| **F1** | Probe | **7 mağaza** (Trendyol + Amazon dahil) + MediaMarkt `?brand=` kategori sayfası → **gerçek fixture** | yok | **sıfır** |
-| **F2** | Okuyucu | `store_worker.py`: Hepsiburada + MediaMarkt + Teknosa | yok | düşük |
-| **F3** | Takipçi | `store_tracker.py` + `store_watches.json` (boş dosya **commit'li**) | yok | orta |
+| **F1** | Probe | 7 mağazayı ölçer: JSON-LD, **gömülü JSON**, **kaç satıcı fiyatı var**, 2. el var mı → gerçek fixture | yok | **sıfır** |
+| **F2** | Okuyucu | `store_worker.py`: Hepsiburada (non-www+Referer), MediaMarkt, Teknosa. 4 kademeli fiyat merdiveni | yok | düşük |
+| **F3** | Takipçi | `store_tracker.py` + `store_watches.json` (boş dosya commit'li) | yok | orta |
 | **F4** | Bağlantı | `bot.py` ~20 satır | **LİNK YAPIŞTIR → TAKİP** | **yüksek** |
-| **F5** | Genişleme | n11 + Pazarama (`?magaza=` korunur, sepette fiyat, en düşük satıcı) | 5 mağaza | orta |
-| **F6** | Satıcı linkleri | `/magazatakipbul <akakçe linki>` → **satıcı linkleri listesi** | "bu üründeki linkler" | düşük |
-| **F7** | Trendyol (kesin) | Adaptör + coğrafya duvarı tespiti + Akakçe satırı yedeği | Trendyol **takip edilir** | orta |
-| **F8** | Çoklu seçim | `1,3,7` → sırayla hedef sor, `hepsi 55000` | 3 mağaza tek seferde | düşük |
-| **F9** | Amazon TR (kesin) | `.a-offscreen` fiyat + yeni/2. el filtresi + sıkı hız + kill switch | Amazon **takip edilir** (korumalı) | **orta-yüksek** |
+| **F5** | n11 + Pazarama | n11'de **satıcı başına fiyat** → en düşük satıcı; sepette fiyat | 5 mağaza | orta |
+| **F6** | Trendyol | Gömülü state + `__NEXT_DATA__`; duvar → Akakçe yedeği | Trendyol takipte | orta |
+| **F7** | Amazon TR | `.a-offscreen` + **yeni/2. el filtresi** + sıkı hız + kill switch | Amazon takipte | **orta-yüksek** |
+| **F8** | **En iyi fiyat motoru** | Aynı ürün N mağazada → **tek alarm, en ucuz mağaza+satıcı** | **"hepsini birden"** | orta |
+| **F9** | Akakçe satıcı linkleri | `/magazatakipbul <akakçe linki>` → satıcı linkleri listesi | kolaylık | düşük |
+| **F10** | Çoklu seçim | `1,3,7` → sırayla hedef, `hepsi 55000` | kolaylık | düşük |
 
 **Kural:** her faz **ayrı commit**, kendi testleriyle. Testler geçmeden sonraki faza geçilmez.
-**Bekleme yok** — "gün" ifadesi yok, fazlar sırayla tek akışta ilerler.
+**Bekleme yok** — fazlar sırayla tek akışta ilerler.
 
 ---
 
 ## 4. Faz faz detay
 
 ### F1 — Probe (ölçüm)
-**Yapılır:** `.github/workflows/store-probe.yml` (yalnız `workflow_dispatch`, `permissions: {}`,
-secret yok, Telegram yok) + `tools/store_probe.py` (tek dosya, stdlib).
+`.github/workflows/store-probe.yml` (yalnız `workflow_dispatch`, `permissions: {}`, secret yok,
+Telegram yok) + `tools/store_probe.py` (tek dosya, stdlib).
 **Güvenlik:** host allowlist (`www.mediamarkt.com.tr`, `www.teknosa.com`, `www.pazarama.com`,
-`www.n11.com`, `www.hepsiburada.com`, `www.trendyol.com`, `www.amazon.com.tr`) + **https zorunlu** + `NoRedirect`;
-allowlist dışı satır **reddedilir**. Siteler arası ≥5 sn, URL başına tek istek.
-**Çıktı (her URL için):** HTTP kodu, yönlendirme var mı, gövde boyutu, captcha/engel işareti,
-JSON-LD blok sayısı, Product sayısı, `offers.price` + `priceCurrency`, **görünen tüm fiyat
-adayları** (ana fiyat / taksit / puan / garanti) ve **hangisinin JSON-LD ile eşleştiği**.
-Ayrıca çıktı: `GITHUB_STEP_SUMMARY` tablosu + artifact (site başına ≤20 KB kırpılmış JSON-LD ve
-fiyat çevresi HTML). **Bu artifact F2 fixture'larının tek kaynağı.**
-**Kabul kriteri:** 7 site için tablo dolu. **Trendyol** satırı ya fiyat okumuş ya `country_wall`;
-**Amazon** satırı ya **yeni** fiyat okumuş ya `no_new_offer`/`blocked` — ikisi de kanıtlı.
-MediaMarkt `?brand=TCL` kategori sayfası da ölçülmüş. Trendyol/Amazon için **2. el ve
-taksit satırları ayrı ayrı** raporlanır (tuzağı görmek için).
+`www.n11.com`, `www.hepsiburada.com`, `www.trendyol.com`, `www.amazon.com.tr`) + **https zorunlu**
++ `NoRedirect`; allowlist dışı satır **reddedilir**. Siteler arası ≥5 sn, URL başına tek istek.
+**Her URL için çıktı:** HTTP, yönlendirme, boyut, captcha/engel işareti, **JSON-LD blok sayısı +
+`offers.price`/`priceCurrency`**, **gömülü JSON var mı** (`__NEXT_DATA__`,
+`__PRODUCT_DETAIL_APP_INITIAL_STATE__`, `__INITIAL_STATE__`, `"price":"… TL"` deseni),
+**gömülü JSON'dan çıkan satıcı sayısı + fiyat listesi**, görünen tüm fiyat adayları
+(ana fiyat / taksit / puan / garanti / **2. el**), hangisi JSON-LD ile eşleşiyor, **EAN var mı**.
+**Ek deneme:** Hepsiburada için `www.`li ve `www.`siz URL **ayrı ayrı** ölçülür (Akamai farkı).
+**Çıktı artefaktı:** `GITHUB_STEP_SUMMARY` tablosu + site başına ≤20 KB kırpılmış JSON/HTML →
+**F2/F5/F6/F7 fixture'larının tek kaynağı**.
+**Kabul:** 7 site tablosu dolu; Trendyol ya fiyat ya `country_wall`; Amazon ya **yeni** fiyat ya
+`no_new_offer`; **her satırda "kaç satıcı fiyatı bulundu" sayısı** yazılı.
 **Geri alma:** workflow dosyasını sil.
 
 ### F2 — Okuyucu (`store_worker.py`)
-**Yapılır:** `sys.path.insert(0, <kendi klasörü>)` (−I notu: izole modda `sys.path[0]` stdlib zip
-olur, script klasörü eklenmez; `-E -s` de devrede) → `akakce_worker`'dan `cents, target_cents,
-purchase_url, Scripts, NoRedirect, MAX_BODY` import.
-Registry `{host: adaptör}`; adaptör sözleşmesi: `QUERY = "drop"|"keep"`, `product_url(raw)`,
-`parse(raw_html)`, `verify(parsed)` (tutmazsa `ValueError`).
-**Başlangıç adaptörleri:** Hepsiburada, MediaMarkt (`/tr/product/_<slug>-<id>.html`),
-Teknosa (`/<slug>-p-<id>`).
-**verify (tek satıcılı):** JSON-LD `offers.price` **ve** sayfada görünen fiyat. Kural:
-**JSON-LD kuruş değeri ana fiyat bloğunda aynen geçmeli**; taksit (`22.499,75`), puan
-(`+18.000 puan`), ek garanti (`3.639 TL`), `4 x …` satırları **fiyat adayı sayılmaz**.
-Para birimi TRY, tek Product, stok var. Hepsiburada'da ek olarak liste ≥ sepette.
-**CLI:** `python -I store_worker.py <url>` → `{"ok":true,"result":…}` / `{"ok":false,…}`
-(akakce_worker ile aynı hata biçimi, iç ayrıntı sızdırmaz).
-**Test:** `tests/test_store_worker.py` + `tests/fixtures/stores/**` — **fixture F1 artifact'inden**;
-artifact yoksa faz **BLOKE**, sentetikle devam edilmez. Senaryolar: fiyat yok, iki Product, TRY
-değil, stok yok, JSON-LD ≠ görünen fiyat, **taksit/puan satırı fiyatla karışmıyor**, engel
-sayfası, güvensiz URL'ler (`http`, farklı host, userinfo, port, localhost, `host.evil.test`),
-query politikası (Teknosa `shopId` atılır, n11 `magaza` korunur).
+`sys.path.insert(0, <kendi klasörü>)` → `akakce_worker`'dan `cents, target_cents, purchase_url,
+Scripts, NoRedirect, MAX_BODY` import.
+Registry `{host: adaptör}`; sözleşme: `QUERY`, `product_url(raw)`, `parse(raw_html)`, `verify(parsed)`.
+**Fiyat merdiveni (her adaptörde aynı sıra):** ① JSON-LD `offers` ② gömülü JSON
+③ `data-testid`/anlamlı DOM ④ meta. **Satıcı listesi** çıkarılabiliyorsa (n11, Hepsiburada)
+`offers[]` içinde döndürülür, en düşüğü seçilir.
+**verify:** JSON-LD kuruş değeri **ana fiyat bloğunda aynen geçmeli**; taksit (`22.499,75`),
+puan (`+18.000 puan`), ek garanti (`3.639 TL`), `4 x …` **fiyat adayı değil**. Para birimi TRY,
+tek Product, stok var. Hepsiburada'da liste ≥ sepette.
+**CLI:** `python -I store_worker.py <url>` → `{"ok":true,"result":…}` / `{"ok":false,"reason":…}`.
+**Test:** `tests/test_store_worker.py` + `tests/fixtures/stores/**` (**F1 artefaktından**; yoksa
+faz **BLOKE**, sentetikle devam yok). Senaryolar: fiyat yok, iki Product, TRY değil, stok yok,
+JSON-LD ≠ görünen, **taksit/puan karışmıyor**, engel sayfası, güvensiz URL'ler (`http`, farklı
+host, userinfo, port, localhost, `host.evil.test`), query politikası.
 **Geri alma:** dosyayı sil.
 
 ### F3 — Takipçi (`store_tracker.py`) + başlangıç dosyası
-**Yapılır:** `store_watches.json` **bu fazda commit edilir**:
-`{"version":1,"enabled":false,"items":[]}` — yoksa `persist_products`'ın GitHub `GET`+`sha`
-adımı ilk kayıtta hep "Takip dosyasının GitHub sürümü okunamadı." verir.
+`store_watches.json` **bu fazda commit edilir**: `{"version":1,"enabled":false,"items":[]}`
+(yoksa `persist_products`'ın `GET`+`sha` adımı ilk kayıtta hep başarısız olur).
 `StoreTracker(path, api, persist, reader=read_store, *, owner_id, header_formatter)` —
-`product_tracker.py` örnek alınır, ona **bağlanılmaz**; `money`, `clean_title` import edilir.
-En fazla **10** ürün. Kayıt: `url, store, title, target, chat_id, alert_price`.
-**`handle(event, raw, *, existing_pending=False)`** imzası product_tracker ile aynı kural:
-`existing_pending and komut değilse → False`. Allowlist dışı link / bilinmeyen komut → `False`.
+`product_tracker.py` örnek alınır, **ona bağlanılmaz**; `money`, `clean_title` import edilir.
+En fazla 10 ürün. Kayıt: `url, store, title, target, chat_id, alert_price, group` (`group` F8'de).
+**`handle(event, raw, *, existing_pending=False)`** — `existing_pending and komut değilse → False`.
+Allowlist dışı link / bilinmeyen komut → `False`.
 **Komutlar:** `/magazatakip`, `/magazatakipac`, `/magazatakipkapat`, `/magazatakipler`,
 `/magazatakipsil N`, `/magazatakipiptal`, `/magazatakipyardim`.
-**Akış:** link kuyruğa (komut işleyicide **ağ beklemesi yok**) → hedef fiyat iste → kaydet.
-İdempotent alarm, kayıt başarısızsa RAM'de geri al, okuma hatası ≠ bildirim hatası,
-3 ardışık okuma hatasında tek uyarı, üstel geri çekilme.
-**Bildirim:** `build_header_line` başlığı + boş satır + `{Mağaza} Takip Bildirimi · kargo hariç`
-+ boş satır + ürün linki. Tek düz metin, link önizleme kapalı, 4096 UTF-16 kontrolü.
+**Akış:** link kuyruğa (komut işleyicide **ağ beklemesi yok**) → hedef fiyat → kaydet.
+İdempotent alarm, kayıt hatasında RAM'de geri al, okuma hatası ≠ bildirim hatası, 3 ardışık
+hatada tek uyarı, üstel geri çekilme.
+**Bildirim:** `build_header_line` + boş satır + `{Mağaza} Takip Bildirimi · kargo hariç` +
+boş satır + link. Tek düz metin, önizleme kapalı, 4096 UTF-16 kontrolü.
 **Test:** `tests/test_store_tracker.py` (TrackerTests deseni): kuyruk, taslak, alarm + bastırma,
-kayıt hatasında geri alma, bozuk dosya izolasyonu, hung reader yönlendirmeyi bloklamaz, iptal,
-10 ürün sınırı, kapalıyken okuma yok, `existing_pending` kuralı.
-**Geri alma:** dosyaları sil + `store_watches.json`'ı boşalt.
+geri alma, bozuk dosya izolasyonu, hung reader yönlendirmeyi bloklamaz, iptal, 10 sınırı,
+kapalıyken okuma yok, `existing_pending` kuralı.
 
 ### F4 — `bot.py` bağlantısı (en riskli, en küçük diff)
-**Yapılır:** `persist_products`'ın bulunduğu `try` bloğunda, mevcut tracker kurulumundan
-**sonra**, **kendi `try/except`'iyle** `StoreTracker(...)` kurulur (aynı `persist_products`,
-`owner_id`, `header_formatter`). Hata olursa **yalnız log**.
-**Yönlendirme (~7213, owner-only blok):** `pending_state = peek_pending(pending_key(event))`
-**bir kez** hesaplanır, **her iki takipçiye aynı `existing_pending`** geçirilir
-(`existing_pending=pending_state is not None`). Sıra: mağaza taslağı varsa ona → sonra
-`tracker.handle` → `handled` değilse `store_tracker.handle`.
-**Pending temizliği:** `handled` sonrası mevcut `stage == "webdetakip"` → `drop_pending` mantığı
-mağaza takipçisi handled olduğunda **da** çalışır (yoksa `/ekle` taslağı açık kalır).
-`/iptal` ve `/magazatakipiptal` için iptal mesajı. `private_tasks`'a `store_tracker.run()`.
-**Test:** Akakçe linki eskisi gibi `tracker`'a; mağaza linki `store_tracker`'a; bilinmeyen komut
-eskisi gibi; kurulum patlarsa tracker + kanal dinleme çalışıyor; iki taslak varken düz metin
-doğru yere; `/ekle` taslağı mağaza komutundan sonra açık kalmıyor.
-**Ön koşul kontrolü:** `handled=False` sonrası "bilinmeyen komut" cevabının bozulmadığı doğrulanır.
-**Geri alma:** tek commit revert → `bot.py` eski hâline döner.
+Mevcut tracker kurulumundan **sonra**, **kendi `try/except`'iyle** `StoreTracker(...)`.
+Hata olursa **yalnız log**.
+Yönlendirme (~7213, owner-only blok): `pending_state = peek_pending(pending_key(event))`
+**bir kez** hesaplanır, **her iki takipçiye aynı** `existing_pending` geçirilir. Sıra: mağaza
+taslağı → `tracker.handle` → `handled` değilse `store_tracker.handle`.
+**Pending temizliği:** `handled` sonrası `stage == "webdetakip"` → `drop_pending` mantığı mağaza
+takipçisi handled olduğunda **da** çalışır. `/iptal` + `/magazatakipiptal`. `private_tasks`'a
+`store_tracker.run()`.
+**Test:** Akakçe linki eskisi gibi; mağaza linki `store_tracker`'a; bilinmeyen komut eskisi gibi;
+kurulum patlarsa tracker + kanal dinleme çalışıyor; iki taslak varken düz metin doğru yere;
+`/ekle` taslağı açık kalmıyor. **Ön koşul:** `handled=False` sonrası "bilinmeyen komut" cevabı bozulmuyor.
 
 ### F5 — n11 + Pazarama
-`QUERY="keep"` (n11 `?magaza=`, Pazarama `?magaza`). n11'de **satıcı sabitlenir**; sayfadaki
-satıcılar içinde **en düşük fiyat** kuralı geçerli; bildirimde en düşük satıcının adı yazılır.
-`verify`: liste ≥ sepette, ikisi de > 0, aynı para birimi. Sepette yoksa liste +
+n11: **gömülü varyant JSON** → `"outOfStock":false … "price":"… TL"` deseni ile **satıcı başına
+fiyat**; en düşük satıcı seçilir, adı bildirime yazılır. `QUERY="keep"` (`?magaza=`).
+Pazarama: JSON-LD → `[data-testid="price-current"]` → `.price-current`/`.price-box`; `QUERY="keep"`.
+**verify:** liste ≥ sepette, ikisi de > 0, aynı para birimi; sepette yoksa liste +
 "(sepette fiyat okunamadı)".
-**Test:** fixture + query politikası + "sepette yok" senaryosu + en düşük satıcı seçimi.
+**Test:** fixture + query politikası + "sepette yok" + **en düşük satıcı seçimi** (iki farklı
+satıcı fiyatıyla).
 
-### F6 — `/magazatakipbul` (7. aşama: Akakçe'den satıcı linkleri)
-**Neden ayrı dosya:** `akakce_worker.parse_page` teklifleri `{price, seller}` olarak döndürüyor,
-`url` alanı atılıyor; `akakce_worker.py` değişmez olduğu için **yeni** `seller_links_worker.py`
-sayfayı **bir kez** indirir → (a) `akakce_worker.parse_page` çağırır (kanıtlı doğrulama bozulmaz),
-(b) kendi küçük JSON-LD yürüyücüsüyle `price + seller + url` çıkarır.
-**Ölçüm (kanıt):** TCL 65C7K → 4/4 teklif linkli; hava fritözü fixture'ı → JSON-LD 10/10,
-HTML listesi 16 teklif → **10/16**. Bu yüzden çıktıda **dürüst kapsam etiketi**: `4/4`, `10/16`.
-**Ekran:**
+### F6 — Trendyol
+**Fiyat merdiveni:** `window.__PRODUCT_DETAIL_APP_INITIAL_STATE__` gömülü JSON
+(regex: `window\.__PRODUCT_DETAIL_APP_INITIAL_STATE__\s*=\s*(\{.+?\});`, sonra
+`product.price.discountedPrice.value` → `sellingPrice.value`) → `__NEXT_DATA__` → JSON-LD → CSS.
+**Duvar tespiti:** final URL `select-country` içeriyorsa veya gövdede `Welcome to Trendyol` /
+`Please select your country` varsa → `ok:false, reason:"country_wall"`, **alarm yok**.
+**Otomatik yedek:** duvar sürerse Akakçe'nin **Trendyol satırı** kullanılır (15 dk gecikme).
+**Mesaj:** duvar sürerse "/magazatakipac Trendyol kapatıldı, Akakçe satırından devam" (sessiz düşüş yok).
+**Kabul:** F1'de Trendyol ya "fiyat okundu" ya `country_wall` — belirsizlik kabul değil.
+
+### F7 — Amazon TR (korumalı)
+**ASIN doğrulama:** `/dp/<ASIN>` veya `/gp/product/<ASIN>`; https, host `www.amazon.com.tr`,
+`NoRedirect`, tek `GET`, 3 MB.
+**Fiyat:** `#corePrice_feature_div .a-offscreen` → `#corePriceDisplay_desktop_feature_div` →
+JSON-LD; **aynı kuruşta** olmalı (C4).
+**🔴 Yeni/2. el filtresi (kritik):** yalnız **"Yeni"** fiyatı kabul. `İkinci El`, `Amazon Depo`,
+`Yenilenmiş`, `Kullanılmış`, `Yeni Gibi` etiketli fiyatlar **reddedilir**. Yeni yoksa
+`ok:false, reason:"no_new_offer"`, alarm yok. *(Bugün ölçtüğüm tek fiyat "İkinci El" idi — tuzak gerçek.)*
+**Koruma:** ürün başına **6 saatte 1** okuma, günde ≤6 istek; `403/503/CAPTCHA` → adaptör
+**kendini kapatır** (`enabled=false` + tek uyarı), diğerleri etkilenmez.
+**Yedek:** okunamazsa `🔔 Amazon: <ürün> — fiyat okunamadı (yalnız 2. el teklif var). Kontrol: <link>`
+
+### F8 — En iyi fiyat motoru (**senin çekirdek isteğin**)
+**Amaç:** Aynı ürünün N mağazadaki linkini ver → bot hepsini **aynı anda** izlesin,
+**en uygun fiyatı** bulsun, **tek alarm** göndersin.
+**Tasarım (yeni dosya `store_group.py`; `product_tracker.py`'ye dokunulmaz):**
+- `store_watches.json` item'larına `group` alanı eklenir (şema bizim dosyamız, `config.json` değil).
+  `{"url": ..., "store": "n11", "group": "tcl-65c7k", ...}`
+- Grup alarm kuralı: her turda grubun **tüm üyeleri** okunur → `min(price)` → koşul:
+  `min < target` **ve** `min < group_alert_price` → **tek bildirim**:
+  ```
+  ₺148.999 — TCL 65C7K Premium 4K Ultra HD 65" …
+  En uygun: n11 · satıcı: novvo · sepette 148.999,00 TL
+  Diğerleri: Hepsiburada 152.400 (Teknolojiankara) · Trendyol 155.000 (NOVVO) · Amazon okunamadı
+  Mağaza Takip Bildirimi · kargo hariç
+  https://www.n11.com/urun/…
+  ```
+- Tek mağaza okunamazsa **grup alarmı durmaz**; bildirimde "okunamadı" satırı görünür (fail-closed
+  yalnız o mağaza için; diğer mağazalar geçerli).
+- Aynı ürünün birden fazla linki **elle** gruplanır (`/magazatakipgrup <grup> <link>` ya da
+  `/magazatakip` sırasında "bu ürünün diğer mağaza linki var mı?" sorusu). Otomatik eşleştirme
+  **yok** (yanlış ürün riski); F9 geldikten sonra Akakçe ürün ID'si grup anahtarı olabilir.
+- **Senin kontrolün:** grup kurulurken bot her linki tek tek okur ve **onay ister**:
+  "3 link okundu, hepsi TCL 65C7K görünüyor — grup kurulsun mu?"
+- **Test:** 3 mağaza fixture'ı, en ucuz seçimi, bir mağaza `ok:false` iken alarmın yine gelmesi,
+  aynı fiyata ikinci alarm yok, 10 ürün/grup sınırı.
+
+### F9 — `/magazatakipbul` (Akakçe'den satıcı linkleri) — **kolaylık, sonda**
+`akakce_worker.parse_page` teklifleri `{price, seller}` döndürüyor, `url` **atılıyor**;
+`akakce_worker.py` değişmez → **yeni** `seller_links_worker.py` sayfayı **bir kez** indirir →
+(a) `parse_page` çağırır (kanıtlı doğrulama bozulmaz), (b) kendi JSON-LD yürüyücüsüyle
+`price + seller + url` çıkarır.
+**Ölçüm:** TCL 65C7K → **4/4** teklif linkli; fritöz fixture'ı → JSON-LD **10/10**, HTML listesi
+**10/16**. Çıktıda **dürüst kapsam etiketi** (`4/4`, `10/16`).
 ```
 Sen: /magazatakipbul https://www.akakce.com/televizyon/…-fiyati,1050078653.html
 Bot: TCL 65C7K … Akakçe'de 4 satıcı, 4'ünde de link bulundu:
-     1) n11         162.890,00 TL   lacasedegrup
-     2) Pttavm      163.333,33 TL   La casede tasarım
-     3) Hepsiburada 169.200,00 TL   lacase de
-     4) Pazarama    179.000,00 TL   LACASEDE GRUP
-     Trendyol / Amazon / idefix / Teknosa / MediaMarkt: Akakçe bu üründe listelemiyor.
-     Bunlarda varsa linki /magazatakip ile yapıştır.
-     Hangilerini takip edeyim? (1,2,3 — ya da "hepsi 150000")
+     1) n11 162.890,00 (lacasedegrup)  2) Pttavm 163.333,33  3) Hepsiburada 169.200,00  4) Pazarama 179.000,00
+     Trendyol/Amazon/idefix/Teknosa/MediaMarkt listelenmiyor — varsa linki /magazatakip ile yapıştır.
+     Hangilerini takip edeyim? (1,2,3)
 ```
-**Ayrıca keşif kanalı (B):** MediaMarkt `category/…?brand=TCL` sayfası (robots serbest) →
-"TCL 65 inc TV (9 ürün)" listesi; F1'de ölçüldü, F6'da ikinci kaynak olarak kullanılır.
-**Test:** fixture × 2 (65C7K satıcı listesi + gürültülü örnek), linki olmayan satır "link yok"
-etiketi, aynı satıcının farklı pazaryerleri uyarısı.
+**Ek keşif kanalı:** MediaMarkt `category/…?brand=TCL` (robots serbest) — F1'de ölçülür.
 
-### F7 — Trendyol (kesin dahil)
-**Ölçüm (2026-11-08, iki deneme):** ürün sayfası `/en/select-country?cb=…` sayfasına düştü —
-bu bir **IP/coğrafya duvarı** (çerez kapısı değil). Aynı sayfa Türkiye IP'sinden normal açılıyor.
-**Sunucu tarafında fiyat var** (açık kaynak kanıtı: Trendyol HTML'inde fiyat `class="prc-dsc"`,
-başlık `class="pr-new-br"` — `ismailcakmak/e-commerce-price-tracker`; ayrıca
-`data-testid="price"` / `price-view-discounted` — `furkandlkdr/telegram-trendyol-bot`).
-Trendyol fiyatı **JS ile sonradan basmıyor**, HTML'de geliyor.
-
-**Yapılacak (4 parça):**
-1. **Adaptör:** `store_worker` içinde `trendyol.py` eşdeğeri; `product_url` kuralı
-   `/…-p-<id>` + `QUERY="keep"` (`merchantId=` satıcıyı belirler — atılırsa başka satıcı).
-   Fiyat sırası: JSON-LD `offers.price` → yoksa `data-testid="price"` bloğu →
-   `prc-dsc` sınıfı. Doğrulama (C4): JSON-LD fiyatı ile görünen fiyat aynı kuruşta olmalı.
-2. **Duvar tespiti:** dönen sayfada `select-country` / `Welcome to Trendyol` varsa veya
-   final URL `select-country` içeriyorsa → `ok:false, reason:"country_wall"`. **Alarm yok.**
-3. **Otomatik yedek (fallback):** duvar varsa aynı ürünün **Akakçe Trendyol satırı**
-   kullanılır (`/magazatakipbul` listesinde `[Trendyol · Akakçe üzerinden]` etiketiyle).
-   Seçilirse Akakçe ürün linki takibe girer → **Trendyol fiyatı yine izlenir, 15 dk gecikmeyle.**
-4. **Kullanıcıya net mesaj:** duvar sürerse "/magazatakipac Trendyol kapatıldı, Akakçe
-   satırından devam" bilgisi (sessiz düşüş yok).
-
-**Kabul kriteri:** F1 probe'unda Trendyol satırı ya "fiyat okundu" ya da "country_wall" olarak
-**kanıtlı** görünür. İkisi de kabul; belirsizlik kabul değil.
-**Geri alma:** adaptörü sil; Akakçe satırı yedeği zaten çalışıyor.
-
-### F8 — Çoklu seçim kuyruğu (`1,3,7` / `hepsi 55000`)
-**Kanıt (kod):** `product_tracker.py:291` → `self.drafts[chat] = {...}` **tek yuva**, üzerine
-yazar; satır 300-306 `add` işi **tek ürün + tek hedef** alır. Yani "her seçim için
-`tracker.handle(url)` çağır" yöntemi önceki taslağı ezer → yalnız son seçim yaşar.
-**Çözüm:** yeni dosya kendi kuyruğunu tutar: `{'urls': [...], 'i': 0, 'titles': {...}}`.
-Hedef fiyat mesajında sırayla `tracker.handle(url, existing_pending=False)` +
-`tracker.handle("<hedef>")` çağrılır, `i` artar, "2/3 · 65C7L için hedef?" sorulur.
-`product_tracker.py`'ye **dokunulmaz**.
-**Hedef biçimleri:** `hepsi 55000` · `55000, 70000, 40000` · ürüne özel `65C6K: 55000`.
-**Yarıda kalırsa:** taslak daimi değil (yeniden başlatmada kaybolur) → "kalanları tekrar seç".
-Bu bilinçli: kalıcı yazmak `product_watches.json` şemasını bozardı.
-**Test:** 3 seçim + `hepsi 55000` → **3 kayıt**, 3 farklı hedef değil, tek oturum.
-
-### F9 — Amazon TR (kesin dahil, korumalı)
-**Ölçüm (2026-11-08):** `amazon.com.tr` ürün sayfası **fiyat veriyor**:
-`Satın alın İkinci El : 53.256,04 TL`, alternatif kutu `30.999,00 TL`,
-`Yeni & İkinci El Ürün (2) başlangıç fiyatı: 53.256,04 TL`, `Kargo BEDAVA`.
-Fiyat HTML'de `a-offscreen` sınıfında (açık kaynak kanıtı: `metehanulusoy/price-tracker-bot`
-`.a-price-whole`; `ismailcakmak` `a-offscreen`; `ismailcakmak` ayrıca TR siteleri için tek
-dosyalık basit ayrıştırma kullanıyor).
-**robots.txt (bugün okundu):** `User-agent: *` bloğunda `/dp/` **yasak değil**; yalnız
-`/gp/offer-listing`, `/gp/cart`, `/ap/signin` gibi yollar yasak. **Ama** ClaudeBot, GPTBot,
-ChatGPT-User, PerplexityBot, GrokBot, Scrapy, Copilot… **ismen `Disallow: /`.**
-**Karar:** AI botu gibi davranmayız (düz, dürüst UA); robots'un `*` kuralına uyarız.
-Yine de Amazon ToS otomatik erişimi sınırlıyor → **risk kabul edilerek** dahil edilir.
-
-**Yapılacak (5 parça):**
-1. **ASIN doğrulama:** `/dp/<ASIN>` veya `/gp/product/<ASIN>`; https, host `www.amazon.com.tr`,
-   `NoRedirect`, tek `GET`, 3 MB.
-2. **Fiyat kaynakları:** `#corePrice_feature_div .a-offscreen` → yoksa
-   `#corePriceDisplay_desktop_feature_div` → yoksa JSON-LD `offers.price`.
-   **Çapraz doğrulama (C4):** bulunan değerler aynı kuruşta olmalı; tutmazsa `ok:false`.
-3. **Yeni/kullanılmış ayrımı (kritik):** yalnız **"Yeni"** fiyatı kabul edilir.
-   `İkinci El`, `Amazon Depo`, `Yenilenmiş`, `Kullanılmış`, `Yeni Gibi` etiketli fiyatlar
-   **reddedilir** (bugünkü örnekte görünen tek fiyat "İkinci El" idi — tuzak gerçek).
-   Yeni fiyat yoksa `ok:false, reason:"no_new_offer"`, alarm yok.
-4. **Sıkı hız sınırı + kill switch:** ürün başına **6 saatte 1 okuma** (≈4/gün),
-   toplam Amazon isteği **günde ≤6**; `403/503/CAPTCHA` görülürse adaptör **kendini kapatır**
-   (`enabled=false` + tek uyarı), Akakçe ve diğer mağazalar etkilenmez.
-5. **Yedek:** Amazon'da yeni teklif yoksa/engel varsa bot sana şunu der:
-   `🔔 Amazon: TCL 65Q6C — fiyat okunamadı (yalnız 2. el teklif var). Kontrol: <link>`
-
-**Kabul kriteri:** Amazon satırı ya "yeni fiyat okundu" ya da
-`no_new_offer` / `blocked` olarak **kanıtlı** görünür; **asla** 2. el fiyatıyla alarm üretmez.
-**Geri alma:** adaptörü sil + `store_watches.json`'dan amazon kayıtlarını çıkar.
+### F10 — Çoklu seçim kuyruğu
+**Kanıt:** `product_tracker.py:291` `self.drafts[chat] = {...}` **tek yuva**, üzerine yazar;
+300-306 `add` işi **tek ürün + tek hedef**. "Her seçim için `tracker.handle(url)`" önceki taslağı ezer.
+**Çözüm:** yeni dosya kendi kuyruğunu tutar `{'urls': [...], 'i': 0}`; hedef mesajında sırayla
+`tracker.handle(url, existing_pending=False)` + `tracker.handle("<hedef>")`, `i` artar,
+"2/3 · 65C7L için hedef?" sorulur. Hedef biçimleri: `hepsi 55000`, `55000, 70000`, `65C6K: 55000`.
+**Test:** 3 seçim + `hepsi 55000` → **3 kayıt**.
 
 ---
 
-## 5. Ekranda ne görürsün (F4 sonrası, asıl hedef)
+## 5. Ekranda ne görürsün (F8 sonrası = asıl hedef)
 
 ```
 Sen: /magazatakip https://www.hepsiburada.com/tcl-65c7k-…-p-HBCV…
 Bot: ✅ Okundu: TCL 65C7K Premium 4K Ultra HD 65" 165 Ekran Mini LED TV
-     Hepsiburada · liste 169.200,00 TL · sepette 165.000,00 TL (kargo hariç)
-     Hangi fiyatın altına düşerse haber vereyim? (ör. 150000)   İptal: /magazatakipiptal
-Sen: 150000
-Bot: ✅ Takibe alındı (Hepsiburada, kargo hariç)
-     Hedef 150.000 TL · şu an sepette 165.000,00 TL
+     Hepsiburada · liste 169.200,00 TL · sepette 165.000,00 TL · satıcı: lacase de
+     Bu ürünün başka mağazada linki var mı? Varsa yapıştır, yoksa "yok" yaz. (kargo hariç)
+Sen: https://www.n11.com/urun/tcl-65c7k-…-103250733?magaza=lacasedegrup
+Bot: ✅ n11 · liste 162.890,00 TL · satıcı: lacasedegrup
+     Grup: tcl-65c7k (2 mağaza). Hangi fiyatın altına düşerse haber vereyim? (ör. 148000)
+Sen: 148000
+Bot: ✅ Takibe alındı · grup tcl-65c7k · 2 mağaza · hedef 148.000 TL
+     Şu an en uygun: n11 · lacasedegrup · 162.890,00 TL
 
-… 15 dk sonra …
-Bot: ₺149.499 — TCL 65C7K Premium 4K Ultra HD 65" …
-     Liste 169.200,00 TL · Sepette 149.499,00 TL
-     Hepsiburada Takip Bildirimi · kargo hariç
-     https://www.hepsiburada.com/tcl-65c7k-…-p-HBCV…
+… 15 dk sonra, n11 düştü …
+Bot: ₺147.499 — TCL 65C7K Premium 4K Ultra HD 65" …
+     En uygun: n11 · satıcı lacasedegrup · sepette 147.499,00 TL
+     Diğerleri: Hepsiburada 165.000 (sepette) · Trendyol okunamadı (coğrafya duvarı)
+     Mağaza Takip Bildirimi · kargo hariç
+     https://www.n11.com/urun/…
 ```
-Desteklenmeyen/okunamayan mağaza **sessizce yutulmaz**, açıkça söylenir.
 
 ---
 
@@ -305,136 +282,136 @@ Desteklenmeyen/okunamayan mağaza **sessizce yutulmaz**, açıkça söylenir.
 
 | Risk | Etki | Önlem |
 |---|---|---|
-| `bot.py` değişikliği Akakçe takibini bozar | **yüksek** | Ayrı `try/except`, Akakçe yönlendirmesi **değişmez**, F4 testlerinde "Akakçe linki eskisi gibi" maddesi |
-| Hepsiburada Akamai 403/503 | orta | 3 ardışık hatada tek uyarı + üstel geri çekilme; alarm yok (fail-closed) |
-| Mağaza sayfası yapısı değişir | orta | C4 çapraz doğrulama: tutmazsa "okuma başarısız", yanlış fiyat **gösterilmez** |
-| Taksit/puan fiyat sanılır | **yüksek** | JSON-LD kuruş değeri ana blokta aynen geçmeli (MediaMarkt'ta gerçek tuzak: 22.499,75) |
-| n11'de yanlış satıcı | orta | `?magaza=` **korunur** |
-| Akakçe'nin listelemediği mağaza | düşük | Senin verdiğin link + F6 dürüst kapsam etiketi (`4/4`, `10/16`) |
-| Trendyol coğrafya duvarı (Actions IP'si) | orta | Duvar tespiti → **Akakçe Trendyol satırı** otomatik yedeğe düşer (15 dk gecikme), alarm yok |
-| Amazon 2. el fiyatını yeni fiyat sanmak | **yüksek** | `İkinci El/Amazon Depo/Yenilenmiş/Yeni Gibi` etiketli fiyat **reddedilir**; yeni teklif yoksa alarm yok |
-| Amazon CAPTCHA/403 (ToS + AI bot yasağı) | **yüksek** | Ürün başına 6 saatte 1, günde ≤6 istek; engelde adaptör **kendini kapatır**, tek uyarı |
-| Public repo'da fiyat geçmişi | orta | Geçmiş commit **edilmez**; `store_watches.json` yalnız hedef+url |
-| Actions maliyeti | düşük | Repo **public** → standart runner dakikaları ücretsiz; probe yalnız elle |
-| Test tabanı kayar | orta | Taban **904 test OK**; her fazda sayı düşerse faz kapanmaz |
+| `bot.py` değişikliği Akakçe takibini bozar | **yüksek** | Ayrı `try/except`, Akakçe yönlendirmesi değişmez, F4 testinde "Akakçe linki eskisi gibi" maddesi |
+| Hepsiburada Akamai 403/503 | orta | `www.`siz URL + `Referer`; 3 ardışık hatada tek uyarı; üstel geri çekilme |
+| Mağaza sayfası yapısı değişir | orta | C4 → tutmazsa "okuma başarısız", yanlış fiyat gösterilmez |
+| Taksit/puan fiyat sanılır | **yüksek** | JSON-LD kuruş değeri ana blokta aynen geçmeli (gerçek tuzak: 22.499,75) |
+| Amazon 2. el fiyatını yeni sanmak | **yüksek** | `İkinci El/Amazon Depo/Yenilenmiş/Yeni Gibi` reddedilir |
+| Amazon CAPTCHA/403 | **yüksek** | 6 saatte 1, günde ≤6; engelde adaptör kendini kapatır |
+| Trendyol coğrafya duvarı | orta | Duvar tespiti → Akakçe Trendyol satırı yedeği |
+| n11'de yanlış satıcı | orta | `?magaza=` korunur; gömülü JSON'dan satıcı başına fiyat |
+| Grup yanlış eşleşme (farklı ürün) | orta | Otomatik eşleştirme yok; 3 link okunup **onay** istenir |
+| Public repo'da fiyat geçmişi | orta | Geçmiş commit edilmez |
+| Actions maliyeti | düşük | Repo public → standart runner ücretsiz; probe yalnız elle |
+| Test tabanı kayar | orta | Taban **904 test OK**; her fazda düşerse faz kapanmaz |
 
 ---
 
-## 7. Test disiplini (her fazda aynı)
+## 7. Test disiplini
 
 ```
 /tmp/venv/bin/python -m unittest discover -s tests
 ```
-(Bu ortamda `telethon` gerekiyor; sistem python'unda yok → `/tmp/venv` `--system-site-packages`.)
-- Bugünkü taban: **904 test OK**.
-- Faz başında ve sonunda koşulur. **Sayı düşerse veya hata çıkarsa sonraki faza geçilmez.**
-- Her faz kendi test dosyasını ekler: `test_store_worker.py`, `test_store_tracker.py`,
-  `test_store_links.py`, `test_find_queue.py` + `tests/fixtures/stores/**` (gerçek sayfadan).
+(Bu ortamda `telethon` gerekiyor; sistem python'unda yok → `/tmp/venv --system-site-packages`.)
+Taban: **904 test OK**. Faz başında ve sonunda koşulur; sayı düşerse sonraki faza geçilmez.
+Yeni testler: `test_store_worker.py`, `test_store_tracker.py`, `test_store_group.py`,
+`test_store_links.py`, `test_find_queue.py` + `tests/fixtures/stores/**` (gerçek sayfadan).
 
 ---
 
 ## 8. Geri alma (her faz için)
 
 1. O fazın **tek commit**'ini revert et.
-2. Yeni dosyalar silinir (`store_worker.py`, `store_tracker.py`, `seller_links_worker.py`…).
+2. Yeni dosyalar silinir (`store_worker.py`, `store_tracker.py`, `store_group.py`,
+   `seller_links_worker.py`…).
 3. `store_watches.json` → `{"version":1,"enabled":false,"items":[]}` → takip durur.
-4. Akakçe hattı hiçbir fazda etkilenmez (dosyalarına dokunulmuyor).
+4. Akakçe hattı hiçbir fazda etkilenmez.
 
 ---
 
-## 9. Claude'a not (kopyala-yapıştır)
+## 9. Derin tarama — ne bulundu, ne alınacak (2026-11-08)
+
+**Aranan:** GitHub repo araması + kod araması (17 sorgu): `trendyol/n11/hepsiburada/pazarama/
+mediamarkt/teknosa + scraper`, `turkish ecommerce scraper`, `price tracker turkey telegram`,
+`json-ld product extractor`, `__NEXT_DATA__ trendyol`, `__INITIAL_STATE__ hepsiburada`,
+`botasaurus`, `scrapling`, `curl_cffi`, `self-hosted price monitor`, `akakce`.
+
+| Kaynak | Ne alıyoruz | Durum |
+|---|---|---|
+| **`kaanvp/fiyat-takip`** (en değerli) | **20+ TR mağaza için ayrı ayrıştırıcı**: hepsiburada, n11, pazarama, trendyol, mediamarkt, teknosa… | 4 kademeli fiyat merdiveni, **Hepsiburada non-www+Referer**, **n11 varyant JSON'undan satıcı başına fiyat**, **Trendyol `__PRODUCT_DETAIL_APP_INITIAL_STATE__`** → plana işlendi |
+| **`msakirc/kutai`** | Trendyol ürün sayfalarında **`__NEXT_DATA__` önce**, sonra yapısal veri; `public.trendyol.com` API'sinin 2026-03'te DNS sorunu yaşadığı notu | Alındı. **Resmî olmayan API kullanılmayacak** (senin kuralın) |
+| `ismailcakmak/e-commerce-price-tracker` | Trendyol `prc-dsc`/`pr-new-br`, Amazon `a-offscreen` | Yedek seçici |
+| `furkandlkdr/telegram-trendyol-bot` | `data-testid="price"` + `price-view-discounted`; "Sepete Ekle" ile stok kontrolü | Yedek seçici + stok kuralı |
+| `2scraper/mediamarkt-scraper` | MediaMarkt'ta **EAN + 30 günlük dip fiyat** alanları | **F1'de ölçülecek**; EAN çıkarsa gruplama anahtarı olur (F8) |
+| `nsozturk/akakce-mcp` | Akakçe için MCP sunucusu + `API_REFERENCE.md` + `llms.txt` | **F9** için referans (kod alınmayacak) |
+| `clucraft/PriceGhost` (1.1k★) | Self-hosted fiyat takip mimarisi | Mimari fikir (kayıt modeli, bildirim) |
+| `D4Vinci/Scrapling` (99k★) | Anti-bot fetch katmanı, TLS parmak izi | **Reddedildi** — bağımlılık; stdlib kuralını bozar |
+| `lexiforest/curl_cffi` (6.8k★) | Chrome TLS/HTTP2 taklidi | **Reddedildi** — bağımlılık. Yalnız "Trendyol duvarı aşılamazsa son çare" olarak not edildi, plana girmedi |
+| `omkarcloud/botasaurus` (5.8k★) | Anti-detect tarayıcı çerçevesi | **Reddedildi** — tarayıcı gerekir |
+| `metehanulusoy/price-tracker-bot` | Amazon `.a-price-whole`, Playwright | Seçici alındı, **Playwright reddedildi** |
+| `omkarcloud/trendyol-scraper` | RapidAPI ücretli servis | **Reddedildi** — proxy/3. taraf |
+| `piloterr`, `luminati/ Bright Data` | Ticari scraping API'leri | **Reddedildi** — 3. taraf/proxy |
+
+**Yasal/etik çizgi:** hiçbir depodan kod kopyalanmadı (lisans riski yok). Yalnız
+"**hangi HTML sınıfı / hangi gömülü JSON alanı fiyat taşıyor**" bilgisi alındı; kod kendi
+C1–C7 sözleşmelerimizle sıfırdan yazılacak. Resmî olmayan site API'leri (`public.trendyol.com`,
+`discovery-web-*`) **kullanılmayacak**. Tarayıcı (Playwright/Selenium) **kullanılmayacak**.
+
+---
+
+## 10. Claude'a not (kopyala-yapıştır)
 
 ```
-FINAL PLAN v3 — onaylandı. Aşağıdaki 9 faz sırayla, her faz ayrı commit + test kapısı (taban 904 OK).
+FINAL PLAN v4 — onaylandı. Sıra: F1 probe → F2 store_worker(HB+MediaMarkt+Teknosa)
+→ F3 store_tracker+store_watches.json → F4 bot.py → F5 n11+Pazarama → F6 Trendyol
+→ F7 Amazon → F8 EN İYİ FİYAT MOTORU (grup) → F9 /magazatakipbul → F10 çoklu seçim.
+Her faz ayrı commit; test kapısı taban 904 OK.
+
 Dokunulmazlar: product_tracker.py, akakce_worker.py, product_watches.json, config.json,
-COMMAND_DESCRIPTIONS/HELP_TEXT. C1–C7 aynen korunur.
+COMMAND_DESCRIPTIONS/HELP_TEXT. C1–C7 aynen.
 
-Sıra: F1 probe → F2 store_worker(HB+MM+Teknosa) → F3 store_tracker+store_watches.json
-→ F4 bot.py → F5 n11+Pazarama → F6 /magazatakipbul (satıcı linkleri) → F7 Trendyol
-→ F8 çoklu seçim kuyruğu → F9 (opsiyonel) Amazon hatırlatıcı.
-
-Trendyol: doğrudan okunamıyor (ülke seçim sayfası: /en/select-country?cb=…; çerez yasak).
-  Yapılacak: (1) store_worker'da reason:"country_wall", (2) kullanıcıya net mesaj + Akakçe
-  yönlendirmesi, (3) Akakçe'nin Trendyol satırı /magazatakipbul listesinde
-  "[Trendyol · Akakçe üzerinden]" etiketiyle → seçilirse Akakçe ürün linki takibe girer.
-Trendyol (revize — ÖLÇÜLDÜ): ürün sayfası sunucu tarafında fiyat VERİYOR (fiyat class="prc-dsc",
-  başlık class="pr-new-br"; ayrıca data-testid="price"/price-view-discounted). Engel IP/coğrafya
-  duvarı: /en/select-country?cb=… F7 planı: adaptör (+QUERY="keep", merchantId korunur) +
-  duvar tespiti (reason:"country_wall") + otomatik yedek Akakçe Trendyol satırı +
-  kullanıcıya net mesaj. Trendyol ARTIK KESİN kapsamda.
-
-Amazon TR (revize — ÖLÇÜLDÜ): amazon.com.tr ürün sayfası fiyat veriyor
-  (İkinci El :53.256,04 TL, alternatif 30.999,00 TL). robots: User-agent * için /dp/ yasak değil;
-  ClaudeBot/GPTBot/Scrapy ismen Disallow: /. AI botu gibi davranmayacağız (düz UA), * kuralına
-  uyacağız. F9 planı: ASIN doğrulama + #corePrice_feature_div .a-offscreen → corePriceDisplay →
-  JSON-LD offers.price (aynı kuruşta) + YENİ/KULLANILMIŞ FİLTRESİ (İkinci El, Amazon Depo,
-  Yenilenmiş, Yeni Gibi → reddet; yeni yoksa ok:false reason:"no_new_offer") + ürün başına
-  6 saatte 1 okuma, günde ≤6 istek + 403/503/CAPTCHA'da adaptör kendini kapatır.
-  Amazon ARTIK KESİN kapsamda (korumalı).
-
-Düzeltmeler (v1'den, hepsi hâlâ geçerli):
-D1 -I gerekçesi: izole modda sys.path[0] stdlib zip olur; -E -s de devrede → worker kendi
-   klasörünü sys.path.insert(0, ...) ile ekler.
-D2 QUERY adaptör başına: Teknosa/MediaMarkt "drop", n11/Pazarama "keep" (?magaza).
-D3 store_watches.json repoda yok → F3'te {"version":1,"enabled":false,"items":[]} commit edilir.
+D1 -I: izole modda sys.path[0] stdlib zip olur, -E -s devrede → worker kendi klasörünü
+   sys.path.insert(0, ...) ile ekler.
+D2 QUERY adaptör başına: Teknosa/MediaMarkt "drop", n11/Pazarama/Trendyol "keep".
+D3 store_watches.json repoda yok → F3'te {"version":1,"enabled":false,"items":[]} commit.
 D4 handle(event, raw, *, existing_pending=False); handled sonrası stage=="webdetakip"
    → drop_pending mağaza takipçisi için de çalışır.
-D5 /magazatakip* ve /webtakipbul COMMAND_DESCRIPTIONS/HELP_TEXT'e EKLENMEZ
-   (test_bot.py:259 kanonik demeti birebir karşılaştırıyor).
-D6 verify: JSON-LD offers.price'ın kuruş değeri ana fiyat bloğunda aynen geçmeli; taksit
-   (22.499,75), puan (+18.000), ek garanti (3.639 TL), "4 x …" satırları fiyat adayı değil.
-D7 store_probe.py: host allowlist + https zorunlu + NoRedirect, allowlist dışı satır reddedilir.
+D5 /magazatakip*, /magazatakipbul COMMAND_DESCRIPTIONS/HELP_TEXT'e EKLENMEZ.
+D6 verify: JSON-LD kuruş değeri ana fiyat bloğunda aynen geçmeli; taksit (22.499,75),
+   puan (+18.000), ek garanti (3.639 TL), "4 x …" fiyat adayı değil.
+D7 store_probe.py: host allowlist (7 host) + https + NoRedirect; allowlist dışı reddedilir.
 D8 Her fazda README: komutlar, açma/kapama, "kargo hariç", geri alma.
-D9 Kapsam gerçeği: Akakçe 65C7K'da yalnız 4 satıcı (n11, Pttavm, Hepsiburada, Pazarama);
-   Trendyol/Amazon/idefix/Teknosa/MediaMarkt yok. Adaptörler "taze + yedek" değer katar.
+D9 Kapsam: Akakçe 65C7K'da yalnız 4 satıcı (n11, Pttavm, Hepsiburada, Pazarama).
 
-Ek düzeltmeler:
-N1 Çoklu seçim: product_tracker.py:291 self.drafts[chat] TEK yuva, 300-306 tek ürün+tek hedef.
-   F8'de kendi kuyruğu tutulacak, product_tracker.py'ye dokunulmayacak.
-N2 /magazatakipbul: akakce_worker.parse_page url alanını ATIYOR ({price,seller}).
-   akakce_worker.py değişmez → yeni seller_links_worker.py: sayfayı 1 kez indir,
-   parse_page'i çağır + kendi JSON-LD yürüyücüsüyle price+seller+url çıkar.
-   Kapsam etiketi dürüst: 65C7K 4/4, fritöz fixture 10/16.
-N3 F6/F8 yönlendirmesinde existing_pending şartı açıkça uygulanır (ayar taslağı varken
-   /magazatakipbul araya girmez).
-N4 "28/28 TV kabul" yalnız televizyon/tcl-65-inc.html fixture'ı için; ?q= fixture'ında askı
-   aparatı reddedilmeli (iki ayrı test).
-N5 Aday satırı: "1) 65C6K · 60.990,24 TL · 28 satıcı" + ad 45 karaktere kırpılır.
-N6 verify: liste ve sepette ikisi de > 0, aynı para birimi; sepette yoksa liste +
-   "(sepette fiyat okunamadı)".
+YENİ — derin tarama bulguları (plana işlendi):
+E1 Fiyat merdiveni her adaptörde: JSON-LD → GÖMÜLÜ JSON → data-testid/DOM → meta.
+E2 Hepsiburada: www. OLMADAN url + Referer: https://hepsiburada.com/ → Akamai daha az engelliyor
+   (kaynak: kaanvp/fiyat-takip). F1'de iki URL ayrı ayrı ölçülecek.
+E3 n11: gömülü varyant JSON'unda "outOfStock":false … "price":"… TL" deseni → SATICI BAŞINA
+   fiyat; en düşük satıcı buradan seçilir, adı bildirime yazılır.
+E4 Trendyol: window.__PRODUCT_DETAIL_APP_INITIAL_STATE__ gömülü JSON
+   (product.price.discountedPrice.value / sellingPrice.value), sonra __NEXT_DATA__, sonra JSON-LD.
+   Duvar tespiti: select-country / "Welcome to Trendyol" → reason:"country_wall" + Akakçe yedeği.
+E5 Amazon: #corePrice_feature_div .a-offscreen → #corePriceDisplay… → JSON-LD; YENİ/2.EL FİLTRESİ
+   (İkinci El, Amazon Depo, Yenilenmiş, Yeni Gibi → reddet); 6 saatte 1; engelde kendini kapatır.
+E6 F8 grup motoru: store_watches.json item'larına "group" alanı; grup min fiyatı → TEK alarm;
+   bir mağaza okunamazsa grup alarmı durmaz, "okunamadı" satırı görünür. Otomatik eşleştirme YOK,
+   grup kurulurken her link okunup onay istenir.
+E7 MediaMarkt EAN alanı F1'de ölçülecek; çıkarsa grup anahtarı olarak kullanılabilir.
+
+Reddedilenler: Playwright/Selenium (bağımlılık), curl_cffi/Scrapling/Botasaurus (bağımlılık),
+public.trendyol.com ve discovery-web-* resmî olmayan API'ler, RapidAPI/Bright Data/proxy.
 ```
 
 ---
 
-## 9b. Açık kaynak kaynakçası (bu plana girenler)
-
-| Depo | Ne aldık | Uyum |
-|---|---|---|
-| `ismailcakmak/e-commerce-price-tracker` | Trendyol fiyat `class="prc-dsc"`, başlık `pr-new-br`; Amazon `a-offscreen`; TR siteleri için basit tek dosya yaklaşımı | Fikir/ayrıştırma kaynağı — kod **kopyalanmadı**, seçici bilgisi doğrulama olarak kullanıldı |
-| `furkandlkdr/telegram-trendyol-bot` | `data-testid="price"` + `price-view-discounted` sırası; stok için "Sepete Ekle" kontrolü | Aynı: seçici bilgisi |
-| `metehanulusoy/price-tracker-bot` | Amazon `.a-price-whole`; **Playwright ile JS render** yaklaşımı | **Reddedildi** — tarayıcı bağımlılığı stdlib kuralına aykırı, ağır, izolasyonu bozar |
-| `omkarcloud/trendyol-scraper` | (RapidAPI üzerinden ücretli 3. taraf servis) | **Reddedildi** — proxy/3. taraf kapalı |
-
-**Sonuç:** hiçbir depodan kod alınmadı (lisans/itibar riski yok); yalnız **hangi HTML
-sınıflarının fiyat taşıdığı** bilgisi alındı ve kendi C1–C7 sözleşmelerimizle yeniden yazılacak.
-Playwright/Selenium tabanlı çözümler kural dışı olduğu için kullanılmıyor.
-
-## 10. Komut listesi (yeni, hiçbiri yardım menüsüne eklenmez)
+## 11. Komut listesi (yeni, hiçbiri yardım menüsüne eklenmez)
 
 | Komut | İş |
 |---|---|
-| `/magazatakip <link>` | Mağaza linkini takibe al (hedef fiyat sorar) |
+| `/magazatakip <link>` | Mağaza linkini takibe al (hedef fiyat sorar; başka mağaza linki eklemeyi önerir) |
+| `/magazatakipgrup <grup> <link>` | Linki var olan gruba ekle (F8) |
 | `/magazatakipac` · `/magazatakipkapat` | Mağaza hattını aç / kapat (varsayılan **kapalı**) |
-| `/magazatakipler` | Takip listesi + sağlık |
+| `/magazatakipler` | Takip listesi + grup bazlı en uygun fiyatlar |
 | `/magazatakipsil N` | N. kaydı sil |
 | `/magazatakipiptal` | Taslağı iptal |
 | `/magazatakipyardim` | Kendi kısa yardımı |
-| `/magazatakipbul <akakçe linki>` | **Akakçe ürünündeki satıcı linklerini listele** (F6) |
-| `/magazatakipamazon <link>` | Amazon hatırlatıcı (F9, opsiyonel) |
+| `/magazatakipbul <akakçe linki>` | Akakçe ürünündeki satıcı linklerini listele (F9) |
 
 ---
 
-## 11. Onay
+## 12. Onay
 
-**"F1'e başla"** → probeyi yazarım, testleri koştururum (**904 + yeni**), sonucu raporlarım
-(değişen dosyalar, test sonucu, geri alma), sonra F2'ye geçerim. Arada bekleme yok; tek kapı test.
+**"F1'e başla"** → probeyi yazarım (7 mağaza, host allowlist, `NoRedirect`, gömülü JSON ölçümü),
+testleri koştururum (**904 + yeni**), sonucu raporlarım (değişen dosyalar, test sonucu, geri alma),
+sonra F2'ye geçerim. Arada bekleme yok; tek kapı test.
