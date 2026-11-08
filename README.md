@@ -1445,7 +1445,13 @@ TLS yığını) — **hepsi 403**. Yani engel istek içeriğinden bağımsız, *
 aşılamaz. Aynı linkler farklı ağdan açılıyor → engel **veri merkezi
 IP** kaynaklı, ayrıştırıcı hatası değil. Bu yüzden Cimri/Epey linki **kuyruğa alınmıyor**; bot anında doğru sebebi yazıyor:
 *"Epey okunamadı: sunucu bu bağlantıyı reddetti (HTTP 403). Sayfa değişmedi; site veri merkezi
-IP'lerini engelliyor."* Ayrıntı ve seçenekler: `docs/aggregator-403-bulgusu.md`.
+IP'lerini engelliyor."*
+
+**Çözüm (B yolu, ücretsiz):** Okuma işini kendi ağına taşıyan `yerel_okuyucu.py` var.
+Bilgisayarında `python yerel_okuyucu.py --watch product_watches.json` çalıştırır, ürettiği
+`aggregator_feed.json` dosyasını depoya koyarsın; bot yalnızca **dosyayı** okur, ağa hiç
+çıkmaz → Telegram bildirimleri etkilenmez (ölçüm: dosya okuma 0,014 ms). Kurulum:
+`docs/cimri-epey-yerel-okuyucu.md`.
 Akakçe hattı bu engelden **etkilenmez**.
 
 Güvenlik kuralı: sayfanın yapısal fiyatı (JSON-LD) ile sayfada görünen mağaza

@@ -5547,6 +5547,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 store.path.with_name("product_watches.json"), private_api, persist_products,
                 owner_id=SELF_ID,
                 header_formatter=lambda cents, title: build_header_line(header_price_text(cents / 100), title),
+                # B yolu: Cimri/Epey, kullanıcının kendi ağında çalışan
+                # yerel_okuyucu.py'nin bıraktığı dosyadan okunur (ağa çıkılmaz).
+                feed_path=store.path.with_name("aggregator_feed.json"),
             )
         except Exception:
             log.exception("Ürün takibi başlatılamadı; kanal dinleme devam ediyor.")

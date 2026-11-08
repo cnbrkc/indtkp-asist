@@ -74,6 +74,12 @@ HOST_GAP = 10
 # / kullanıcı makinesi üzerinden okuma için geçerli ve platforma göre düzeltilir.
 PLATFORM_AGGREGATOR_BLOCKED = frozenset({'cimri', 'epey'})
 
+# --- B yolu: yerel okuyucu besini ("feed") ---------------------------------
+# yerel_okuyucu.py kullanıcının kendi ağından okur ve bu dosyayı üretir.
+# Bot dosyayı okur, AĞA HİÇ ÇIKMAZ: Telegram bildirimleri bu yüzden yavaşlamaz.
+FEED_FILENAME = 'aggregator_feed.json'
+FEED_STALE_SECONDS = 6 * 3600      # bundan eski veri fiyat olarak gösterilmez
+
 SITE_POLICY = {
     # Akakçe: 30 ürün × 10 sn = 300 sn => bugünkü döngü tam dolu. Bu yüzden
     # tek ürünü hızlandırmak EK yük getirmez, sadece 30 üründe eski hâline döner.
@@ -226,6 +232,53 @@ def notification_text(result, tracked_url, header_formatter=None):
     return '\n\n'.join(blocks)
 
 
+def load_feed(path):
+    """Yerel okuyucunun bıraktığı veriyi oku. Yoksa/bozuksa boş sözlük."""
+    try:
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get('version') != 1:
+        return {}
+    items = data.get('items')
+    return items if isinstance(items, dict) else {}
+
+
+def feed_entry(feed, url, now=None):
+    """Feed'deki kaydı doğrula; kullanılabilirse sade sonuç döndür.
+
+    Fail-closed: doğrulanmamış, eski veya fiyatı geçersiz kayıt **kullanılmaz**.
+    """
+    entry = (feed or {}).get(url)
+    if not isinstance(entry, dict) or entry.get('verified') is not True:
+        return None
+    if type(entry.get('price')) is not int or entry['price'] <= 0:
+        return None
+    read_at = entry.get('read_at')
+    if type(read_at) is not int:
+        return None
+    now = time.time() if now is None else now
+    if now - read_at > FEED_STALE_SECONDS:
+        return None
+    price = entry['price']
+    offers = []
+    if isinstance(entry.get('seller'), str) and entry['seller']:
+        offers.append({'seller': entry['seller'], 'price': price})
+    return {
+        'title': clean_title(entry.get('title') or '(başlık yok)'),
+        'price': price,
+        'currency': 'TRY',
+        'store': aggregator_site(url) or 'Cimri',
+        'seller': entry.get('seller'),
+        'offers': offers,
+        'offer_count': entry.get('offer_count') or len(offers),
+        'price_source': 'local_feed',
+        'jsonld_verified': True,
+        'read_at': read_at,
+        'url': url,
+    }
+
+
 def load_state(path):
     if not path.exists():
         return {'version': 1, 'enabled': False, 'items': []}
@@ -267,6 +320,9 @@ READ_FAILURES = {
     'NETWORK': 'bağlantı kurulamadı (ağ hatası).',
     'TIMEOUT': 'site zamanında yanıt vermedi.',
     'PARSE': 'sayfa indi ama fiyat doğrulanamadı; ayrıştırıcı uyumsuz olabilir.',
+    'STALE_FEED': 'bu site veri merkezi IP\'sini engelliyor (HTTP 403). Yerel okuyucu '
+                  'verisi yok veya 6 saatten eski. Çözüm: bilgisayarında '
+                  '`python yerel_okuyucu.py --watch product_watches.json` çalıştır.',
 }
 
 
@@ -324,8 +380,11 @@ async def read_product(url):
 
 
 class ProductTracker:
-    def __init__(self, path, api, persist, reader=read_product, *, owner_id=None, header_formatter=None):
+    def __init__(self, path, api, persist, reader=read_product, *, owner_id=None,
+                 header_formatter=None, feed_path=None):
         self.path, self.api, self.persist, self.reader = Path(path), api, persist, reader
+        # Besin dosyası: varsa ve tazeyse Cimri/Epey oradan okunur (ağa çıkılmaz).
+        self.feed_path = Path(feed_path) if feed_path else Path(path).with_name(FEED_FILENAME)
         self.owner_id = owner_id
         self.header_formatter = header_formatter
         self.queue = asyncio.Queue(maxsize=32)
@@ -421,11 +480,13 @@ class ProductTracker:
             return False
         # Bu platformdan okunamadığı ÖLÇÜLMÜŞ siteler için kuyruğa hiç atmayız:
         # anında, doğru sebeple cevap veririz. Sessiz yutma yok, yanlış teşhis yok.
-        if is_link and site_key(raw) in PLATFORM_AGGREGATOR_BLOCKED:
+        if (is_link and site_key(raw) in PLATFORM_AGGREGATOR_BLOCKED
+                and feed_entry(load_feed(self.feed_path),
+                                          normalize_product_url(raw)) is None):
             site = aggregator_site(raw)
-            await event.reply(read_failure_text(site, {'code': 'BLOCKED', 'http_status': 403})
-                              + f"\n\n{site} linki kaydedilmedi; bu hâliyle takip edilemez. "
-                              'Akakçe linki kullanabilirsin. Ayrıntı: docs/aggregator-403-bulgusu.md')
+            await event.reply(read_failure_text(site, {'code': 'STALE_FEED', 'http_status': 403})
+                              + f"\n\n{site} linki kaydedilmedi. "
+                              'Akakçe linki her zaman kullanabilirsin.')
             return True
         if command == '/webtakip':
             text, keyboard = tracking_menu(self.state['enabled'])
@@ -476,6 +537,16 @@ class ProductTracker:
 
     async def fetch(self, url):
         key = site_key(url)
+        if key in PLATFORM_AGGREGATOR_BLOCKED:
+            # B yolu: ağa çıkmadan, yerel okuyucunun bıraktığı taze veriyi kullan.
+            # Dosya okumak milisaniye sürer; Telegram döngüsü hiç beklemez.
+            entry = feed_entry(load_feed(self.feed_path), url)
+            if entry is None:
+                # Taze veri yok: dürüst hata. Kuyruğa/ağa çıkmıyoruz.
+                raise ValueError(read_failure_text(
+                    aggregator_site(url),
+                    {'code': 'STALE_FEED', 'http_status': 403}))
+            return entry
         await asyncio.sleep(max(0, self.next_site.get(key, 0.0) - time.monotonic()))
         bucket = self.buckets.get(key) or {}
         started = time.monotonic()          # bekleme DEĞİL, yalnız istek süresi

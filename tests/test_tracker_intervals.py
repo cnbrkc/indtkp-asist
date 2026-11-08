@@ -169,7 +169,11 @@ class TrackerIntervalTests(unittest.IsolatedAsyncioTestCase):
             path.write_text(__import__('json').dumps(data))
             return True, 'test'
 
-        self.tracker = ProductTracker(self.path, SimpleNamespace(call=call), persist, reader)
+        # Cimri/Epey artık ağdan değil yerel okuyucu besininden okunuyor (B yolu).
+        self.feed = Path(self.tmp.name) / pt.FEED_FILENAME
+        self.write_feed(EPEY.format(n=1), CIMRI.format(n=1))
+        self.tracker = ProductTracker(self.path, SimpleNamespace(call=call), persist, reader,
+                                      feed_path=self.feed)
         self.replies = []
 
         async def reply(text):
@@ -180,6 +184,13 @@ class TrackerIntervalTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         self.tmp.cleanup()
+
+    def write_feed(self, *urls, price=600_000):
+        import json
+        items = {url: {'title': 'Örnek', 'price': price, 'seller': 'x', 'offer_count': 1,
+                       'verified': True, 'read_at': int(time.time())} for url in urls}
+        self.feed.write_text(json.dumps({'version': 1, 'updated_at': int(time.time()),
+                                         'items': items}), encoding='utf-8')
 
     async def test_first_check_uses_the_site_interval_not_five_minutes(self):
         self.tracker.state['items'] = [item(EPEY.format(n=1), minutes=5)]
@@ -234,6 +245,8 @@ class TrackerIntervalTests(unittest.IsolatedAsyncioTestCase):
     async def test_failure_relaxes_the_site_gap(self):
         self.tracker.state['items'] = [item(EPEY.format(n=1))]
         self.tracker.rebuild_buckets()
+        # Besini bayatlat: okuma başarısız olsun (B yolunda taze veri yok = hata).
+        self.write_feed()          # boş besin
 
         async def broken(url):
             raise ValueError('blocked')

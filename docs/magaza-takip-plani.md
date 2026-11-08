@@ -881,3 +881,31 @@ linki kuyruğa girmiyor, kullanıcı anında doğru sebebi görüyor. Akakçe ha
 
 **Kural hatırlatması:** proxy, çerez/oturum, CAPTCHA çözen araç yok. Yani bu engel
 "aşılacak" bir engel değil; ya kabul edilir ya da okuma yolu değiştirilir. Karar kullanıcıda.
+
+### 17.1 B yolu — yerel okuyucu (2026-11-08, kullanıcı kararı)
+
+Kullanıcı: *"B yolunu da sonuna kadar zorlayalım. Para vermek istemiyorum… Tek sorun şu benim
+telegram indirim bildirimlerimi geciktirip yavaşlatmasın."*
+
+**Denenen ve elenen yollar (ücretsiz olanlar):**
+
+| Aday | Sonuç |
+|---|---|
+| `r.jina.ai` (ücretsiz okuma servisi) | ❌ 403 — Cloudflare, servisin IP'sini de engelliyor |
+| Google Translate proxy (`*.translate.goog`) | ❌ "Just a moment…" (Cloudflare challenge) |
+| allorigins / codetabs / corsproxy.io / cors.lol / cors.workers.dev | ❌ 500 / 522 / API anahtarı istiyor / hız sınırı |
+| Wayback Machine (canlı kayıt zorlama) | ❌ "Job failed"; mevcut kopya **Eylül 2025** (fiyat takibi için ölü) |
+| Arama motoru önbelleği | ❌ önbellek kaldırıldı; fiyat da taşımıyor |
+
+Yani **ücretsiz üçüncü taraf proxy yolu kapalı**. Çalışan tek biçim: okumayı
+**kullanıcının kendi ağına** taşımak.
+
+**Uygulama:** `yerel_okuyucu.py` (yeni, tek dosya, standart kütüphane, pip yok) kullanıcının
+ağında Cimri/Epey'i okur → `aggregator_feed.json`. Bot bu dosyayı okur, **ağa çıkmaz**.
+
+- Tazelik sınırı **6 saat**; eski veri fiyat olarak gösterilmez (fail-closed).
+- Doğrulama değişmedi: JSON-LD == mağaza satırlarının en düşüğü (aynı kuruş).
+- Telegram etkisi **ölçüldü**: besin okuma ort. 0,014 ms / en kötü 0,07 ms; tam `check()` 1,22 ms.
+  Olay döngüsünü bloklamadığı testle kilitli.
+- İstekler arası 45 sn, tur arası 10 dk (siteyi yormamak için).
+- Kurulum belgesi: `docs/cimri-epey-yerel-okuyucu.md`.

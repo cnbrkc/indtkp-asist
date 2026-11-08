@@ -160,7 +160,15 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
             path.write_text(json.dumps(data))
             return True, 'test'
 
-        self.tracker = ProductTracker(self.path, SimpleNamespace(call=call), persist, reader)
+        self.feed = Path(self.tmp.name) / pt.FEED_FILENAME
+        self.feed.write_text(json.dumps({'version': 1, 'updated_at': 1, 'items': {
+            EPEY: {'title': 'TCL 65C6K', 'price': 6_092_775, 'seller': 'Trendyol',
+                   'offer_count': 5, 'verified': True, 'read_at': int(__import__('time').time())},
+            CIMRI: {'title': 'TCL T6D', 'price': 2_999_900, 'seller': 'Amazon-prime',
+                    'offer_count': 3, 'verified': True, 'read_at': int(__import__('time').time())},
+        }}), encoding='utf-8')
+        self.tracker = ProductTracker(self.path, SimpleNamespace(call=call), persist, reader,
+                                      feed_path=self.feed)
         self.replies = []
 
         async def reply(text):
@@ -171,22 +179,21 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.tmp.cleanup()
 
-    async def test_off_by_default_still_answers_with_the_real_reason(self):
-        """2026-11-08: Cimri/Epey bu platformdan okunamıyor; 'kapalı' demek yanıltıcı."""
+    async def test_off_by_default_refuses_before_anything_else(self):
         await self.tracker.handle(self.event, CIMRI)
         self.assertTrue(self.tracker.queue.empty())
-        self.assertIn('403', self.replies[-1])
+        self.assertIn('kapalı', self.replies[-1].lower())
 
-    async def test_cimri_link_is_refused_without_reaching_the_network(self):
+    async def test_cimri_link_goes_to_the_feed_not_the_network(self):
+        """B yolu: besin varsa link kabul edilir, ağa hiç çıkılmaz."""
         self.tracker.state['enabled'] = True
 
         async def fail_if_called(url):
-            raise AssertionError('Cimri bu platformda okunamıyor; ağa çıkılmamalı')
+            raise AssertionError('Cimri ağdan okunmamalı; besin kullanılmalı')
 
         self.tracker.reader = fail_if_called
         self.assertTrue(await self.tracker.handle(self.event, CIMRI + '?magaza=Amazon'))
-        self.assertTrue(self.tracker.queue.empty())
-        self.assertIn('Cimri okunamadı', self.replies[-1])
+        self.assertEqual(self.tracker.queue.get_nowait()[0], 'link')
 
     async def test_add_stores_kind_and_site(self):
         await self.tracker.job('link', 123, EPEY)
