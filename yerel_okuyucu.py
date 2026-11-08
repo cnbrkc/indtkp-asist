@@ -27,6 +27,11 @@ Sürekli (kendi bilgisayarında açık bırak):
 
     python yerel_okuyucu.py --watch product_watches.json
 
+Modemde / sunucuda, besini kendiliğinden depoya gönder (bilgisayar kapalı olabilir):
+
+    GITHUB_TOKEN=... python yerel_okuyucu.py --watch product_watches.json \
+        --push https://github.com/<kullanici>/<depo>.git --push-path aggregator_feed.json
+
 Çıktı dosyası `aggregator_feed.json` (varsayılan):
 
     {"version": 1, "updated_at": 1762..., "items": {
@@ -45,6 +50,8 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -150,14 +157,103 @@ def run_once(urls, feed_path, *, gap=45.0, verbose=True):
     return results
 
 
-def watch(path, feed_path, *, gap=45.0, period=600.0):
-    print(f'İzleme başladı: {path} → {feed_path} '
+def push_token():
+    """Depoya yazma token'ı. Yoksa boş dize (çağıran dürüstçe durur)."""
+    for name in ('GITHUB_TOKEN', 'FEED_PUSH_TOKEN', 'GH_TOKEN'):
+        value = os.environ.get(name, '').strip()
+        if value:
+            return value
+    return ''
+
+
+def parse_repo(url):
+    """https://github.com/<kullanici>/<depo>.git adresinden (kullanıcı, depo) çıkar."""
+    text = (url or '').strip()
+    for prefix in ('https://github.com/', 'http://github.com/', 'git@github.com:'):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    else:
+        raise ValueError('--push adresi github.com/<kullanici>/<depo>.git biçiminde olmalı')
+    text = text[:-4] if text.endswith('.git') else text
+    parts = [part for part in text.split('/') if part]
+    if len(parts) != 2:
+        raise ValueError('--push adresinde kullanıcı ve depo adı olmalı')
+    return parts[0], parts[1]
+
+
+def push_feed(repo_url, feed_path, *, path='aggregator_feed.json', branch='main'):
+    """Üretilen besini depoya işle: (durum, ayrıntı). Asla istisna fırlatmaz.
+
+    Neden git değil: modemde git kurulu olmayabilir ve token'ı .git/config'e
+    yazmak istemiyoruz. GitHub Contents API tek bir HTTPS çağrısıdır; bu
+    yüzden yalnız standart kütüphane yeter (Entware'de bağımlılık yok).
+
+    Durumlar: pushed | unchanged | no-token | error
+    """
+    import base64
+
+    token = push_token()
+    if not token:
+        return 'no-token', 'GITHUB_TOKEN yok'
+    try:
+        owner, repo = parse_repo(repo_url)
+        content = Path(feed_path).read_bytes()
+    except (ValueError, OSError) as exc:
+        return 'error', str(exc)[:120]
+
+    api = (f'https://api.github.com/repos/{owner}/{repo}/contents/'
+           f'{urllib.parse.quote(path)}')
+    headers = {'Authorization': f'Bearer {token}',
+               'Accept': 'application/vnd.github+json',
+               'X-GitHub-Api-Version': '2022-11-28',
+               'User-Agent': 'indtkp-asist-yerel-okuyucu'}
+
+    sha = ''
+    try:
+        request = urllib.request.Request(f'{api}?ref={branch}', headers=headers)
+        with urllib.request.urlopen(request, timeout=30) as response:
+            sha = json.loads(response.read().decode('utf-8')).get('sha', '')
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:                      # 404 = dosya henüz yok, normal
+            return 'error', f'okuma {exc.code}'
+    except (urllib.error.URLError, OSError) as exc:
+        return 'error', f'ağ: {str(exc)[:90]}'
+
+    payload = {'message': 'feed: yerel okuyucu güncellemesi',
+               'content': base64.b64encode(content).decode('ascii'),
+               'branch': branch}
+    if sha:
+        payload['sha'] = sha
+    data = json.dumps(payload).encode('utf-8')
+    try:
+        request = urllib.request.Request(api, data=data, headers=headers, method='PUT')
+        with urllib.request.urlopen(request, timeout=45) as response:
+            body = json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as exc:
+        # 409 = aynı içerik/çakışma: veri zaten orada, hata değil.
+        return ('unchanged' if exc.code in (409, 422) else 'error',
+                f'yazma {exc.code}')
+    except (urllib.error.URLError, OSError) as exc:
+        return 'error', f'ağ: {str(exc)[:90]}'
+    commit = (body.get('commit') or {}).get('sha', '')[:7]
+    return 'pushed', commit or 'tamam'
+
+
+def watch(path, feed_path, *, gap=45.0, period=600.0,
+          push=None, push_path='aggregator_feed.json', push_branch='main'):
+    suffix = f' → depo:{push_path}@{push_branch}' if push else ''
+    print(f'İzleme başladı: {path} → {feed_path}{suffix} '
           f'(her {int(period)} sn, istekler arası {int(gap)} sn)')
     while True:
         urls = urls_from_watches(path)
         if urls:
             print(f'[{time.strftime("%H:%M:%S")}] {len(urls)} ürün okunuyor')
             run_once(urls, feed_path, gap=gap)
+            if push:
+                state, detail = push_feed(push, feed_path, path=push_path,
+                                          branch=push_branch)
+                print(f'  depo: {state} ({detail})')
         else:
             print(f'[{time.strftime("%H:%M:%S")}] takip dosyasında Cimri/Epey ürünü yok')
         time.sleep(period)
@@ -176,18 +272,39 @@ def main(argv=None):
                         help='İstekler arası bekleme, sn (varsayılan 45)')
     parser.add_argument('--period', type=float, default=600.0,
                         help='--watch tur aralığı, sn (varsayılan 600 = 10 dk)')
+    parser.add_argument('--push', metavar='https://github.com/<kullanici>/<depo>.git',
+                        help='Besini bu depoya işle (GitHub Contents API; token '
+                             'GITHUB_TOKEN ortam değişkeninde). Modem/sunucu senaryosu.')
+    parser.add_argument('--push-path', default='aggregator_feed.json',
+                        help='Depoda besinin yolu (varsayılan aggregator_feed.json)')
+    parser.add_argument('--push-branch', default='main',
+                        help='Hangi dala işlenecek (varsayılan main)')
     args = parser.parse_args(argv)
+
+    if args.push:
+        try:
+            repo = parse_repo(args.push)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if not push_token():
+            parser.error('--push için GITHUB_TOKEN ortam değişkeni gerekli')
 
     if args.watch:
         try:
             watch(args.watch, args.out, gap=max(15.0, args.gap),
-                  period=max(120.0, args.period))
+                  period=max(120.0, args.period),
+                  push=args.push, push_path=args.push_path,
+                  push_branch=args.push_branch)
         except KeyboardInterrupt:
             print('\nDurduruldu. Son yazılan veri korunuyor.')
         return 0
     if not args.url:
         parser.error('--url veya --watch gerekli')
     results = run_once(args.url, args.out, gap=max(0.0, args.gap))
+    if args.push:
+        state, detail = push_feed(args.push, args.out, path=args.push_path,
+                                  branch=args.push_branch)
+        print(f'  depo: {state} ({detail})')
     ok = sum(1 for state, _ in results.values() if state == 'ok')
     print(f'\n{ok}/{len(results)} okundu → {args.out}')
     return 0 if ok else 1

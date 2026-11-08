@@ -91,3 +91,14 @@ Dosya yoksa veya 6 saatten eskiyse bot dürüst davranır:
 - Bilgisayar kapalıysa veri tazelenmez → bot "veri eski" der, **uydurmaz**.
 - Elle yükleme yapıyorsan veri en fazla o kadar taze olur.
 - Fiyat doğrulaması yine iki kapıdan geçer (JSON-LD + mağaza satırlarının en düşüğü aynı kuruş).
+
+## Bilgisayarı açık tutmak istemiyorsan: modem
+
+Aynı betik Keenetic + Entware üzerinde 7/24 çalışabilir ve besini **kendisi
+depoya işleyebilir** (`--push`). Bilgisayar kapalı olabilir. Kurulum:
+`docs/modem-uzerinde-okuyucu.md`.
+
+```sh
+python3 yerel_okuyucu.py --watch product_watches.json \
+  --push https://github.com/cnbrkc/indtkp-asist.git --gap 60 --period 900
+```

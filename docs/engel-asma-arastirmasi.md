@@ -116,6 +116,9 @@ merkezi IP'sinden değil, sitelerin **normal gördüğü** bir ağdan çıksın.
 | Yol | Ücret | Sunucu/proxy | Durum |
 |---|---|---|---|
 | **Yerel okuyucu** (`yerel_okuyucu.py`, kullanıcının kendi interneti) | 0 | Gerekmez | ✅ **Mevcut çözüm** |
+| **Modemde yerel okuyucu** (Keenetic + Entware, `--push` ile depoya işler) | 0 | Gerekmez (cihaz zaten açık) | ✅ **Bilgisayar kapalıyken de çalışır** — `docs/modem-uzerinde-okuyucu.md` |
+| Tailscale exit node | 0 | **Evdeki cihaz açık kalmalı** | ❌ Kısıtı çözmez, yerini değiştirir |
+| Cloudflare "bypass" Action'ları | 0 | Gerekmez | ❌ Yalnız **kendi** Cloudflare zone'unuzda çalışır; başkasının sitesinde hiçbir şey yapmaz |
 | Telefon hotspot'u + aynı betik (`--gap 60`) | 0 | Gerekmez | ✅ Yedek |
 | GitHub Actions + Chrome + challenge | 0 | Gerekmez | ❌ **Ölçüldü: geçmiyor** |
 | Ücretsiz VPS/proxy | 0 | Var | ❌ Kayıt/kart + IP yine veri merkezi |
