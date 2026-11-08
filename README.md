@@ -503,7 +503,7 @@ dahil) `/kaydet` seçilene kadar taslakta kalır. `/restart` için
 | `/dmfiltre` | Kişisel bildirim filtresinin durumunu, dahil/hariç listesini ve fiyat sınırını gösterir. |
 | `/dmfiltreac` | Kişisel bildirim filtresini açar. |
 | `/dmfiltrekapat` | Kişisel bildirim filtresini kapatır; kelime listeleri korunur. |
-| `/webtakip` | Akakçe ürün takip menüsünü açar; Akakçe linkini gönderip hedef fiyatı belirlersin. |
+| `/webtakip` | Ürün takip menüsünü açar; Akakçe/Cimri/Epey linkini gönderip hedef fiyatı belirlersin. |
 | `/webtakipac` | Web ürün fiyat takibini etkinleştirir. |
 | `/webtakipkapat` | Web ürün fiyat takibini durdurur; ana Telegram indirim akışını durdurmaz. |
 | `/webtakipler` | Takip edilen web ürünlerini, hedeflerini ve son kontrol durumunu listeler. |
@@ -1363,7 +1363,7 @@ Regresyonları çalıştırmak için: `python -m unittest discover -s tests -v`.
 Testler gerçek Telegram gönderimi yapmadan HTTP 429, OnuAl medya bildirimi,
 geçmiş ID alanları, fiyat düşüşü, eşzamanlı olaylar ve iptal senaryolarını sınar.
 
-## Akakçe ürün takibi — aynı botun özel sohbetinde
+## Akakçe / Cimri / Epey ürün takibi — aynı botun özel sohbetinde
 
 Varsayılan **kapalıdır**. Aynı Actions job'unda çalışır; yeni bot/token gerekmez.
 Mevcut kanal filtreleri, iletim zinciri ve dedup akışı değişmez. Yalnız hesap sahibi
@@ -1393,6 +1393,35 @@ Link bulunamaz veya güvenlik denetimini geçmezse o blok atlanır; başka satı
 linki veya tahmini link kullanılmaz. Akakçe takip linki her zaman en sondadır.
 Satıcı sitesine ek HTTP isteği yapılmaz.
 
+### Cimri ve Epey linkleri (2026-11-08'den itibaren)
+
+Aynı menü, aynı komutlar; **link üç siteden biri olabilir**. Yeni komut yok.
+
+| Site | Gönderilecek link | Not |
+|---|---|---|
+| Akakçe | `…akakce.com/…-fiyati,ID.html` | Değişmedi |
+| Cimri | `…cimri.com/<kategori>/en-ucuz-<ürün>-fiyatlari,a<ID>` | `,a<ID>` eki şart |
+| Epey | `…epey.com/<kategori>/<model>.html` | `.html` şart (uzantısız adres 404) |
+
+Cimri ve Epey bir **karşılaştırma sitesi**dir: sayfada Akakçe'de olmayan Amazon,
+MediaMarkt, Vatan, A101 fiyatları da bulunur. Bot hepsini okur, **en düşüğünü** izler ve
+alarmda hangi mağazada olduğunu söyler:
+
+```text
+₺60.927 — TCL 65C6K Ultra HD (4K) TV
+
+Epey Takip Bildirimi
+En düşük fiyat: Trendyol
+5 mağaza fiyatı karşılaştırıldı
+
+https://www.epey.com/televizyon/tcl-65c6k.html
+```
+
+Güvenlik kuralı: sayfanın yapısal fiyatı (JSON-LD) ile sayfada görünen mağaza
+satırlarının en düşüğü **aynı kuruş** olmalı. Tutmazsa fiyat gösterilmez, alarm
+kurulmaz — yanlış fiyat yerine "okunamadı" denir. Satıcı kilidi yoktur (kural `lowest`);
+link doğrulanırken `?magaza=` gibi mağaza filtreleri atılır ki tüm mağazalar görülsün.
+
 ### İlk kontrollü deneme
 
 Bu komutlar ancak PR birleştirilip **güncel ana bot başladıktan sonra** kullanılabilir.
@@ -1407,7 +1436,7 @@ Botla özel sohbetinde sırayla:
 1. `/durum` — mevcut dinleyicinin yanıt verdiğini kontrol et.
 2. `/webtakip` — alt komutların kısa menüsünü açar.
 3. `/webtakipac` — **Kalıcı kaydedildi** yanıtını bekle.
-4. Takip edeceğin Akakçe **ürün detay linkini** gönder.
+4. Takip edeceğin Akakçe, Cimri veya Epey **ürün detay linkini** gönder.
 5. Bot ürünü ve okuduğu fiyatı gösterip hedefi sorunca, test için gördüğün güncel
    fiyatın biraz **üstünde** hedef yaz. Örneğin fiyat hâlâ 6.839,05 TL ise `7000`.
 6. Kalıcı kayıt onayını bekle. İlk başarılı periyodik okumada yukarıdaki biçimde

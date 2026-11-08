@@ -10,11 +10,48 @@ import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import timefmt
-from akakce_worker import product_url, purchase_url, target_cents
+from akakce_worker import purchase_url, target_cents
+from akakce_worker import product_url as akakce_product_url
+from aggregator_worker import LABEL as AGGREGATOR_NAMES
+from aggregator_worker import product_url as aggregator_product_url
 
 log = logging.getLogger(__name__)
+
+
+def aggregator_site(raw):
+    """Link Cimri/Epey ürün sayfasıysa site adını döndürür, değilse None.
+
+    Akakçe hattı bu dosyada *tek* yol olmaktan çıkıyor. Cimri ve Epey
+    kendi okuyucusuyla (``aggregator_worker``) okunur; geri kalan her şey
+    eskisi gibi Akakçe kuralından geçer, böylece Akakçe davranışı bire bir
+    korunur.
+    """
+    try:
+        return AGGREGATOR_NAMES[urlsplit((raw or '').strip()).hostname]
+    except (KeyError, ValueError, AttributeError, TypeError):
+        return None
+
+
+def is_product_link(raw):
+    return aggregator_site(raw) is not None or raw.startswith(
+        ('https://www.akakce.com/', 'https://akakce.com/'))
+
+
+def normalize_product_url(raw):
+    """Akakçe ise Akakçe kuralı, Cimri/Epey ise toplayıcı kuralı."""
+    if aggregator_site(raw):
+        return aggregator_product_url(raw)
+    return akakce_product_url(raw)
+
+
+def tracker_kind(host):
+    """Takip dosyasındaki ``kind`` alanı: okuma yöntemini belirler."""
+    return 'aggregator' if host in AGGREGATOR_NAMES else 'akakce'
+
+
 MAX_PRODUCTS = 30
 INTERVAL = 300
 # Tek bir Telegram gönderimi döngüyü kilitlemesin (Bot API'nin kendi 30 sn
@@ -62,11 +99,22 @@ def notification_text(result, tracked_url, header_formatter=None):
         header = header_formatter(result['price'], title)
     else:
         header = f"₺{result['price'] // 100:,}".replace(',', '.') + f" — {title}"
-    blocks = [header, 'Akakçe Takip Bildirimi']
+    site = aggregator_site(tracked_url)
+    blocks = [header, (f'{site} Takip Bildirimi' if site else 'Akakçe Takip Bildirimi')]
+    # Toplayıcı siteler tüm mağazaları gezdiği için en düşük fiyatın hangi
+    # mağazada olduğunu söylemek zorundayız (satıcı kilidi yok — kural: lowest).
+    # Akakçe sözleşmesinde `offers` sayıdır; toplayıcılarda liste. Karıştırma yok.
+    offers = result.get('offers')
+    sellers = offers if isinstance(offers, list) else []
+    cheapest = sellers[0] if sellers else {}
+    if site and cheapest.get('seller') and cheapest.get('seller') != '(mağaza adı okunamadı)':
+        blocks.append(f"En düşük fiyat: {cheapest['seller']}")
+    if site and result.get('offer_count'):
+        blocks.append(f"{result['offer_count']} mağaza fiyatı karşılaştırıldı")
     direct = purchase_url(result.get('purchase_url'))
     if direct:
         blocks.append(direct)
-    blocks.append(product_url(tracked_url))
+    blocks.append(normalize_product_url(tracked_url))
     return '\n\n'.join(blocks)
 
 
@@ -81,10 +129,13 @@ def load_state(path):
         raise ValueError('Geçersiz takip dosyası')
     urls = set()
     for item in data['items']:
-        url = product_url(item['url'])
+        url = normalize_product_url(item['url'])
         if url in urls or url != item['url']:
             raise ValueError('Tekrarlı veya geçersiz ürün')
         urls.add(url)
+        # Eski kayıtlarda "kind" yok; URL'den anlaşılır (geriye dönük uyumlu).
+        if item.get('kind') not in (None, 'akakce', 'aggregator', 'cimri', 'epey'):
+            raise ValueError('Geçersiz takip türü')
         for key in ('target', 'chat_id'):
             if type(item[key]) is not int or item[key] <= 0:
                 raise ValueError('Geçersiz takip kaydı')
@@ -98,10 +149,12 @@ def load_state(path):
 
 async def read_product(url):
     """One disposable process, no Telegram/GitHub credentials inherited."""
-    worker = str(Path(__file__).with_name('akakce_worker.py').resolve())
+    site = aggregator_site(url)
+    worker = str(Path(__file__).with_name(
+        'aggregator_worker.py' if site else 'akakce_worker.py').resolve())
     env = {key: os.environ[key] for key in ('PATH', 'LANG', 'SYSTEMROOT') if key in os.environ}
     process = await asyncio.create_subprocess_exec(
-        sys.executable, '-I', worker, product_url(url), env=env,
+        sys.executable, '-I', worker, normalize_product_url(url), env=env,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         limit=65536,
     )
@@ -111,10 +164,16 @@ async def read_product(url):
             raise ValueError('İşçi yanıtı çok büyük')
         body = json.loads(output)
         if process.returncode or not body.get('ok'):
-            raise ValueError('Akakçe okunamadı; erişim engeli veya sayfa değişikliği olabilir')
+            name = site or 'Akakçe'
+            detail = body.get('reason') if isinstance(body, dict) else None
+            raise ValueError(f'{name} okunamadı; erişim engeli veya sayfa değişikliği olabilir'
+                             + (f' ({detail})' if site and isinstance(detail, str) else ''))
         result = body['result']
-        if result.get('minimum_verified') is not True:
-            raise ValueError('Güncel en düşük fiyat doğrulanamadı; Akakçe minimumu ve okunan teklif uyuşmalı')
+        # Akakçe "minimum_verified", Cimri/Epey "jsonld_verified" alanını yazar:
+        # ikisi de aynı soruyu yanıtlar — okunan fiyat doğrulandı mı?
+        verified = (result.get('jsonld_verified') if site else result.get('minimum_verified'))
+        if verified is not True:
+            raise ValueError('Güncel en düşük fiyat doğrulanamadı; okunan teklifler birbirini tutmalı')
         if type(result.get('price')) is not int or result['price'] <= 0:
             raise ValueError('Geçersiz fiyat')
         return result
@@ -140,6 +199,10 @@ class ProductTracker:
         except Exception:
             self.state = {'version': 1, 'enabled': False, 'items': []}
             self.disabled_error = True
+        # Geriye dönük: eski kayıtlarda tür yok. Dosyayı yazmadan bellekte tamamla.
+        for item in self.state['items']:
+            item.setdefault('kind', tracker_kind(urlsplit(item['url']).hostname))
+            item.setdefault('site', aggregator_site(item['url']) or 'Akakçe')
             log.error('Ürün takip dosyası okunamadı; yalnız ürün takibi kapalı.')
 
     async def tell(self, chat, text):
@@ -177,7 +240,7 @@ class ProductTracker:
             self.drafts.pop(event.chat_id, None)
             await event.reply('Ürün takip taslağı iptal edildi.')
             return True
-        is_link = raw.startswith(('https://www.akakce.com/', 'https://akakce.com/'))
+        is_link = is_product_link(raw)
         if command not in COMMANDS and not is_link and not (draft and not command):
             return False
         if command == '/webtakip':
@@ -209,7 +272,7 @@ class ProductTracker:
                 if not self.state['enabled']:
                     await event.reply('Ürün takibi kapalı. Açmak için /webtakipac; menü: /webtakip')
                     return True
-                job = ('link', event.chat_id, product_url(raw))
+                job = ('link', event.chat_id, normalize_product_url(raw))
             elif draft and not command:
                 target = target_cents(raw)
                 job = ('add', event.chat_id, {**draft, 'target': target})
@@ -290,8 +353,17 @@ class ProductTracker:
             # A second link replaces only this feature's own draft.
             self.drafts[chat] = {'url': value, 'title': result['title'],
                                  'until': time.monotonic() + 600}
+            site = aggregator_site(value)
+            if site:
+                offers = result.get('offers') if isinstance(result.get('offers'), list) else []
+                cheapest = offers[0] if offers else {}
+                store = cheapest.get('seller') or '(mağaza adı okunamadı)'
+                source = (f"{result.get('offer_count') or len(offers)} mağaza fiyatı gezildi; "
+                          f"en düşük {store}")
+            else:
+                source = 'Akakçe güncel minimumuyla doğrulandı'
             await self.tell(chat, f"{result['title']}\nOkunan en düşük teklif: {money(result['price'])}\n"
-                            "Akakçe güncel minimumuyla doğrulandı.\nHangi fiyatın altına düşerse haber vereyim?\n"
+                            f"{source}.\nHangi fiyatın altına düşerse haber vereyim?\n"
                             'Örnek: 6500 veya 6.500,50 TL. İptal: /webtakipiptal')
             return
         before = copy.deepcopy(self.state)
@@ -302,7 +374,8 @@ class ProductTracker:
             if item is None:
                 if len(self.state['items']) >= MAX_PRODUCTS:
                     raise ValueError(f'İlk sürüm en fazla {MAX_PRODUCTS} ürün destekler.')
-                item = {'url': value['url']}
+                item = {'url': value['url'], 'kind': tracker_kind(urlsplit(value['url']).hostname),
+                        'site': aggregator_site(value['url']) or 'Akakçe'}
                 self.state['items'].append(item)
             item.update(title=value['title'], target=value['target'], chat_id=chat, alert_price=None)
             self.health.pop(item['url'], None)

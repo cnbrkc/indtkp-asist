@@ -3750,6 +3750,13 @@ TELEGRAM_LIST_FIELDS = ("include_keywords", "exclude_keywords", "source_chats", 
 # Bu config listesi değildir; seçilince product_tracker (link → hedef fiyat →
 # product_watches.json) akışına yönlendirilir.
 WEBTAKIP_FIELD = "__webtakip__"
+# Ürün takibi artık Akakçe + Cimri + Epey linklerini kabul eder. Liste tek
+# yerde tutulur; product_tracker zincirleme doğrulamayı kendi yapar.
+PRODUCT_LINK_PREFIXES = ("https://www.akakce.com/", "https://akakce.com/",
+                         "https://www.cimri.com/", "https://www.epey.com/")
+PRODUCT_LINK_PROMPT = ("Ürün detay linkini gönder (Akakçe: …akakce.com/…-fiyati,ID.html · "
+                       "Cimri: …cimri.com/…-fiyatlari,ID · Epey: …epey.com/…/….html). "
+                       "Hedef fiyatı bir sonraki mesajda istenecek.")
 WEBTAKIP_CHOICES = {"7", "webdetakip", "web_takip", "akakcetakip", "akakce_takip"}
 TELEGRAM_LIST_META: dict[str, dict[str, str]] = {
     "dm_keywords": {
@@ -6262,7 +6269,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     await tracker.job("/webtakipler", event.chat_id, "")
                     await control_reply(event, "Çıkarılacak ürünün /webtakipler listesindeki numarasını gönder (ör. 3). İptal: /iptal")
                 else:
-                    await control_reply(event, "Akakçe ürün detay linkini gönder (…akakce.com/…-fiyati,ID.html). Hedef fiyatı bir sonraki mesajda istenecek. İptal: /iptal")
+                    await control_reply(event, PRODUCT_LINK_PROMPT)
                 return True
 
             if not await can_edit_list(event, field):
@@ -6291,8 +6298,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
             action = str(item.get("action") or "add")
             ok = True
             if action == "add":
-                if not text.startswith(("https://www.akakce.com/", "https://akakce.com/")):
-                    await control_reply(event, "Akakçe ürün detay linki bekleniyor (…akakce.com/…-fiyati,ID.html). İptal: /iptal")
+                if not text.startswith(PRODUCT_LINK_PREFIXES):
+                    await control_reply(event, PRODUCT_LINK_PROMPT + " İptal: /iptal")
                     return True
                 ok = await tracker.handle(event, text, existing_pending=False)
             else:
@@ -6306,7 +6313,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             # kalıcı tutar; bu nedenle ayar taslağına ayrı bir /kaydet adımı yok.
             drop_pending(key)
             if not ok:
-                await control_reply(event, "⚠️ İşlem anlaşılamadı; lütfen Akakçe linki veya geçerli bir ürün numarası gönder.")
+                await control_reply(event, "⚠️ İşlem anlaşılamadı; lütfen Akakçe/Cimri/Epey ürün linki veya geçerli bir ürün numarası gönder.")
             return True
 
         if item.get("stage") == "value":
