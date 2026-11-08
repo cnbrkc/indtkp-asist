@@ -60,7 +60,7 @@ anda." → Planın çekirdeği bu. Akakçe bulma = kolaylık, sonra.
 | Ürün kimliği | Akakçe ürün ID + seri kodu; **EAN/GTIN bonus** (MediaMarkt veriyor — F1'de ölçülür) |
 | Fiyat geçmişi | Tutulmaz (Akakçe kendi geçmişini veriyor; repo public) |
 | Akakçe sınırı | 30 ürün / 300 sn (mevcut, değişmez) |
-| Mağaza sınırı | 10 ürün / 900 sn taban, ±45 sn jitter, `HOST_GAP 20 sn` |
+| Mağaza sınırı | **30 ürün**; ürün başına `speed (auto/acil/normal/ekonomik)`; 5 dk–1 saat; host başına 1 istek/20 sn |
 
 ---
 
@@ -145,7 +145,11 @@ host, userinfo, port, localhost, `host.evil.test`), query politikası.
 (yoksa `persist_products`'ın `GET`+`sha` adımı ilk kayıtta hep başarısız olur).
 `StoreTracker(path, api, persist, reader=read_store, *, owner_id, header_formatter)` —
 `product_tracker.py` örnek alınır, **ona bağlanılmaz**; `money`, `clean_title` import edilir.
-En fazla 10 ürün. Kayıt: `url, store, title, target, chat_id, alert_price, group` (`group` F8'de).
+**En fazla 30 ürün** (Akakçe ile aynı; bkz. 13.5 — sınır ürün sayısı değil, **host bazlı istek aralığı**).
+Kayıt: `url, store, title, target, chat_id, alert_price, group, speed, interval, fail_streak, next_check`.
+**Zamanlama:** sabit tur yerine **her ürün kendi `next_check` saatinde** okunur;
+`speed=auto` → hedefe yakınlığa göre 5 dk–1 saat arası; host başına **1 istek / 20 sn** token bucket;
+`403/429/CAPTCHA` → aralık iki katı (max 6 saat) + tek uyarı.
 **`handle(event, raw, *, existing_pending=False)`** — `existing_pending and komut değilse → False`.
 Allowlist dışı link / bilinmeyen komut → `False`.
 **Komutlar:** `/magazatakip`, `/magazatakipac`, `/magazatakipkapat`, `/magazatakipler`,
@@ -430,9 +434,9 @@ Bizim `store_tracker.run()` de **aynı listeye** eklenecek (F4).
 | **Actions dakikası** | ~1.440 dk/gün (tek runner, 7/24) | **Değişmez** (yeni job yok) | Public repo → standart runner **ücretsiz/sınırsız** | ✅ |
 | **Telegram poller** | 1 süreç (`bot.py`) + `private_bot` | Değişmez | 409 çakışması yok | ✅ |
 | **Akakçe döngüsü** | 30 ürün × `HOST_GAP 10 sn` = **300 sn** / `INTERVAL 300` | **Değişmez** (dosyaya dokunulmuyor) | %100 dolu — **zaten sınırda** | ⚠️ mevcut |
-| **Mağaza döngüsü** | yok | 10 link × `HOST_GAP 20 sn` = **200 sn** / `INTERVAL 900` | %22 dolu → **~40 link** sığar | ✅ |
-| **Amazon alt sınırı** | — | ürün başına **4 istek/gün** (6 saatte 1) | günde ≤6 hedefi | ✅ |
-| **Günlük HTTP isteği** | 30 × 288 = 8.640 | +960 (10 link × 96) = **~9.600/gün** ≈ 0,11 istek/sn | site nezaket sınırları | ✅ |
+| **Mağaza döngüsü** | yok | **30 ürün**, ürün başına 5 dk–1 saat (`auto`); host başına 1 istek/20 sn | ~2.880 istek/gün, host başına ≤4.320 | ✅ |
+| **Amazon alt sınırı** | — | `auto`: ürün başına **4–24 istek/gün** | kill switch | ✅ |
+| **Günlük HTTP isteği** | 30 × 288 = 8.640 | +2.880 (30 ürün × 96) = **~11.520/gün** ≈ 0,13 istek/sn | site nezaket sınırları | ✅ |
 | **GitHub Contents API** | yalnız durum değişince (2 istek) | aynı | 5.000 istek/saat | ✅ |
 | **Disk/commit** | `product_watches.json` | +`store_watches.json` (~1-2 KB) | — | ✅ |
 | **Bellek** | — | +1 asyncio görevi, +10 kayıt | — | ✅ |
@@ -454,20 +458,98 @@ Bizim `store_tracker.run()` de **aynı listeye** eklenecek (F4).
 
 ### 13.4 Dürüst sınırlar (abartmıyoruz)
 
-- **Mağaza hattı 10 ürünle sınırlı** (F3). Teorik tavan ~40 link; pratikte 10'da tutuyoruz ki
-  döngü + jitter + geri çekilme rahat olsun. Dolarsa `/magazatakipsil` ile yer açılır.
+- **Mağaza hattı 30 ürün** (Akakçe ile aynı). Ürün artınca engellenme değil, **kontrol sıklığı** düşer
+  (host limiter). Dolarsa `/magazatakipsil` ile yer açılır.
 - **Akakçe hattı 30 ürün ve 5 dakika** — mevcut sınır, değişmiyor.
 - **Runner 5,5 saatte bir yeniden başlıyor** → yarıda kalan taslaklar (hedef fiyat sorulmuş ama
   cevaplanmamış) kaybolur. Bugün de böyle; yeni bir risk değil.
-- **Yavaşlık:** mağaza hattı 15 dk'da bir okur. Akakçe 5 dk'da bir. Yani mağaza alarmı
-  Akakçe'den **daha geç** gelebilir; "daha taze" beklentisi 5 dk değil **15 dk** üzerinden kurulmalı.
-- **Amazon** en kısıtlı: 6 saatte 1 → bir günde en fazla 4 kez kontrol. Bu bilinçli (engellenmemek için).
+- **Yavaşlık:** `auto` hızda mağaza hattı **5 dk (hedefe yakınken) – 1 saat (uzakken)** arasında okur.
+  Akakçe sabit 5 dk. Yani mağaza alarmı Akakçe'den genelde daha geç; `acil` seçilirse eşitlenir.
+- **Amazon** en kısıtlı: varsayılan 6 saat (günde 4), `acil` ile 1 saat (günde 24). Daha hızlısı riskli.
 
 ### 13.5 Bu tablo nereden geliyor (kanıt)
 `telegram-monitor.yml` (timeout 350, restart 330, cron 6 saat), `bot.py:7558`, `bot.py:5515`
 (`persist_products` → Contents API GET+PUT), `product_tracker.py:18-23`
 (`MAX_PRODUCTS 30`, `INTERVAL 300`, `SEND_TIMEOUT 45`, `HOST_GAP 10`),
 `product_tracker.py:156` (`save` yalnız durum değişiminde), `product_tracker.py:413` (`run` döngüsü).
+
+
+## 13.5 Sınırlar neden var? Hangisi gerçek, hangisi keyfi (2026-11-08 taraması)
+
+### 13.5.1 Üç tür sınır var — karıştırılmamalı
+
+| Sınır | Tür | Gerçek mi? |
+|---|---|---|
+| Akakçe 30 ürün / 300 sn | **Teknik (gerçek)** | 30 × `HOST_GAP 10 sn` = 300 sn = aralık → **döngü %100 dolu**, ürün eklenemez |
+| Mağaza `INTERVAL 900 sn` | **Bizim seçimimiz (keyfi)** | Teknik zorunluluk yok. Gerçek uygulamalar **1–3 saat** kullanıyor → bizim 15 dk zaten 4–12 kat agresif |
+| `HOST_GAP 20 sn` | **Nezaket (gerekli)** | Bir siteye saniyede 1 istek = engellenme. robots'ta **Crawl-delay yok** (kontrol edildi) → kendi kuralımız |
+| Mağaza 10 ürün | **Bizim seçimimiz (keyfi)** | `bot.py` 7/24 çalıştığı için ürün sayısı Actions dakikası **artırmıyor**; tek kısıt host başına istek aralığı |
+| Amazon 6 saatte 1 | **Yasal/risk (gerekli)** | `robots.txt` AI botlarını ismen yasaklıyor; ToS otomatik erişimi sınırlıyor |
+| Actions dakikası | **Gerçek değil** (public repo) | Public → ücretsiz sınırsız; tek runner zaten 7/24 çalışıyor |
+
+### 13.5.2 Sanayi karşılaştırması (ölçüldü)
+- **changedetection.io** (35,6k★): varsayılan kontrol **3 saat**; fiyat takibi için önerilen
+  **1–3 saat**; "**5–10 dakika yalnız çok acil birkaç ürün için**" — kaynak: resmî rehberler.
+- **urlwatch** (3,1k★): saatlik/günlük periyot varsayılanı.
+- Yani **15 dakika "çok sık" tarafında**, 5 dakika ise Akakçe'nin hattı (mevcut, çalışıyor).
+- **robots.txt kontrolü (bugün):** MediaMarkt, n11, Akakçe, Teknosa, Hepsiburada, Pazarama →
+  hiçbirinde **`Crawl-delay` yok**. MediaMarkt AI botlarını **açıkça serbest bırakmış**
+  (`User-agent: ClaudeBot / Allow: /`). Yani yavaşlığımızın sebebi sitelerin kuralı değil,
+  **bizim temkinli seçimimiz**.
+
+### 13.5.3 Çözüm: sabit süre yerine **akıllı hız**
+
+**Kaldırılan:** tek `INTERVAL 900` ve tek `MAX 10`.
+**Gelen (F3/F5'e işlendi):** ürün başına `hız` alanı + host bazlı limiter + otomatik geri çekilme.
+
+| Hız | Aralık | Ne zaman |
+|---|---|---|
+| `acil` | **5 dk** | Kampanya dönemi, hedefin çok yakınındasın |
+| `normal` (varsayılan) | **15 dk** | Genel kullanım |
+| `ekonomik` | **1 saat** | Uzak hedef, "acelesi yok" |
+| `otomatik` ✅ önerilen | **5 dk – 1 saat arası kendisi ayarlar** | Aşağıdaki kural |
+
+**`otomatik` nasıl çalışır:**
+1. `fiyat, hedefin %5 yakınında` → **5 dk** (alarm anı yakın, hızlan)
+2. `hedefin %5–20 üstünde` → **15 dk**
+3. `hedefin %20+ üstünde` → **1 saat** (boşuna istek atma)
+4. **Tek yönlü kural:** fiyat hedefin altına indiyse (alarm gitti) → 15 dk'ya döner, tekrar
+   yükselirse yavaşlar.
+5. **Geri çekilme:** `403/429/CAPTCHA` → aralık **iki katına** (max 6 saat) + **tek uyarı**;
+   3 temiz okumadan sonra kademeli olarak hızlanır.
+6. **Host bazlı token bucket:** aynı siteye **en sık 1 istek / 20 sn** — bu kural ürün sayısından
+   **bağımsız** çalışır. 30 ürün aynı sitedeyse limiter etkin aralığı otomatik
+   `30 × 20 sn = 10 dk`ya çeker. **Yani ürün sayısı artınca engellenme riski artmaz, sadece
+   kontrol aralığı uzar.** Bu, "sabit ürün sınırı"ndan daha doğru bir tasarım.
+
+### 13.5.4 Yeni kapasite (ölçülmüş hesap)
+
+| Senaryo | İstek/gün | Host başına | Durum |
+|---|---|---|---|
+| 30 ürün, 5 siteye dağılmış, `normal` (15 dk) | 30 × 96 = 2.880 | 576 | ✅ rahat |
+| 30 ürün, tek sitede, `normal` | 2.880 | 2.880 → limiter 10 dk'ya çeker | ✅ engellenmez |
+| 30 ürün, `acil` (5 dk) | 8.640 | 1.728/site | ✅ (limit 4.320/gün/host) |
+| Akakçe hattı (mevcut) | 8.640 | 8.640 | ⚠️ **dolu** — yeni ürün almaz |
+| Amazon, `normal` | ürün başına 4 | 4 | ✅ |
+| Amazon, `acil` (1 saat) | ürün başına 24 | 24 | ⚠️ sınırda, kill switch devrede |
+
+**Sonuç:** Mağaza hattı ürün sınırı **10 → 30**'a çıkıyor (Akakçe ile aynı). Ürün sayısı artınca
+engellenme değil, **kontrol sıklığı** düşüyor — doğru davranış bu. Actions maliyeti yine **artmıyor**
+(`bot.py` zaten 7/24 çalışıyor).
+
+### 13.5.5 Değişen dosya alanları
+- `store_watches.json` item: `{"url", "store", "title", "target", "chat_id", "alert_price",
+  "group", "speed": "auto|acil|normal|ekonomik", "interval", "fail_streak", "next_check"}`
+- `store_tracker.py`: `next_check` tabanlı zamanlayıcı (sabit tur yerine **her ürün kendi saatinde**),
+  host token bucket, `speed` çözümleyici, geri çekilme.
+- **`product_tracker.py` değişmiyor** (Akakçe 5 dk / 30 ürün sabit kalıyor).
+
+### 13.5.6 Dürüst kalan sınırlar
+- **Akakçe hattı** gerçekten dolu: 30 ürün / 5 dk. Hızlandırmak için dosyasına dokunmak gerekir →
+  **yapmıyoruz**. Akakçe'de daha fazla ürün istersen mağaza hattına taşı.
+- **Amazon** her modda en yavaş (1 saat en hızlısı, varsayılan 6 saat) — engellenmemek için.
+- **`acil` modu senin sorumluluğunda:** 30 ürün × 5 dk × tek site = günde 8.640 istek. Limiter
+  korur ama "nezaket" sınırına yakın. Varsayılan `auto`.
 
 ## 14. Onay
 
