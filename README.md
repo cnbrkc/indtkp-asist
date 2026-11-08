@@ -346,6 +346,59 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 
 ---
 
+## 2.1 Mağaza takibi — F1 ölçümü (probe)
+
+Mağaza fiyat takibi **henüz kapalı ve kullanılmıyor**. İlk adım, sitelerin ürün
+sayfalarının anonim olarak okunup okunamadığını **ölçmek**. Bu adım hiçbir Telegram
+komutu eklemez, hiçbir secret kullanmaz ve mevcut Akakçe takibini etkilemez.
+
+**Ne yapar:** yalnız izin listesindeki 7 mağazadan, tek seferde bir istek atarak ürün
+sayfasını okur; JSON-LD, sayfaya gömülü JSON, görünen fiyat adayları (ana fiyat / taksit /
+puan / ek garanti / **ikinci el**), EAN, gecikme ve engel işaretlerini **ölçer**.
+Fiyat kararı vermez, kayıt tutmaz.
+
+| Konu | Kural |
+|---|---|
+| İzinli host'lar | mediamarkt, teknosa, pazarama, n11, hepsiburada, trendyol, amazon (`.com.tr`) + referans için akakce |
+| Reddedilen | `http`, listede olmayan host, `userinfo`, özel port, `localhost`, IP adresi |
+| Yönlendirme | **Reddedilir** (`NoRedirect`); takip edilmez |
+| Sınırlar | 3 MB gövde, 15 sn HTTP, tek `GET`, giriş/çerez yok |
+| Hız | URL başına 3 istek, aralarında en az 5 sn; host politikasındaki `min_gap` uygulanır |
+| Secret | **Yok** |
+
+**Nasıl çalıştırılır:** GitHub → Actions → **"Mağaza ölçümü (F1 probe)"** → *Run workflow*.
+`urls` alanına her satıra bir ürün linki yaz:
+
+```
+https://www.mediamarkt.com.tr/tr/product/_ornek-1246642.html
+https://www.amazon.com.tr/dp/B0FBWJTCV6
+https://www.trendyol.com/tcl/ornek-p-855342638?merchantId=106394
+```
+
+**Çıktı:** iş özetinde Markdown tablo (durum, HTTP, gecikme, JSON-LD, gömülü JSON'daki
+satıcı fiyatı sayısı, görünür fiyat adayları ve etiketleri, EAN, engel) + `store-probe-out`
+artefaktı (site başına ≤20 KB kanıt: JSON-LD ve fiyat çevresi HTML). Bu artefakt, sonraki
+fazın test fixture'larının **tek kaynağıdır** — sentetik veriyle devam edilmez.
+
+**Durumlar:** `okunabilir` · `okundu, fiyat yok` · `coğrafya duvarı` · `engel/captcha` ·
+`yönlendirme` · `hata` · `okunamadı`.
+
+**Yerelde çalıştırma (test):**
+
+```bash
+python -I tools/store_probe.py --url https://www.amazon.com.tr/dp/B0FBWJTCV6 --out probe-out
+python -m unittest discover -s tests -p "test_store_probe.py" -v
+```
+
+**Geri alma:** `.github/workflows/store-probe.yml` ve `tools/store_probe.py` silinir
+(`tests/test_store_probe.py` de silinebilir). Bot davranışı değişmediği için
+`config.json`, `product_watches.json` ve Akakçe hattı etkilenmez.
+
+**Plan:** mağaza takibinin tamamı (fazlar, sınırlar, site başına dip süreler) için
+[`docs/magaza-takip-plani.md`](docs/magaza-takip-plani.md).
+
+---
+
 ## 3. Ayarlar: `config.json`
 
 | Alan | Tip | Açıklama |
