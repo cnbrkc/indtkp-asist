@@ -51,16 +51,76 @@ parmak izini ve HTTP/2 ayarlarını** kullanır. Kaynaklardaki tablo:
 Yani **eğer bizim 403'ümüz TLS kaynaklıysa**, bu yöntem çözer. Eğer **IP itibarı** kaynaklıysa
 çözmez — ve bunu ancak deneyerek anlarız.
 
-## 4. Öneri: tek bir ölçüm daha
+## 4. ÖLÇÜM SONUÇLARI (2026-11-08, GitHub Actions, engelli IP)
 
-`tools/aggregator_diag.py`'ye **7. varyant**: `curl_cffi` ile `impersonate="chrome"`.
+Teşhis aracı 8 varyanta çıkarıldı ve ölçüm engelli IP'den (GitHub runner) koşuldu.
 
-- Ücretsiz, pip'ten gelir (GitHub Actions'ta zaten kurulur).
-- Tek seferlik bir teşhis; sisteme kalıcı bağımlılık eklemez.
-- Sonuç 200 ise → Cimri/Epey **doğrudan çalışır**, yerel okuyucuya gerek kalmaz.
-- Sonuç 403 ise → engel kesin olarak IP itibarıdır; o zaman tek çözüm "okuma senin ağından"
-  (mevcut `yerel_okuyucu.py`) veya ücretli proxy (kural dışı).
+### 4.1 HTTP istemcileri — hepsi 403
 
-Ayrıca aynı koşuya **403 gövde imzası** eklendi: hangi WAF (Cloudflare/Akamai/Incapsula/
-DataDome) ve **"blocked" mı "challenge" mı** olduğunu yazar. Bu, "tarayıcı denemeye değer mi"
-sorusunu da tek bakışta yanıtlar.
+| Varyant | Epey | Cimri |
+|---|---|---|
+| urllib · mevcut UA | 403 | 403 |
+| urllib · tarayıcı UA | 403 | 403 |
+| urllib · tarayıcı UA + tam başlık | 403 | 403 |
+| urllib · mevcut UA + tam başlık | 403 | 403 |
+| curl · mevcut UA | 403 | 403 |
+| curl · tarayıcı UA + tam başlık | 403 | 403 |
+| **curl_cffi · Chrome TLS** | **403** | **403** |
+| **curl_cffi · Safari TLS** | **403** | **403** |
+
+→ TLS parmak izi engel **değil**. Chrome'un BoringSSL'i bile aynı cevabı aldı.
+
+### 4.2 403'ün kimliği — IP engeli değil, **JS challenge**
+
+| Site | Başlık | WAF imzası | Karar |
+|---|---|---|---|
+| Epey | `Just a moment...` | Cloudflare | **challenge** |
+| Cimri | `Güvenlik doğrulaması \| Cimri` | kendi doğrulaması | **challenge** |
+
+`cf-mitigated: challenge` tarzı cevap: sunucu "IP'ni beğenmedim" demiyor,
+"**önce JavaScript'ini çalıştır**" diyor.
+
+### 4.3 Gerçek tarayıcı — son ve kesin test
+
+Runner'da Chrome kurulu (`Chrome kontrolü` adımı geçti: example.com açıldı),
+`nodriver` ile başsız Chrome, bot sinyalini azaltan argümanlarla, **48 saniye**
+challenge'ın çözülmesini bekledi:
+
+```
+başlık="Just a moment..." · bekleme=48.0 sn · JSON-LD=yok
+→ TARAYICI DA GEÇEMEDİ
+```
+
+Bu, sorunun son halkası: **veri merkezi IP'sinden gelen gerçek Chrome bile
+geçemiyor.** Challenge IP itibarına bağlı olarak etkileşimli doğrulama
+istiyor (Cloudflare "managed challenge" / Turnstile). Ücretsiz ve otomatik
+hiçbir yol bunu geçemez — geçen tek şey, **o sitede daha önce normal
+davranmış bir tarayıcı profili** (çerez) olur; o da bizde yok.
+
+## 5. Neden eski öneri
+
+Eski plan "curl_cffi deneyelim, 200 gelirse çalışır" idi. **Denendi: 403.**
+Ardından "challenge ise gerçek tarayıcı çözer" dendi. **Denendi: o da geçemedi.**
+
+Yani artık tahmin kalmadı; üç katman da (başlık, TLS, JavaScript) ölçüldü ve
+hepsi aynı yerde kapandı.
+
+## 6. Kesin cevap: "başka hiç mi yolu yok?"
+
+**Sunucu/proxy/ücret olmadan, tamamen otomatik: YOK.** Kanıt yukarıda —
+üç ayrı katman, üç ayrı ölçüm, hepsi 403, sonuncusu gerçek Chrome ile.
+
+Kalan tek ücretsiz yol, engelin **mantığına** uyan yol: istek engelli veri
+merkezi IP'sinden değil, sitelerin **normal gördüğü** bir ağdan çıksın.
+
+| Yol | Ücret | Sunucu/proxy | Durum |
+|---|---|---|---|
+| **Yerel okuyucu** (`yerel_okuyucu.py`, kullanıcının kendi interneti) | 0 | Gerekmez | ✅ **Mevcut çözüm** |
+| Telefon hotspot'u + aynı betik (`--gap 60`) | 0 | Gerekmez | ✅ Yedek |
+| GitHub Actions + Chrome + challenge | 0 | Gerekmez | ❌ **Ölçüldü: geçmiyor** |
+| Ücretsiz VPS/proxy | 0 | Var | ❌ Kayıt/kart + IP yine veri merkezi |
+| Ücretli konut proxy / Apify | Ücretli | Var | ❌ Kural dışı |
+
+Not: bu araştırma **Akakçe hattına hiç dokunmadı** (Akakçe zaten okunuyor) ve
+sisteme yeni bir çalışma zamanı bağımlılığı eklemedi — `curl_cffi`/`nodriver`
+yalnız teşhis workflow'unda, sadece teşhis dosyaları değişince koşuyor.

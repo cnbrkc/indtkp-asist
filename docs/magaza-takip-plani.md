@@ -924,5 +924,12 @@ Ayrıntı: `docs/engel-asma-arastirmasi.md`. Özet:
 - Ücretsiz CORS proxy'leri, r.jina.ai, translate.goog, Wayback: **ölçüldü, hepsi kapalı**.
 - Apify scraper'ları çalışıyor ama **ücretli** → kural dışı.
 
-Karar: bir ölçüm daha yapılır (7. varyant + 403 imzası). Sonuç 200 ise yerel okuyucuya gerek
-kalmaz; 403 ise engel kesin IP itibarıdır ve tek ücretsiz çözüm yerel okuyucu kalır.
+**Ölçüm yapıldı (2026-11-08):** 8 varyant (urllib ×4, düz curl ×2, curl_cffi
+Chrome/Safari TLS ×2) → **hepsi 403**. 403 gövdeleri: Epey `Just a moment...`
+(Cloudflare **challenge**), Cimri `Güvenlik doğrulaması` (**challenge**) — IP
+itibarı engeli değil, JS doğrulaması. Son test: GitHub runner'ında gerçek Chrome
+(nodriver, bot sinyali azaltılmış, 48 sn bekleme) → **`Just a moment...` kaldı,
+geçmedi.**
+
+Sonuç: sunucu/proxy/ücret olmadan otomatik yol **yok**; kanıtlandı. Tek ücretsiz
+yol yerel okuyucu (kullanıcının kendi ağı). Ayrıntı: `docs/engel-asma-arastirmasi.md`.
