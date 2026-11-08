@@ -75,3 +75,28 @@ class AttemptTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class AnnotateTests(unittest.TestCase):
+    """Log arşivi API'den okunamadığında sonuç annotation'dan görünebilmeli."""
+
+    def test_annotate_prints_a_warning_with_the_verdict(self):
+        import contextlib
+        import io
+        rows = [{'status': 403, 'ms': 140, 'bytes': 0}] * 4
+        buffer = io.StringIO()
+        with mock.patch.object(diag, 'attempt', side_effect=rows), \
+             mock.patch.object(diag.time, 'sleep'), \
+             contextlib.redirect_stdout(buffer):
+            diag.main(['--url', 'https://www.epey.com/televizyon/x.html', '--annotate'])
+        output = buffer.getvalue()
+        self.assertIn('::warning title=www.epey.com::', output)
+        self.assertIn('::notice title=', output)
+        self.assertIn('HTTP 403', output)
+        self.assertIn('IP', output)
+
+    def test_verdict_names_the_mixed_statuses_instead_of_hiding_them(self):
+        text = diag.verdict([('a', {'status': 403}), ('b', {'status': 500}),
+                             ('c', {'status': None}), ('d', {'status': 0})])
+        self.assertIn('KARMA', text)
+        self.assertIn('500', text)

@@ -139,7 +139,9 @@ def verdict(rows):
     if all(status == 403 for status in by_name.values()):
         return ('DÖRDÜ DE 403 → engel IP/veri merkezi kaynaklı görünüyor; bu makineden '
                 'okunamaz (başlıkla düzeltilemez).')
-    return 'KARMA SONUÇ — ayrıntı tabloda.'
+    statuses = [row.get('status') for _, row in rows]
+    return ('KARMA SONUÇ — dördü de okunamadı ama 403 de değil: '
+            f'{statuses}. Ağ/başlık kombinasyonu denendi.')
 
 
 def main(argv=None):
@@ -148,6 +150,9 @@ def main(argv=None):
     parser.add_argument('--gap', type=float, default=12.0,
                         help='istekler arası bekleme (sn), varsayılan 12')
     parser.add_argument('--json', action='store_true')
+    parser.add_argument('--annotate', action='store_true',
+                        help='Sonucu GitHub annotation olarak yaz (log depolaması '
+                             'okunamasa da API\'den görünür)')
     args = parser.parse_args(argv)
 
     report = {'generated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
@@ -174,6 +179,14 @@ def main(argv=None):
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
+    if args.annotate:
+        # Log arşivi bazen API'den okunamıyor; annotation check-run API'sinde kalır.
+        for entry in report['results']:
+            for name, row in entry['variants'].items():
+                print(f'::notice title={name}::HTTP {row.get("status")} · '
+                      f'{row.get("ms")} ms · {row.get("bytes", "—")} bayt · '
+                      f'{entry["url"].split("/")[2]}')
+            print(f'::warning title={entry["url"].split("/")[2]}::{entry["verdict"]}')
     return 0
 
 
