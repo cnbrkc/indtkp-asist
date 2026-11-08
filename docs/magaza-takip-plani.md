@@ -802,17 +802,31 @@ milyonda biri (plan §13.6.7).
 Akakçe tam eski hızına dönüyor. Yani "az link = sık kontrol, çok link = seyrek" kuralı
 kendiliğinden işliyor; ayrı bir ürün sayısı sınırı gerekmiyor (fizik dayatıyor).
 
-### 16.4 Blok yememe — üç bağımsız fren
+### 16.4 Blok yememe — üç bağımsız fren (birleştirme öncesi denetimde düzeltildi)
 
-1. **Tur içi bekleme:** her istekten sonra `gap = max(dip_sınır, yanıt_süresi × 2)`.
-   Site yavaşlarsa biz de yavaşlarız (Scrapy AutoThrottle mantığı). Ölçüldüğü için tahmin yok.
-2. **Hata freni:** okuma başarısız olursa o site **120 sn** boyunca dip sınıra çekilir;
-   **ikinci üst üste hatada** dip sınır iki katına (max 300 sn).
-3. **Geri çekilme:** 2. hatada 4×, 3. hatada 8×, 4+ hatada 16× aralık (tavan 1 saat).
-   Engelin geçtiği ilk temiz okumada sayaç sıfırlanır.
+1. **Tur içi bekleme:** her istekten sonra `gap = max(dip_sınır, istek_süresi × 2)`.
+   Site yavaşlarsa biz de yavaşlarız (Scrapy AutoThrottle mantığı).
 
-Ek olarak **siteler birbirini kilitlemez**: Akakçe'de engel olsa Cimri ve Epey kendi hızında
-devam eder (test: `test_sites_do_not_block_each_other`).
+   > **Düzeltme (denetimde bulundu):** ilk sürümde sayaç bekleme **başlamadan** başlıyordu.
+   > 16 sn bekleyen bir tur "32 sn yavaş istek" sayılıp dip sınırı ikiye katlıyor, sonraki tur
+   > 32 sn bekliyor → 64 sn → … kendi kendini boğan bir sarmal. Artık sayaç bekleme
+   > **bittikten sonra** başlıyor; yalnız ağ süresi ölçülüyor.
+
+2. **Hata freni:** okuma başarısız olursa o sitenin aralığı **hemen 2 katına** çıkar
+   (2 → 4 → 8 kademe, tavan 8×); **ikinci üst üste hatada** ayrıca dip sınır iki katına
+   (max 300 sn). **3 temiz okumadan sonra** bir kademe geri hızlanır.
+
+   > **Düzeltme (denetimde bulundu):** ilk sürümde "temiz okuma sayısı ≥ 3 → aralık 2×"
+   > kuralı **sağlıklı sitede de** kalıcı yavaşlama yapıyordu (3. okumadan sonra sonsuza kadar
+   > 2 kat). Artık çarpan yalnız **hata sonrası** uygulanıyor.
+
+3. **Geri çekilme:** ürün bazlı; 2/3/4+ hatada 4×/8×/16× (tavan 1 saat), temiz okumada sıfırlanır.
+
+**Siteler birbirini kilitlemez**: Akakçe'de engel olsa Cimri ve Epey kendi hızında devam eder
+(test: `test_sites_do_not_block_each_other`).
+
+**Tavan kuralı:** hangi fren devreye girerse girsin kontrol **30 dakikadan seyrek olmaz**
+(test: `test_thirty_minutes_is_never_exceeded`) — kullanıcı fiyatı kaçırmasın.
 
 ### 16.5 Kontrol kimde? — yeni komut **yok**
 
@@ -840,6 +854,6 @@ bir bakıyoruz, yani kullanıcının istediği "az link = sık kontrol" sağlan�
 
 ### 16.7 Test kapısı
 
-`python -m unittest discover -s tests` → **997 OK** (+24 aralık testi:
+`python -m unittest discover -s tests` → **999 OK** (+26 aralık testi:
 `tests/test_tracker_intervals.py`; yeni komut yok, yardım kataloğu değişmedi). Eski 5 dk sabitinin korunduğu tek yer `INTERVAL = 300`
 (sadece geriye dönük isim; 30 üründe Akakçe hâlâ tam 300 sn).

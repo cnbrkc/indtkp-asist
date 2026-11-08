@@ -1434,9 +1434,10 @@ Yeni komut eklenmez (yardım listesi aynı kalır). Gerekirse `product_watches.j
 ürün başına `"interval_minutes": 5` yazarak elle sabitlenebilir; bu değer de dip sınırın
 altına inemez (blok yemeyelim diye).
 
-Blok koruması üç katmanlı: her istekten sonra `max(dip, yanıt×2)` bekleme; hata görülen site
-120 sn dip sınıra çekilir, ikinci hatada dip sınır iki katına; 2/3/4+ hatada 4×/8×/16× geri
-çekilme (tavan 1 saat). Siteler birbirini kilitlemez.
+Blok koruması: her istekten sonra `max(dip, ağ_süresi×2)` bekleme; hata gören site **hemen 2
+katı** yavaşlar (2→4→8 kademe), ikinci hatada dip sınır da iki katına (max 300 sn), 3 temiz
+okumada bir kademe geri gelir; ürün bazlı geri çekilme 4×/8×/16× (tavan 1 saat). Hangi fren
+devreye girerse girsin kontrol **30 dakikadan seyrek olmaz**. Siteler birbirini kilitlemez.
 
 Güvenlik kuralı: sayfanın yapısal fiyatı (JSON-LD) ile sayfada görünen mağaza
 satırlarının en düşüğü **aynı kuruş** olmalı. Tutmazsa fiyat gösterilmez, alarm

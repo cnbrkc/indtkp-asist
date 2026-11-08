@@ -2,8 +2,10 @@
 
 Ağ yok. Tüm sayılar plan §13.6 ve §16'daki ölçümlere dayanır.
 """
+import asyncio
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -115,22 +117,30 @@ class DilutionTests(unittest.TestCase):
 
 class BackoffTests(unittest.TestCase):
     def test_error_grows_the_interval_and_stays_capped(self):
-        bucket = {'count': 1, 'min_gap': 10, 'wanted': 180, 'cap': 1800,
-                  'clean': 0, 'boost_until': 0}
-        self.assertEqual(bucket_target(bucket), 180)
-        bucket['boost_until'] = 10 ** 9         # engel penceresi açık
-        self.assertEqual(bucket_target(bucket), 180)   # dip: istenen aralık
-        bucket.update(count=30)
-        self.assertEqual(bucket_target(bucket), 300)
-        bucket['cap'] = 250
-        self.assertEqual(bucket_target(bucket), 250)
+        bucket = {'count': 1, 'min_gap': 10, 'wanted': 180, 'cap': 1800, 'slowdown': 1}
+        self.assertEqual(bucket_target(bucket), 180)          # sağlıklı
+        bucket['slowdown'] = 2
+        self.assertEqual(bucket_target(bucket), 360)          # 1 hata
+        bucket['slowdown'] = 8
+        self.assertEqual(bucket_target(bucket), 1440)         # 3. hata
+        bucket.update(count=30, slowdown=8)
+        self.assertEqual(bucket_target(bucket), 1800)         # tavan 30 dk
+        bucket.update(slowdown=999)
+        self.assertEqual(bucket_target(bucket), 1800)         # slowdown 8'de kırpılır
 
-    def test_clean_reads_relax_slowly(self):
-        bucket = {'count': 1, 'min_gap': 10, 'wanted': 180, 'cap': 1800,
-                  'clean': 0, 'boost_until': 0}
+    def test_thirty_minutes_is_never_exceeded(self):
+        """Engel ne kadar sürerse sürsün kontrol 30 dk'dan seyrek olmaz."""
+        for count in (1, 10, 30):
+            bucket = {'count': count, 'min_gap': 12, 'wanted': 240, 'cap': 1800,
+                      'slowdown': 8}
+            self.assertLessEqual(bucket_target(bucket), 1800)
+
+    def test_slowdown_is_not_applied_to_a_healthy_site(self):
+        """Regresyon: eskiden 3 temiz okumadan sonra kalıcı 2× yavaşlama vardı."""
+        bucket = buckets_from_items([item(CIMRI.format(n=1))])['cimri']
+        for _ in range(10):
+            bucket['clean'] = bucket.get('clean', 0) + 1
         self.assertEqual(bucket_target(bucket), 180)
-        bucket['clean'] = 3
-        self.assertEqual(bucket_target(bucket), 360)
 
     def test_backoff_weight_table(self):
         self.assertEqual(pt.BACKOFF_WEIGHT, {2: 2, 3: 3, 4: 4})
@@ -232,13 +242,36 @@ class TrackerIntervalTests(unittest.IsolatedAsyncioTestCase):
         await self.tracker.check(self.tracker.state['items'][0])
         bucket = self.tracker.buckets['epey']
         self.assertEqual(bucket['fail_streak'], 1)
-        self.assertGreater(bucket['boost_until'], 0)
+        self.assertEqual(bucket['slowdown'], 2)      # 1. hatada hemen 2 katı
+        self.assertEqual(bucket['interval'], 480)    # 240 × 2
         first_gap = self.tracker.next_site['epey']
         self.tracker.reset_gaps()
         await self.tracker.check(self.tracker.state['items'][0])
-        self.assertEqual(bucket['min_gap'], 24)      # 2. hatada iki katına
+        self.assertEqual(bucket['min_gap'], 24)      # 2. hatada dip iki katına
         self.assertGreater(self.tracker.next_site['epey'], first_gap)
         self.assertLessEqual(bucket['min_gap'], 300)  # tavan
+        for _ in range(4):                           # 8 kat tavanı aşılmaz
+            self.tracker.reset_gaps()
+            await self.tracker.check(self.tracker.state['items'][0])
+        self.assertEqual(bucket['slowdown'], 8)
+
+    async def test_slow_throttle_is_not_counted_as_a_slow_site(self):
+        """Regresyon: bekleme süresi ölçülen yanıt süresine ekleniyordu →
+        her turda dip sınır ikiye katlanıp site kendi kendini boğuyordu."""
+        self.tracker.state['items'] = [item(EPEY.format(n=1))]
+        self.tracker.rebuild_buckets()
+        self.tracker.buckets['epey']['min_gap'] = 1        # ölçüm için küçült
+        self.tracker.next_site['epey'] = time.monotonic() + 0.5   # 0,5 sn bekleme
+
+        async def slow_but_ok(url):
+            await asyncio.sleep(0.02)
+            return {'title': 'Örnek', 'price': 600_000, 'seller': 'x', 'offers': 1}
+
+        self.tracker.reader = slow_but_ok
+        await self.tracker.check(self.tracker.state['items'][0])
+        gap = self.tracker.next_site['epey'] - time.monotonic()
+        # Bekleme sayılsaydı gap ≈ 2 × 0,52 = 1,04 sn olurdu; doğrusu dip sınır.
+        self.assertLess(gap, 1.0, 'bekleme, ölçülen yanıt süresine eklenmemeli')
 
     async def test_clean_read_resets_the_streak(self):
         self.tracker.state['items'] = [item(EPEY.format(n=1))]

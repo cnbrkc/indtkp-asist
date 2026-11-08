@@ -123,14 +123,17 @@ def effective_interval(bucket, wanted):
 
 
 def bucket_target(bucket, now=None):
-    """Kovaya yazılacak hedef aralık (sn)."""
-    now = time.monotonic() if now is None else now
+    """Kovaya yazılacak hedef aralık (sn).
+
+    Sağlıklı hâl: ``max(ideal, N × dip_sınır)``.
+    Hata sonrası: aynı değer ``slowdown`` katı (2 → 4 → 8, tavan 8) — yani
+    engel yediğimizde o site **ölçülü** biçimde yavaşlar, sonra kendine gelir.
+    Tavan her durumda 30 dk; engel ne kadar sürerse sürsün 30 dk'dan seyrek
+    kontrol edilmez (kullanıcı fiyatı kaçırmasın).
+    """
     cap = int(bucket.get('cap') or DEFAULT_POLICY['max'])
-    if bucket.get('boost_until', 0) > now:
-        return min(effective_interval(bucket, bucket['wanted']), cap)
-    # Temiz okuma sayısı arttıkça tavana doğru iki adımda gevşe.
-    factor = 1 if bucket.get('clean', 0) < 3 else 2
-    return min(effective_interval(bucket, bucket['wanted']) * factor, cap)
+    slowdown = max(1, min(8, int(bucket.get('slowdown') or 1)))
+    return min(effective_interval(bucket, bucket['wanted']) * slowdown, cap)
 
 
 def buckets_from_items(items):
@@ -142,7 +145,7 @@ def buckets_from_items(items):
         bucket = buckets.setdefault(key, {
             'site': key, 'count': 0, 'wanted': policy['single'],
             'min_gap': policy['min_gap'], 'cap': policy['max'],
-            'backoff': policy['backoff'], 'clean': 0, 'boost_until': 0,
+            'backoff': policy['backoff'], 'clean': 0, 'slowdown': 1,
             'latency_ms': None, 'fail_streak': 0, 'last_check': None,
             'auto': True, 'interval': policy['single'],
         })
@@ -321,7 +324,7 @@ class ProductTracker:
         self.buckets = buckets_from_items(self.state['items'])
         for key, bucket in self.buckets.items():
             old = previous.get(key) or {}
-            for field in ('clean', 'boost_until', 'latency_ms', 'fail_streak', 'last_check'):
+            for field in ('clean', 'slowdown', 'latency_ms', 'fail_streak', 'last_check'):
                 if field in old:
                     bucket[field] = old[field]
             bucket['interval'] = bucket_target(bucket)
@@ -430,15 +433,17 @@ class ProductTracker:
 
     async def fetch(self, url):
         key = site_key(url)
-        started = time.monotonic()
-        await asyncio.sleep(max(0, self.next_site.get(key, 0.0) - started))
+        await asyncio.sleep(max(0, self.next_site.get(key, 0.0) - time.monotonic()))
+        bucket = self.buckets.get(key) or {}
+        started = time.monotonic()          # bekleme DEĞİL, yalnız istek süresi
         try:
             return await self.reader(url)
         finally:
-            # Dip sınır ÖLÇÜLEN yanıt süresine göre de büyür: site yavaşladıysa
-            # (AutoThrottle mantığı) gap = max(dip, yanıt × 2).
+            # AutoThrottle: gap = max(dip sınır, istek_süresi × 2).
+            # Regresyon: eskiden sayaç beklemeden önce başlıyordu; 16 sn bekleyen
+            # bir istek 32 sn "yavaş" sayılıp dip sınırı ikiye katlıyor, her
+            # turda daha da yavaşlıyordu (site kendi kendini boğuyordu).
             elapsed = time.monotonic() - started
-            bucket = self.buckets.get(key) or {}
             floor = max(float(bucket.get('min_gap') or HOST_GAP), elapsed * 2)
             self.next_site[key] = time.monotonic() + floor
             self.next_host = max(self.next_host, self.next_site[key])
@@ -577,6 +582,10 @@ class ProductTracker:
                      money(price), money(item['target']))
             bucket['fail_streak'] = 0
             bucket['clean'] = int(bucket.get('clean', 0)) + 1
+            # 3 temiz okumadan sonra bir kademe hızlan (throttle'dan çıkış).
+            if bucket['clean'] >= 3 and int(bucket.get('slowdown') or 1) > 1:
+                bucket['slowdown'] = max(1, int(bucket['slowdown']) // 2)
+                bucket['clean'] = 0
             if price >= item['target'] or (item.get('alert_price') is not None and price >= item['alert_price']):
                 # Alarm gerekmiyor: geçmiş bir gönderim hatası geri çekilmeyi
                 # kalıcı olarak şişirmesin.
@@ -621,7 +630,10 @@ class ProductTracker:
                 # Engel/yavaşlama sinyali: bu siteyi bir süre gevşet (plan §13.6.4).
                 bucket['fail_streak'] = int(bucket.get('fail_streak', 0)) + 1
                 bucket['clean'] = 0
-                bucket['boost_until'] = time.monotonic() + int(bucket.get('backoff', 120))
+                # 1. hatada hemen 2 katı yavaşla (ban yemeyelim), her hatada bir
+                # kademe daha; tavan 8 kat. İki siteden biri bozulsa diğeri
+                # etkilenmez (kova ayrı).
+                bucket['slowdown'] = min(8, int(bucket.get('slowdown') or 1) * 2)
                 if bucket['fail_streak'] >= 2:
                     bucket['min_gap'] = min(300, int(bucket.get('min_gap', 10)) * 2)
                 log.warning('Ürün okunamadı: %s — %s (%d. başarısız deneme)',
