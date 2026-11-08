@@ -1,0 +1,60 @@
+name: Mağaza ölçümü (F1 probe)
+
+# Yalnız elle çalıştırılır. Secret yok, Telegram yok, zamanlanmış görev yok.
+# Çıktı: GITHUB_STEP_SUMMARY tablosu + artefakt (sonraki fazların fixture kaynağı).
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: >
+          Ölçülecek ürün URL'leri (her satıra bir tane). Birden fazla satır
+          yazabilirsin; izin listesinde olmayan satırlar reddedilir.
+        required: true
+        type: string
+      rounds:
+        description: Her URL için istek sayısı (gecikme ölçümü)
+        required: false
+        default: "3"
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: store-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Bağımlılık kurulmuyor: probe yalnız standart kütüphane kullanır.
+      - name: URL listesini yaz
+        env:
+          URLS: ${{ inputs.urls }}
+        run: |
+          printf '%s\n' "$URLS" > urls.txt
+          echo "--- girilen satırlar ---"
+          cat -n urls.txt
+      - name: Ölçüm
+        run: |
+          python -I tools/store_probe.py \
+            --urls urls.txt \
+            --out probe-out \
+            --rounds "${{ inputs.rounds }}"
+      - name: Özet tabloyu iş akışına yaz
+        if: always()
+        run: |
+          if [ -f probe-out/summary.md ]; then cat probe-out/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Artefaktı yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: store-probe-out
+          path: probe-out/
+          retention-days: 14
+          if-no-files-found: warn
