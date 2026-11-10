@@ -4954,7 +4954,7 @@ async def resolve_chat_groups(
     if "destination" in groups:
         notes += await resolve_destination(client, config)
         if strict and DESTINATION_ID is None:
-            return notes, "destination çözülemedi; sohbet ID'sini/​kullanıcı adını kontrol et"
+            return notes, "destination çözülemedi; sohbet ID'sini/kullanıcı adını kontrol et"
     if "control" in groups:
         control_notes, resolved = await resolve_control(client, config)
         notes += control_notes
@@ -5833,7 +5833,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if not isinstance(event, PrivateControlEvent) or event.sender_id != SELF_ID:
             await control_reply(event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
             return
-        key = pending_key(event)
         if command == COMMAND_DM_STATUS:
             await control_reply(event, dm_status() + (
                 "\n\nBu komut yalnızca bilgi gösterir. Kelime eklemek / çıkarmak için /ekle veya "
