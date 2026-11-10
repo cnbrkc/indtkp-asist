@@ -1,0 +1,2254 @@
+[
+ {
+  "src": "test_bot.py:98",
+  "text": "Sıcak KAHVE 250 TL"
+ },
+ {
+  "src": "test_bot.py:893",
+  "text": "iPhone 15 indirim\n2.299 TL"
+ },
+ {
+  "src": "test_bot.py:899",
+  "text": "İNDİRİM %50 2.299 TL"
+ },
+ {
+  "src": "test_bot.py:963",
+  "text": "Philips Airfryer XXL 6.2L\nTCL 65 QLED TV\n🛍️ Amazon\n💰 1.299 TL"
+ },
+ {
+  "src": "test_bot.py:964",
+  "text": "🔥 %40 indirim\nTCL 655 Model 5.999,90 TL"
+ },
+ {
+  "src": "test_bot.py:965",
+  "text": "Abc Televizyon 55 inç\nTCL 65 ekran\n💸 İndirimli Fiyat: 14.500,00 TL"
+ },
+ {
+  "src": "test_bot.py:970",
+  "text": "Philips Airfryer XXL 6.2L - 1.299 TL"
+ },
+ {
+  "src": "test_bot.py:971",
+  "text": "Abc Televizyon 55 inç - 14.500,00 TL"
+ },
+ {
+  "src": "test_bot.py:977",
+  "text": "Çok Uzun Bir Ürün Adı Burada Yer Alıyor Kablo 2 metre 99 TL"
+ },
+ {
+  "src": "test_bot.py:983",
+  "text": "Çok Uzun Bir Adı Yer Alıyor Kablo 2 metre - 99 TL"
+ },
+ {
+  "src": "test_bot.py:994",
+  "text": "\n🏷 31.866 TL\n\n👉 FIRSATA GİT"
+ },
+ {
+  "src": "test_bot.py:996",
+  "text": " - 31.866 TL"
+ },
+ {
+  "src": "test_bot.py:1003",
+  "text": "TCL 65 inç Akıllı TV 65C7K\n❌ Eski fiyat: 44.999 TL\n✅ Yeni fiyat: 31.866 TL"
+ },
+ {
+  "src": "test_bot.py:1004",
+  "text": "TCL 65 inç Akıllı TV 65C7K - 31.866 TL"
+ },
+ {
+  "src": "test_bot.py:1005",
+  "text": "TCL 65 inç Akıllı TV 65P635\n44.999 TL yerine 31.866 TL"
+ },
+ {
+  "src": "test_bot.py:1006",
+  "text": "TCL 65 inç Akıllı TV 65P635 - 31.866 TL"
+ },
+ {
+  "src": "test_bot.py:1007",
+  "text": "TCL 65 inç Akıllı TV 65Q650\n6 ay taksit 5.311 TL\nPeşin 31.866 TL"
+ },
+ {
+  "src": "test_bot.py:1008",
+  "text": "TCL 65 inç Akıllı TV 65Q650 - 31.866 TL"
+ },
+ {
+  "src": "test_bot.py:1009",
+  "text": "TCL 65 inç Akıllı TV 65T8D\n🏷 3.558 TL\nÜrün sayfasındaki 100 TL kupon her hesapta çıkmayabilir."
+ },
+ {
+  "src": "test_bot.py:1011",
+  "text": "TCL 65 inç Akıllı TV 65T8D - 3.558 TL"
+ },
+ {
+  "src": "test_bot.py:1022",
+  "text": "14.500,00 TL"
+ },
+ {
+  "src": "test_bot.py:1027",
+  "text": "TCL 65 inç Akıllı TV 65C7K için 1299 TL indirim . Normal fiyat 1500 TL"
+ },
+ {
+  "src": "test_bot.py:1586",
+  "text": "🔥 ÇAY #reklam WhatsApp'tan bilgi https://wa.me/123 gizli WhatsApp bağlantısı burada 9 TL."
+ },
+ {
+  "src": "test_bot.py:1605",
+  "text": "🔥 ÇAY WhatsApp'tan bilgi gizli WhatsApp bağlantısı burada 9 TL."
+ },
+ {
+  "src": "test_bot.py:1713",
+  "text": "%50 indirim\n1.299 TL"
+ },
+ {
+  "src": "test_bot.py:1717",
+  "text": "1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nhttps://example.com/product"
+ },
+ {
+  "src": "test_bot.py:1718",
+  "text": "🔥 %40 indirim\nSepette 5.999,90 TL\nSamsung Galaxy S24 Ultra 256GB\nÜrün linki: https://example.com/p"
+ },
+ {
+  "src": "test_bot.py:1719",
+  "text": "Fiyat: ₺7.499\nİndirim oranı %30\nLEGO Technic 42177 Mercedes-Benz G 500"
+ },
+ {
+  "src": "test_bot.py:1720",
+  "text": "%30'a varan indirim\n1.299 TL\nPhilips Airfryer XXL 6.2L"
+ },
+ {
+  "src": "test_bot.py:1721",
+  "text": "Fırsata Git\n1.299 TL\n#Philips Airfryer XXL\nhttps://example.com/product"
+ },
+ {
+  "src": "test_bot.py:1737",
+  "text": "🎯 Samsung Galaxy S24 Ultra 256GB · 49.999 TL (%25 indirim)"
+ },
+ {
+  "src": "test_bot.py:1742",
+  "text": "🔥 Sıcak ÇAY 5 TL"
+ },
+ {
+  "src": "test_bot.py:1749",
+  "text": "**DÜŞÜŞÜ**\n\n\n\n📉 **FİYAT DÜŞÜŞÜ -%29,6**\n\n\n\n🛍️ **Restorex Besleyici Bakım Şampuanı 900 Mililitre, 7 Besleyici**\n\n\n\n💸 İndirimli Fiyat: **145,00 TL**\n\n🔻 Fark: **-%29,6**\n❌ Eski Fiyat: ~~206,00 TL~~\n🛒 **Amazon: 60 günün en düşük fiyatı**\n🏆 **TÜM ZAMANLARIN DİBİ (49 günün)**\n\n🔗 [Amazon'da gör](https://www.amazon.com.tr/dp/B0FWR8N18Z?tag=alalal07-21)\n\n#Kozmetik@amazonfirsatalarmi"
+ },
+ {
+  "src": "test_bot.py:1844",
+  "text": "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n129,90 TL\n\nhttps://wa.me/905551234567\n#reklam\n\nStoklarla sınırlı"
+ },
+ {
+  "src": "test_bot.py:1848",
+  "text": "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n129,90 TL\n\nStoklarla sınırlı"
+ },
+ {
+  "src": "test_bot.py:1862",
+  "text": "\n\n\n  çay 5 TL \n\n\n"
+ },
+ {
+  "src": "test_bot.py:1888",
+  "text": "🔥 başlık\n\n\nfiyat 9,90 TL"
+ },
+ {
+  "src": "test_bot.py:1901",
+  "text": "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n\n\n129,90 TL\n\nhttps://wa.me/905551234567\n#reklam\n\nStoklarla sınırlı"
+ },
+ {
+  "src": "test_bot.py:1910",
+  "text": "🔥 Başlık\n\n\n\nhttps://wa.me/905551234567\n\n\n\n9 TL"
+ },
+ {
+  "src": "test_bot.py:1934",
+  "text": "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n\n\n129,90 TL\n\n\n\nStoklarla sınırlı"
+ },
+ {
+  "src": "test_bot.py:1941",
+  "text": "A101 Çamaşır Deterjanı 4 Lt\n\n🔥 A101 Çamaşır Deterjanı 4 Lt\n\n129,90 TL\n\nStoklarla sınırlı\n\n🔗 https://example.com/urun\n\n🔗 Mesajı Gör: https://t.me/firsatz/123\n\nFırsatZ"
+ },
+ {
+  "src": "test_bot.py:1958",
+  "text": "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n129,90 TL"
+ },
+ {
+  "src": "test_bot.py:1968",
+  "text": "A101 Çamaşır Deterjanı 4 Lt\n\n🔥 A101 Çamaşır Deterjanı 4 Lt\n\n129,90 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/123\n\nFırsatZ"
+ },
+ {
+  "src": "test_bot.py:1985",
+  "text": "Çay fırsatı 5 TL\n\n🛒 https://amzn.to/urun"
+ },
+ {
+  "src": "test_bot.py:2027",
+  "text": "Çay 5 TL\n\n💚Whatsapp Önemli Fırsatlar\n\nStoklarla sınırlı"
+ },
+ {
+  "src": "test_bot.py:2028",
+  "text": "Çay 5 TL\n\nStoklarla sınırlı"
+ },
+ {
+  "src": "test_bot.py:2031",
+  "text": "Çay 5 TL\n\n#amazon #indirimalarmi\n\nStoklarla sınırlı"
+ },
+ {
+  "src": "test_bot.py:2037",
+  "text": "🛍️ Urban Care Duş Jeli 500 Ml\n\n💰 Fiyat : 107 TL\n\n💚Whatsapp Önemli Fırsatlar\n\n#amazon #indirimalarmi"
+ },
+ {
+  "src": "test_bot.py:2043",
+  "text": "🛍️ Urban Care Duş Jeli 500 Ml\n\n💰 Fiyat : 107 TL"
+ },
+ {
+  "src": "test_bot.py:2050",
+  "text": "WhatsApp'tan sipariş için yazın 9 TL indirim"
+ },
+ {
+  "src": "test_bot.py:2051",
+  "text": "WhatsApp grubunda 120 TL kupon"
+ },
+ {
+  "src": "test_bot.py:2052",
+  "text": "WhatsApp'tan bilgi gizli WhatsApp bağlantısı burada 9 TL."
+ },
+ {
+  "src": "test_bot.py:2076",
+  "text": "Çay 5 TL\n\n#fırsat gerçekten kaçmaz"
+ },
+ {
+  "src": "test_bot.py:2080",
+  "text": "Çay 5 TL\n\n30 Günün En Düşük Fiyatı"
+ },
+ {
+  "src": "test_bot.py:2091",
+  "text": "Çay 5 TL\n\n💚Whatsapp Önemli Fırsatlar"
+ },
+ {
+  "src": "test_bot.py:2126",
+  "text": "Çay 5 TL\n\n📣 Instagram kanalımıza katılın\nhttps://www.instagram.com/ornek\n\n📣 Diğer kanallarımız için TAZEFIRSAT.com\nhttps://www.amazon.com.tr/dp/B123"
+ },
+ {
+  "src": "test_bot.py:2191",
+  "text": "Instagram bağlantısı ürün açıklamasında 9 TL"
+ },
+ {
+  "src": "test_bot.py:2195",
+  "text": "Çay 5 TL instagram.com/ornek"
+ },
+ {
+  "src": "test_bot.py:2202",
+  "text": "Insta360 kamera 5 TL"
+ },
+ {
+  "src": "test_bot.py:2241",
+  "text": "1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nFırsata Git"
+ },
+ {
+  "src": "test_bot.py:2248",
+  "text": "Philips Airfryer XXL 6.2L\n\n1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nFırsata Git\n\n🔗 Mesajı Gör: https://t.me/firsatz/9\n\nFırsatZ"
+ },
+ {
+  "src": "test_bot.py:2269",
+  "text": "🛍️ Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici Banyo ve Duş Jeli 500ml x 4 Adet\n\n💰 Fiyat : 225 TL\n\n🗓️ 365 Günün En Düşük Fiyatı\n\n🛒 https://link.amazon/B02W5SjPe"
+ },
+ {
+  "src": "test_bot.py:2300",
+  "text": "çay\n\nçay 5 TL\n\n🔗 Fırsata Git: https://amzn.to/btn\n\n🔗 Mesajı Gör: https://t.me/FirsatZ/31543"
+ },
+ {
+  "src": "test_bot.py:2311",
+  "text": "🎟️ Hopi 200 TL ve üzeri alışverişlerde 50 TL indirim kuponu\n\nKod: HOPI50\n\nSon kullanım: 31 Ekim"
+ },
+ {
+  "src": "test_bot.py:2333",
+  "text": "🛍️ Çay Bardağı 6'lı Set\n129,90 TL Stoklarla sınırlı"
+ },
+ {
+  "src": "test_bot.py:2341",
+  "text": "Çay Bardağı 6'lı Set\n\n🛍️ Çay Bardağı 6'lı Set\n129,90 TL Stoklarla sınırlı"
+ },
+ {
+  "src": "test_bot.py:2351",
+  "text": "Fırsata Git 👉 çay 5 TL"
+ },
+ {
+  "src": "test_bot.py:2372",
+  "text": "çay\n\nçay 5 TL\n\n🔗 Fırsata Git: https://amzn.to/btn\n\n🔗 Mesajı Gör: https://t.me/FirsatZ/9"
+ },
+ {
+  "src": "test_bot.py:2577",
+  "text": "ÇAY 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"
+ },
+ {
+  "src": "test_bot.py:2681",
+  "text": "Sıcak ÇAY 5 TL"
+ },
+ {
+  "src": "test_bot.py:2685",
+  "text": "  Sıcak   ÇAY 5 TL  "
+ },
+ {
+  "src": "test_bot.py:2685",
+  "text": "sıcak çay 5 tl"
+ },
+ {
+  "src": "test_bot.py:2693",
+  "text": "Philips Airfryer XXL 6,2 L\nFiyat: 1.299₺\nÜrüne Git"
+ },
+ {
+  "src": "test_bot.py:2764",
+  "text": "Sıcak ÇAY 5 TL\nAçıklama satırı"
+ },
+ {
+  "src": "test_bot.py:2768",
+  "text": "🔥 3 kaynakta paylaşıldı!\n📌 Kaynaklar: A, B\n\nSıcak ÇAY 5 TL"
+ },
+ {
+  "src": "test_bot.py:2790",
+  "text": "Çay\n\n💰Fiyat: 5 TL\n\n✅ 2 kaynakta paylaşıldı · teyitli fırsat\n\nfirsatz"
+ },
+ {
+  "src": "test_bot.py:2793",
+  "text": "Çay\n\n💰Fiyat: 5 TL\n\nfirsatz"
+ },
+ {
+  "src": "test_bot.py:2804",
+  "text": "Çay\n\nÇay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9\n\nFırsatZ"
+ },
+ {
+  "src": "test_bot.py:2809",
+  "text": "Çay 5 TL\n\nFırsatZ"
+ },
+ {
+  "src": "test_bot.py:2853",
+  "text": "Ürün\n\n💰Fiyat: 5 TL\n\n🔗 https://example.com/p\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz"
+ },
+ {
+  "src": "test_bot.py:2863",
+  "text": "Yeni biçim ``💰Fiyat: 5 TL``; boşluklu eski yazım da tanınır."
+ },
+ {
+  "src": "test_bot.py:2864",
+  "text": "💰Fiyat: 5 TL"
+ },
+ {
+  "src": "test_bot.py:2865",
+  "text": "💰 Fiyat: 5 TL"
+ },
+ {
+  "src": "test_bot.py:2867",
+  "text": "Sepette 5 TL"
+ },
+ {
+  "src": "test_bot.py:2869",
+  "text": "Sıcak ÇAY\n\n💰Fiyat: 5 TL\n\n🔗 https://example.com/p"
+ },
+ {
+  "src": "test_campaign_price.py:1",
+  "text": "Kampanya koşulu tutarları (ör. \"2. ürün 1 TL\") ürün fiyatı sayılmaz.\n\nSenaryolar: (1) yalnızca kampanya tutarı var → fiyat bilinmez (❓, dedup'ta fiyat yok,\nDM kuralı tetiklenmez); (2) gerçek ürün fiyatı + kampanya tutarı → gerçek fiyat;\n(3) normal 1 TL ürünler ve kampanya gibi görünen ama ürün bağlamında olan tutarlar\n→ filtrelenmez. Her vaka fiyat katmanında (price_filter), bildirim başlığında\n(compose_message), dedup fiyatında (offer_terms), DM kuralında (price_matches) ve\nanaliz raporunda (query_price) birlikte doğrulanır.\n"
+ },
+ {
+  "src": "test_campaign_price.py:31",
+  "text": "Kalem Set 10'lu\n2 al 2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:32",
+  "text": "Kalem Set 10'lu\n2 al, 2. ürüne 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:33",
+  "text": "Kalem Set 10'lu\n2 al 2. 1₺"
+ },
+ {
+  "src": "test_campaign_price.py:34",
+  "text": "Kalem Set 10'lu\n2. ürüne 1₺"
+ },
+ {
+  "src": "test_campaign_price.py:35",
+  "text": "Kalem Set 10'lu\nİkinci ürüne 1₺"
+ },
+ {
+  "src": "test_campaign_price.py:36",
+  "text": "Kalem Set 10'lu\nİkinci ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:37",
+  "text": "Kalem Set 10'lu\n2. ürünü 1 TL'ye al"
+ },
+ {
+  "src": "test_campaign_price.py:38",
+  "text": "Kalem Set 10'lu\n2. ürün: 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:39",
+  "text": "Kalem Set 10'lu\n2. ürün fiyatı: 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:40",
+  "text": "Kalem Set 10'lu\n🏷 2. ürün 1₺"
+ },
+ {
+  "src": "test_campaign_price.py:41",
+  "text": "Kalem Set 10'lu\n2 alana 1 TL kampanyası"
+ },
+ {
+  "src": "test_campaign_price.py:42",
+  "text": "Kalem Set 10'lu\n2 alana 2. ürün 1₺"
+ },
+ {
+  "src": "test_campaign_price.py:43",
+  "text": "Kalem Set 10'lu\nKampanya: 2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:44",
+  "text": "Kalem Set 10'lu\nKampanya: 1 TL ek ürün"
+ },
+ {
+  "src": "test_campaign_price.py:45",
+  "text": "Kalem Set 10'lu\n2. ürün 1 TL kampanyası geçerli"
+ },
+ {
+  "src": "test_campaign_price.py:47",
+  "text": "Kalem Set 10'lu\n2. ürün\n1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:48",
+  "text": "Kalem Set 10'lu\n2. ürün:\n1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:49",
+  "text": "Kalem Set 10'lu\n2. ürün:\n1₺"
+ },
+ {
+  "src": "test_campaign_price.py:50",
+  "text": "Kalem Set 10'lu\n2. ürün\n1₺"
+ },
+ {
+  "src": "test_campaign_price.py:51",
+  "text": "Kalem Set 10'lu\n2 al 2. ürün\n1₺"
+ },
+ {
+  "src": "test_campaign_price.py:52",
+  "text": "Kalem Set 10'lu\n2 alana\n1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:53",
+  "text": "Kalem Set 10'lu\nKampanya:\n2. ürün\n1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:54",
+  "text": "Kalem Set 10'lu\nEk ürün\n1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:92",
+  "text": "Kalem Set 10'lu\n🏷 49,90 TL\n2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:93",
+  "text": "🏷 49,90 TL 2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:95",
+  "text": "Kalem Set 10'lu\nFiyat: 49,90 TL 2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:96",
+  "text": "Kalem Set 10'lu\n🏷 1 TL 2. ürün 49,90 TL"
+ },
+ {
+  "src": "test_campaign_price.py:98",
+  "text": "Kalem Set 10'lu\n🏷 49,90 TL\n2. ürün:\n1₺"
+ },
+ {
+  "src": "test_campaign_price.py:99",
+  "text": "Kalem Set 10'lu\n2. ürün:\n🏷 49,90 TL\n1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:100",
+  "text": "Kalem Set 10'lu\nFiyat: 49,90 TL\n2 al 2. 1₺"
+ },
+ {
+  "src": "test_campaign_price.py:101",
+  "text": "Kalem Set 10'lu\n🏷 49,90 TL\n2 alana 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:102",
+  "text": "Kalem Set 10'lu\nKampanya fiyatı: 49,90 TL ek ürün"
+ },
+ {
+  "src": "test_campaign_price.py:104",
+  "text": "Kalem Set 10'lu\n2. ürün 1 TL\n🏷 49,90 TL"
+ },
+ {
+  "src": "test_campaign_price.py:105",
+  "text": "Kalem Set 10'lu\nKampanya: 2. ürün 1 TL\nFiyat: 49,90 TL"
+ },
+ {
+  "src": "test_campaign_price.py:107",
+  "text": "Kalem Set 10'lu\n🏷 49,90 TL\n2. ürün\n1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:110",
+  "text": "Kalem Set 10'lu\n2. ürün\n🏷 49,90 TL"
+ },
+ {
+  "src": "test_campaign_price.py:130",
+  "text": "Kalem Set 10'lu\n🏷 1 TL\n2. ürün\n1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:137",
+  "text": "🏷 49,90 TL\n2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:142",
+  "text": "Gerçekten 1 TL olan ürünler ve kampanya kelimesine benzeyen ama ürün fiyatı olan tutarlar."
+ },
+ {
+  "src": "test_campaign_price.py:145",
+  "text": "Kalem Set 10'lu\n🏷 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:146",
+  "text": "Kalem Set 10'lu\nFiyat: 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:147",
+  "text": "Kalem Set 10'lu\n💰 1₺"
+ },
+ {
+  "src": "test_campaign_price.py:148",
+  "text": "Kalem Set 10'lu 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:149",
+  "text": "Kalem Set 10'lu\n🏷 1 TL\nKargo bedava"
+ },
+ {
+  "src": "test_campaign_price.py:150",
+  "text": "Kalem Set 10'lu\nFiyat:\n1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:152",
+  "text": "Kalem Set 10'lu\n1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:153",
+  "text": "Kalem 1 TL'ye al"
+ },
+ {
+  "src": "test_campaign_price.py:154",
+  "text": "Kalem Set\n🏷 1 TL'ye al"
+ },
+ {
+  "src": "test_campaign_price.py:156",
+  "text": "Kalem Set 10'lu\nFiyat: 1 TL\n2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:157",
+  "text": "Kalem Set 10'lu\n🏷 1 TL 2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:159",
+  "text": "Kutu 2 alüminyum 150 TL"
+ },
+ {
+  "src": "test_campaign_price.py:160",
+  "text": "Ek ürün kılıfı 150 TL"
+ },
+ {
+  "src": "test_campaign_price.py:162",
+  "text": "2. ürün: Kulaklık 1.299 TL"
+ },
+ {
+  "src": "test_campaign_price.py:163",
+  "text": "Kalem Set 2 ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:179",
+  "text": "Kalem\n🏷 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:192",
+  "text": "Kalem Set 10'lu\n1 TL 2. ürün 49,90 TL"
+ },
+ {
+  "src": "test_campaign_price.py:193",
+  "text": "Kalem Set 10'lu\n49,90 TL 2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:194",
+  "text": "Kalem Set 10'lu\n1 TL (2. ürün 49,90 TL)"
+ },
+ {
+  "src": "test_campaign_price.py:195",
+  "text": "Kalem Set 10'lu\n49,90 TL (2. ürün 1 TL)"
+ },
+ {
+  "src": "test_campaign_price.py:196",
+  "text": "Kalem Set 10'lu\n1 TL / 2. ürün 49,90 TL"
+ },
+ {
+  "src": "test_campaign_price.py:197",
+  "text": "Kalem Set 10'lu\n1 TL, 2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:198",
+  "text": "Kalem Set 10'lu\n2. ürün 49,90 TL 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:199",
+  "text": "Kalem Set 10'lu\n2 al 1 TL 2. ürün 49,90 TL"
+ },
+ {
+  "src": "test_campaign_price.py:200",
+  "text": "Kalem Set 10'lu\n49,90 TL 2 al 2. 1₺"
+ },
+ {
+  "src": "test_campaign_price.py:201",
+  "text": "Kalem Set 10'lu\n🏷 2. ürün 1 TL 49,90 TL"
+ },
+ {
+  "src": "test_campaign_price.py:203",
+  "text": "Kalem Set 10'lu 🏷 49,90 TL 2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:204",
+  "text": "Kalem Set 10'lu\n🏷 2 al 2. 1₺ 49,90 TL"
+ },
+ {
+  "src": "test_campaign_price.py:225",
+  "text": "Kalem Set 2. ürün\n1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:227",
+  "text": "Kalem Set 10'lu\n49,90 TL\n2. ürün 1 TL"
+ },
+ {
+  "src": "test_campaign_price.py:228",
+  "text": "Kalem Set 10'lu\n1 TL\n2. ürün 49,90 TL"
+ },
+ {
+  "src": "test_campaign_price.py:229",
+  "text": "Kalem Set 10'lu\n1 TL\n2. ürün:\n49,90 TL"
+ },
+ {
+  "src": "test_campaign_price.py:230",
+  "text": "Kalem Set 10'lu\n2. ürün 1 TL\n49,90 TL"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:46",
+  "text": " TL\n\n🧮 Sepete 3 adet ekleyin, indirim ödeme ekranında uygulanır.\n\n🎯 KAMPANYA: "
+ },
+ {
+  "src": "test_cross_channel_dedup.py:142",
+  "text": "🛍️ Homend Profashion 3023H Stand Mikser Antrasit\n\n💰 Fiyat : 6619 TL\n🗓️ 365 Günün En Düşük Fiyatı\n\n"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:144",
+  "text": "✅ Homend Profashion 3023H Stand Mikser Antrasit\n\n🏷 6.619 TL\n\n👉 FIRSATA GİT!\n\n🛍 Amazon"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:184",
+  "text": "\n\n💰86,67 TL\n\n🧮 Sepete 3 adet ekleyin, indirim ödeme ekranında uygulanır.\n\n🎯 KAMPANYA: 3 al 2 öde\n\n🔗 Mesajı Gör: https://t.me/firsatz/130652\n\n"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:209",
+  "text": "Kargo 29,90 TL"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:236",
+  "text": "\n1 TL 2. ürün 49,90 TL"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:255",
+  "text": "🎯 2. ürün 1 TL"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:260",
+  "text": "🎯 2. ürün 1₺"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:387",
+  "text": "🛍️ Dr. Oetker Revani 3 kg\n💰 Fiyat : 291 TL / 4 adet alımda 262 TL"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:404",
+  "text": "\n💰 Fiyat : 79 TL / 13 adet alımda 71 TL"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:416",
+  "text": "Dr. Oetker Revani 3 Kg\n291 TL"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:417",
+  "text": "Dr. Oetker Revani 3 Kg\nFiyat: 260 TL"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:433",
+  "text": "\nFiyat: 79 TL / 13 adet alımda 71 TL"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:488",
+  "text": "\n🏷 79 TL\nhttps://amazon.com/dp/B09RMSLVS8"
+ },
+ {
+  "src": "test_cross_channel_dedup.py:489",
+  "text": "\nFiyat: 79 TL / 13 adet alımda 71 TL\nhttps://amazon.com/dp/B0ABC12345"
+ },
+ {
+  "src": "test_delivery_regressions.py:57",
+  "text": "Captain 150 ml\n159 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:58",
+  "text": "Whitewater 250 ml\n159 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:90",
+  "text": "Stanley IceFlow 1322 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:90",
+  "text": "Stanley IceFlow 1135 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:92",
+  "text": "Bingo 2000 ml 285 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:92",
+  "text": "Bingo 2000 ml 159 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:93",
+  "text": "Bingo 2000 ml\n3 adet alımda 159 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:95",
+  "text": "Bref WC\nFiyat: 97 TL / 2 adet alımda 48 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:96",
+  "text": "Bref WC\nFiyat: 97 TL / 2 adet alımda 40 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:100",
+  "text": "Ürün\nEski fiyat: 100 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:286",
+  "text": "Çay\n\nÇay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9"
+ },
+ {
+  "src": "test_delivery_regressions.py:311",
+  "text": "Çay 5 TL\nPrime üyelerine özel"
+ },
+ {
+  "src": "test_delivery_regressions.py:316",
+  "text": "Çay Demlik Poşet 5 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:326",
+  "text": "Çay 5 TL\nSatıcı: Başka Mağaza"
+ },
+ {
+  "src": "test_delivery_regressions.py:333",
+  "text": "Çay\n\nÇay 5 TL https://ornek.example/urun-a\n\n🔗 Mesajı Gör: https://t.me/firsatz/9"
+ },
+ {
+  "src": "test_delivery_regressions.py:334",
+  "text": "Çay 5 TL https://ornek.example/urun-b"
+ },
+ {
+  "src": "test_delivery_regressions.py:341",
+  "text": "Çay 5 TL https://ornek.example/urun-a"
+ },
+ {
+  "src": "test_delivery_regressions.py:369",
+  "text": "Çay 4 TL https://ornek.example/urun-a"
+ },
+ {
+  "src": "test_delivery_regressions.py:378",
+  "text": "Çay 5 TL https://magaza-a.example/urun"
+ },
+ {
+  "src": "test_delivery_regressions.py:379",
+  "text": "Çay 5 TL https://magaza-b.example/urun"
+ },
+ {
+  "src": "test_delivery_regressions.py:387",
+  "text": "Çay 5 TL\nKupon: CAY10"
+ },
+ {
+  "src": "test_delivery_regressions.py:420",
+  "text": "Çay Demlik 9 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:447",
+  "text": "Çay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9"
+ },
+ {
+  "src": "test_delivery_regressions.py:477",
+  "text": "Stanley IceFlow Termos\n1322 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:478",
+  "text": "Stanley IceFlow Termos\n1135 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:573",
+  "text": "Karaca Multichef Rose Gold Mutfak Şefi\n2999 TL"
+ },
+ {
+  "src": "test_delivery_regressions.py:653",
+  "text": "Stanley IceFlow\n\nStanley IceFlow 1135 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/2"
+ },
+ {
+  "src": "test_delivery_regressions.py:654",
+  "text": "Stanley IceFlow\n\nStanley IceFlow 1322 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"
+ },
+ {
+  "src": "test_delivery_regressions.py:657",
+  "text": "Stanley IceFlow\n1135 TL"
+ },
+ {
+  "src": "test_fast_poll.py:51",
+  "text": "çay 5 TL fırsat"
+ },
+ {
+  "src": "test_integration.py:1284",
+  "text": "Sıcak ÇAY 5 TL\nKaçırılmayacak fırsat!"
+ },
+ {
+  "src": "test_integration.py:1332",
+  "text": "Abc Deterjan Çamaşır Sodası (Soda Matik) 500 Gr\n\n🏷️ 33 TL (3 Adet Alımda 22 TL)\n\n💬 Ortalama fiyatın %31 altında\n\n📂 Süpermarket\n\n🛍️ Amazon\n\n🔗 https://onu.al/feMF"
+ },
+ {
+  "src": "test_integration.py:1428",
+  "text": "çay 5 TL\n\n🛒 https://amzn.to/urun"
+ },
+ {
+  "src": "test_integration.py:1442",
+  "text": "Fırsata git 👇 çay 5 TL"
+ },
+ {
+  "src": "test_integration.py:1475",
+  "text": "Adidas ESS BTU BP Sırt Çantası\n💸 İndirimli Fiyat: 1.577 TL\n"
+ },
+ {
+  "src": "test_integration.py:1492",
+  "text": "Adidas sırt çantası\n1.577 TL\nhttps://amazon.com.tr/dp/B123"
+ },
+ {
+  "src": "test_integration.py:1513",
+  "text": "çay\n\nçay 5 TL"
+ },
+ {
+  "src": "test_integration.py:1642",
+  "text": "ÇAY 5 TL kampanya"
+ },
+ {
+  "src": "test_integration.py:1837",
+  "text": "çay fırsatı – Fırsata Git 5 TL"
+ },
+ {
+  "src": "test_integration.py:1872",
+  "text": "çay fırsatı 5 TL"
+ },
+ {
+  "src": "test_integration.py:1902",
+  "text": "🔥 ÇAY #işbirliği reklamcı WhatsApp'tan bilgi https://wa.me/905551234567 gizli WhatsApp bağlantısı burada 9 TL."
+ },
+ {
+  "src": "test_integration.py:1927",
+  "text": "🔥 ÇAY reklamcı WhatsApp'tan bilgi gizli WhatsApp bağlantısı burada 9 TL."
+ },
+ {
+  "src": "test_integration.py:1959",
+  "text": "🛍️ Urban Care Duş Jeli 500 Ml\n\n💰 Fiyat : 107 TL / 3 adet alımda 64 TL\n\nhttps://www.amazon.com.tr/dp/B0CB49N31Z\n\n💚Whatsapp Önemli Fırsatlar\n\n#amazon #indirimalarmi"
+ },
+ {
+  "src": "test_integration.py:1973",
+  "text": "💰 Fiyat : 107 TL / 3 adet alımda 64 TL"
+ },
+ {
+  "src": "test_integration.py:2087",
+  "text": "Sıcak ÇAY 5 TL https://www.akakce.com/arama/?q=cay"
+ },
+ {
+  "src": "test_integration.py:2269",
+  "text": "TCL 65 inç Akıllı TV 65C7K 4K QD-Mini LED\n🏷 31.866 TL\n👉 FIRSATA GİT"
+ },
+ {
+  "src": "test_integration.py:2283",
+  "text": "TCL 65 inç Akıllı TV 65C7K 4K QD-Mini LED - 31.866 TL"
+ },
+ {
+  "src": "test_integration.py:2373",
+  "text": "1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nFırsata Git\nÇay fırsatı"
+ },
+ {
+  "src": "test_integration.py:2375",
+  "text": "Philips Airfryer XXL 6,2 L\nFiyat: 1.299₺\nhttps://shop.example/p\nÇay fırsatı"
+ },
+ {
+  "src": "test_integration.py:2445",
+  "text": "Soğuk ÇAY 3 TL"
+ },
+ {
+  "src": "test_integration.py:2527",
+  "text": "Çay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9\n\nfirsatz"
+ },
+ {
+  "src": "test_integration.py:2545",
+  "text": "Çay\n\n💰Fiyat: 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9\n\nfirsatz"
+ },
+ {
+  "src": "test_integration.py:2562",
+  "text": "Çay\n\n💰Fiyat: 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9"
+ },
+ {
+  "src": "test_integration.py:2568",
+  "text": "arkadaşlar çay 5 tl demiş"
+ },
+ {
+  "src": "test_integration.py:2593",
+  "text": "🔥 3 kaynakta paylaşıldı!\n📌 Kaynaklar: A\n\nÇay 5 TL"
+ },
+ {
+  "src": "test_integration.py:2741",
+  "text": "Çay fırsatı 5 TL https://amzn.to/urun"
+ },
+ {
+  "src": "test_integration.py:2802",
+  "text": "\nFiyat: 13.485,92 TL"
+ },
+ {
+  "src": "test_integration.py:2803",
+  "text": "\nFiyat: 13.485,92 TL\nSatıcı: Amazon"
+ },
+ {
+  "src": "test_integration.py:2804",
+  "text": "\nFiyat: 13.485 TL\nSatıcı: Amazon Depo"
+ },
+ {
+  "src": "test_integration.py:2805",
+  "text": "\nFiyat: 13.485 TL"
+ },
+ {
+  "src": "test_integration.py:2819",
+  "text": "\n\n💰 13.485,92 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz"
+ },
+ {
+  "src": "test_integration.py:2835",
+  "text": "aynı ₺440 teklif restart sonrası yeniden gönderilmemeli"
+ },
+ {
+  "src": "test_integration.py:2845",
+  "text": "\nFiyat: 13.485 TL\nÜrün durumu: İkinci el yeni gibi"
+ },
+ {
+  "src": "test_integration.py:2854",
+  "text": "\nFiyat: 13.400 TL"
+ },
+ {
+  "src": "test_integration.py:2868",
+  "text": "\nFiyat: 13.484 TL"
+ },
+ {
+  "src": "test_integration.py:2882",
+  "text": "\n\n💰 1.299,90 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz"
+ },
+ {
+  "src": "test_integration.py:2886",
+  "text": "\nFiyat: 1.299,90 TL"
+ },
+ {
+  "src": "test_integration.py:2887",
+  "text": "\nFiyat: 1.299 TL"
+ },
+ {
+  "src": "test_integration.py:2888",
+  "text": "\nFiyat: 1.298 TL"
+ },
+ {
+  "src": "test_integration.py:2898",
+  "text": "\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi\nSatıcı: Mağaza A"
+ },
+ {
+  "src": "test_integration.py:2899",
+  "text": "\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi\nSatıcı: Mağaza B"
+ },
+ {
+  "src": "test_integration.py:2900",
+  "text": "\nFiyat: 13.485 TL\nÜrün durumu: Yenilenmiş"
+ },
+ {
+  "src": "test_integration.py:2901",
+  "text": " Siyah\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi"
+ },
+ {
+  "src": "test_integration.py:2911",
+  "text": "\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi"
+ },
+ {
+  "src": "test_notification_header.py:1",
+  "text": "Bildirim üst satırı: ``₺56 — Ürün Adı`` / ``❓ — Ürün Adı`` tasarımı.\n\nKullanıcı isteğinin kesin biçimi:\n\n    ₺56 — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap\n    ❓ — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap     ← fiyat bulunamayınca\n\nYani: fiyatın önünde 💰 YOK, ``56 TL`` değil ``56₺``, ayraç ``-`` (em-dash\ndeğil), fiyat yokken tek başına ``❓``. İlk satır fiyat + adı birlikte taşır;\nalt gövde, kampanya açıklaması, linkler ve kaynak adı değişmeden kalır.\n\nBu dosya üç şeyi kilitler:\n1. tam metin eşitliğiyle üst satır tasarımı,\n2. gerçek inline-buton zincirinde (build_inline_keyboard → _price_search_url)\n    sorgunun DECODE edilmiş ``q`` parametresinin birebir fiyatsız ad olması,\n3. gönderilmiş bildirimlerin (yeni + iki eski biçim) açılış taramasında aynı\n    fırsat anahtarına dönmesi; ayrıca entity/uzunluk sınırları.\n"
+ },
+ {
+  "src": "test_notification_header.py:43",
+  "text": "\n\n🎯 56₺\n%28 indirim · kargo bedava\n\n🛒 https://amazon.com.tr/dp/B0X"
+ },
+ {
+  "src": "test_notification_header.py:123",
+  "text": "Philips Airfryer XXL 6.2L\nFiyat: 12.299 TL"
+ },
+ {
+  "src": "test_notification_header.py:124",
+  "text": "Philips Airfryer XXL 6.2L\nFiyat: 12.299,90 TL"
+ },
+ {
+  "src": "test_notification_header.py:125",
+  "text": "Philips Airfryer XXL 6.2L\nFiyat: 56 TL"
+ },
+ {
+  "src": "test_notification_header.py:126",
+  "text": "Philips Airfryer XXL 6.2L\nFiyat: 56₺"
+ },
+ {
+  "src": "test_notification_header.py:127",
+  "text": "Philips Airfryer XXL 6.2L\nFiyat: ₺56"
+ },
+ {
+  "src": "test_notification_header.py:139",
+  "text": "₺1.999 — Çay"
+ },
+ {
+  "src": "test_notification_header.py:140",
+  "text": "12.299,99 TL"
+ },
+ {
+  "src": "test_notification_header.py:140",
+  "text": "₺12.299 — Çay"
+ },
+ {
+  "src": "test_notification_header.py:143",
+  "text": "1.234.567,89 TL"
+ },
+ {
+  "src": "test_notification_header.py:143",
+  "text": "₺1.234.567 — Çay"
+ },
+ {
+  "src": "test_notification_header.py:157",
+  "text": "Cam Bardak 50 TL\nPamuk Havlu 100 TL"
+ },
+ {
+  "src": "test_notification_header.py:158",
+  "text": "Deneme Havlu\nEski fiyat: 200 TL"
+ },
+ {
+  "src": "test_notification_header.py:159",
+  "text": "Deneme Havlu\nSepette 50 TL indirim"
+ },
+ {
+  "src": "test_notification_header.py:173",
+  "text": "Xiaomi Redmi Note 13 Pro 256GB\nFiyat: 18.499 TL\nEski: 24.999 TL"
+ },
+ {
+  "src": "test_notification_header.py:174",
+  "text": "Philips Airfryer XXL 6.2L\n💰 Fiyat: 12.299 TL / 2 adet alımda 11.999 TL"
+ },
+ {
+  "src": "test_notification_header.py:199",
+  "text": "Fiyat: 1.299 TL\n\n#firsat #amazon"
+ },
+ {
+  "src": "test_notification_header.py:226",
+  "text": "12.299,90 TL"
+ },
+ {
+  "src": "test_notification_header.py:234",
+  "text": "56 TL - Penti"
+ },
+ {
+  "src": "test_notification_header.py:235",
+  "text": "12.299 TL ve üzeri"
+ },
+ {
+  "src": "test_notification_header.py:243",
+  "text": "₺19.999 — Beko B3RFS280DXF - No Frost 56 cm Buzdolabı"
+ },
+ {
+  "src": "test_notification_header.py:244",
+  "text": "₺12.299 — Xiaomi Redmi — Pro 256GB"
+ },
+ {
+  "src": "test_notification_header.py:256",
+  "text": "19.999₺ - Beko B3RFS280DXF - No Frost 56 cm Buzdolabı"
+ },
+ {
+  "src": "test_notification_header.py:258",
+  "text": "12.299,90₺ - Xiaomi Redmi — Pro 256GB"
+ },
+ {
+  "src": "test_notification_header.py:272",
+  "text": "💰 12.299 TL — Philips Airfryer XXL"
+ },
+ {
+  "src": "test_notification_header.py:285",
+  "text": "₺56 — Penti Patik"
+ },
+ {
+  "src": "test_notification_header.py:286",
+  "text": "56₺ - Penti Patik"
+ },
+ {
+  "src": "test_notification_header.py:318",
+  "text": "💰 3.999₺ - Arzum ARZ0652 Twist Copper Izgara\n\n🔥 Kaçmaz!"
+ },
+ {
+  "src": "test_notification_header.py:341",
+  "text": "Fiyat: 1.299 TL"
+ },
+ {
+  "src": "test_notification_header.py:371",
+  "text": "Pentı Gi̇yim 4’lü - Patik Çorap 56cm\nFiyat: 56₺"
+ },
+ {
+  "src": "test_notification_header.py:497",
+  "text": "\n\n💰 56 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz"
+ },
+ {
+  "src": "test_notification_header.py:510",
+  "text": "\n\n💰Fiyat: 56 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/2\n\nfirsatz"
+ },
+ {
+  "src": "test_notification_header.py:515",
+  "text": "\nFiyat: 56 TL"
+ },
+ {
+  "src": "test_notification_header.py:630",
+  "text": "1) Sıfır, negatif, boş ve bozuk girdiler: MEVCUT fiyat politikası korunur.\n\n    politika (price_filter, dokunulmadı): ``Fiyat: 0 TL`` → high/0.0 ve\n    \"ücretsiz/bedava\" → medium/0.0, yani sıfır gösterilmesi gereken geçerli bir\n    fiyattır; ``kargo bedava`` ise _FREE_BLOCK_RE ile fiyat sayılmaz.\n    "
+ },
+ {
+  "src": "test_notification_header.py:645",
+  "text": "Samsung Kulaklık\nFiyat: 0 TL"
+ },
+ {
+  "src": "test_notification_header.py:648",
+  "text": "₺0 — Samsung Kulaklık"
+ },
+ {
+  "src": "test_notification_header.py:675",
+  "text": "Fiyat: -56 TL"
+ },
+ {
+  "src": "test_notification_header.py:675",
+  "text": "Fiyat: -12,50 TL"
+ },
+ {
+  "src": "test_notification_header.py:675",
+  "text": "Fiyat: −56 TL"
+ },
+ {
+  "src": "test_notification_header.py:676",
+  "text": "Fiyat: ‑56 TL"
+ },
+ {
+  "src": "test_notification_header.py:676",
+  "text": "Eski: -1.299 TL, Yeni: -999 TL"
+ },
+ {
+  "src": "test_notification_header.py:676",
+  "text": "İade: -50 TL"
+ },
+ {
+  "src": "test_notification_header.py:693",
+  "text": "Ürün X\nFiyat: 1.2.99 TL"
+ },
+ {
+  "src": "test_notification_header.py:693",
+  "text": "Ürün X\nFiyat: 12,29,90 TL"
+ },
+ {
+  "src": "test_notification_header.py:694",
+  "text": "Ürün X\n50 TL kupon"
+ },
+ {
+  "src": "test_notification_header.py:694",
+  "text": "Ürün X\nEski: 19.999 TL"
+ },
+ {
+  "src": "test_notification_header.py:695",
+  "text": "Ürün A 100 TL\nÜrün B 200 TL"
+ },
+ {
+  "src": "test_notification_header.py:724",
+  "text": "🔥 FIRSAT 🔥\n\nPhilips Airfryer XXL 6.2L\n\nEski fiyat: 19.999 TL\n💰 Fiyat: 12.299 TL\nSepete özel %10 indirim · kargo bedava\n\n🛒 https://amazon.com.tr/dp/B0X"
+ },
+ {
+  "src": "test_notification_header.py:745",
+  "text": "Eski fiyat: 19.999 TL"
+ },
+ {
+  "src": "test_notification_header.py:745",
+  "text": "💰 Fiyat: 12.299 TL"
+ },
+ {
+  "src": "test_notification_header.py:760",
+  "text": "Ürün\nFiyat: 12.299,90 TL"
+ },
+ {
+  "src": "test_notification_header.py:818",
+  "text": "₺41.999 — Samsung Galaxy S24 Ultra 256…"
+ },
+ {
+  "src": "test_notification_header.py:836",
+  "text": "\nFiyat: 1.299 TL\n"
+ },
+ {
+  "src": "test_november_reported_regressions.py:12",
+  "text": "\n\n🏷️ 224 TL 🤖\n\n📂 Kozmetik, Kişisel Bakım\n\n🛍️ Amazon\n\n🔗 https://onu.al/fizd"
+ },
+ {
+  "src": "test_november_reported_regressions.py:13",
+  "text": "Trust GXT278 Dizüstü Bilgisayar İçin Soğutucu Fan | Kırmızı ışık, USB güç kablosu, 3 pozisyonlu soğutma pedi, yüksekliği ayarlanabilir dizüstü bilgisayar soğutucu\n\n🏷️ 512,05 TL\n\n🆕 Yeni Fiyatı: 699 TL\n\n🛍️ Amazon #tanıtım\n\n📦 Depo Ürünü\n\n📌 Durumu: İkinci El: Yeni Gibi\n\n💬 Yorum: Ürün orijinal ambalajında gönderilir.\n\n🔗 FIRSATA GİT"
+ },
+ {
+  "src": "test_november_reported_regressions.py:17",
+  "text": "🛒 OTL Technologies - SUPER MARIO TWS KULAKLIK\n\n💰 953.42 TL\n\n🛍 Amazon"
+ },
+ {
+  "src": "test_november_reported_regressions.py:29",
+  "text": "📂 Kozmetik, Kişisel Bakım\n🏷 224 TL"
+ },
+ {
+  "src": "test_november_reported_regressions.py:30",
+  "text": "Clear Şampuan\n📂 Kozmetik Bakım\n🏷 224 TL"
+ },
+ {
+  "src": "test_november_reported_regressions.py:41",
+  "text": "₺512 — Trust GXT278 Dizüstü Bilgisayar İçin Soğutucu Fan"
+ },
+ {
+  "src": "test_november_reported_regressions.py:43",
+  "text": "Ürün\n🏷️ 512,05 TL\n🆕 Yeni Fiyatı: 699 TL"
+ },
+ {
+  "src": "test_november_reported_regressions.py:44",
+  "text": "Ürün\n🆕 Yeni Fiyatı: 699 TL"
+ },
+ {
+  "src": "test_november_reported_regressions.py:45",
+  "text": "Ürün\n🏷 512 TL\n🏷 530 TL\nYeni Fiyatı: 699 TL\nDurum: İkinci El"
+ },
+ {
+  "src": "test_november_reported_regressions.py:48",
+  "text": "Ürün\n🏷 512 TL\nYeni Fiyatı: 699 TL\nİkinci El"
+ },
+ {
+  "src": "test_november_reported_regressions.py:58",
+  "text": "₺953 — OTL Technologies - SUPER MARIO TWS KULAKLIK"
+ },
+ {
+  "src": "test_offer_regressions.py:13",
+  "text": "519 TL\nTakip Kuponu + GUZELLIK200 kodu ile (2 Adet Alımda) 1 adet 369 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:15",
+  "text": "GUZELLIK200 koduyla 3 adet alımda 250 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:17",
+  "text": "2 Adet Alımda 100₺ Kuponla Adedi 373₺"
+ },
+ {
+  "src": "test_offer_regressions.py:19",
+  "text": "Fiyat : 189 TL / 2 al 1 öde ile 94 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:21",
+  "text": "Fiyat: 179,00 TL\nKampanyalar 450TL seçili ürün satın aldığınızda %5 tasarruf edin\nKAMPANYA: 170,05 TL (3 adet) // 450TL seçili ürün satın aldığınızda %5 tasarruf edin"
+ },
+ {
+  "src": "test_offer_regressions.py:24",
+  "text": "Fiyat: 560,28 TL\nÖdeme esnasında %15 tutarında tasarruf edin\nKAMPANYA: 504,25 TL (2 adet)\n1000 TL seçili ürün satın aldığınızda %10 tasarruf edin"
+ },
+ {
+  "src": "test_offer_regressions.py:76",
+  "text": "2 adet alımda 100 TL kuponla "
+ },
+ {
+  "src": "test_offer_regressions.py:84",
+  "text": "3 adet alımda 250 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:84",
+  "text": "KOD200 koduyla 3 adet alımda 250 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:85",
+  "text": "KAMPANYA: 170,05 TL (3 adet)"
+ },
+ {
+  "src": "test_offer_regressions.py:85",
+  "text": "KAMPANYA: 504,25 TL (2 adet)"
+ },
+ {
+  "src": "test_offer_regressions.py:86",
+  "text": "2 al 1 öde ile 94 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:87",
+  "text": "KAMPANYA: 170,05 TL (3 adet)\nKAMPANYA: 160 TL (4 adet)"
+ },
+ {
+  "src": "test_offer_regressions.py:107",
+  "text": "519 TL / 2 adet alımda toplam 369 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:108",
+  "text": "189 TL / 2 al 1 öde ile toplam 94 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:108",
+  "text": "189 TL / 2 al 1 öde ile 94 TL toplam"
+ },
+ {
+  "src": "test_offer_regressions.py:113",
+  "text": "Eski adedi 373 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:113",
+  "text": "Kargo adedi 373 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:113",
+  "text": "100 TL kuponla adedi 373 TL kupon"
+ },
+ {
+  "src": "test_offer_regressions.py:114",
+  "text": "Taksit adedi 373 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:114",
+  "text": "Kargo tanesi 373 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:114",
+  "text": "Taksit 1 adet 373 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:115",
+  "text": "100 TL kuponla kargo adedi 373 TL"
+ },
+ {
+  "src": "test_offer_regressions.py:118",
+  "text": "Eski 80 TL\nKargo: 10 TL\n519 TL\n2 adet alımda 100 TL kuponla adedi 369 TL"
+ },
+ {
+  "src": "test_price_context.py:11",
+  "text": "99 TL 🚚 Kargo Bedava"
+ },
+ {
+  "src": "test_price_context.py:14",
+  "text": "225 TL / 300 TL'ye 50 TL kuponla 2 adet alımda 200 TL"
+ },
+ {
+  "src": "test_price_context.py:17",
+  "text": "956 TL / Ürün altındaki 300 TL kuponla 656 TL"
+ },
+ {
+  "src": "test_price_context.py:20",
+  "text": "100 TL / 500 TL'ye 100 TL kuponla 5 adet alımda 80 TL"
+ },
+ {
+  "src": "test_price_context.py:23",
+  "text": "114 TL (2 Adet Alımda 57 TL)"
+ },
+ {
+  "src": "test_price_context.py:25",
+  "text": "600 TL / Sepette 150 TL kuponla 450 TL / Ürün altındaki 250 TL kuponla 2 adet alımda 475 TL"
+ },
+ {
+  "src": "test_price_context.py:28",
+  "text": "423 TL / 500 TL'ye 100 TL kuponla 2 adet alımda 373 TL"
+ },
+ {
+  "src": "test_price_context.py:48",
+  "text": "Ürün: Chakra Waved Pamuk El Havlusu 30x40 Cm Bej\n\n🎯 99 TL 🚚 Kargo Bedava"
+ },
+ {
+  "src": "test_price_context.py:60",
+  "text": "2 adet alımda toplam 100 TL"
+ },
+ {
+  "src": "test_price_context.py:60",
+  "text": "2 adet alımda 100 TL toplam"
+ },
+ {
+  "src": "test_price_context.py:61",
+  "text": "Ürün 100 TL / 90 TL"
+ },
+ {
+  "src": "test_price_context.py:68",
+  "text": "Eski 900 TL / Yeni 700 TL\nKargo: 30 TL\nAdet başı 80 TL"
+ },
+ {
+  "src": "test_price_context.py:72",
+  "text": "🎯 900 TL / 700 TL"
+ },
+ {
+  "src": "test_price_context.py:77",
+  "text": "2 adet alımda 200 TL"
+ },
+ {
+  "src": "test_price_context.py:78",
+  "text": "2 adet alımda toplam 200 TL"
+ },
+ {
+  "src": "test_price_context.py:79",
+  "text": "2 adet alımda tanesi 200 TL"
+ },
+ {
+  "src": "test_price_context.py:80",
+  "text": "adet başı 200 TL"
+ },
+ {
+  "src": "test_price_context.py:81",
+  "text": "2 adet 200 TL"
+ },
+ {
+  "src": "test_price_context.py:93",
+  "text": "Eski 90 TL\nGüncel fiyat: 600 TL / Sepette 150 TL kuponla 450 TL / Ürün altındaki 250 TL kuponla 2 adet alımda 475 TL\n500 TL'ye 100 TL kupon\nKargo: 20 TL"
+ },
+ {
+  "src": "test_price_context.py:104",
+  "text": "600 TL / Sepette 100 TL kuponla 500 TL / Ürün altındaki 200 TL kuponla 400 TL"
+ },
+ {
+  "src": "test_price_context.py:105",
+  "text": "600 TL / Ürün altındaki 200 TL kuponla 400 TL / Sepette 100 TL kuponla 500 TL"
+ },
+ {
+  "src": "test_price_context.py:111",
+  "text": "500 TL'ye 100 TL kupon"
+ },
+ {
+  "src": "test_price_context.py:111",
+  "text": "Sepette 150 TL indirim"
+ },
+ {
+  "src": "test_price_context.py:111",
+  "text": "Kupon: 50 TL"
+ },
+ {
+  "src": "test_price_context.py:112",
+  "text": "Kargo: 30 TL"
+ },
+ {
+  "src": "test_price_context.py:127",
+  "text": "₺99 — Chakra Waved Pamuk El Havlusu 30x40 Cm Bej"
+ },
+ {
+  "src": "test_price_context.py:140",
+  "text": "300 TL / 2 adet alımda 200 TL"
+ },
+ {
+  "src": "test_price_context.py:145",
+  "text": "Eski fiyat: 200 TL"
+ },
+ {
+  "src": "test_price_context.py:146",
+  "text": "Fiyat: 200 TL"
+ },
+ {
+  "src": "test_price_context.py:148",
+  "text": "Sepette 50 TL indirim"
+ },
+ {
+  "src": "test_price_context.py:149",
+  "text": "500 TL'ye 50 TL kupon"
+ },
+ {
+  "src": "test_price_context.py:151",
+  "text": "600 TL / Sepette 100 TL kuponla 500 TL / Ürün altındaki 200 TL kuponla 400 TL / 2 adet alımda 300 TL"
+ },
+ {
+  "src": "test_price_context.py:188",
+  "text": "🛍 Deneme Havlu\n🎯 200 TL"
+ },
+ {
+  "src": "test_price_context.py:211",
+  "text": "(adet alımda)\\s+(\\d+ TL)"
+ },
+ {
+  "src": "test_price_engine_regressions.py:15",
+  "text": "Samsung Galaxy A55\n12 999 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:16",
+  "text": "Samsung Galaxy A55\n15 bin 500 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:17",
+  "text": "Samsung Galaxy A55\n15 bin TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:25",
+  "text": "Philips Airfryer\n12.999 TL / Kupon uygulayınca 11.999 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:31",
+  "text": "Philips Airfryer\n12.999 TL ürün fiyatı, 1.000 TL kupon"
+ },
+ {
+  "src": "test_price_engine_regressions.py:36",
+  "text": "Philips Airfryer\nSepette 150 TL indirim / 1.299 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:41",
+  "text": "8'li Kahve Kapsülü Paketi\n240 TL (tanesi 30 TL)"
+ },
+ {
+  "src": "test_price_engine_regressions.py:47",
+  "text": "Filtre Kahve\nAdet başı 80 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:52",
+  "text": "1. ürün: Televizyon 13.999 TL\n2. ürün: Kulaklık kuponla 8.499 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:61",
+  "text": "1. ürün: Televizyon\n2. ürün: Kulaklık 8.499 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:64",
+  "text": "1. ürün: Televizyon 13.999 TL\n2. ürün: Öne çıkan ürün: Kulaklık 8.499 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:70",
+  "text": "Bosch Blender\n15.999 TL yerine 12.999 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:72",
+  "text": "Bosch Blender\n14.999 TL, sepette 13.999 TL, kuponla 12.999 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:79",
+  "text": "Fiyat: 12.999 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:80",
+  "text": "Fiyat: 12,999 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:81",
+  "text": "Fiyat: 12 999 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:82",
+  "text": "Fiyat: 1.299,90 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:83",
+  "text": "Fiyat: 1,299.90 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:84",
+  "text": "Fiyat: 1299,90 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:86",
+  "text": "🔥 12.999 TL ✅"
+ },
+ {
+  "src": "test_price_engine_regressions.py:95",
+  "text": "Sony WH-1000XM5 Model WH1000XM5, 40 mm, 2026/11/07\nEski fiyat 19.999 TL\nYeni fiyat: 17.999 TL\n12 taksit x 1.500 TL; 500 TL kupon tutarı"
+ },
+ {
+  "src": "test_price_engine_regressions.py:103",
+  "text": "Yeni Doğan Bebek Bezi\n🏷 299 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:104",
+  "text": "Super Mario Odyssey\n1.299 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:105",
+  "text": "İlk Yardım Çantası\n249 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:106",
+  "text": "%0 Yağlı Yoğurt\n80 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:107",
+  "text": "iPhone 15 – 128 GB Siyah\n12.999 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:108",
+  "text": "Samsung\n+ Galaxy Watch 6 44mm LTE\n12.999 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:109",
+  "text": "Dyson V15 Detect Absolute 394451-01\n24.999 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:116",
+  "text": "Kargo: 30 TL\nCashback: 100 TL\n12 taksit x 1.250 TL"
+ },
+ {
+  "src": "test_price_engine_regressions.py:122",
+  "text": "Fiyat: -- TL"
+ },
+ {
+  "src": "test_price_filter.py:18",
+  "text": "Philips Hue Ampul\n0 TL\nhttps://x.com"
+ },
+ {
+  "src": "test_price_filter.py:19",
+  "text": "TCL 65C7K 4K QD-Mini LED Google TV\n🏷 29.999 TL\n500 TL kupon\nhttps://a.co/x"
+ },
+ {
+  "src": "test_price_filter.py:21",
+  "text": "🔥 FIRSAT 🔥\nSamsung Galaxy S24 256 GB Akıllı Telefon\n💰 Fiyat: 41.999 TL\n✅ Taksit: 12 x 3.500 TL\nSatıcı: Amazon"
+ },
+ {
+  "src": "test_price_filter.py:23",
+  "text": "Ürün X\nSepette 150 TL indirim\n1.299 TL"
+ },
+ {
+  "src": "test_price_filter.py:24",
+  "text": "LG 65UR781C 65 inç 4K TV\nEski: 44.999 TL\nYeni: 31.866 TL\nTaksit 2.655 TL"
+ },
+ {
+  "src": "test_price_filter.py:26",
+  "text": "Xiaomi Redmi Buds 5 Pro 1.199 TL'ye düştü! Hepsiburada"
+ },
+ {
+  "src": "test_price_filter.py:27",
+  "text": "Dyson V12 Detect Slim Süpürge\n2.999 TL'den 1.999 TL'ye düştü"
+ },
+ {
+  "src": "test_price_filter.py:28",
+  "text": "1.000 TL ve üzeri alışverişlerde 150 TL indirim\nTrendyol"
+ },
+ {
+  "src": "test_price_filter.py:29",
+  "text": "Apple AirPods Pro 2\n6.499 TL + kargo bedava"
+ },
+ {
+  "src": "test_price_filter.py:30",
+  "text": "📦 Ürün: Philips 3000 Serisi Airfryer HD9200/90\n💸 Fiyat: 2.899,90 TL\n📉 En düşük fiyat: 2.799 TL (60 gün)"
+ },
+ {
+  "src": "test_price_filter.py:32",
+  "text": "[Amazon] Anker 20.000 mAh Powerbank\n599 TL\nKupon: 100 TL (otomatik uygulanır)"
+ },
+ {
+  "src": "test_price_filter.py:34",
+  "text": "Kupon ile 899 TL! Lego Classic 11011\nhttps://x"
+ },
+ {
+  "src": "test_price_filter.py:35",
+  "text": "DIKKAT FİYAT HATASI\nLogitech MX Master 3S\n₺749"
+ },
+ {
+  "src": "test_price_filter.py:36",
+  "text": "Sony WH-1000XM5 Kulaklık\n8.999 TL\n(Önceki fiyat 11.499 TL)"
+ },
+ {
+  "src": "test_price_filter.py:37",
+  "text": "Nutella 750 gr\n129,90 TL\nMigros"
+ },
+ {
+  "src": "test_price_filter.py:38",
+  "text": "Samsung\n55 inç Crystal UHD TV\n15 bin TL"
+ },
+ {
+  "src": "test_price_filter.py:39",
+  "text": "Fiyat düştü!\nRoborock Q Revo\nSepette 17.999 TL\nTaksit 12 x 1.500 TL"
+ },
+ {
+  "src": "test_price_filter.py:40",
+  "text": "Sepette %20 indirim\nOral-B iO 5 Şarjlı Diş Fırçası\n3.299 TL"
+ },
+ {
+  "src": "test_price_filter.py:41",
+  "text": "Xiaomi Robot Süpürge S10+\nFiyat: 9.499 TL\nKargo: 49,90 TL"
+ },
+ {
+  "src": "test_price_filter.py:42",
+  "text": "Apple iPhone 15 128 GB\n39.999 TL\n(2 gün önce 41.499 TL idi)"
+ },
+ {
+  "src": "test_price_filter.py:43",
+  "text": "Adidas Erkek Ayakkabı\n1.250 TL\n750 TL sepette indirim"
+ },
+ {
+  "src": "test_price_filter.py:44",
+  "text": "Hepsiburada\n500 TL kupon kodu: HB500\nXiaomi 14T 12/256"
+ },
+ {
+  "src": "test_price_filter.py:45",
+  "text": "Kingston 1TB NV2 NVMe SSD 2.099 TL"
+ },
+ {
+  "src": "test_price_filter.py:46",
+  "text": "🔥 Samsung 980 Pro 2TB 5.399 TL 🔥 ➡️ link"
+ },
+ {
+  "src": "test_price_filter.py:47",
+  "text": "Ücretsiz Kargo!\nPhilips Sonicare 3100\n1.899 TL"
+ },
+ {
+  "src": "test_price_filter.py:48",
+  "text": "Hepsipay ile 1.000 TL ve üzeri alışverişe 100 TL indirim\nSony PS5 Slim\n21.999 TL"
+ },
+ {
+  "src": "test_price_filter.py:49",
+  "text": "Dikkat! Stoklarla sınırlı\nBaseus 65W GaN Şarj Aleti\n429 TL\nKupon ile 349 TL"
+ },
+ {
+  "src": "test_price_filter.py:50",
+  "text": "Lg 55 inç TV\n17.499 TL (Normal fiyatı 21.999 TL)"
+ },
+ {
+  "src": "test_price_filter.py:58",
+  "text": "🏷️ 3P FIRSAT -%38,3\n\n🛍️ TP-Link RE315 AC1200 Mbps Wi-Fi Güçlendirici - 2 Harici Ante\n\n💸 3P Fiyat: 826,89 TL\n🔻 Fark: -%38,3\n🏪 Amazon (1P) son fiyatı: 1.339,43 TL\n⚠️ 3. taraf satıcı — satıcıyı/kargoyu kontrol edin\n✅ GERÇEK FIRSAT — 30g medyanın %39 altında\n\n🔗 Amazon'da gör\n\n#Elektronik@amazonfirsatalarmi\n\n🔗 https://amazon.com.tr/dp/B08R6JH8DG?tag=alalal07-21"
+ },
+ {
+  "src": "test_price_filter.py:60",
+  "text": "🔥 N11’de Altınyıldız Ürünlerinde 1.000/300TL ve 900/200TL İndirim Kuponu Aktif❗️\n\n⬛️ Tailored Slim Fit Gömlek 2 Adet Alımda 300 TL Kuponla 385 TL Civarına Geliyor\n\n🔗Ürüne Git\nhttps://sl.n11.com/n/vyHC0TA\n\n#tanıtım n11"
+ },
+ {
+  "src": "test_price_filter.py:62",
+  "text": "🛍️ Bref WC Power Aktiv Çiçek Kokulu 2'li Klozet Temizleme Topları 1 x 2 Adet, Çiçek 2, İkili\n\n💰 Fiyat : 97 TL / 2 adet alımda 48 TL\n\nhttps://www.amazon.com.tr/dp/B0GR1F4GDL?smid=A1UNQM1SR2CHM&th=1&psc=1&tag=indirimalarmi-21"
+ },
+ {
+  "src": "test_price_filter.py:64",
+  "text": "🛍️ NIVEA Cellular Expert Filler Nemlendirici Cilt Serumu 30ml,Kırışıklık Karşıtı,Dolgunlaştırıcı,Saf Hyaluronik Asit,Tüm Cilt Tipleri\n\n💰 Fiyat : 199 TL / 6 adet alımda 179 TL\n\nhttps://www.amazon.com.tr/dp/B0C3RLV1C2?psc=1&tag=indirimalarmi-21"
+ },
+ {
+  "src": "test_price_filter.py:66",
+  "text": "🛒 Köyceğiz Yöresel Çifte Kavrulmuş Tahin 600 G Cam Kavanoz Lezzetli ve Doğal Ürün\n\n🎯 512 TL / 2. ürün 1 TL ile 2 adet alımda 256 TL\n\n🛍 https://app.hb.biz/ENGqPJfAO2FJ"
+ },
+ {
+  "src": "test_price_filter.py:68",
+  "text": "Apple M5 Çipli 15 İnç Macbook Air Laptop\n\n🏷️ 2.999 TL 🤖\n💬 Ortalama fiyatın %40 altında\n📂 Elektronik\n🛍️ Amazon\n🔗 https://onu.al/x"
+ },
+ {
+  "src": "test_price_filter.py:70",
+  "text": "DURU Sıvı Sabun, Hindistan Cevizi Gold, 1.5 Litre\n\n💰 ₺194,95\n\n🔗 FIRSATA GİT!\n\n#İşbirliği"
+ },
+ {
+  "src": "test_price_filter.py:72",
+  "text": "Carrera GO Ferrari 488 GT3 Red Bull AF Corse\n\n🏷️ 917.04 TL\n\n🛒 FIRSATI YAKALA\n\n#işbirliği | 🛍️ Amazon"
+ },
+ {
+  "src": "test_price_filter.py:74",
+  "text": "🚨 Nestle Coffee Mate Kahve Beyazlatıcı 625 g Ekonomik Paket\n#Tanıtım\n\n🔻 179,95 TL"
+ },
+ {
+  "src": "test_price_filter.py:76",
+  "text": "4.599₺\n\nGrundig VCC 7870 HEPA Filtreli Toz Torbasız Elektrikli Süpürge\n\nhttps://link.amazon/x"
+ },
+ {
+  "src": "test_price_filter.py:78",
+  "text": "Tefal Juice & Clean Digital Meyve Sıkacağı\n\nSepette 8.829₺\n\nhttps://app.hb.biz/A"
+ },
+ {
+  "src": "test_price_filter.py:80",
+  "text": "Tefal Ingenio Xl Force Titanyum 2x Büyük Set 12 Parça 001 Siyah\n\n7.499 TL\n400 TL tık hızı"
+ },
+ {
+  "src": "test_price_filter.py:82",
+  "text": "🔥 Xiaomi AW300 IP Wi-Fi Güvenlik Kamerası\n\n💰 3.999₺ (Piyasası +5.299₺)\n\n〽️ Son 6 Ayın En Düşüğü"
+ },
+ {
+  "src": "test_price_filter.py:84",
+  "text": "📦 Maisto 531282 Model Araba, 1:24 Jeep Renegade\n\n💰 874,50 TL\n🔻 %65.02 - Son 4 günün en düşük fiyatı\n\n🔎 Google"
+ },
+ {
+  "src": "test_price_filter.py:86",
+  "text": "🛒 Apple iPhone 16 128GB Siyah\n\n🎯 72799 TL / Sepette 750 TL kuponla 72049 TL\n\n🛍️ https://app.hb.biz/x"
+ },
+ {
+  "src": "test_price_filter.py:88",
+  "text": "🛒 Moonlife Point 2 Kapaklı 2 Çekmeceli Gardrop Beyaz\n\n🎯 3811 TL / Sepette 50 TL kuponla 3761 TL"
+ },
+ {
+  "src": "test_price_filter.py:90",
+  "text": "🛒 Sırma Doğal Zengin Mineralli Maden Suyu 6x1 L\n\n🎯 165 TL / 300 TL'ye 50 TL kupon"
+ },
+ {
+  "src": "test_price_filter.py:96",
+  "text": "🔥 SNEAKER500 koduyla n11'de Sneaker Ürünlerinde 3000 TL ve üzeri 500 TL indirim\n\n👉 https://firsatagi.com"
+ },
+ {
+  "src": "test_price_filter.py:102",
+  "text": "Patisssiss Juva Antep Fıstıklı Krema, 200g\n\n🔻2 ADET ALIMDA 129 TL\n💥PATİSWİSS ÜRÜNÜ"
+ },
+ {
+  "src": "test_price_filter.py:104",
+  "text": "Pierre Cardin bej kadın bot\n\nSepette kuponla 1.361 TL ✅\n\nhttps://app.hb.biz/oWs"
+ },
+ {
+  "src": "test_price_filter.py:106",
+  "text": "Roborock S9 Akıllı Robot Süpürge Beyaz\n\nAltındaki kuponla 16999 tl\n\nhttps://sl.n"
+ },
+ {
+  "src": "test_price_filter.py:108",
+  "text": "🛍️ iFFALCON 55U75A 55” 4K QLED Google TV\n\nSepette 3.000 TL kupon ile\n\n💰 29.799 TL"
+ },
+ {
+  "src": "test_price_filter.py:110",
+  "text": "🛒 Defacto Giyim Ürünlerinde 1200 TL ve üzerine 250 TL indirim + 4000 TL ve üzerine 1000 TL indirim"
+ },
+ {
+  "src": "test_price_filter.py:112",
+  "text": "🛒 HelloBaby Basic Denim Görünümlü Tayt Kız Bebek\n\n🎯 128 TL\n\n🛍️ https://app.hb.biz/x"
+ },
+ {
+  "src": "test_price_filter.py:114",
+  "text": "Xiaomi Robot Vacuum S40 Pro 15.000 Pa Robot Süpürge\n\nTık hızı 750 tl kuponla 14799 tl\n\nhttps://x"
+ },
+ {
+  "src": "test_price_filter.py:118",
+  "text": "Apple iPad Air 13 inç (M4): Liquid Retina Ekran, 256 GB\n\n💰 Fiyat: 889,00 TL"
+ },
+ {
+  "src": "test_price_filter.py:120",
+  "text": "Jacobs Café Espresso Çekirdek Kahve 500 gram x 2 Adet (1 Kg)\n\n💰 Fiyat: 889,00 TL"
+ },
+ {
+  "src": "test_price_filter.py:122",
+  "text": "🔥 Bi Kutu Oyun Zamanı Gelince Bir Yılım\n\n💰 2 Adet Alımda Adedi 250₺\n\n🛒 https://a"
+ },
+ {
+  "src": "test_price_filter.py:153",
+  "text": "Ürün Adı Pro\n1.999 TL 1.499 TL"
+ },
+ {
+  "src": "test_price_filter.py:175",
+  "text": "Ampul\n150 TL"
+ },
+ {
+  "src": "test_price_filter.py:180",
+  "text": "TCL 65 TV 29.999 TL\n500 TL kupon"
+ },
+ {
+  "src": "test_price_filter.py:181",
+  "text": "Sepette 150 TL indirim\nTV 20.000 TL"
+ },
+ {
+  "src": "test_price_filter.py:182",
+  "text": "Sadece kupon: 100 TL kupon kodu"
+ },
+ {
+  "src": "test_price_filter.py:185",
+  "text": "Eski fiyat 900 TL"
+ },
+ {
+  "src": "test_price_filter.py:193",
+  "text": "TCL 65C7K TV 29.999 TL"
+ },
+ {
+  "src": "test_price_filter.py:195",
+  "text": "Ampul 150 TL"
+ },
+ {
+  "src": "test_price_filter.py:199",
+  "text": "Telefon\n9.999 TL"
+ },
+ {
+  "src": "test_price_filter.py:200",
+  "text": "Telefon\n10.001 TL"
+ },
+ {
+  "src": "test_price_filter.py:208",
+  "text": "TV kablosu 49 TL"
+ },
+ {
+  "src": "test_price_filter.py:229",
+  "text": "🔥 FIRSAT 🔥\nSamsung Galaxy S24 256 GB\nEski: 49.999 TL\nYeni: 41.999 TL\n500 TL kupon"
+ },
+ {
+  "src": "test_price_filter.py:252",
+  "text": "₺41.999 — Samsung Galaxy S24 256 GB\n\n🔥 FIRSAT"
+ },
+ {
+  "src": "test_price_filter.py:253",
+  "text": "₺41.999 — Samsung Galaxy S24 256 GB"
+ },
+ {
+  "src": "test_price_filter.py:258",
+  "text": "500 TL kupon"
+ },
+ {
+  "src": "test_price_filter.py:284",
+  "text": "\nFiyat: 41.999 TL"
+ },
+ {
+  "src": "test_product_tracker.py:79",
+  "text": "<h1>100 TL</h1>"
+ },
+ {
+  "src": "test_product_tracker.py:86",
+  "text": "<div class=\"offers\" onclick=\"SECRET_HANDLER\">17 teklif<a href=\"https://example.com/SECRET_URL\">6.839,05 TL</a><script>SECRET_SCRIPT</script><form>SECRET_FORM</form></div>"
+ },
+ {
+  "src": "test_product_tracker.py:110",
+  "text": "<ul id=\"PL_22\"><li><span class=\"pt_v8\">1 TL</span></li></ul>"
+ },
+ {
+  "src": "test_product_tracker.py:141",
+  "text": "6.839,05&nbsp;TL"
+ },
+ {
+  "src": "test_product_tracker.py:215",
+  "text": "₺6.839 — Philips Airfryer\n\nAkakçe Takip Bildirimi\n\nhttps://example.com/product?merchantId=23\n\n"
+ },
+ {
+  "src": "test_product_tracker.py:221",
+  "text": "₺6.839 — Philips\n\nAkakçe Takip Bildirimi\n\n"
+ },
+ {
+  "src": "test_product_tracker.py:334",
+  "text": "hedefin 1.000,00 TL üzerinde"
+ },
+ {
+  "src": "test_product_tracker.py:340",
+  "text": "hedefin 1.000,00 TL altında (alarm eşiği)"
+ },
+ {
+  "src": "test_product_tracker.py:445",
+  "text": "hedef 7.000,00 TL"
+ },
+ {
+  "src": "test_product_tracker.py:614",
+  "text": "₺6.000 — Örnek\n\nAkakçe Takip Bildirimi\n\n"
+ },
+ {
+  "src": "test_reported_message_regressions.py:13",
+  "text": "Sleepy Easy Clean Orkide Bahçesi Yüzey Temizlik Havlusu Mendili 100 Yaprak 🔎\n\n💳 75 TL\n\n⚠️ 4 adet ekleyin\n\n🛍️ Amazon Tanıtım\n\n👉 FIRSATA GİT 👈\n\n📣 Diğer kanallarımız için TAZEFIRSAT.com"
+ },
+ {
+  "src": "test_reported_message_regressions.py:18",
+  "text": "🛍️ Philips 7000 Serisi Aqua 25.2 V Kablosuz Dik Süpürge\n\n💰 Fiyat : 14250 TL / ödeme aşamasında 750 TL indirimle 13500 TL\n\n🗓️ 365 Günün En Düşük Fiyatı\n\nhttps://www.amazon.com.tr/dp/B0GQV9ZHGZ?psc=1&tag=indirimalarmi-21"
+ },
+ {
+  "src": "test_reported_message_regressions.py:24",
+  "text": "📉 FİYAT DÜŞÜŞÜ -%33,6\n\n🛍️ Adidas ESS BTU BP Unisex Yetişkin Sırt Çantası BLACK/WHITE S\n\n💸 İndirimli Fiyat: 1.577,00 TL\n\n🔻 Fark: -%33,6\n\n❌ Eski Fiyat: 2.375,01 TL\n\n🛒 Amazon: 30 günün en düşük fiyatı\n\n🏆 TÜM ZAMANLARIN DİBİ (78 günün)\n\n🔗 Amazon'da gör\n\n#Moda@amazonfirsatalarmi"
+ },
+ {
+  "src": "test_reported_message_regressions.py:31",
+  "text": "\"KOTON300\" indirim kodunu uygulayın. Linkteki diğer montları da inceleyebilirsiniz.\n\n✅ Kapüşonlu Uzun Kollu Cepli Fermuarlı Şişme\n\n🏷 889 TL — sepette \"KOTON300\" indirim kodunu uygulayın. Linkteki diğer montları da inceleyebilirsiniz.\n\n👉 FIRSATA GİT !\n\n🛍 Hepsiburada"
+ },
+ {
+  "src": "test_reported_message_regressions.py:39",
+  "text": "Dreame D20 Ultra Robot Süpürge Beyaz, 13000Pa Emiş Gücü\n\n🏷️ 20.999 TL (Son 6 Ayın En Düşük Fiyatı)\n\n💬 Sepette 1 yıllık süpürge bakım paketi hediye"
+ },
+ {
+  "src": "test_reported_message_regressions.py:53",
+  "text": "422 TL’ye çıkmıştı tekrar 199 TL⬇️ Plus üyeliklerde kargo bedava, 59 TL kargo ödemek yerine sepette 10’lu kargo paketini 75 TL’ye alabilirsiniz😉"
+ },
+ {
+  "src": "test_reported_message_regressions.py:59",
+  "text": "SONGMICS 2 Elbise Askısı, Uzatılabilir Gardırop Askısı, Tekerlekli Gardırop Askısı, Yüksekliği 113 ila 180 cm Arasında Yüksekliği Ayarlanabilir, Alt Çubuk Ayarlanabilir, Siyah LLR401B01\n\n🏷️ 1489 TL\n\n👉 FIRSATA GİT\n\n🛍️Amazon tanıtım @ozelfirsat GOOGLE 🔍"
+ },
+ {
+  "src": "test_reported_message_regressions.py:65",
+  "text": "Tefal Ingenio Harmony Okaliptus Büyük Tava Tencere Seti - 10 Parça 🔎\n\n💳 5.649 TL - 2 set alımda\n\n⚡ Ürün sayfasındaki 2700 TL kuponu kullanın\n\n🛍️ n11 (Satıcı : n11) Tanıtım\n\n👉 FIRSATA GİT 👈\n\n📣 Diğer kanallarımız için TAZEFIRSAT.com"
+ },
+ {
+  "src": "test_reported_message_regressions.py:71",
+  "text": "Karcher Wd 1 Classic 1.628-411.0\n\n🛍️SOFRAM300 koduyla 1.690 TL\n\nhttps://publicis.link/amzn-37441-taxlg5a"
+ },
+ {
+  "src": "test_reported_message_regressions.py:75",
+  "text": "Samsung Galaxy S26 FE 256 GB 8 GB Ram (Samsung Türkiye Garantili)\n\nhttps://app.hb.biz/RjzSABNqoXN9  siyah renk\n\nhttps://app.hb.biz/dv6XvY8dsk8R yeşil renk\n\n43.728 tl sepette\n\nSatıcı hepsiburada-teknosa\n\n🔥🔥🔥"
+ },
+ {
+  "src": "test_reported_message_regressions.py:81",
+  "text": "Philips Daily Collection Çelik Su Isıtıcı - 1.7L, 2200W, Işıklı Gösterge, 360° Döner Taban, Mikro Gözenekli Filtre, Yassı Isıtma Yüzeyi, Yaylı Kapak, Enerji Tasarruflu, Güvenli Tasarım (HD9350/90)\n\n🏷️ 1.463 TL\n\nSOFRAM300 Kodunu sepette kullanın\n\n👉 FIRSATA GİT\n\n🛍️Amazon tanıtım @ozelfirsat GOOGLE 🔍"
+ },
+ {
+  "src": "test_reported_message_regressions.py:88",
+  "text": "PHILIPS 5000 Serisi Buharlı Ütü – 2400W, 40g/dk Sürekli Buhar, 160g Şok, SteamGlide Plus Taban, Dahili Kireç Temizleme, Damlatmaz Sistem, Dikey Kullanım Özelliği (DST5010/10)\n\n🏷️ 1.474 TL\n\nSOFRAM300 Kodunu sepette kullanın\n\n👉 FIRSATA GİT\n\n🛍️Amazon tanıtım @ozelfirsat GOOGLE 🔍"
+ },
+ {
+  "src": "test_reported_message_regressions.py:94",
+  "text": "🛍️ Haustier WF007L Otomatik Kedi Su Sebili,Kedi Su Çeşmesi, Su Şelalesi, Su Pınarı 3.5Lt Geniş Hazne, Bpa Içermez, Ultra Sessiz (Siyah)\n\n💰 Fiyat : 1344 TL / ödeme aşamasında 134 TL indirimle 1209 TL\n\n🗓️ 365 Günün En Düşük Fiyatı\n\n🛒 https://link.amazon/B0ewaZard"
+ },
+ {
+  "src": "test_reported_message_regressions.py:105",
+  "text": "🛍️ Thrustmaster T128 Yarış Direksiyonu – Hibrit Force Feedback Teknolojisi – Manyetik Vites ve Pedal Seti – LED Hız Göstergesi – Xbox Series X|S, Xbox One ve PC Uyumlu\n\n💰 Fiyat : 13199 TL\n🗓️ 60 Günün En Düşük Fiyatı\n♻️ İkinci El (Yeni Gibi) : 12539 TL\n\nhttps://www.amazon.com.tr/dp/B0B3RJNZXG?psc=1&tag=indirimalarmi-21"
+ },
+ {
+  "src": "test_reported_message_regressions.py:112",
+  "text": "✅ Philips 3000 Serisi 3'ü 1 Arada Saç Şekillendirici, Seramik Argan Yağı Katkılı Plakalar\n\n🏷 1.649 TL — sepette 250 TL kupon ile. Listedeki diğer Philips ürünlerini de inceleyebilirsiniz 1500/250 kupon var."
+ },
+ {
+  "src": "test_reported_message_regressions.py:117",
+  "text": "✅ Philips 3000 Serisi Islak&Kuru Tıraş Makinesi, 5 Yönde Dönen Başlıklar, Hassas Düzeltici, S3144/00\n\n🏷 1.749 TL — sepette 250 TL kupon ile."
+ },
+ {
+  "src": "test_reported_message_regressions.py:129",
+  "text": "Homend Dustroyer 1272H 2 in 1 Metal Borulu Kablolu Dikey Süpürge\n\n1376 TL kupon ile"
+ },
+ {
+  "src": "test_reported_message_regressions.py:135",
+  "text": "TrioMove Protein Bar Ürünlerinde Sepette 2.si 1 TL"
+ },
+ {
+  "src": "test_reported_message_regressions.py:143",
+  "text": "\n\n🎯 499 TL / Tık hızında 175 TL kuponla 3 adet alımda tanesi 440 TL 🚚 Kargo Bedava\n\n🛍️ https://sl.n11.com/n/vAk2s0n"
+ },
+ {
+  "src": "test_reported_message_regressions.py:153",
+  "text": "🛍️ Mayi Tuz Mayi İyotlu Öğütülmüş Sofra Tuzu 2 kg – 2'li Fırsat Paket\n\n💰 Fiyat : 600 TL / ödeme aşamasında 454  TL\n🗓️ 60 Günün En Düşük Fiyatı\n\n🛒 https://link.amazon/B00MrDi3m"
+ },
+ {
+  "src": "test_reported_message_regressions.py:159",
+  "text": "🛒 Colin's Yeşil Erkek Sweatshirt\n\n🎯 222 TL / Plus Üyelere Özel 211 TL\n\n🛍️ https://publicis.link/pazarama-37360-9bsitwt"
+ },
+ {
+  "src": "test_reported_message_regressions.py:164",
+  "text": "Sudocrem Bebek Bakım Pişik Kremi 250 G\n\n🏷️ 217 TL (Kargo Bedava)\n💬 2.000+ yorum\n📂 Kozmetik, Kişisel Bakım\n🛍️ n11\n🔗 https://onu.al/fixu"
+ },
+ {
+  "src": "test_reported_message_regressions.py:200",
+  "text": "Fiyat: 1000 TL / ödeme aşamasında 100 TL indirim ile 900 TL"
+ },
+ {
+  "src": "test_reported_message_regressions.py:202",
+  "text": "Fiyat: 1000 TL / ödeme aşamasında 100 TL indirimle **900 TL**"
+ },
+ {
+  "src": "test_reported_message_regressions.py:207",
+  "text": "Sepette 750 TL indirim"
+ },
+ {
+  "src": "test_reported_message_regressions.py:222",
+  "text": "🏷 **889 TL**"
+ },
+ {
+  "src": "test_reported_message_regressions.py:300",
+  "text": "5.649 TL - 2 set alımda"
+ },
+ {
+  "src": "test_reported_message_regressions.py:313",
+  "text": "750 TL sepette indirim"
+ },
+ {
+  "src": "test_reported_message_regressions.py:314",
+  "text": "43.728 TL sepette"
+ },
+ {
+  "src": "test_reported_message_regressions.py:356",
+  "text": "\n♻️ İkinci El (Çok İyi) : 12499 TL"
+ },
+ {
+  "src": "test_reported_message_regressions.py:378",
+  "text": "Sepette 250 TL kupon"
+ },
+ {
+  "src": "test_reported_message_regressions.py:379",
+  "text": "Sepette 250 TL kupon ile"
+ },
+ {
+  "src": "test_reported_message_regressions.py:380",
+  "text": "250 TL kupon ile"
+ },
+ {
+  "src": "test_reported_message_regressions.py:381",
+  "text": "100 TL kupon ile 90 TL"
+ },
+ {
+  "src": "test_reported_message_regressions.py:409",
+  "text": "Everest Mouse\n249 TL (Tanesi 124 TL)"
+ },
+ {
+  "src": "test_reported_message_regressions.py:419",
+  "text": "TrioMove Protein Bar\n🏷 49 TL\n"
+ },
+ {
+  "src": "test_reported_message_regressions.py:465",
+  "text": "600 TL / ödeme aşamasında 454 TL kargo"
+ },
+ {
+  "src": "test_reported_message_regressions.py:477",
+  "text": "222 TL / Plus Üyelere Özel 211 TL kargo"
+ },
+ {
+  "src": "test_reported_message_regressions.py:481",
+  "text": "Colin's Yeşil Erkek Sweatshirt\n222 TL / 211 TL"
+ },
+ {
+  "src": "test_reported_message_regressions.py:483",
+  "text": " / Plus Üyelere Özel 209 TL"
+ },
+ {
+  "src": "test_reported_message_regressions.py:497",
+  "text": "Sudocrem Bebek Bakım Kremi\nKargo: 30 TL"
+ },
+ {
+  "src": "test_reported_message_regressions.py:501",
+  "text": "₺20.999 — Dreame D20 Ultra Robot Süpürge Beyaz, 13000Pa Emiş Gücü"
+ },
+ {
+  "src": "test_resilience.py:29",
+  "text": "Fiyat: 1..299 TL"
+ },
+ {
+  "src": "test_resilience.py:29",
+  "text": "Fiyat: 1,2,3 TL"
+ },
+ {
+  "src": "test_resilience.py:30",
+  "text": "Fiyat: ₺1..299"
+ },
+ {
+  "src": "test_resilience.py:37",
+  "text": "Fiyat: {} TL"
+ },
+ {
+  "src": "test_resilience.py:63",
+  "text": "Fiyat: 300 TL"
+ },
+ {
+  "src": "test_resilience.py:73",
+  "text": "500 TL ve üzeri alışverişlerde %5 indirim"
+ },
+ {
+  "src": "test_resilience.py:80",
+  "text": "Fiyat: 1 299,90 TL"
+ },
+ {
+  "src": "test_resilience.py:80",
+  "text": "Fiyat: 1 299,90 TL"
+ },
+ {
+  "src": "test_resilience.py:90",
+  "text": "Pamuk Havlu\nFiyat: 300 TL\nKupon: "
+ },
+ {
+  "src": "test_resilience.py:93",
+  "text": "Pamuk Havlu\n300 TL / 100 TL kupon"
+ },
+ {
+  "src": "test_resilience.py:96",
+  "text": "Pamuk Havlu\n100 TL\nCam Bardak\n200 TL"
+ },
+ {
+  "src": "test_resilience.py:101",
+  "text": "Pamuk Havlu\nFiyat: 100 TL\nCam Bardak 50 TL"
+ },
+ {
+  "src": "test_resilience.py:129",
+  "text": "\nFiyat: 300 TL / 2 adet alımda 200 TL\nSatıcı: Mağaza A"
+ },
+ {
+  "src": "test_resilience.py:139",
+  "text": "\n💰 Fiyat: 300₺ / 2 adet alımda 200₺\nSatıcı: Mağaza B"
+ },
+ {
+  "src": "test_resilience.py:145",
+  "text": "₺200 — Deneme Pamuk Havlu"
+ },
+ {
+  "src": "test_resilience.py:156",
+  "text": "\nFiyat: 300 TL\nKupon: KOD10"
+ },
+ {
+  "src": "test_resilience.py:157",
+  "text": "\nFiyat: 300 TL\nKupon: KOD20"
+ },
+ {
+  "src": "test_resilience.py:167",
+  "text": "\nFiyat: 300 TL"
+ },
+ {
+  "src": "test_resilience.py:247",
+  "text": "\nEski fiyat: 100 TL"
+ },
+ {
+  "src": "test_resilience.py:252",
+  "text": "₺300 — Deneme Pamuk Havlu"
+ },
+ {
+  "src": "test_resilience.py:253",
+  "text": "Eski fiyat: 100 TL"
+ },
+ {
+  "src": "test_resilience.py:258",
+  "text": "\nFiyat: 300 TL\nKupon: KOD10\nİkinci El: Yeni Gibi\nAçıklama: Kutusu açılmış; aksesuarları tam"
+ },
+ {
+  "src": "test_resilience.py:260",
+  "text": "\n300 TL\nKupon: KOD10\nİkinci El: Yeni Gibi"
+ },
+ {
+  "src": "test_resilience.py:279",
+  "text": "\r\nFiyat: 300 TL\r\n\r\n\tKupon: "
+ },
+ {
+  "src": "test_title_product_dedup.py:54",
+  "text": "\n\n🏷 6.619 TL\n\n👉 FIRSATA GİT!\n\n🛍 Amazon"
+ },
+ {
+  "src": "test_title_product_dedup.py:82",
+  "text": "\n\n🏷 6619 TL\n\n🛍 Hepsiburada"
+ },
+ {
+  "src": "test_title_product_dedup.py:226",
+  "text": "aynı tam TL kuruş farkı birleşmeye devam etmeli"
+ },
+ {
+  "src": "test_title_product_dedup.py:287",
+  "text": "Kargo 49,90 TL"
+ },
+ {
+  "src": "test_title_product_dedup.py:301",
+  "text": "\n\n💰 Fiyat: 6.619 TL\n\nhttps://app.hb.biz/K9xL1m2N3p\n\n🔗 Mesajı Gör: https://t.me/firsatz/140001\n\n"
+ },
+ {
+  "src": "test_user_november_cases.py:9",
+  "text": "✅ Fropie Yer Fıstığı Ezmesi 630 gr - %100 Yer Fıstığı Glutensiz ve Vegan Uyumlu Sağlıklı Atıştırmalık\n\n🏷 229 TL — 2 adet alımda sepette \"TADIM100\" indirim kodunu uygulayın. (3 adet alımda adet 101 TL).\n\n👉 FIRSATA GİT !\n\n🛍 Hepsiburada"
+ },
+ {
+  "src": "test_user_november_cases.py:12",
+  "text": "Servet Şeker Ilavesiz Badem Kreması 315g 3’lü Paket\n\n🛍️Sepet indirimi➕TADIM100 koduyla\n\n413 TL ye düşüyor (137 TL/Adet)\n\n✅Aramaya Badem yazınız"
+ },
+ {
+  "src": "test_user_november_cases.py:17",
+  "text": "⚡ 87500₺ (🎉 Ziraat Bankkart, Axess ve Paraf'a peşin fiyatına 12 taksit + 💥 %3 indirim) "
+ },
+ {
+  "src": "test_user_november_cases.py:30",
+  "text": "Ürün\n🏷 229 TL — sepette indirim kodunu kullanın"
+ },
+ {
+  "src": "test_user_november_cases.py:37",
+  "text": "Ürün\n🏷 413 TL (137 TL/Adet)"
+ },
+ {
+  "src": "test_user_november_cases.py:38",
+  "text": "Ürün\n🏷 413 TL\ntanesi 137 TL"
+ },
+ {
+  "src": "test_user_november_cases.py:49",
+  "text": "₺87.500 — GIGABYTE GAMING A18"
+ },
+ {
+  "src": "test_user_november_cases.py:59",
+  "text": "NIVEA Kadın Roll On 50ml\n268 TL"
+ },
+ {
+  "src": "test_user_november_cases.py:71",
+  "text": "\n🏷 79 TL\nİkinci El"
+ },
+ {
+  "src": "test_user_november_cases.py:74",
+  "text": "\nFiyat: 79 TL / 13 adet alımda 71 TL\nİkinci El"
+ }
+]
