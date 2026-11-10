@@ -1208,6 +1208,10 @@ def is_instagram_url(url: Any) -> bool:
 def _utf16_to_index(text: str, offset: int) -> int:
     """Telegram UTF-16 offset'ini Python karakter indeksine çevir."""
     target = max(0, int(offset or 0))
+    if target == 0:
+        # Offset 0 metnin başıdır; aşağıdaki döngü onu ilk karakterin içi
+        # sayıp 1 döndürürdü ve baştaki biçim ilk karakterini kaybederdi.
+        return 0
     units = 0
     for index, char in enumerate(text):
         width = 2 if ord(char) > 0xFFFF else 1
@@ -1465,6 +1469,12 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
         )
         new_start = _index_after_removals(old_start, removed_spans)
         new_end = _index_after_removals(old_end, removed_spans)
+        if new_end - new_start < old_end - old_start:
+            # Etiketin bir kısmı silindi; geriye yalnızca boş satır kaldıysa onu
+            # ikinci geçiş (boş satır sıkıştırma) atar ve entity düşer. Hedef o
+            # durumda da taşınmalı. Temizliğin dokunmadığı etiketler bu dala girmez.
+            new_start = _index_after_removals(new_start, blank_spans)
+            new_end = _index_after_removals(new_end, blank_spans)
         if old_end > old_start and new_end <= new_start:
             preserved_links.append({
                 "url": clean_url(url),

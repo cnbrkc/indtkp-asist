@@ -1614,6 +1614,48 @@ class MessageSanitizationTest(unittest.TestCase):
         self.assertEqual(bot.extract_links(cleaned), [])
         self.assertTrue(cleaned.changed)
 
+    def test_utf16_offset_zero_is_the_start_of_the_text(self):
+        """UTF-16 ofseti 0 metnin başıdır; ilk karakterin sonu değil."""
+        for text in ("Çay 5 TL", "🔥 Çay", "a", ""):
+            with self.subTest(text=text):
+                self.assertEqual(bot._utf16_to_index(text, 0), 0)
+        text = "a🔥b"  # 🔥 iki UTF-16 birimidir: karakter sınırları 0, 1, 3 ve 4
+        self.assertEqual([bot._utf16_to_index(text, offset) for offset in (0, 1, 3, 4)], [0, 1, 2, 3])
+        self.assertEqual(bot._utf16_to_index(text, 2), 2, "karakterin ortasına düşen ofset sağa yuvarlanır")
+        self.assertEqual(bot._utf16_to_index(text, 99), 3, "metnin ötesindeki ofset metnin sonudur")
+        self.assertEqual(bot._utf16_to_index(text, -1), 0, "eksi ofset metnin başıdır")
+
+    def test_entity_at_message_start_keeps_its_first_character_when_text_is_removed(self):
+        """Temizlik metin silince mesajın en başındaki biçim ilk karakterini kaybetmemeli.
+
+        Kalın ürün adı ya da ürün adına gömülü bağlantı mesajın ilk karakterinden
+        başlayabilir; başka bir yerden #reklam/WhatsApp linki ya da fazla boş satır
+        silindiğinde biçim "Carrera" yerine "arrera"yı kapsamamalı.
+        """
+        cases = {
+            "sondaki etiket silinir": ("Carrera GO Yarış Seti\n3.499 TL\n\n#reklam", "Carrera"),
+            "fazla boş satırlar sıkışır": ("Carrera GO Yarış Seti\n\n\n\n3.499 TL", "Carrera"),
+            "emoji ile başlar": ("🔥 Carrera GO Yarış Seti\n3.499 TL\nhttps://wa.me/905551234567", "🔥 Carrera"),
+        }
+        for name, (text, bold) in cases.items():
+            with self.subTest(name):
+                title = text.split("\n", 1)[0]
+                entities = [
+                    tl_types.MessageEntityBold(offset=0, length=bot.utf16_length(bold)),
+                    tl_types.MessageEntityTextUrl(
+                        offset=0, length=bot.utf16_length(title), url="https://example.com/urun",
+                    ),
+                ]
+                cleaned = bot.sanitize_message(make_message(text, entities=entities, media=False))
+                self.assertTrue(cleaned.changed, "örnek, temizliğin metin sildiği bir mesaj olmalı")
+                self.assertTrue(cleaned.message.startswith(title))
+                self.assertEqual(
+                    [bot.utf16_slice(cleaned.message, entity.offset, entity.length)
+                     for entity in cleaned.entities],
+                    [bold, title],
+                    "baştaki biçim aynı metni kapsamalı",
+                )
+
     def test_external_link_on_removed_disclosure_label_is_preserved(self):
         text = "🔥 #reklam"
         entity = tl_types.MessageEntityTextUrl(
@@ -1629,6 +1671,122 @@ class MessageSanitizationTest(unittest.TestCase):
         )
         self.assertIn("https://example.com/campaign", with_links_disabled["text"],
                       "temizlenen etiketteki bağımsız bağlantı link_appendix=off iken de kaybolmamalı")
+
+    @staticmethod
+    def _links_reaching_notification(message):
+        """Bildirimde okuyucuya ulaşan bağlantılar: görünür etiketli gizli bağlantılar ve yazılı URL'ler."""
+        composed = bot.compose_message(message, link_kinds=())
+        text = composed["text"]
+        hidden = [
+            entity.url for entity in composed["entities"]
+            if getattr(entity, "url", None)
+            and bot.utf16_slice(text, entity.offset, entity.length).strip()
+        ]
+        return hidden + bot.URL_RE.findall(text)
+
+    def test_link_on_label_removed_after_leading_line_break_reaches_notification(self):
+        """İleti satır sonuyla başlar; bağlantının etiketi "satır sonu + #işbirliği"dir.
+
+        Etiketten geriye yalnızca baştaki satır sonu kalır, onu da boş satır
+        sıkıştırması atar; hedef URL yine de bildirime taşınmalı.
+        """
+        url = "https://example.com/campaign"
+        label = "\n#işbirliği"
+        entity = tl_types.MessageEntityTextUrl(offset=0, length=bot.utf16_length(label), url=url)
+        message = make_message(label + "\nÇay 5 TL", entities=[entity], media=False)
+        self.assertEqual(bot.sanitize_message(message).message, "Çay 5 TL")
+        self.assertEqual(self._links_reaching_notification(message), [url],
+                         "etiketi temizlenen bağlantının hedefi kaybolmamalı")
+
+    def test_link_on_label_removed_after_leading_space_reaches_notification(self):
+        """İleti boşlukla başlar; bağlantının etiketi "boşluk + #işbirliği"dir.
+
+        Etiketin yanındaki boşluk etiketle birlikte silinir; hedef URL taşınır.
+        """
+        url = "https://example.com/campaign"
+        label = " #işbirliği"
+        entity = tl_types.MessageEntityTextUrl(offset=0, length=bot.utf16_length(label), url=url)
+        message = make_message(label + "\nÇay 5 TL", entities=[entity], media=False)
+        self.assertEqual(bot.sanitize_message(message).message, "Çay 5 TL")
+        self.assertEqual(self._links_reaching_notification(message), [url],
+                         "etiketi temizlenen bağlantının hedefi kaybolmamalı")
+
+    def test_link_over_line_with_one_character_instagram_link_reaches_notification(self):
+        """İlk karakterde tek karakterlik gizli Instagram bağlantısı, aynı satırda ikinci bağlantı.
+
+        Instagram'a bağlı tanıtım satırı silinince ikinci bağlantının etiketi
+        ("satır + satır sonu") yok olur; ikinci bağlantının hedefi kaybolmamalı.
+        """
+        url = "https://example.com/campaign"
+        promo_line = "Kanalımıza katılın"
+        entities = [
+            tl_types.MessageEntityTextUrl(offset=0, length=1, url="https://instagram.com/ornek"),
+            tl_types.MessageEntityTextUrl(offset=0, length=bot.utf16_length(promo_line + "\n"), url=url),
+        ]
+        message = make_message(promo_line + "\nÇay 5 TL", entities=entities, media=False)
+        self.assertEqual(self._links_reaching_notification(message), [url],
+                         "silinen satırı kapsayan bağlantının hedefi kaybolmamalı")
+
+    def test_link_on_line_break_and_removed_label_after_text_reaches_notification(self):
+        """Etiket iletinin başında değil: ürün metninden sonra "satır sonu + #işbirliği".
+
+        Etiketten geriye kalan satır sonu iletinin sonunda kalır ve boş satır
+        sıkıştırmasıyla atılır; hedef URL yine de bildirime taşınmalı.
+        """
+        url = "https://example.com/campaign"
+        text = "Çay 5 TL\n\n\n#işbirliği"
+        label = "\n#işbirliği"
+        entity = tl_types.MessageEntityTextUrl(
+            offset=bot.utf16_length(text[:text.index(label)]), length=bot.utf16_length(label), url=url,
+        )
+        message = make_message(text, entities=[entity], media=False)
+        self.assertEqual(bot.sanitize_message(message).message, "Çay 5 TL")
+        self.assertEqual(self._links_reaching_notification(message), [url],
+                         "etiketi temizlenen bağlantının hedefi kaybolmamalı")
+
+    def test_link_whose_label_keeps_visible_text_stays_hidden_and_is_not_written(self):
+        """Etiket kısalsa da görünür metni kalıyorsa bağlantı o metinde kalır; URL ayrıca yazılmaz.
+
+        Etiketin önünde, etiketten kalan metinden daha uzun bir boş satır bloğu
+        silinir: etiketin iki ucu da aynı kaydırmadan geçmezse etiket yok sanılır.
+        """
+        url = "https://example.com/campaign"
+        label = "Al #reklam"
+        text = "Çay 5 TL" + "\n" * 8 + label
+        entity = tl_types.MessageEntityTextUrl(
+            offset=bot.utf16_length(text[:text.index(label)]), length=bot.utf16_length(label), url=url,
+        )
+        message = make_message(text, entities=[entity], media=False)
+        cleaned = bot.sanitize_message(message)
+        self.assertEqual(cleaned.message, "Çay 5 TL\n\nAl")
+        self.assertEqual(
+            [(link.url, bot.utf16_slice(cleaned.message, link.offset, link.length)) for link in cleaned.entities],
+            [(url, "Al")],
+        )
+        self.assertEqual(cleaned.preserved_links, [])
+        self.assertEqual(self._links_reaching_notification(message), [url],
+                         "bağlantı bir kez, gizli bağlantı olarak ulaşmalı")
+
+    def test_link_on_blank_lines_only_is_still_not_written(self):
+        """Etiketi baştan beri yalnızca boş satır olan bağlantıda bugünkü davranış sürer.
+
+        Temizlik kuralları böyle bir etikete dokunmaz; etiket boş satır sıkıştırmasıyla
+        gider ve URL bildirime yazılmaz. Hedefi yalnızca temizliğin kısalttığı
+        etiketlerde taşırız; bu test o sınırı sabitler ("doğrusu budur" demek değildir).
+        """
+        url = "https://example.com/campaign"
+        cases = {
+            "sondaki boş satırlar": ("Çay 5 TL\n\n", 8, "Çay 5 TL"),
+            "fazla boş satırlar": ("Çay\n\n\n\n5 TL", 5, "Çay\n\n5 TL"),
+        }
+        for name, (text, start, expected) in cases.items():
+            with self.subTest(name):
+                entity = tl_types.MessageEntityTextUrl(offset=start, length=2, url=url)
+                message = make_message(text, entities=[entity], media=False)
+                cleaned = bot.sanitize_message(message)
+                self.assertEqual(cleaned.message, expected)
+                self.assertEqual(cleaned.preserved_links, [])
+                self.assertEqual(self._links_reaching_notification(message), [])
 
     def test_whatsapp_host_matching_is_not_substring_based(self):
         self.assertTrue(bot.is_whatsapp_url("https://wa.me/905551234567"))

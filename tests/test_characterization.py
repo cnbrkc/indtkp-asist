@@ -12,11 +12,13 @@ dosya onun ulaşmadığı yan yolları sabitler:
   Bekçiler      : tanımsız ad taraması; Akakçe işçisinin yalıtılmış kipte açılması.
 
 Buradaki her iddia "bugün böyle çalışıyor" demektir; "doğrusu budur" demek DEĞİLDİR.
-Bilinen üç kusurun bugünkü görünümü KnownDefectPins sınıfında, kusur başına tek
-testle durur. Bir kusur düzeltildiğinde bu dosyada yalnızca o test (ve tanımsız ad
-kusurlarında KNOWN_UNDEFINED listesi) bilinçli olarak güncellenir; buradaki başka bir
-testin oynaması düzeltmenin beklenmeyen bir yan etkisidir. Altın referansta 1 ve 2
-numaralı kusurların dokunduğu kayıtlar ayrıca yeniden üretilir (3 numara dokunmaz).
+Düzeltilmemiş kusurların (2 ve 3 numara) bugünkü görünümü KnownDefectPins sınıfında,
+kusur başına tek testle durur. Bir kusur düzeltildiğinde bu dosyada yalnızca o test
+(ve tanımsız ad kusurlarında KNOWN_UNDEFINED listesi) bilinçli olarak güncellenir;
+buradaki başka bir testin oynaması düzeltmenin beklenmeyen bir yan etkisidir. Altın
+referansta 1 ve 2 numaralı kusurların dokunduğu kayıtlar ayrıca yeniden üretilir
+(3 numara dokunmaz). 1 numaralı kusur düzeltildi: iğnesi kaldırıldı, doğru davranışı
+test_bot.py'deki MessageSanitizationTest sabitler.
 
 Ağ yoktur: Telethon yerine test_integration.FakeClient, HTTP yerine
 urllib.request.urlopen'ın sahtesi çalışır; aradaki her şey üretim kodudur.
@@ -41,7 +43,6 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 from unittest import mock
 
@@ -57,7 +58,6 @@ import test_golden_reference as golden  # noqa: E402
 import test_integration as ti  # noqa: E402
 import test_private_bot as tpb  # noqa: E402
 from telethon import errors  # noqa: E402
-from telethon.tl import types  # noqa: E402
 
 OWNER = ti.ADMIN_ID   # sahte istemcide hesap sahibi (SELF_ID) aynı zamanda yöneticidir
 
@@ -858,21 +858,15 @@ class ReservationTakeoverTest(unittest.TestCase):
 # --- Bilinen kusurların bugünkü görünümü -------------------------------------------
 
 class KnownDefectPins(unittest.TestCase):
-    """Denetimde bulunan üç gizli kusur BUGÜN böyle davranıyor.
+    """Denetimde bulunan gizli kusurlardan düzeltilmemiş ikisi BUGÜN böyle davranıyor.
 
     Bunlar hedef değil, ölçüm noktasıdır: ilgili kusur düzeltildiğinde buradaki tek
     test bilinçli olarak güncellenir. Düzeltmenin ne üretmesi gerektiği o aşamanın
     kararıdır; burada yalnızca bugünkü sonuç yazılıdır.
-    """
 
-    def test_defect1_entity_at_offset_zero_loses_its_first_character_when_text_is_removed(self) -> None:
-        # bot.py _utf16_to_index: 0 ofseti 1 döner. Temizlik metin attığında en baştaki
-        # biçim bir karakter sağdan başlar ("Çay" yerine "ay" kalın olur).
-        message = SimpleNamespace(message="Çay 5 TL\n#reklam",
-                                  entities=[types.MessageEntityBold(offset=0, length=3)])
-        cleaned = bot.sanitize_message(message)
-        self.assertEqual(cleaned.message, "Çay 5 TL")
-        self.assertEqual([(entity.offset, entity.length) for entity in cleaned.entities], [(1, 2)])
+    1 numaralı kusur (_utf16_to_index 0 ofsetini 1 sayıyordu) düzeltildi ve iğnesi
+    kaldırıldı; doğru davranışı test_bot.py'deki MessageSanitizationTest sabitler.
+    """
 
     def test_defect2_second_copy_in_history_is_not_counted_at_startup(self) -> None:
         # bot.py dedup_preload: "existing_conflict" tanımsız; aynı fırsatın geçmişteki ikinci
@@ -913,8 +907,9 @@ class LookAlikeHelpersTest(unittest.TestCase):
     satır aynı girdinin iki işlevdeki bugünkü sonucudur; sütunlardan biri oynarsa bir
     işlev ötekine benzetilmiş demektir.
 
-    Üçüncü çift (bot._utf16_to_index / price_filter.utf16_to_char_index) yalnızca 0
-    ofsetinde ayrışır; o fark KnownDefectPins'teki 1 numaralı kusurun kendisidir.
+    Üçüncü bir çift (bot._utf16_to_index / price_filter.utf16_to_char_index) yalnızca 0
+    ofsetinde ayrışıyordu; o fark 1 numaralı kusurdu ve düzeltildi. İkisi artık her
+    tamsayı ofsette aynı sonucu verdiği için burada satırı yoktur.
     """
 
     def test_normalize_keeps_whitespace_and_casefolds_while_norm_collapses_and_lowers(self) -> None:
