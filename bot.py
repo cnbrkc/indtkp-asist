@@ -3992,6 +3992,8 @@ def resolve_telegram_list(text: Any) -> str | None:
 def _webtakip_count(store: Any) -> int | None:
     """product_watches.json'daki takip edilen ürün sayısı (okunamazsa None)."""
     try:
+        from product_tracker import load_state
+
         return len(load_state(store.path.with_name("product_watches.json")).get("items", []))
     except Exception:
         return None
@@ -5652,7 +5654,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     tracker = None
     if private_api and config_flag(store.config.get("private_control"), False):
         try:
-            from product_tracker import ProductTracker, load_state
+            from product_tracker import ProductTracker
 
             def persist_products(path, data):
                 # Contents API avoids dirtying the shared checkout while config

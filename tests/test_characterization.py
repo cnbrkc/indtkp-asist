@@ -12,13 +12,13 @@ dosya onun ulaşmadığı yan yolları sabitler:
   Bekçiler      : tanımsız ad taraması; Akakçe işçisinin yalıtılmış kipte açılması.
 
 Buradaki her iddia "bugün böyle çalışıyor" demektir; "doğrusu budur" demek DEĞİLDİR.
-Düzeltilmemiş kusurların (2 ve 3 numara) bugünkü görünümü KnownDefectPins sınıfında,
-kusur başına tek testle durur. Bir kusur düzeltildiğinde bu dosyada yalnızca o test
-(ve tanımsız ad kusurlarında KNOWN_UNDEFINED listesi) bilinçli olarak güncellenir;
-buradaki başka bir testin oynaması düzeltmenin beklenmeyen bir yan etkisidir. Altın
-referansta 1 ve 2 numaralı kusurların dokunduğu kayıtlar ayrıca yeniden üretilir
-(3 numara dokunmaz). 1 numaralı kusur düzeltildi: iğnesi kaldırıldı, doğru davranışı
-test_bot.py'deki MessageSanitizationTest sabitler.
+Düzeltilmemiş son kusurun (2 numara) bugünkü görünümü KnownDefectPins sınıfında tek
+testle durur. Bir kusur düzeltildiğinde bu dosyada yalnızca o test (ve tanımsız ad
+kusurlarında KNOWN_UNDEFINED listesi) bilinçli olarak güncellenir; buradaki başka bir
+testin oynaması düzeltmenin beklenmeyen bir yan etkisidir. Altın referansta 2 numaralı
+kusurun dokunduğu kayıtlar ayrıca yeniden üretilir. 1 ve 3 numaralı kusurlar düzeltildi,
+iğneleri kaldırıldı: doğru davranışı 1 için test_bot.py'deki MessageSanitizationTest,
+3 için buradaki WebdetakipFlowTest sabitler (3 numara altın referansa dokunmadı).
 
 Ağ yoktur: Telethon yerine test_integration.FakeClient, HTTP yerine
 urllib.request.urlopen'ın sahtesi çalışır; aradaki her şey üretim kodudur.
@@ -639,6 +639,45 @@ class WebdetakipFlowTest(unittest.TestCase):
 
         run_private(scenario, tracker_factory=broken)
 
+    # 7. satırın sonundaki kayıt sayısı product_watches.json'dan okunur.
+
+    def test_list_menu_counts_the_watched_products(self) -> None:
+        async def scenario(chat: PrivateChat) -> None:
+            chat.tracker.path.write_text(json.dumps(WATCHES), encoding="utf-8")
+            (menu,) = await chat.say("/ekle")
+            self.assertIn(MENU_LINE + "1 kayıt\n", menu)
+            await chat.say("/iptal")
+            (menu,) = await chat.say("/cikar")
+            self.assertIn(MENU_LINE + "1 kayıt\n", menu)
+
+        run_private(scenario)
+
+    def test_menu_repeated_after_an_unknown_choice_keeps_the_count(self) -> None:
+        async def scenario(chat: PrivateChat) -> None:
+            chat.tracker.path.write_text(json.dumps(WATCHES), encoding="utf-8")
+            await chat.say("/ekle")
+            (again,) = await chat.say("sekizinci liste")
+            self.assertTrue(again.startswith("❌ Seçimi anlayamadım."), again)
+            self.assertIn(MENU_LINE + "1 kayıt\n", again)
+
+        run_private(scenario)
+
+    def test_list_menu_shows_zero_before_any_product_is_watched(self) -> None:
+        async def scenario(chat: PrivateChat) -> None:
+            self.assertFalse(chat.tracker.path.exists())
+            (menu,) = await chat.say("/ekle")
+            self.assertIn(MENU_LINE + "0 kayıt\n", menu)
+
+        run_private(scenario)
+
+    def test_list_menu_shows_a_dash_only_when_the_watch_file_is_unreadable(self) -> None:
+        async def scenario(chat: PrivateChat) -> None:
+            chat.tracker.path.write_text("{", encoding="utf-8")
+            (menu,) = await chat.say("/ekle")
+            self.assertIn(MENU_LINE + "– kayıt\n", menu)
+
+        run_private(scenario)
+
 
 # --- Tekrar rozeti: düzenlemenin reddedildiği dallar -------------------------------
 
@@ -858,14 +897,16 @@ class ReservationTakeoverTest(unittest.TestCase):
 # --- Bilinen kusurların bugünkü görünümü -------------------------------------------
 
 class KnownDefectPins(unittest.TestCase):
-    """Denetimde bulunan gizli kusurlardan düzeltilmemiş ikisi BUGÜN böyle davranıyor.
+    """Denetimde bulunan gizli kusurlardan düzeltilmemiş sonuncusu BUGÜN böyle davranıyor.
 
-    Bunlar hedef değil, ölçüm noktasıdır: ilgili kusur düzeltildiğinde buradaki tek
-    test bilinçli olarak güncellenir. Düzeltmenin ne üretmesi gerektiği o aşamanın
-    kararıdır; burada yalnızca bugünkü sonuç yazılıdır.
+    Bu hedef değil, ölçüm noktasıdır: kusur düzeltildiğinde buradaki test bilinçli
+    olarak güncellenir. Düzeltmenin ne üretmesi gerektiği o aşamanın kararıdır; burada
+    yalnızca bugünkü sonuç yazılıdır.
 
     1 numaralı kusur (_utf16_to_index 0 ofsetini 1 sayıyordu) düzeltildi ve iğnesi
     kaldırıldı; doğru davranışı test_bot.py'deki MessageSanitizationTest sabitler.
+    3 numaralı kusur (_webtakip_count, load_state adını bulamıyordu) düzeltildi ve iğnesi
+    kaldırıldı; doğru davranışı WebdetakipFlowTest sabitler.
     """
 
     def test_defect2_second_copy_in_history_is_not_counted_at_startup(self) -> None:
@@ -886,16 +927,6 @@ class KnownDefectPins(unittest.TestCase):
         run_prod(scenario, wire=Wire(), history=history)
         self.assertEqual(seen["count"], 1)
         self.assertEqual(seen["last_seen"], older)
-
-    def test_defect3_list_menu_cannot_count_the_watched_products(self) -> None:
-        # bot.py _webtakip_count: "load_state" modül düzeyinde tanımsız; sayı hep bilinmiyor ("–").
-        async def scenario(chat: PrivateChat) -> None:
-            chat.tracker.path.write_text(json.dumps(WATCHES), encoding="utf-8")
-            self.assertEqual(len(product_tracker.load_state(chat.tracker.path)["items"]), 1)
-            (menu,) = await chat.say("/ekle")
-            self.assertIn(MENU_LINE + "– kayıt\n", menu)
-
-        run_private(scenario)
 
 
 # --- Benzer görünen yardımcılar ------------------------------------------------------
@@ -945,8 +976,8 @@ class LookAlikeHelpersTest(unittest.TestCase):
 
 # --- Yapısal bekçiler ----------------------------------------------------------------
 
-# Bugün tanımsız olduğu bilinen iki ad (KnownDefectPins 2 ve 3). Liste yalnızca küçülebilir.
-KNOWN_UNDEFINED = {("bot.py", "existing_conflict"), ("bot.py", "load_state")}
+# Bugün tanımsız olduğu bilinen tek ad (KnownDefectPins, 2 numara). Liste yalnızca küçülebilir.
+KNOWN_UNDEFINED = {("bot.py", "existing_conflict")}
 
 _IMPLICIT_GLOBALS = frozenset({"__name__", "__file__", "__doc__", "__spec__", "__loader__",
                                "__package__", "__builtins__", "__debug__"})
