@@ -766,6 +766,41 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertIn("@yenikanal", self._config()["source_chats"])
         self.assertTrue(any(item["requested"] == "@yenikanal" for item in bot.SOURCES))
 
+    def test_joined_invite_is_staged_and_saved_as_id_not_secret(self):
+        self._reply("/ekle")
+        self._say("3")
+        original = bot.resolve_chat
+        async def resolve(client, value):
+            if value == "https://t.me/+PrivateSecret":
+                return -12345, "Özel", None
+            return await original(client, value)
+        with mock.patch.object(bot, "resolve_chat", side_effect=resolve):
+            draft = self._say("https://t.me/+PrivateSecret")
+            self.assertIn("-12345", draft)
+            self.assertNotIn("PrivateSecret", draft)
+            self.assertNotIn("PrivateSecret", str(bot.PENDING))
+            self.assertNotIn(-12345, self._config()["source_chats"])
+            self._reply("/kaydet")
+        self.assertIn(-12345, self._config()["source_chats"])
+        self.assertNotIn("PrivateSecret", str(self._config()))
+        self.assertTrue(any(item["id"] == -12345 for item in bot.SOURCES))
+
+    def test_invite_failure_does_not_stage_any_source_or_expose_secret(self):
+        self._reply("/ekle")
+        self._say("3")
+        original = bot.resolve_chat
+        async def resolve(client, value):
+            if value == "https://t.me/+PrivateSecret":
+                raise ValueError("not joined")
+            return await original(client, value)
+        with mock.patch.object(bot, "resolve_chat", side_effect=resolve):
+            reply = self._say("@yenikanal, https://t.me/+PrivateSecret")
+        self.assertIn("önce katıl", reply)
+        self.assertNotIn("PrivateSecret", reply)
+        self.assertNotIn("PrivateSecret", str(bot.PENDING))
+        self.assertEqual(self._config()["source_chats"], ["@firsatz", "@olmayan"])
+        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "value")
+
     def test_unresolvable_source_is_not_staged(self):
         self._reply("/ekle")
         self._say("3")
@@ -1409,8 +1444,8 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         call = self.calls[0]
         self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", call["text"])
-        self.assertNotIn("https://amzn.to/btn", call["text"],
-                         "bildirim botunda buton linki metne yazılmaz, klavyede kalır")
+        self.assertIn("🔗 Fırsata Git: https://amzn.to/btn", call["text"])
+        self.assertEqual(call["text"].count("https://amzn.to/btn"), 1)
         keyboard = call["keyboard"]["inline_keyboard"]
         self.assertEqual(keyboard[0], [{"text": "Fırsata Git", "url": "https://amzn.to/btn"}])
         self.assertEqual([button["text"] for button in keyboard[1]], [

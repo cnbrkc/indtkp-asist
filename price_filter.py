@@ -389,6 +389,21 @@ def find_candidates(text: str, strike: Sequence[tuple[int, int]] = ()) -> list[C
             cls, _ = _classify(line, match.start("a"), match.end("a"), offset + match.start("a"), strike)
             candidates.append(Candidate(value, match.group().strip(), cls, True, index, match.start("a"), match.end("a")))
         offset += len(line) + 1
+    # A warehouse/used listing may quote the new item's price for comparison.
+    # Only demote that exact label when a separate strong offer price and an
+    # explicit used/refurbished condition are present; ordinary "yeni fiyatı"
+    # announcements and independent condition prices retain their semantics.
+    used = re.search(r"\b(?:ikinci\s+el|2\s*\.\s*el|yenilenmiş|yenilenmis|refurbished|renewed)\b", norm(text))
+    if used:
+        lines_by_index = text.split("\n")
+        references = [c for c in candidates if c.cls == "price" and re.search(
+            r"\byeni\s+(?:ürün\s+)?fiyat[ıi]\s*[:=]\s*$",
+            norm(lines_by_index[c.line][:c.start]),
+        )]
+        offers = [c for c in candidates if c not in references and c.cls == "price" and c.strong]
+        if len({c.value for c in offers}) == 1 and len({c.value for c in references}) == 1:
+            for c in references:
+                c.cls, c.strong = "old", False
     _relate_candidates(text, candidates)
     return candidates
 
@@ -1035,6 +1050,11 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
     for index, raw in enumerate(lines):
         if not raw.strip():
             continue
+        # Folder-marked category lines are channel metadata, not product names.
+        # Do not reject category words in ordinary product titles.
+        if re.match(r"^\s*📂\ufe0f?", raw):
+            position += 1
+            continue
         pieces = _segments(raw)
         best: tuple[float, str] | None = None
         for piece_index, piece in enumerate(pieces):
@@ -1069,7 +1089,7 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
     # Kısa başlık (marka) + hemen altındaki devam satırı
     if len(title.split()) <= 2 and index + 1 < len(lines):
         nxt = lines[index + 1]
-        if nxt.strip():
+        if nxt.strip() and not re.match(r"^\s*📂\ufe0f?", nxt):
             cleaned = _trim_edges(_remove_noise(nxt))
             if cleaned and not _is_noise(cleaned) and not _META_WORDS_RE.search(norm(nxt)) \
                     and not _META_LABEL_RE.match(nxt) and len(cleaned.split()) <= 12:
@@ -1079,7 +1099,7 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
         prev = lines[index - 1]
         cleaned = _trim_edges(_remove_noise(prev))
         continuation = re.sub(r"^[+&]\s*", "", title)
-        if cleaned and len(cleaned.split()) <= 2 and not _is_noise(cleaned) \
+        if not re.match(r"^\s*📂\ufe0f?", prev) and cleaned and len(cleaned.split()) <= 2 and not _is_noise(cleaned) \
                 and not _META_WORDS_RE.search(norm(prev)) and not _META_LABEL_RE.match(prev) \
                 and not cleaned.endswith(":"):
             title = f"{cleaned} {continuation}"

@@ -2633,9 +2633,8 @@ class LinkAppendixModeTest(unittest.TestCase):
     def test_default_is_smart(self):
         self.assertEqual(bot.link_appendix_mode({}), "smart")
         self.assertEqual(bot.link_kinds_for("smart"), ("button", "webpage"))
-        # Bot bildiriminde ürün linki ayrı satır olarak tekrarlanmaz; hesap
-        # kopyasında buton/önizleme linkleri metne yazılmaya devam eder.
-        self.assertEqual(bot.link_kinds_for("smart", bot=True), ())
+        # Buton linkleri bot bildiriminde de metne taşınır.
+        self.assertEqual(bot.link_kinds_for("smart", bot=True), ("button",))
 
     def test_all_and_off_modes(self):
         for value in ("all", "ALL", "hepsi", "tüm", True, 1):
