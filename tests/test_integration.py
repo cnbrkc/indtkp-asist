@@ -1447,8 +1447,7 @@ class NotificationTest(unittest.TestCase):
         self.assertIn("🔗 Fırsata Git: https://amzn.to/btn", call["text"])
         self.assertEqual(call["text"].count("https://amzn.to/btn"), 1)
         keyboard = call["keyboard"]["inline_keyboard"]
-        self.assertEqual(keyboard[0], [{"text": "Fırsata Git", "url": "https://amzn.to/btn"}])
-        self.assertEqual([button["text"] for button in keyboard[1]], [
+        self.assertEqual([button["text"] for button in keyboard[0]], [
             "Google Alışveriş", "Akakçe'de ara", "Cimri'de ara",
         ])
 
@@ -1457,7 +1456,8 @@ class NotificationTest(unittest.TestCase):
         client = self._run({"notify_bot_token": "123:ABC", "notify_media": False})
         markup = FakeMarkup([FakeRow([FakeButton("Fırsat", url="https://amzn.to/eski")])])
         self._send(client, "çay", reply_markup=markup)
-        self.assertEqual(self.calls[0]["keyboard"]["inline_keyboard"][0][0]["url"], "https://amzn.to/eski")
+        self.assertIn("https://amzn.to/eski", self.calls[0]["text"])
+        self.assertNotIn("https://amzn.to/eski", str(self.calls[0]["keyboard"]))
 
     def test_text_only_message_notification(self):
         client = self._run({"notify_bot_token": "123:ABC"})
@@ -2324,6 +2324,17 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
             await self.client.handlers[1][1](FakeEvent(self.source_id, 7, text, **kwargs))
             await asyncio.sleep(settle)  # rozet görevi aynı döngüde bitsin
         asyncio.run(_run())
+
+    def test_multibuy_upgrade_account_path_badges_new_before_old_delete(self):
+        bot.FILTER_INCLUDE_ENABLED = False
+        title = "Hayat Doğal Mineralli Su 6x1,5 L"
+        self._send(title + "\n🏷 79 TL", media=False)
+        old_id = self.client.sent_ids[0]
+        self._send(title + "\nFiyat: 79 TL / 13 adet alımda 71 TL", media=False)
+        self.assertEqual(len(self.client.sent_ids), 2)
+        self.assertEqual(self.client.edited[-1][1], self.client.sent_ids[-1])
+        self.assertIn("2 kere paylaşıldı", self.client.edited[-1][2])
+        self.assertIn(old_id, self.client.deleted[-1][1])
 
     def test_same_title_twice_sends_once_and_badges_first(self):
         self._send("Sıcak ÇAY 5 TL")
