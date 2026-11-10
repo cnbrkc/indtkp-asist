@@ -479,18 +479,26 @@ class PersistProductsTest(unittest.TestCase):
         ])
 
     def test_unknown_remote_version_is_refused_before_writing(self) -> None:
-        for answer in (http_error(404, "Not Found"), {"name": "product_watches.json"}, []):
-            with self.subTest(answer=answer):
+        cases = [(http_error(404, "Not Found"), "HTTP 404 Not Found"),
+                 ({"name": "product_watches.json"}, "beklenmeyen yanıt"),
+                 ([], "beklenmeyen yanıt")]
+        for answer, reason in cases:
+            with self.subTest(answer=answer), mock.patch.object(bot.log, "warning") as warning:
                 result, wire = self.persist(answer, GITHUB_REPOSITORY="cnbrkc/ornek", GH_PAT="pat",
                                             GITHUB_REF_NAME="main")
                 self.assertEqual(result, (False, "Takip dosyasının GitHub sürümü okunamadı."))
                 self.assertEqual([call["method"] for call in wire.calls], ["GET"])
+                self.assertIn(mock.call("Ürün takip dosyasının GitHub sürümü okunamadı: %s", reason),
+                              warning.call_args_list, "neden kullanıcıya gitmez ama log'a düşer")
 
     def test_refused_write_is_reported(self) -> None:
-        result, wire = self.persist({"sha": "eski-sha"}, http_error(409, "sha uyuşmuyor"),
-                                    GITHUB_REPOSITORY="cnbrkc/ornek", GH_PAT="pat", GITHUB_REF_NAME="main")
+        with mock.patch.object(bot.log, "warning") as warning:
+            result, wire = self.persist({"sha": "eski-sha"}, http_error(409, "sha uyuşmuyor"),
+                                        GITHUB_REPOSITORY="cnbrkc/ornek", GH_PAT="pat", GITHUB_REF_NAME="main")
         self.assertEqual(result, (False, "GitHub yazımı başarısız."))
         self.assertEqual([call["method"] for call in wire.calls], ["GET", "PUT"])
+        self.assertIn(mock.call("Ürün takip ayarı GitHub'a yazılamadı: %s", "HTTP 409 sha uyuşmuyor"),
+                      warning.call_args_list, "neden kullanıcıya gitmez ama log'a düşer")
 
     def test_branch_is_config_push_branch_then_local_branch_then_ref_name(self) -> None:
         def checkout(args: list[str], cwd: str, timeout: int = 30) -> tuple[int, str]:
@@ -672,8 +680,12 @@ class WebdetakipFlowTest(unittest.TestCase):
     def test_list_menu_shows_a_dash_only_when_the_watch_file_is_unreadable(self) -> None:
         async def scenario(chat: PrivateChat) -> None:
             chat.tracker.path.write_text("{", encoding="utf-8")
-            (menu,) = await chat.say("/ekle")
+            with mock.patch.object(bot.log, "warning") as warning:
+                (menu,) = await chat.say("/ekle")
             self.assertIn(MENU_LINE + "– kayıt\n", menu)
+            # Neden log'a düşer: sessiz bir "–" gerçek bir hatayı (kusur 3) günlerce saklamıştı.
+            (call,) = warning.call_args_list
+            self.assertEqual(call.args[:2], ("Web takip kayıt sayısı okunamadı: %s: %s", "JSONDecodeError"))
 
         run_private(scenario)
 
@@ -945,6 +957,27 @@ class StartupScanCountTest(unittest.TestCase):
         entry = self.entry_after_startup(self.BADGED, self.PLAIN)
         self.assertEqual(entry["count"], 4)
         self.assertEqual(entry["last_seen"], self.newer)
+
+    def test_messages_the_scan_cannot_process_are_reported_once(self) -> None:
+        # Tek ileti taramayı durdurmaz ama sessiz de kalmaz: toplam, uyarı olarak yazılır
+        # (kusur 2'de bu dala düşen her ileti debug düzeyinde yutuluyordu).
+        class BrokenDate:
+            def timestamp(self) -> float:
+                raise OSError("tarih okunamadı")
+
+        history = self.history(self.PLAIN, self.PLAIN)
+        history[0] = (*history[0][:3], BrokenDate(), *history[0][4:])
+        seen: dict[str, Any] = {}
+
+        async def scenario(_client: ti.FakeClient) -> None:
+            seen.update(cached())
+
+        with mock.patch.object(bot.log, "warning") as warning:
+            run_prod(scenario, wire=Wire(), history=history)
+        self.assertEqual(seen["count"], 1, "işlenebilen ileti yine kayda alınır")
+        self.assertEqual([call.args[0] % call.args[1:] for call in warning.call_args_list
+                          if call.args[0].startswith("Tekrar önbelleği")],
+                         ["Tekrar önbelleği: 1/2 ileti işlenemedi (ilk hata: OSError: tarih okunamadı)."])
 
     def test_live_share_in_a_basic_group_is_merged_without_an_edit(self) -> None:
         # Deponun kurulumu (temel grup + bot): eski bildirim düzenlenemez. Sayaç ilerler,
