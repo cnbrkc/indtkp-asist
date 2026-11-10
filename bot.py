@@ -156,13 +156,10 @@ LINK_KIND_GROUPS = {
     "all": ("entity", "button", "webpage"),
     "off": (),
 }
-# Bildirim botunda ürün linki ayrı bir satır olarak TEKRAR yazılmaz: bağlantı
-# orijinal mesaj alıntısının içinde zaten taşınır (görünür URL, tıklanabilir
-# gizli link veya gerçek inline buton); önizlemedeki hedefe de bildirimdeki
-# "🔗 Mesajı Gör" üzerinden ulaşılır. Aynı linki iki kez göstermek gereksiz
-# (kullanıcı isteği). "all" modu bilinçli tercihtir: tüm linkleri listeler.
+# Bot bildiriminde buton URL'si de metne taşınır; görünür URL ve metin
+# hyperlink'i tekrarlanmaz. Önizleme için eski smart davranışı korunur.
 BOT_LINK_KIND_GROUPS = {
-    "smart": (),
+    "smart": ("button",),
     "all": ("entity", "button", "webpage"),
     "off": (),
 }
@@ -642,9 +639,30 @@ def humanize(seconds: float) -> str:
     return f"{secs}sn"
 
 
+_INVITE_LINK_RE = re.compile(
+    r"^https?://(?:t\.me|telegram\.me)/(?:\+|joinchat/)([A-Za-z0-9_-]+)/*$",
+    re.IGNORECASE,
+)
+
+
 async def resolve_chat(client: TelegramClient, value: int | str) -> tuple[int, str, Any]:
-    """Chat'i int ID'ye çevir; çözülemezse ValueError/TypeError fırlatır."""
-    entity = await client.get_entity(value)
+    """Resolve joined invite links without joining or paying on the user's behalf."""
+    invite = _INVITE_LINK_RE.fullmatch(value.strip()) if isinstance(value, str) else None
+    if invite:
+        checked = await client(functions.messages.CheckChatInviteRequest(invite.group(1)))
+        if not isinstance(checked, types.ChatInviteAlready) or getattr(checked.chat, "left", False):
+            raise ValueError("Önce takip hesabıyla daveti açıp üyeliği tamamla; onay/ücret gerekebilir.")
+        entity = checked.chat
+    else:
+        try:
+            entity = await client.get_entity(value)
+        except ValueError:
+            # StringSession does not persist Telethon's entity cache. Refresh
+            # dialogs for a private numeric ID after a fresh process starts.
+            if not isinstance(value, int):
+                raise
+            await client.get_dialogs()
+            entity = await client.get_entity(value)
     return utils.get_peer_id(entity), display_name(entity), entity
 
 
@@ -1666,6 +1684,8 @@ _SEARCH_CTA_ONLY_WORDS = frozenset({"al", "bak", "git", "gor", "gör", "incele",
 
 def _search_line_candidate(raw_line: str) -> str:
     """Fiyat/indirim/CTA satırlarını ayıkla, ürün adı olabilecek metni döndür."""
+    if re.match(r"^\s*📂\ufe0f?", raw_line or ""):
+        return ""
     line = URL_RE.sub(" ", raw_line or "")
     line = clean_disclosure_tokens(line)
     line = price_filter.strip_store_prefix(line)
@@ -3914,8 +3934,9 @@ def build_list_value_prompt(action: str, field: str, config: dict) -> str:
         return "\n".join(lines)
     if action == "add":
         if field == "source_chats":
-            lines += ["Eklenecek kanal/grup kullanıcı adlarını veya ID'lerini gönder.",
-                      "Örnek: @kanaladi, -1001234567890"]
+            lines += ["Eklenecek kanal/grup kullanıcı adını, ID'sini veya davet linkini gönder.",
+                      "Davet linki için önce takip hesabıyla katıl (gerekirse onay/abonelik tamamlanmalı).",
+                      "Örnek: @kanaladi, -1001234567890, https://t.me/+DAVET"]
         else:
             lines.append("Eklenecek kelimeleri gönder.")
         lines += ["Birden çok kaydı virgül, noktalı virgül veya satır ile ayırabilirsin.",
@@ -5366,8 +5387,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
     if LINK_APPENDIX_MODE == "smart":
         log.info("Bağlantı ekleri: akıllı mod — gizli hyperlink'ler mesajda tıklanabilir kalır; "
-                 "hesap kopyasında yalnızca buton/önizleme linkleri metne yazılır, bot "
-                 "bildiriminde ürün linki ayrı satır olarak tekrarlanmaz.")
+                 "hesap kopyasında buton/önizleme, bot bildiriminde buton linkleri metne yazılır.")
     elif LINK_APPENDIX_MODE == "all":
         log.info("Bağlantı ekleri: tüm gizli linkler iletinin sonuna yazılacak.")
     if MESSAGE_LINK_LINE:
@@ -6323,18 +6343,32 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 return True
 
             if action == "add" and field == "source_chats":
+                resolved_values = []
                 for value in values:
                     try:
-                        await resolve_chat(client, value)
+                        peer_id, _, _ = await resolve_chat(client, value)
+                        # Never persist a private invite token in config/Git history.
+                        resolved_values.append(peer_id if isinstance(value, str) and _INVITE_LINK_RE.fullmatch(value.strip()) else value)
                     except Exception as exc:  # noqa: BLE001 - geçersiz kaynak taslağa alınmasın
                         set_pending(key, **item)
                         await control_reply(event, "\n".join([
-                            f"❌ {value} çözülemedi ({type(exc).__name__}).",
-                            "Hiçbir kayıt taslağa alınmadı; @kullanıcıadı veya -100... ID gönder.",
-                            "Hesabın o kanala/grupa erişebildiğini kontrol et.",
+                            f"❌ Kaynak çözülemedi ({type(exc).__name__}).",
+                            "Hiçbir kayıt taslağa alınmadı. Daveti takip hesabıyla açıp önce katıl; "
+                            "onay veya ücretli abonelik gerekiyorsa tamamlanmasını bekle.",
+                            "Linkin geçerli ve hesabın erişiminin açık olduğunu kontrol et.",
                             "",
                             build_list_value_prompt(action, field, draft),
                         ]))
+                        return True
+                if resolved_values != values:
+                    # Re-stage with IDs so duplicate handling and confirmation use
+                    # exactly the values that will be saved, never the invite.
+                    ok, candidate, values, message = stage_telegram_list_change(
+                        draft, field, action, "\n".join(map(str, resolved_values)),
+                    )
+                    if not ok:
+                        set_pending(key, **item)
+                        await control_reply(event, message)
                         return True
 
             item["stage"] = "confirm"

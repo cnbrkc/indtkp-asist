@@ -554,7 +554,19 @@ Seçmek için 1, 2 veya 3 yaz.
 Vazgeçmek için /iptal.
 ```
 
-Grup/kanal eklerken `@kullaniciadi` veya `-1001234567890` biçiminde ID kullan. Bot
+Grup/kanal eklerken `@kullaniciadi`, `-1001234567890` biçiminde ID veya özel
+davet linki (`https://t.me/+...` / `https://t.me/joinchat/...`) kullan. Özel link
+önce **takipçinin kişisel Telegram hesabında** açılıp üyelik tamamlanmalıdır; bot
+otomatik katılmaz, katılma isteği göndermez ve ücretli abonelik/ödeme yapmaz.
+Onay veya abonelik bekliyorsa tamamlanmasını bekle. Sonra `/ekle` → `grup` → davet
+linki → `/kaydet` kullan. Bot linki yalnızca üyeliği doğrulamak için kontrol eder,
+taslağa ve config/Git geçmişine davet kodu yerine sohbet ID'si kaydeder. Davet kodunu
+başkalarıyla paylaşma; komutu yalnızca güvenilir özel kontrol sohbetinde gönder.
+Yeniden başlatmada özel ID çözülemezse sohbet listesi yenilenir. Üyelik bitmişse,
+link iptal edilmişse veya Telegram erişimi engelliyorsa takip çalışmaz. Özel
+kanalın `t.me/c/...` mesaj linkleri sadece erişimi olan hesaplarda açılır; normal
+özel gruplarda mesaj linki üretilemeyebilir. Canlı takip sadece takipçi çalışırken
+gelen mesajları alır. Bot
 yeni kaynağı doğrulamaya çalışır; çözülemeyen kaynak taslağa alınmaz. **Kaydettikten sonra
 `/kaynaktest @kullaniciadi`** (veya sadece `/kaynaktest` ile tüm kaynaklar) yazarak
 hesabın kanaldan son mesajı okuyabildiğini ve üyelik durumunu kontrol et.
@@ -788,7 +800,7 @@ denenmez; sırayla deneyip ilk başarılı olanı kullanır:
 | Gizleme yolu | Örnek | Bot ne yapar |
 |---|---|---|
 | Metin altına gizlenmiş hyperlink | "**Fırsata Git**" yazısı görünür, link altındadır | Mesaj olduğu gibi iletildiği için link gövdede tıklanabilir kalır; `link_appendix: "all"` açılırsa ayrıca ek link listesine yazılır |
-| Inline buton | Yazıda link yok, butondadır | Bot bildirimi URL düğmesini korur; kullanıcı hesabı kopyasında buton gönderilemediği için link ek link listesine yazılır |
+| Inline buton | Yazıda link yok, butondadır | `smart` modunda bağlantı bot bildiriminde ve hesap kopyasında metne yazılır; bot ayrıca URL düğmesini korur |
 | Link önizlemesi | Metinde link yok, önizleme kartı var | Önizleme hedefi ek link listesine girer (taşınamayan linkler kaybolmaz) |
 
 Bildirim botu, kaynakta aynı arama hizmetine ait bir URL/buton yoksa eksik düğmeleri şu
@@ -853,9 +865,9 @@ Orijinal mesajın altına `🔗 Mesajı Gör: <t.me linki>`, en alta kaynak grup
 Gövdede tıklanabilir kalan gizli hyperlink'ler ek listeye yazılmaz.
 `link_appendix: "smart"` (varsayılan) hesap kopyasında yalnızca başka türlü
 taşınamayan linkleri (buton ve önizleme linkleri) orijinal mesajın altına ekler.
-Bot bildiriminde ürün linki ayrı bir satır olarak tekrar yazılmaz; bağlantı
-orijinal mesaj alıntısının içinde kalır, önizlemedeki hedefe de `🔗 Mesajı Gör`
-üzerinden ulaşılır. `"all"` gizli hyperlink'leri de yazar; `"off"` ek bağlantı
+Bot bildiriminde buton URL'si de metne eklenir; gövdede zaten görünür olan URL
+tekrarlanmaz. Metin altındaki hyperlink korunur, önizleme hedefi bot bildiriminde
+ayrı yazılmaz; ona `🔗 Mesajı Gör` üzerinden ulaşılabilir. `"all"` gizli hyperlink'leri de yazar; `"off"` ek bağlantı
 listesi yazmaz.
 
 ---
