@@ -369,3 +369,123 @@ class FastPollTest(Harness, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReportedMultibuyUpgradeTest(Harness, unittest.TestCase):
+    def test_promotes_recent_same_product_and_moves_badge_before_deleting_old(self):
+        client = self.start()
+        deletes = []
+        async def delete(token, chat, message_id):
+            self.assertTrue(self.edit_text_calls, 'must badge new message before deleting')
+            deletes.append(message_id)
+            return True, 'ok'
+        self._patch('delete_bot_message', delete)
+        title = 'Dr. Oetker Revani 3 Kg'
+        self.offers(client, [
+            (self.first_id, 101, title + '\n₺291,90'),
+            (SECOND_CHANNEL_ID, 201, title + '\n₺291,90'),
+            (self.first_id, 102, '🛍️ Dr. Oetker Revani 3 kg\n💰 Fiyat : 291 TL / 4 adet alımda 262 TL'),
+        ])
+        self.assertEqual(len(self.ping_calls), 2)
+        self.assertEqual(deletes, [self.ping_calls[0]['message_id']])
+        self.assertEqual(self.edit_text_calls[-1]['message_id'], self.ping_calls[1]['message_id'])
+        self.assertIn('3 kere paylaşıldı', self.edit_text_calls[-1]['text'])
+        self.assertTrue(self.ping_calls[-1]['text'].startswith('₺262 —'))
+
+    def test_water_same_base_discount_is_promoted(self):
+        client = self.start()
+        deletes = []
+        async def delete(token, chat, message_id):
+            deletes.append(message_id)
+            return True, 'ok'
+        self._patch('delete_bot_message', delete)
+        title = 'Hayat Doğal Mineralli Su 6x1,5 L'
+        self.offers(client, [(self.first_id, 101, title + '\n🏷️ 79 TL'),
+                             (SECOND_CHANNEL_ID, 201, f'🛍️ {title}\n💰 Fiyat : 79 TL / 13 adet alımda 71 TL')])
+        self.assertEqual(len(self.ping_calls), 2)
+        self.assertEqual(deletes, [self.ping_calls[0]['message_id']])
+        self.assertIn('2 kere paylaşıldı', self.edit_text_calls[-1]['text'])
+
+    def test_real_drop_without_base_stays_separate(self):
+        client = self.start()
+        deletes = []
+        async def delete(*args):
+            deletes.append(args)
+            return True, 'ok'
+        self._patch('delete_bot_message', delete)
+        self.offers(client, [(self.first_id, 101, 'Dr. Oetker Revani 3 Kg\n291 TL'),
+                             (SECOND_CHANNEL_ID, 201, 'Dr. Oetker Revani 3 Kg\nFiyat: 260 TL')])
+        self.assertEqual(len(self.ping_calls), 2)
+        self.assertFalse(deletes)
+
+    def test_badge_failure_keeps_old_message(self):
+        client = self.start()
+        deletes = []
+        async def delete(*args):
+            deletes.append(args)
+            return True, 'ok'
+        async def fail_edit(*args, **kwargs):
+            return False, 'unavailable'
+        self._patch('delete_bot_message', delete)
+        title = 'Hayat Doğal Mineralli Su 6x1,5 L'
+        with mock.patch.object(bot, 'edit_bot_text', fail_edit):
+            self.offers(client, [(self.first_id, 101, title + '\n🏷 79 TL'),
+                                 (SECOND_CHANNEL_ID, 201, f'{title}\nFiyat: 79 TL / 13 adet alımda 71 TL')])
+        self.assertEqual(len(self.ping_calls), 2)
+        self.assertFalse(deletes)
+
+    def test_stale_first_and_wrong_base_do_not_delete(self):
+        client = self.start()
+        deletes = []
+        async def delete(*args):
+            deletes.append(args)
+            return True, 'ok'
+        self._patch('delete_bot_message', delete)
+        title = 'Hayat Doğal Mineralli Su 6x1,5 L'
+        self.offers(client, [(self.first_id, 101, title + '\n🏷 79 TL')])
+        entry = next(iter(bot.DEDUP_CACHE.values()))
+        entry['first_seen'] -= 181
+        self.offers(client, [(SECOND_CHANNEL_ID, 201, f'{title}\nFiyat: 79 TL / 13 adet alımda 71 TL')])
+        self.assertEqual(len(self.ping_calls), 2)
+        self.assertFalse(deletes)
+
+    def test_send_failure_preserves_previous_cache_and_message(self):
+        client = self.start()
+        title = 'Hayat Doğal Mineralli Su 6x1,5 L'
+        self.offers(client, [(self.first_id, 101, title + '\n🏷 79 TL')])
+        old = next(iter(bot.DEDUP_CACHE.values()))
+        async def fail_send(*args, **kwargs):
+            return bot.BotSendResult(False, 'failed')
+        deletes = []
+        async def delete(*args):
+            deletes.append(args)
+            return True, 'ok'
+        self._patch('delete_bot_message', delete)
+        with mock.patch.object(bot, 'send_bot_ping', fail_send):
+            self.offers(client, [(SECOND_CHANNEL_ID, 201, f'{title}\nFiyat: 79 TL / 13 adet alımda 71 TL')])
+        self.assertIs(next(iter(bot.DEDUP_CACHE.values())), old)
+        self.assertFalse(deletes)
+
+    def test_non_content_teaser_skipped_but_media_and_links_retained(self):
+        client = self.start()
+        self.offers(client, [(self.first_id, 101, 'Yoğun ilgi görüyor'),
+                             (SECOND_CHANNEL_ID, 201, 'Yoğun ilgi görüyor\nhttps://example.com/urun')])
+        self.assertEqual(len(self.ping_calls), 1)
+        async def run_photo():
+            event = ti.FakeEvent(self.first_id, 7, 'Yoğun ilgi görüyor', message_id=102, media=True)
+            await client.handlers[1][1](event)
+        asyncio.run(run_photo())
+        self.assertEqual(len(self.media_calls), 1)
+
+    def test_different_asin_or_used_condition_are_not_upgraded(self):
+        client = self.start()
+        deletes = []
+        async def delete(*args):
+            deletes.append(args)
+            return True, 'ok'
+        self._patch('delete_bot_message', delete)
+        title = 'Hayat Doğal Mineralli Su 6x1,5 L'
+        self.offers(client, [(self.first_id, 101, f'{title}\n🏷 79 TL\nhttps://amazon.com/dp/B09RMSLVS8'),
+                             (SECOND_CHANNEL_ID, 201, f'{title}\nFiyat: 79 TL / 13 adet alımda 71 TL\nhttps://amazon.com/dp/B0ABC12345')])
+        self.assertFalse(deletes)
+        self.assertEqual(len(self.ping_calls), 2)

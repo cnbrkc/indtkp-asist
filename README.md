@@ -800,7 +800,7 @@ denenmez; sırayla deneyip ilk başarılı olanı kullanır:
 | Gizleme yolu | Örnek | Bot ne yapar |
 |---|---|---|
 | Metin altına gizlenmiş hyperlink | "**Fırsata Git**" yazısı görünür, link altındadır | Mesaj olduğu gibi iletildiği için link gövdede tıklanabilir kalır; `link_appendix: "all"` açılırsa ayrıca ek link listesine yazılır |
-| Inline buton | Yazıda link yok, butondadır | `smart` modunda bağlantı bot bildiriminde ve hesap kopyasında metne yazılır; bot ayrıca URL düğmesini korur |
+| Inline buton | Yazıda link yok, butondadır | `smart` modunda bağlantı metne yazılır; bot, bağlantı metinde başarıyla taşındıysa fazladan ürün düğmesini kaldırır, taşınamadıysa korur |
 | Link önizlemesi | Metinde link yok, önizleme kartı var | Önizleme hedefi ek link listesine girer (taşınamayan linkler kaybolmaz) |
 
 Bildirim botu, kaynakta aynı arama hizmetine ait bir URL/buton yoksa eksik düğmeleri şu
@@ -849,7 +849,7 @@ fiyat, indirim oranı, biçimlendirme ve kaynak linkleri olduğu gibi kalır. Al
 isteği yapmadığı için bildirim yoluna ek gecikme getirmez.
 
 Kaynakta zaten Google Shopping/Akakçe/Cimri linki varsa aynı hizmet için yeni düğme
-çoğaltılmaz. Kaynaktaki özel ürün butonları korunur; tanınan arama butonları da URL'leri
+çoğaltılmaz. Kaynaktaki ürün URL'si gövdede taşınamazsa butonu korunur; tanınan arama butonları da URL'leri
 bozulmadan standart Google → Akakçe → Cimri sırasına alınır. Eski bir kaynaktan gelen
 `marketfiyati.org.tr` linki de normal kaynak linki olarak korunur, fakat artık Market Fiyatı
 arama düğmesi oluşturulmaz. Düğmeler inline klavyededir; mesaj gövdesini uzatmaz ve
@@ -866,13 +866,25 @@ Gövdede tıklanabilir kalan gizli hyperlink'ler ek listeye yazılmaz.
 `link_appendix: "smart"` (varsayılan) hesap kopyasında yalnızca başka türlü
 taşınamayan linkleri (buton ve önizleme linkleri) orijinal mesajın altına ekler.
 Bot bildiriminde buton URL'si de metne eklenir; gövdede zaten görünür olan URL
-tekrarlanmaz. Metin altındaki hyperlink korunur, önizleme hedefi bot bildiriminde
+tekrarlanmaz. Ürün düğmesi yalnız URL metinde veya tıklanabilir hyperlink olarak
+korunmuşsa kaldırılır; kesilme veya `off` gibi durumlarda düğme yedekte kalır.
+Metin altındaki hyperlink korunur, önizleme hedefi bot bildiriminde
 ayrı yazılmaz; ona `🔗 Mesajı Gör` üzerinden ulaşılabilir. `"all"` gizli hyperlink'leri de yazar; `"off"` ek bağlantı
 listesi yazmaz.
 
 ---
 
 ## 9. Tekrar birleştirme (aynı fırsat, tek mesaj)
+
+İlk tekli fiyat ile daha sonra paylaşılan çoklu alım indirimi, yalnızca **üç dakika**
+içinde ve birebir normalize ürün adı eşleştiğinde, yeni mesaj eski tekli fiyatı
+ve daha düşük çoklu alım fiyatını aynı satırda açıkça içeriyorsa ilişkilendirilir.
+Yeni bildirim önce gönderilir, kaynak sayacı üzerine işlenir; ancak bu ikisi
+başarılı ve eski mesajın kimliği biliniyorsa eski bildirim silinir. Silme/düzenleme
+başarısız olursa mesajlar korunur. Gerçek fiyat düşüşleri ve belirsiz eşleşmeler
+eskisi gibi ayrı bildirimdir. Yeniden başlatma öncesi kayıtlar bu güvenli yükseltme
+için kullanılmaz; üyelik/koşul farklılıkları ve eksik referans fiyatı otomatik
+ilişkilendirilmez. Çoklu alım koşulu ve fiyatın bağlamı kaynak mesajda kalır.
 
 Aynı indirim 3-5 kanal tarafından dakikalar içinde, çoğu zaman birebir aynı
 başlıkla paylaşılır. Hepsini gruba atmak mesaj kalabalığı yapar; oysa tekrarlar

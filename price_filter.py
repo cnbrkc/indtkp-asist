@@ -424,6 +424,24 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
         if c.cls in {"old", "history"}:
             c.reason = c.role
             continue
+        clause = re.split(r"[/|(—–]", before)[-1]
+        # Explicit per-item multi-buy amount; the optional "adet" after
+        # alımda is used by some channels. Do not promote coupon amounts.
+        if c.cls in {"price", "cond"} and re.search(
+            r"\b\d+\s*adet\s*al[ıi]mda\s+(?:adet|tanesi|birim)\s*$", clause
+        ):
+            c.cls, c.role, c.strong, c.reason = "cond", "multi_unit", True, "multi_unit"
+            continue
+        # Parenthesized pack breakdown is not a second independent total.
+        if c.cls == "price" and re.match(r"^\s*/\s*(?:adet|tane)\s*\)", after) \
+                and "(" in before:
+            c.cls, c.role, c.strong, c.reason = "cond", "unit", True, "unit"
+            continue
+        if c.cls == "price" and re.match(r"^(?:ye|ya|e|a)\s+düş\w*", after):
+            c.role, c.strong, c.reason = "discounted", True, "discounted"
+            continue
+        if c.cls == "price" and re.fullmatch(r"\s*[🏷💰💵💸💲]\ufe0f?\s*", line[:c.start]):
+            c.strong = True
         if c.cls in {"price", "cond", "other"} and re.search(
             r"(?:ikinci\s+el|2\s*\.\s*el|yenilenmiş|yenilenmis|renewed|refurbished)\b[^/\n]*$",
             before,
@@ -824,7 +842,9 @@ def _remove_noise(line: str) -> str:
         suffix = norm(line[match.end():])
         # Leading composition/feature percentages (e.g. "%0 Yağlı Yoğurt") are
         # part of a product name; discount/statistic percentages remain noise.
-        if not line[:match.start()].strip() and re.search(r"[^\W\d_]", suffix) \
+        composition = bool(re.fullmatch(r"%\s*(?:0|100)", match.group())
+                           and re.match(r"\s*(?:yer\s+f[ıi]st[ıi]ğ[ıi]|kakao|pamuk|doğal)\b", suffix))
+        if (not line[:match.start()].strip() or composition) and re.search(r"[^\W\d_]", suffix) \
                 and not re.search(r"indirim|altında|fark|tasarruf", suffix):
             return match.group()
         return " "
@@ -904,7 +924,7 @@ def _segments(line: str) -> list[str]:
 
 
 _GENERIC_TITLE_RE = re.compile(
-    r"^(?:durum\s*:|takip\s+kuponu\b|kampanya(?:lar)?\s*(?::|\d)|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
+    r"^(?:yoğun\s+ilgi\s+görüyor\s*$|durum\s*:|takip\s+kuponu\b|kampanya(?:lar)?\s*(?::|\d)|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
     r"(?:anlık|anlik) indirim|bildirimlerinizi|\d+\s+adet kaldı|"
     r"ürün\s+altından\s+(?:aktif|etkinleştir)\w*|"
     r"(?:sepete\s+)?\d+\s+adet(?:\s+sepete)?\s+ekle\w*|"
@@ -1031,8 +1051,39 @@ def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str], le
     return score
 
 
+def priced_catalog_title(text: str) -> str:
+    """Extract a catalog name following a leading price/financing parenthesis."""
+    line = next((s.strip() for s in (text or "").splitlines() if s.strip()), "")
+    match = PRICE_RE.search(line)
+    if not match or _SYMBOL_RE.sub("", line[:match.start()]).strip():
+        return ""
+    rest = line[match.end():].lstrip()
+    if not rest.startswith("("):
+        return ""
+    depth = 0
+    for i, char in enumerate(rest):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                financing, rest = rest[1:i], rest[i + 1:].strip()
+                break
+    else:
+        return ""
+    if not re.search(r"taksit|banka|indirim|peşin|pesin", norm(financing)):
+        return ""
+    if (len(rest.split()) < 4 or not re.match(r"[A-ZÇĞİÖŞÜ]{2,}\b", rest)
+            or not _MODEL_RE.search(rest)):
+        return ""
+    return rest
+
+
 def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str:
     """Mesajdan ürün başlığını seç. Bulamazsa boş döner."""
+    catalog = priced_catalog_title(text)
+    if catalog:
+        return extract_title(catalog, hints, limit)
     selected = _selected_product_block(text or "")
     if selected is not None:
         block, _ = selected

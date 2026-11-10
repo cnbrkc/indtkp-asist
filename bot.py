@@ -868,6 +868,12 @@ async def send_bot_media(
     return BotSendResult(ok, detail, message_id_from_result(result))
 
 
+async def delete_bot_message(token: str, chat_id: int | str, message_id: int) -> tuple[bool, str]:
+    payload = {"chat_id": chat_id, "message_id": message_id}
+    return await _bot_api_request(token, "deleteMessage", payload=json.dumps(payload).encode(),
+                                  content_type="application/json", what="eski bildirim")
+
+
 async def edit_bot_text(
     token: str,
     chat_id: int | str,
@@ -1748,6 +1754,29 @@ def _search_candidate_score(candidate: str) -> int:
     return score
 
 
+def linked_product_title(obj: Any, limit: int = 160) -> str:
+    """Recognize a product-name hyperlink, not CTA or search links.
+
+    Entity offsets are UTF-16. Only a single unambiguous, model-bearing label
+    spanning at least four words is trusted; otherwise keep normal extraction.
+    """
+    text = message_text(obj)
+    candidates = []
+    for entity in message_entities(_as_message(obj)):
+        url = getattr(entity, "url", None)
+        if not url or not URL_RE.match(str(url)) or _price_search_service(str(url), ""):
+            continue
+        label = utf16_slice(text, getattr(entity, "offset", 0), getattr(entity, "length", 0)).strip()
+        if (len(label.split()) < 4 or not price_filter._MODEL_RE.search(label)
+                or price_filter.PRICE_RE.search(label) or "\n" in label
+                or price_filter.is_generic_title(label)):
+            continue
+        title = price_filter.extract_title(label, limit=limit)
+        if title:
+            candidates.append(title)
+    return candidates[0] if len(candidates) == 1 else ""
+
+
 def _search_query(obj: Any, limit: int = SEARCH_QUERY_LIMIT) -> str:
     """Farklı kaynak şablonlarından ürün adını bulup arama sorgusu kur.
 
@@ -1756,6 +1785,12 @@ def _search_query(obj: Any, limit: int = SEARCH_QUERY_LIMIT) -> str:
     korunur, yani eski davranış bozulmaz). Metin değiştirilmez, servise istek
     atılmaz ve bildirim yoluna ek gecikme getirmez.
     """
+    linked = linked_product_title(obj, limit=limit)
+    if linked:
+        return linked
+    catalog = price_filter.priced_catalog_title(message_text(obj))
+    if catalog:
+        return price_filter.extract_title(catalog, limit=limit)
     text = URL_RE.sub(" ", message_text(obj))
     best_candidate = ""
     best_score = None
@@ -1870,8 +1905,12 @@ def _price_search_url(service: str, query: str) -> str:
     raise ValueError(f"Bilinmeyen fiyat arama hizmeti: {service}")
 
 
-def build_inline_keyboard(obj: Any) -> dict | None:
-    """Kaynak butonlarını koru; arama düğmelerini Google/Akakçe/Cimri sırala."""
+def build_inline_keyboard(obj: Any, *, body_text: str | None = None,
+                          body_entities: Sequence[dict[str, Any]] = ()) -> dict | None:
+    """Remove a source button only when its URL survives in the delivered body."""
+    body_urls = visible_urls(body_text or "")
+    body_urls.update(clean_url(e.get("url")).rstrip("/").lower()
+                     for e in body_entities if e.get("type") == "text_link" and e.get("url"))
     message = sanitize_message(obj)
     markup = getattr(message, "reply_markup", None)
     rows: list[list[dict[str, str]]] = []
@@ -1889,6 +1928,9 @@ def build_inline_keyboard(obj: Any) -> dict | None:
             item = {"text": (label or url)[:64], "url": url}
             existing_button_count += 1
             service = _price_search_service(url, label or "")
+            if not service and body_text is not None and clean_url(url).rstrip("/").lower() in body_urls:
+                existing_button_count -= 1
+                continue
             if service in search_buttons:
                 search_buttons[service].append(item)
             else:
@@ -2215,7 +2257,8 @@ def smart_header_info(obj: Any, cleaned_obj: Any, body: str) -> tuple[str, "pric
     try:
         entities = entities_for_text(cleaned_obj, body)
         strike = price_filter.strike_spans_from_entities(body, entities)
-        return price_filter.analyze(body, strike, _webpage_hints(obj))
+        title, info = price_filter.analyze(body, strike, _webpage_hints(obj))
+        return linked_product_title(cleaned_obj) or title, info
     except Exception as exc:  # noqa: BLE001 - başlık/fiyat hatası bildirimi engellemesin
         log.warning("Başlık/fiyat tespiti başarısız (%s): %s", type(exc).__name__, exc)
         return "", price_filter.PriceInfo(None, "", "none", "hata")
@@ -2230,6 +2273,9 @@ def smart_dedup_title(event: Any) -> str:
     """
     cleaned = sanitize_message(event)
     text = message_text(cleaned)
+    linked = linked_product_title(cleaned, limit=MESSAGE_LIMIT)
+    if linked:
+        return linked
     # If the source's first line already contains "price - product name",
     # keep that product name; otherwise a following Prime/shipping line can be
     # mistaken for the title by generic title extraction.
@@ -3109,6 +3155,72 @@ def offer_terms(obj: Any, *, prefer_header: bool = False) -> tuple[float | None,
     info = price_filter.extract_price(text, strike)
     value = info.value if info.confidence in {"high", "medium"} else None
     return value, ""
+
+
+_UPGRADE_CONDITION_RE = re.compile(
+    r"\b(?:ikinci\s+el|2\s*\.\s*el|yenilenmiş|yenilenmis|refurbished|renewed|"
+    r"açık\s+kutu|acik\s+kutu|depo\s+ürünü|depo\s+urunu)\b", re.IGNORECASE,
+)
+_ASIN_RE = re.compile(r"/(?:dp|gp/product)/([a-z0-9]{10})(?:[/?#]|$)", re.IGNORECASE)
+
+
+def product_asins(obj: Any) -> set[str]:
+    return {match.group(1).upper() for link in extract_links(obj)
+            if (match := _ASIN_RE.search(link["url"]))}
+
+
+def plain_offer_for_upgrade(obj: Any, offer: tuple | None) -> bool:
+    """Only a clearly standalone normal offer may be replaced automatically."""
+    if not offer or offer[0] is None:
+        return False
+    text = message_text(obj)
+    if _UPGRADE_CONDITION_RE.search(text):
+        return False
+    strike = price_filter.strike_spans_from_entities(text, entities_for_text(obj, text))
+    candidates = price_filter.find_candidates(text, strike)
+    prices = [c for c in candidates if c.cls == "price" and c.role in {"normal", "pack_total"}]
+    return (len({c.value for c in prices}) == 1 and bool(prices)
+            and _dedup_whole_tl(prices[0].value) == _dedup_whole_tl(offer[0])
+            and not any(c.role in {"multi_unit", "condition_price", "member_price", "discounted", "basket_coupon", "product_coupon"}
+                        for c in candidates))
+
+
+def is_referenced_multibuy_upgrade(entry: dict[str, Any], title: str, obj: Any,
+                                    offer: tuple | None, now: float) -> bool:
+    """Conservative 3-minute bridge: same exact title, old base + lower multi-buy."""
+    old = entry.get("offer")
+    if (entry.get("preload") or not entry.get("plain_offer") or entry.get("failed")
+            or entry.get("pending") or now - float(entry.get("first_seen", 0)) > 180
+            or now < float(entry.get("first_seen", 0))
+            or dedup_key(entry.get("title")) != dedup_key(title)
+            or not old or old[0] is None or not offer or offer[0] is None
+            or not better_or_different_offer(old, offer)):
+        return False
+    if entry.get("editable") == "bot":
+        if not isinstance(entry.get("bot_message_id"), int):
+            return False
+    elif entry.get("editable") == "account":
+        if not isinstance(entry.get("account_message_id"), int):
+            return False
+    else:
+        return False
+    text = message_text(obj)
+    if _UPGRADE_CONDITION_RE.search(text):
+        return False
+    old_asins, new_asins = entry.get("product_asins") or set(), product_asins(obj)
+    if old_asins and new_asins and old_asins != new_asins:
+        return False
+    strike = price_filter.strike_spans_from_entities(text, entities_for_text(obj, text))
+    candidates = price_filter.find_candidates(text, strike)
+    base = [c for c in candidates if c.cls == "price" and c.role in {"normal", "pack_total"}
+            and c.strong and _dedup_whole_tl(c.value) == _dedup_whole_tl(old[0])]
+    cheaper = [c for c in candidates if c.role == "multi_unit" and c.value == offer[0]]
+    normal_values = {c.value for c in candidates if c.cls == "price" and c.role in {"normal", "pack_total"}}
+    multi_values = {c.value for c in candidates if c.role == "multi_unit"}
+    return (len(base) == 1 and len(cheaper) == 1 and base[0].line == cheaper[0].line
+            and len(normal_values) == 1 and len(multi_values) == 1
+            and not any(c.role in {"condition_price", "member_price", "discounted", "basket_coupon", "product_coupon"}
+                        for c in candidates))
 
 
 def dedup_offer_key(title: str, offer: tuple[float | None, str]) -> str | None:
@@ -6558,6 +6670,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         key: str, title: str, source_name: str | None = None,
         footer_name: str | None = None,
         offer: tuple[float | None, str] | None = None,
+        event: Any = None,
     ) -> tuple[str, Any, str]:
         """Karar ver: ``("send", token, hedef_anahtar)`` yeni gönderim, ``("dup", None, hedef_anahtar)`` tekrar.
 
@@ -6581,13 +6694,25 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     and better_or_different_offer(entry.get("offer"), offer)
                 ):
                     target_key = active_key
+                    previous = entry if entry and event is not None and is_referenced_multibuy_upgrade(
+                        entry, title, event, offer, time.time()
+                    ) else None
                     entry = new_dedup_entry(title, token, source_name, footer_name)
                     entry["owner"] = asyncio.current_task()
                     entry["offer"] = offer
+                    entry["plain_offer"] = plain_offer_for_upgrade(event, offer) if event is not None else False
+                    entry["product_asins"] = product_asins(event) if event is not None else set()
+                    if previous:
+                        entry["upgrade_previous"] = previous
+                        entry["count"] = int(previous.get("count", 1)) + 1
+                        entry["sources"] = list(previous.get("sources") or [])
+                        note_dedup_source(entry, source_name)
                     DEDUP_CACHE[target_key] = entry
                     return "send", token, target_key
                 if not entry.get("pending"):
                     _keep_detailed_prefix_title(entry, title)
+                    if event is not None:
+                        entry.setdefault("product_asins", set()).update(product_asins(event))
                     entry["count"] += 1
                     entry["last_seen"] = time.time()
                     note_dedup_source(entry, source_name)
@@ -6619,6 +6744,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         )
                         DEDUP_CACHE[active_key]["owner"] = asyncio.current_task()
                         DEDUP_CACHE[active_key]["offer"] = offer
+                        DEDUP_CACHE[active_key]["plain_offer"] = plain_offer_for_upgrade(event, offer) if event is not None else False
                         return "send", token, active_key
                 # State may have changed just as the timeout fired; re-read it.
 
@@ -6634,7 +6760,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 entry["failed"] = True
                 entry["ready"].set()
                 if DEDUP_CACHE.get(key) is entry:
-                    del DEDUP_CACHE[key]
+                    previous = entry.get("upgrade_previous")
+                    if previous:
+                        DEDUP_CACHE[key] = previous
+                    else:
+                        del DEDUP_CACHE[key]
                 return
             info = info or {}
             bot_info = info.get("bot") or {}
@@ -6656,9 +6786,35 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 # Rozet işlenemez (örn. bot ID'si alınamadı) ama tekrar
                 # kaydı durur: sonraki kopyalar yine birleştirilir.
                 entry["editable"] = None
+            previous = entry.pop("upgrade_previous", None)
+            if previous and not entry.get("editable"):
+                # Unknown new message ID: never remove the known good old one.
+                entry["count"] = 1
+                entry["sources"] = [name for name in [entry.get("footer_name")] if name]
+                previous = None
             entry["pending"] = False
             entry.pop("owner", None)
             entry["ready"].set()
+        if previous:
+            # Send first, then badge; only delete the old message after both
+            # operations succeeded. A failure leaves two recoverable messages.
+            await dedup_apply_badge(key)
+            async with DEDUP_LOCK:
+                can_delete = (DEDUP_CACHE.get(key) is entry
+                              and entry.get("badge_count") == entry.get("count")
+                              and not entry.get("failed"))
+            if can_delete:
+                async with previous["edit_lock"]:
+                    try:
+                        if previous.get("editable") == "bot" and DESTINATION_ID is not None:
+                            deleted, detail = await delete_bot_message(
+                                NOTIFY_BOT_TOKEN, DESTINATION_ID, previous["bot_message_id"])
+                            if not deleted:
+                                log.warning("Eski fırsat silinemedi: %s", detail)
+                        elif previous.get("editable") == "account":
+                            await delete_account_copy([previous["account_message_id"]], "indirimli fırsat")
+                    except Exception as exc:
+                        log.warning("Eski fırsat korunuyor: %s", type(exc).__name__)
 
     async def dedup_apply_badge(key: str) -> None:
         """İlk mesaja rozet işle; geçici hata akışı durdurmaz."""
@@ -7018,7 +7174,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if not NOTIFY_BOT_TOKEN or DESTINATION_ID is None:
             return False, no_info
         message_link = offer_link(event)
-        keyboard = build_inline_keyboard(event)
         footer_name = source_name if SOURCE_FOOTER else None
 
         descriptor = bot_media_descriptor(event) if NOTIFY_MEDIA else None
@@ -7036,6 +7191,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 message_link=message_link, source_name=footer_name,
             )
             entities = bot_api_entities(composed["message"], composed["content"]) + source_name_entity(composed)
+            keyboard = build_inline_keyboard(event, body_text=composed["text"], body_entities=entities)
             t_media = time.perf_counter()
             # Yedek zincirde (send_media) aynı teslim içinde indirildiyse
             # yeniden indirme; önbellek yalnızca bu deliver() bağlamında yaşar.
@@ -7087,6 +7243,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         )
         entities = bot_api_entities(composed["message"], composed["content"]) + source_name_entity(composed)
         text = composed["text"] or f"🔔 Yeni fırsat – {source_name}"
+        keyboard = build_inline_keyboard(event, body_text=text, body_entities=entities)
         send_result = await send_bot_ping(
             NOTIFY_BOT_TOKEN, DESTINATION_ID, text,
             entities=entities, keyboard=keyboard, link_preview=False,
@@ -7389,6 +7546,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if isinstance(source_seen, dict):
             source_seen[event.chat_id] = int(source_seen.get(event.chat_id, 0) or 0) + 1
         text = event.raw_text or ""
+        # Exact, content-free teaser only. Any media, URL, entity, or button may
+        # carry a real deal; fail open rather than suppressing it.
+        msg = _as_message(event)
+        if (normalize(text).strip().strip(" .!…") == "yoğun ilgi görüyor"
+                and getattr(msg, "media", None) is None
+                and not message_entities(msg) and not getattr(msg, "reply_markup", None)
+                and not extract_links(event)):
+            return
         if not matches(text, FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE,
                        include_enabled=FILTER_INCLUDE_ENABLED,
                        exclude_enabled=FILTER_EXCLUDE_ENABLED):
@@ -7417,7 +7582,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         decision, token, effective_dedup_id = await dedup_before_send(
             dedup_id, dedup_title, source_name,
             footer_name=source_name if SOURCE_FOOTER else None,
-            offer=terms,
+            offer=terms, event=event,
         )
         if decision == "dup":
             STATS["deduped"] += 1
