@@ -8,17 +8,16 @@ dosya onun ulaşmadığı yan yolları sabitler:
   webdetakip    : /ekle veya /cikar → 7 akışının ürün takibine devri.
   Tekrar rozeti : düzenleme reddedildiğinde izlenen dallar ve sahipsiz kalmış
                   rezervasyonun devralınması.
+  Açılış        : geçmiş taramasında aynı fırsatın tekrar kopyalarının sayılması.
   Benzer çiftler: aynı işi yapar görünen yardımcıların bugünkü farkları.
   Bekçiler      : tanımsız ad taraması; Akakçe işçisinin yalıtılmış kipte açılması.
 
 Buradaki her iddia "bugün böyle çalışıyor" demektir; "doğrusu budur" demek DEĞİLDİR.
-Düzeltilmemiş son kusurun (2 numara) bugünkü görünümü KnownDefectPins sınıfında tek
-testle durur. Bir kusur düzeltildiğinde bu dosyada yalnızca o test (ve tanımsız ad
-kusurlarında KNOWN_UNDEFINED listesi) bilinçli olarak güncellenir; buradaki başka bir
-testin oynaması düzeltmenin beklenmeyen bir yan etkisidir. Altın referansta 2 numaralı
-kusurun dokunduğu kayıtlar ayrıca yeniden üretilir. 1 ve 3 numaralı kusurlar düzeltildi,
-iğneleri kaldırıldı: doğru davranışı 1 için test_bot.py'deki MessageSanitizationTest,
-3 için buradaki WebdetakipFlowTest sabitler (3 numara altın referansa dokunmadı).
+Denetimde bulunan üç gizli kusur düzeltildi; bugünkü hâllerini sabitleyen iğneler
+(KnownDefectPins) kaldırıldı ve tanımsız ad listesi (KNOWN_UNDEFINED) boşaldı. Doğru
+davranışı 1 için test_bot.py'deki MessageSanitizationTest, 2 için buradaki
+StartupScanCountTest, 3 için buradaki WebdetakipFlowTest sabitler. Altın referansa
+1 ve 2 numara dokundu (2 numara: açılış taramasının sayaçları); 3 numara dokunmadı.
 
 Ağ yoktur: Telethon yerine test_integration.FakeClient, HTTP yerine
 urllib.request.urlopen'ın sahtesi çalışır; aradaki her şey üretim kodudur.
@@ -894,39 +893,95 @@ class ReservationTakeoverTest(unittest.TestCase):
                                  (False, False, 1, "bot"))
 
 
-# --- Bilinen kusurların bugünkü görünümü -------------------------------------------
+# --- Açılış taraması: geçmişteki tekrar kopyaları -----------------------------------
 
-class KnownDefectPins(unittest.TestCase):
-    """Denetimde bulunan gizli kusurlardan düzeltilmemiş sonuncusu BUGÜN böyle davranıyor.
+SUPERGROUP = -1001234567890   # kanal/süper grup: eski bot bildirimi Bot API ile düzenlenebilir
 
-    Bu hedef değil, ölçüm noktasıdır: kusur düzeltildiğinde buradaki test bilinçli
-    olarak güncellenir. Düzeltmenin ne üretmesi gerektiği o aşamanın kararıdır; burada
-    yalnızca bugünkü sonuç yazılıdır.
 
-    1 numaralı kusur (_utf16_to_index 0 ofsetini 1 sayıyordu) düzeltildi ve iğnesi
-    kaldırıldı; doğru davranışı test_bot.py'deki MessageSanitizationTest sabitler.
-    3 numaralı kusur (_webtakip_count, load_state adını bulamıyordu) düzeltildi ve iğnesi
-    kaldırıldı; doğru davranışı WebdetakipFlowTest sabitler.
+class StartupScanCountTest(unittest.TestCase):
+    """Açılış taraması (dedup_preload) hedefteki kendi bildirimlerini eskiden yeniye okur.
+
+    Aynı fırsatın ilk bildirimi kaydı kurar; sonraki kopyası canlı akıştaki tekrar gibi
+    sayılır: rozetsiz kopya sayacı bir artırır, rozetli kopya sayacı en az rozetindeki
+    sayıya çıkarır, son görülme en yeni kopyaya ilerler. Canlı tekrar bu sayının
+    üzerinden devam eder. (2 numaralı kusurda bu dal tanımsız bir ad yüzünden hiç
+    çalışmıyor, sayaç ilk kopyada kalıyordu.)
     """
 
-    def test_defect2_second_copy_in_history_is_not_counted_at_startup(self) -> None:
-        # bot.py dedup_preload: "existing_conflict" tanımsız; aynı fırsatın geçmişteki ikinci
-        # bildirimi NameError'a düşer ve sessizce atlanır: sayaç da son görülme de ilerlemez.
+    PLAIN = NOTIFICATION + "firsatz"
+    BADGED = NOTIFICATION + FULL_BADGE.format(3)
+
+    def setUp(self) -> None:
         now = time.time()
-        older, newer = now - 3600, now - 60
+        self.older, self.newer = now - 3600, now - 60
+
+    def history(self, older_text: str, newer_text: str, chat: int = ti.GROUP_ID) -> list[tuple]:
+        """Botun aynı fırsat için hedefe düşmüş iki bildirimi (iter_messages gibi yeniden eskiye)."""
         bot_id = int(golden.BOT_TOKEN.split(":", 1)[0])
-        history = [  # yeniden eskiye
-            (ti.GROUP_ID, NOTIFICATION + "firsatz", bot_id, newer, None, [], 12),
-            (ti.GROUP_ID, NOTIFICATION + "firsatz", bot_id, older, None, [], 11),
-        ]
+        return [(chat, newer_text, bot_id, self.newer, None, [], 12),
+                (chat, older_text, bot_id, self.older, None, [], 11)]
+
+    def entry_after_startup(self, older_text: str, newer_text: str) -> dict[str, Any]:
         seen: dict[str, Any] = {}
 
         async def scenario(_client: ti.FakeClient) -> None:
             seen.update(cached())
 
-        run_prod(scenario, wire=Wire(), history=history)
-        self.assertEqual(seen["count"], 1)
-        self.assertEqual(seen["last_seen"], older)
+        run_prod(scenario, wire=Wire(), history=self.history(older_text, newer_text))
+        return seen
+
+    def test_second_copy_in_history_is_counted(self) -> None:
+        entry = self.entry_after_startup(self.PLAIN, self.PLAIN)
+        self.assertEqual(entry["count"], 2)
+        self.assertEqual((entry["first_seen"], entry["last_seen"]), (self.older, self.newer),
+                         "kayıt ilk kopyanındır; son görülme yeni kopyaya ilerler")
+
+    def test_badged_copy_raises_the_count_to_its_badge(self) -> None:
+        entry = self.entry_after_startup(self.PLAIN, self.BADGED)
+        self.assertEqual(entry["count"], 3, "rozet eski kopyayı zaten içerir: toplanmaz")
+        self.assertEqual(entry["last_seen"], self.newer)
+
+    def test_plain_copy_after_a_badged_one_adds_one(self) -> None:
+        entry = self.entry_after_startup(self.BADGED, self.PLAIN)
+        self.assertEqual(entry["count"], 4)
+        self.assertEqual(entry["last_seen"], self.newer)
+
+    def test_live_share_in_a_basic_group_is_merged_without_an_edit(self) -> None:
+        # Deponun kurulumu (temel grup + bot): eski bildirim düzenlenemez. Sayaç ilerler,
+        # fırsat yeniden bildirilmez ve hiçbir HTTP isteği (düzenleme denemesi) çıkmaz.
+        wire = Wire()
+        seen: dict[str, Any] = {}
+
+        async def scenario(client: ti.FakeClient) -> None:
+            await offer(client, 3)
+            seen.update(entry=cached(), stats=stats("forwarded", "deduped", "dedup_edits"),
+                        account=[*client.sent, *client.edited])
+
+        run_prod(scenario, wire=wire, history=self.history(self.PLAIN, self.PLAIN))
+        self.assertEqual((seen["entry"]["count"], seen["entry"]["editable"]), (3, None))
+        self.assertEqual(seen["stats"], (0, 1, 0))
+        self.assertEqual((wire.calls, seen["account"]), ([], []))
+
+    def test_live_share_in_a_supergroup_writes_the_next_number_on_the_first_copy(self) -> None:
+        # Eski bildirimin düzenlenebildiği hedefte sayı görünür: geçmişteki iki kopyadan sonra
+        # gelen paylaşım üçüncüdür ve yeni bildirim yerine ilk kopyaya öyle işlenir.
+        wire = golden.BotApiWire()
+        seen: dict[str, Any] = {}
+
+        async def alive(client: ti.FakeClient, _queue: Any) -> None:
+            seen["startup"] = cached()["count"]
+            await offer(client, 3)
+            seen.update(entry=cached(), stats=stats("forwarded", "deduped", "dedup_edits"))
+
+        golden.run_bot({**golden.PROFILES["prod"], "destination": SUPERGROUP, "control_chat": SUPERGROUP},
+                       alive, wire=wire, history=self.history(self.PLAIN, self.PLAIN, chat=SUPERGROUP))
+        self.assertEqual(seen["startup"], 2)
+        (edit,) = [golden.wire_request(request) for request in wire.requests]
+        self.assertEqual((edit["method"], edit["fields"]["chat_id"], edit["fields"]["message_id"]),
+                         ("editMessageText", SUPERGROUP, 11))
+        self.assertEqual(edit["fields"]["text"], NOTIFICATION + FULL_BADGE.format(3))
+        self.assertEqual(seen["stats"], (0, 1, 1), "yeni bildirim yok; tekrar ilk kopyaya işlendi")
+        self.assertEqual((seen["entry"]["count"], seen["entry"]["badge_count"]), (3, 3))
 
 
 # --- Benzer görünen yardımcılar ------------------------------------------------------
@@ -976,8 +1031,8 @@ class LookAlikeHelpersTest(unittest.TestCase):
 
 # --- Yapısal bekçiler ----------------------------------------------------------------
 
-# Bugün tanımsız olduğu bilinen tek ad (KnownDefectPins, 2 numara). Liste yalnızca küçülebilir.
-KNOWN_UNDEFINED = {("bot.py", "existing_conflict")}
+# Tanımsız olduğu bilinen ad kalmadı (son ikisi 2 ve 3 numaralı kusurlardı). Liste boş kalmalıdır.
+KNOWN_UNDEFINED: set[tuple[str, str]] = set()
 
 _IMPLICIT_GLOBALS = frozenset({"__name__", "__file__", "__doc__", "__spec__", "__loader__",
                                "__package__", "__builtins__", "__debug__"})

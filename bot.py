@@ -7145,7 +7145,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                             record["account_message_id"] = message_id
                         DEDUP_CACHE[target_key] = record
                         added += 1
-                    elif not existing_conflict and not existing.get("pending"):
+                    elif not existing.get("pending"):
                         if badge_count > 1:
                             existing["count"] = max(int(existing.get("count", 1)), badge_count)
                         else:
