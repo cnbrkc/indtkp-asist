@@ -297,6 +297,7 @@ def reset_state():
     bot.PENDING.clear()
     bot.COMMAND_MESSAGES.clear()
     bot.DEDUP_CACHE.clear()
+    bot.CURSOR_RAM.clear()
     bot.STATS["cleaned_commands"] = 0
     bot.STATS.update({"seen": 0, "matched": 0, "forwarded": 0, "failed": 0,
                       "commands": 0, "modes": {}, "cleaned": 0, "last_match": None,

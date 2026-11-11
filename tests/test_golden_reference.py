@@ -524,7 +524,7 @@ def deliver_all(profile_name: str, corpus: list[dict[str, str]]) -> list[dict[st
             record: dict[str, Any] = {}
             for variant in variants_for(index, profile_name):
                 # Yalıtım: her örnek boş tekrar önbelleğiyle başlar.
-                for registry in (bot.DEDUP_CACHE, bot.LIVE_SEEN, bot.POLL_DISPATCHED, bot.SOURCE_IN_FLIGHT):
+                for registry in (bot.DEDUP_CACHE, bot.LIVE_SEEN, bot.POLL_DISPATCHED, bot.SOURCE_IN_FLIGHT, bot.CURSOR_RAM):
                     registry.clear()
                 cell = await observe(build_event(index, item["text"], variant))
                 if profile_name == "prod":

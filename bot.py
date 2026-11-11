@@ -2023,7 +2023,7 @@ FAST_POLL_SECONDS = 3.0
 # sırasında gelen mesajlar yalnızca bu pencere içinde yakalanır; daha eski
 # mesajlar topluca yeniden bildirilmez. Kalıcı imleç tutulmaz.
 FAST_POLL_BACKFILL_LIMIT = 100       # kaynak başına en fazla mesaj (sayı)
-FAST_POLL_BACKFILL_MAX_AGE = 3600.0  # ve en fazla bu kadar saniye eski (1 saat; 6s cron arası kesinti için)
+FAST_POLL_BACKFILL_MAX_AGE = 1800.0  # ve en fazla bu kadar saniye eski (30 dk; tek seferlik bootstrap koruması)
 # P0 ölçümleme: hızlı taramanın anlık durumu (/durum ve kalp atışında görünür).
 # Yalnızca sayaç/aralık bilgisi tutar; davranış değişmez.
 POLL_TELEMETRY: dict[str, float] = {
@@ -2035,6 +2035,9 @@ POLL_TELEMETRY: dict[str, float] = {
 LIVE_SEEN: "collections.OrderedDict[tuple[int, int], float]" = collections.OrderedDict()
 POLL_DISPATCHED: "collections.OrderedDict[tuple[int, int], float]" = collections.OrderedDict()
 SOURCE_IN_FLIGHT: set[tuple[int, int]] = set()
+# Kaynak bazlı kalıcı cursor (yalnızca RAM — bilinçli /restart’ta tek commit)
+CURSOR_RAM: dict[int, dict[str, Any]] = {}
+RESTARTING = False  # /restart drain sırasında yeni mesajlar bekletilsin
 # Yavaş bildirim raporu: toplam süre bu eşiği (sn) aşarsa Kayıtlı Mesajlar'a döküm gelir. 0 = kapalı.
 SLOW_REPORT_SECONDS = 8.0
 _SLOW_REPORT_LAST = 0.0
@@ -2253,6 +2256,90 @@ def live_event_should_skip(event: Any) -> bool:
         return True
     _remember(LIVE_SEEN, *key)
     return False
+
+
+# --- Cursor (tek cursor / grup) — yalnızca RAM, bilinçli /restart’ta tek persist
+
+def _cursor_ensure(chat_id: int) -> dict[str, Any]:
+    cid = int(chat_id)
+    if cid not in CURSOR_RAM:
+        CURSOR_RAM[cid] = {"cursor": 0, "pending": set(), "completed": set(), "failed": set(), "failed_at": {}}
+    return CURSOR_RAM[cid]
+
+
+def _cursor_advance(chat_id: int) -> None:
+    """Sade ardışık ilerleme: yalnızca completed zinciri ilerler; gap’ler poll’de doğrulanır."""
+    st = _cursor_ensure(chat_id)
+    while True:
+        nxt = int(st["cursor"]) + 1
+        if nxt in st["pending"]:
+            break
+        if nxt in st["failed"]:
+            break  # başarısız — sonraki poll’de retry edilecek, kaybetme yok
+        if nxt in st["completed"]:
+            st["completed"].remove(nxt)
+            st["cursor"] = nxt
+            continue
+        break
+    # Budama kaldırıldı: cursor önünde poll ile henüz doğrulanmamış
+    # bir boşluk varken bile pending/failed boş olabilir. 500+ kayıtlı
+    # tamamlanmış zinciri silmek cursor'u kilitleyebilir; bu yüzden
+    # completed kayıtları güvenle tüketilene kadar korunur.
+
+
+def _cursor_mark_pending(chat_id: int, msg_id: int) -> None:
+    st = _cursor_ensure(chat_id)
+    mid = int(msg_id)
+    st["pending"].add(mid)
+    # önceki failed aynı ID yeniden deneniyorsa temizle
+    st["failed"].discard(mid)
+    st["failed_at"].pop(mid, None)
+
+
+def _cursor_mark_success(chat_id: int, msg_id: int) -> None:
+    st = _cursor_ensure(chat_id)
+    mid = int(msg_id)
+    st["pending"].discard(mid)
+    st["failed"].discard(mid)
+    st["failed_at"].pop(mid, None)
+    st["completed"].add(mid)
+    _cursor_advance(chat_id)
+
+
+def _cursor_mark_failed(chat_id: int, msg_id: int) -> None:
+    st = _cursor_ensure(chat_id)
+    mid = int(msg_id)
+    st["pending"].discard(mid)
+    st["failed"].add(mid)
+    st["failed_at"][mid] = time.time()
+
+
+def cursor_load_from_config(config: dict) -> None:
+    """config.json → source_cursors RAM’e yükle (main başlangıcında)."""
+    CURSOR_RAM.clear()
+    raw = config.get("source_cursors")
+    if not isinstance(raw, dict):
+        return
+    for k, v in raw.items():
+        try:
+            cid = int(k)
+            cur = int(v)
+            CURSOR_RAM[cid] = {"cursor": cur, "pending": set(), "completed": set(), "failed": set(), "failed_at": {}}
+        except Exception:
+            continue
+
+
+def cursor_collect_for_persist() -> dict[str, int]:
+    """RAM cursor’larını tek toplu dict’e topla (persist için)."""
+    return {str(int(cid)): int(st["cursor"]) for cid, st in CURSOR_RAM.items()}
+
+
+async def cursor_persist_for_restart(store: ConfigStore) -> tuple[bool, str]:
+    """Bilinçli /restart öncesi tek toplu kalıcı kayıt. Başarı → restart serbest."""
+    # Mevcut atomic_write_json + commit_and_push + GIT_WRITE_LOCK yolunu kullan
+    store.config["source_cursors"] = cursor_collect_for_persist()
+    ok, note = await save_config(store, "cursor: restart öncesi yedek")
+    return ok, note
 
 
 def maybe_report_slow(tg_client: Any, source_name: str, lag: float, steps: list[tuple[str, float]]) -> None:
@@ -7498,6 +7585,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
     POLL_DISPATCHED.clear()
     SOURCE_IN_FLIGHT.clear()
     await dedup_preload()
+    # Cursor: RAM sadece, bilinçli /restart’ta tek persist
+    cursor_load_from_config(store.config)
+    # İlk kurulum: source_cursors yoksa bootstrap ilk poll’de top ile yapılır (patlama yok)
+    if not store.config.get("source_cursors"):
+        log.info("Cursor: kalıcı kayıt yok — ilk poll’de her kaynak top ile bootstrap edilecek (geçmiş tekrarı yok).")
 
     # Handler'lara `chats=` VERMİYORUZ: Telethon o filtreyi ilk mesajda çözer ve
     # çözümleme hatası tüm update akışını öldürür. Filtreyi burada kendimiz yapıyoruz.
@@ -7632,8 +7724,29 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 f'  "admin_user_id": {event.sender_id}'
             )
         elif command == COMMAND_RESTART:
+            # Yalnızca bilinçli /restart’ta cursor yedeği — otomatik restart değil
+            global RESTARTING
+            RESTARTING = True
+            # 1) Uçuş drain — yeni mesajlar RESTARTING bayrağıyla zaten bekletiliyor
+            drain_deadline = time.time() + 6
+            while time.time() < drain_deadline and (SOURCE_IN_FLIGHT or poll_delivery_tasks):
+                await asyncio.sleep(0.2)
+            if SOURCE_IN_FLIGHT or poll_delivery_tasks:
+                log.warning("Restart drain %ss doldu — %s uçuş + %s poll görevi kaldı; mevcut ardışık cursor ile yedek alınıyor.",
+                            6, len(SOURCE_IN_FLIGHT), len(poll_delivery_tasks))
+            # 2) Tek toplu persist (mevcut atomic_write_json + GIT_WRITE_LOCK yolunu kullan)
+            ok_save, save_note = await cursor_persist_for_restart(store)
+            if not ok_save:
+                RESTARTING = False
+                await control_reply(event, "✗ Restart iptal — cursor kalıcılaştırılamadı: " + save_note)
+                return
+            # 3) Dispatch yalnızca persist başarıyla bittiyse
             ok, message = await dispatch_next_run(gh_pat)
-            await control_reply(event, ("🔄 " if ok else "⚠️ ") + message)
+            if ok:
+                await control_reply(event, "🔄 " + message + "\n" + save_note)
+            else:
+                RESTARTING = False
+                await control_reply(event, "⚠️ " + message + "\n" + save_note + "\nCursor yedeği alındı ama yeni çalışma başlatılamadı; mevcut süreç çalışmaya devam ediyor.")
         elif command == COMMAND_HELP:
             await control_reply(event, HELP_TEXT)
         elif command == COMMAND_WEB_TRACK:
@@ -7655,15 +7768,31 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return
         if DESTINATION_ID is not None and event.chat_id == DESTINATION_ID:
             return  # hedefe kendi gönderdiğimiz mesajı tekrar iletmeyelim
+        if RESTARTING:
+            return  # bilinçli restart drain — mesaj cursor ile kurtarılır
         if live_event_should_skip(event):
             return  # aynı mesaj hızlı taramayla zaten işlendi
+        # cursor ilk katman — ID bazlı tekrar engeli (yalnızca RAM, persist’siz)
+        # Yeni grup & ilk poll öncesi race: RAM’de yoksa bootstrap (patlama yok)
+        try:
+            _cid = int(event.chat_id); _mid = int(event.id)
+            if _cid not in CURSOR_RAM:
+                _cursor_ensure(_cid)["cursor"] = max(0, _mid - 1)
+                log.info("Yeni kaynak canlı bootstrap (poll öncesi): %s → cursor=%s", _cid, _cursor_ensure(_cid)["cursor"])
+            _cur = int(CURSOR_RAM.get(_cid, {}).get("cursor", 0) or 0)
+            if _mid <= _cur:
+                return
+        except Exception:
+            pass
         key = (event.chat_id, event.id)
         SOURCE_IN_FLIGHT.add(key)
+        _cursor_mark_pending(int(event.chat_id), int(event.id))
         try:
             await process_source_event(event)
         except BaseException:
             LIVE_SEEN.pop(key, None)
             POLL_DISPATCHED.pop(key, None)
+            _cursor_mark_failed(int(event.chat_id), int(event.id))
             raise
         finally:
             SOURCE_IN_FLIGHT.discard(key)
@@ -7681,11 +7810,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 and getattr(msg, "media", None) is None
                 and not message_entities(msg) and not getattr(msg, "reply_markup", None)
                 and not extract_links(event)):
+            _cursor_mark_success(int(event.chat_id), int(event.id))
             return
         if not matches(text, FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE,
                        include_enabled=FILTER_INCLUDE_ENABLED,
                        exclude_enabled=FILTER_EXCLUDE_ENABLED):
             log.debug("Eşleşmedi (chat=%s id=%s): %.80s", event.chat_id, event.id, text)
+            _cursor_mark_success(int(event.chat_id), int(event.id))
             return
 
         STATS["matched"] += 1
@@ -7706,6 +7837,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if not ok:
                 LIVE_SEEN.pop((event.chat_id, event.id), None)
                 POLL_DISPATCHED.pop((event.chat_id, event.id), None)
+                _cursor_mark_failed(int(event.chat_id), int(event.id))
+            else:
+                _cursor_mark_success(int(event.chat_id), int(event.id))
             return
         decision, token, effective_dedup_id = await dedup_before_send(
             dedup_id, dedup_title, source_name,
@@ -7715,6 +7849,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if decision == "dup":
             STATS["deduped"] += 1
             log.info("Tekrar birleştirildi (kaynak=%s): %.60s", source_name, dedup_title)
+            _cursor_mark_success(int(event.chat_id), int(event.id))
             return
         ok, info = False, None
         try:
@@ -7724,6 +7859,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if not ok:
                 LIVE_SEEN.pop((event.chat_id, event.id), None)
                 POLL_DISPATCHED.pop((event.chat_id, event.id), None)
+                _cursor_mark_failed(int(event.chat_id), int(event.id))
+            else:
+                _cursor_mark_success(int(event.chat_id), int(event.id))
 
     async def private_status_changed(status: str, detail: str) -> None:
         """Rutin açılışı sessiz tut; gerçek özel komut arızalarını bildirmeyi sürdür."""
@@ -7755,7 +7893,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
     async def fast_poll_loop() -> None:
         """Kaynakları tek istekle (getPeerDialogs) yoklar; yeni mesajı canlı olayla aynı yoldan işler."""
-        last_seen: dict[int, int] = {}
         input_peers: dict[int, Any] = {}
         failures = 0
         poll_interval = FAST_POLL_SECONDS
@@ -7800,39 +7937,52 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     POLL_TELEMETRY["interval"] = poll_interval
                     log.info("Hızlı tarama isteği %.1f sn sürdü; yoklama aralığı %.0f sn'ye çıkarıldı.",
                              poll_elapsed, poll_interval)
+                if RESTARTING:
+                    await asyncio.sleep(0.5)
+                    continue
                 tops = {utils.get_peer_id(d.peer): int(d.top_message or 0) for d in result.dialogs}
                 for chat_id, peer in targets:
+                    if RESTARTING:
+                        break
                     top = tops.get(chat_id)
                     if top is None:
                         continue
-                    previous = last_seen.get(chat_id)
-                    is_backfill = previous is None
-                    if is_backfill:
-                        # İlk tur: yalnızca sınırlı geriye tarama (P6). Kesinti
-                        # penceresindeki mesajlar yakalanır; daha eskisi için
-                        # sayı + yaş sınırı toplu yeniden bildirimi engeller.
-                        # Çekme başarısız olursa last_seen yazılmaz, seneye
-                        # aynı tabandan yeniden denenir.
-                        previous = max(0, top - FAST_POLL_BACKFILL_LIMIT)
-                    if top <= previous:
-                        if is_backfill:
-                            last_seen[chat_id] = top
+                    # cursor temelli — tek cursor/grup (RAM)
+                    cur_entry = CURSOR_RAM.get(chat_id)
+                    if cur_entry is None:
+                        # İlk kurulum: cursor’u mevcut top’a kur, geçmişi topluca gönderme (patlama yok)
+                        _cursor_ensure(chat_id)["cursor"] = int(top)
+                        log.info("Yeni kaynak için cursor bootstrap: %s → %s", chat_id, top)
                         continue
-                    messages = await client.get_messages(peer, min_id=previous, limit=None)
-                    last_seen[chat_id] = top
+                    cur = int(cur_entry.get("cursor", 0) or 0)
+                    if top <= cur:
+                        continue
+                    # Sayfalı kurtarma: Telethon limit=None → paginated GetHistory
+                    try:
+                        messages = await client.get_messages(peer, min_id=cur, limit=None)
+                    except Exception as exc:  # noqa: BLE001 - çekme başarısızsa cursor ilerletme, sonra tekrar dene
+                        log.warning("Geçmiş çekilemedi (kaynak=%s, cursor=%s): %s: %s", chat_id, cur, type(exc).__name__, exc)
+                        continue
+                    # Poll’le doğrulanmış silinmiş ID’ler için gap skip (canlı race’te tek başına karar yok)
+                    # Sadece ardışık silinmişleri atla — pending/failed ortadaki ID’yi atlama
+                    fetched_ids = {int(getattr(m, "id", 0) or 0) for m in messages if getattr(m, "id", None)}
+                    if fetched_ids:
+                        max_fetched = max(fetched_ids)
+                        st = _cursor_ensure(chat_id)
+                        for gid in range(int(st["cursor"])+1, max_fetched+1):
+                            if gid in fetched_ids:
+                                break  # gerçek mesaj var — sonrası için tekrar poll gerekir
+                            if gid in st["pending"] or gid in st["failed"]:
+                                break  # işlemde/başarısız — poll retry ile çözülür
+                            # poll bu ID’nin olmadığını doğruladı (silinmiş)
+                            st["cursor"] = gid
+                            log.info("Cursor gap skip (poll doğruladı, silinmiş): %s %s", chat_id, gid)
+                        # Gap atlama sonrası tamamlanmış zinciri ilerlet
+                        _cursor_advance(chat_id)
+                        cur = int(st["cursor"])
                     for message in reversed(list(messages)):
-                        if message.id <= previous or (chat_id, message.id) in LIVE_SEEN:
+                        if message.id <= cur or (chat_id, message.id) in LIVE_SEEN:
                             continue
-                        if is_backfill:
-                            # Yaş sınırı: açılışta eski mesajları topluca
-                            # yeniden bildirme. Tarihi okunamayan mesaj
-                            # geriye taramada temkinli biçimde atlanır.
-                            try:
-                                age = time.time() - message.date.timestamp()
-                            except Exception:  # noqa: BLE001 - tarih yoksa atla
-                                continue
-                            if age > FAST_POLL_BACKFILL_MAX_AGE:
-                                continue
                         _remember(POLL_DISPATCHED, chat_id, message.id)
                         event = events.NewMessage.Event(message)
                         try:
@@ -7841,13 +7991,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                             event._client = client
                         event._fast_poll = True
                         log.info("⚡ Hızlı tarama yeni mesajı yakaladı (kaynak=%s, mesaj=%s).", chat_id, message.id)
-                        if is_backfill:
-                            # Açılış yükü kontrolü: geriye tarama mesajları
-                            # sınırsız eşzamanlı teslim görevine dönüşmez,
-                            # sırayla işlenir. Canlı olaylar Telethon'un
-                            # kendi görevlerinde koştuğu için bu sıralama
-                            # canlı fırsatları arkaya atmaz; yalnızca
-                            # tarama döngüsünün kendisi bekler.
+                        # Kurtarma patlamasını önle: çoklu mesajlı gap sırayla, tekil yeni mesaj eşzamanlı
+                        if len(messages) > 12:
                             await run_event(event)
                         else:
                             task = asyncio.create_task(run_event(event))
