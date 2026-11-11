@@ -5088,6 +5088,59 @@ def _is_stale_id_error(exc: Exception) -> bool:
     return False
 
 
+def _is_invite_link(value: Any) -> bool:
+    return isinstance(value, str) and bool(_INVITE_LINK_RE.fullmatch(value.strip()))
+
+
+async def _prefill_missing_ids_from_dialogs(client: TelegramClient, values: list[int | str],
+                                            source_id_map: dict[str, Any]) -> int:
+    """Eksik ID'leri tek bir get_dialogs çağrısıyla doldur — 47x ResolveUsername'i önler.
+
+    Telegram `get_dialogs` bir RPC'de tüm üye olunan sohbetleri döndürür; username
+    eşleştirmesi yerel yapılır, FloodWait tetiklenmez. Sadece @username kaynakları
+    için geçerli, invite linkler ayrı kalır.
+    """
+    missing = [v for v in values if _lookup_source_id(source_id_map, v) is None and not _is_invite_link(v)]
+    if not missing:
+        return 0
+    # Sadece username tabanlı eksikler varsa dene
+    try:
+        dialogs = await client.get_dialogs()
+    except Exception as exc:
+        log.warning("Dialog listesi alınamadı (%s: %s) — tek tek username çözümüne düşülüyor",
+                    type(exc).__name__, exc)
+        return 0
+    # username -> peer_id haritası
+    username_to_id: dict[str, int] = {}
+    for dlg in dialogs or []:
+        ent = getattr(dlg, "entity", None)
+        if ent is None:
+            # Bazı Telethon sürümlerinde dialog direkt entity olabilir
+            ent = dlg
+        uname = getattr(ent, "username", None)
+        if not uname:
+            continue
+        try:
+            pid = utils.get_peer_id(ent)
+        except Exception:
+            continue
+        username_to_id[str(uname).strip().lower()] = pid
+
+    filled = 0
+    for v in missing:
+        key = str(v).strip()
+        # @xxx -> xxx lower
+        lookup = key.lstrip("@").lower() if isinstance(v, str) else ""
+        pid = username_to_id.get(lookup)
+        if pid is not None and _lookup_source_id(source_id_map, v) is None:
+            source_id_map[key] = pid
+            filled += 1
+            log.info("Kaynak ID dialoglardan bulundu: %s -> %s", v, pid)
+    if filled:
+        log.info("Dialoglardan %s/%s eksik kaynak ID'si dolduruldu", filled, len(missing))
+    return filled
+
+
 async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = False) -> list[str]:
     """Kaynakları tek tek çöz; biri bozuksa diğerleri çalışmaya devam eder."""
     global SOURCES, SOURCE_IDS, SOURCE_FAILURES
@@ -5096,6 +5149,12 @@ async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = Fa
     stored_ids = config.get("source_chat_ids")
     source_id_map: dict[str, Any] = dict(stored_ids) if isinstance(stored_ids, dict) else {}
     values = chat_values(config.get("source_chats"))
+    # FloodWait'i tetiklemeden önce dialoglardan toplu ID doldurmayı dene
+    if values:
+        try:
+            await _prefill_missing_ids_from_dialogs(client, values, source_id_map)
+        except Exception as exc:
+            log.warning("Dialog ön-doldurma atlandı: %s: %s", type(exc).__name__, exc)
     flood_wait_seconds: int | None = None
     flood_wait_exc: Exception | None = None
     for idx, value in enumerate(values):
@@ -5142,7 +5201,8 @@ async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = Fa
                     failures.append((value, exc))
                     continue
         # FloodWait aktifken yeni username denemesi yapma — ID'li kaynaklar zaten yukarıda denendi
-        if flood_wait_seconds is not None:
+        # Invite linkler ResolveUsername değil, ayrı limitte; park etme
+        if flood_wait_seconds is not None and not _is_invite_link(value):
             failures.append((value, flood_wait_exc))
             log.warning("Kaynak atlandı (FloodWait park %ss): %r", flood_wait_seconds, value)
             continue

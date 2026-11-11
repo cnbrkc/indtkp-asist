@@ -664,6 +664,93 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
         self.assertEqual(str_calls, [], "ChannelPrivateError için username fallback yapılmamalı")
 
 
+class BulkDialogPrefillTest(unittest.TestCase):
+    """Dialoglardan toplu ID doldurma — FloodWait'i önler."""
+
+    def setUp(self):
+        _reset()
+
+    def tearDown(self):
+        _reset()
+
+    def test_bulk_prefill_fills_missing_ids_without_username_calls(self):
+        # 3 kaynak, hiç cache yok — dialoglar 3 username içeriyor
+        source_chats = ["@alpha", "@beta", "@gamma"]
+        config = {"source_chats": source_chats}
+        # Dialoglar: her username için entity
+        dialogs = []
+        for name in ["alpha", "beta", "gamma"]:
+            ent = _chan(name, 1000000000 + hash(name) % 1000000)
+            dialogs.append(SimpleNamespace(entity=ent))
+
+        class BulkClient(TrackingClient):
+            async def get_dialogs(self, limit=None):
+                self.dialogs_calls += 1
+                return dialogs
+
+            async def get_entity(self, value):
+                # Bulk sonrası int ile çağrılmalı, string ile çağrılırsa hata — FloodWait simüle
+                if isinstance(value, str) and value.lstrip("@").lower() in {"alpha", "beta", "gamma"}:
+                    raise errors.FloodWaitError(request=None, capture=34539)
+                return await super().get_entity(value)
+
+        client = BulkClient()
+
+        asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        self.assertEqual(len(bot.SOURCES), 3, "dialoglardan doldurulan ID'lerle 3 kaynak çözülmeli")
+        self.assertEqual(client.dialogs_calls, 1)
+        # Hiç username çağrısı yapılmamalı — hepsi int üzerinden
+        str_calls = [v for _, v in client.calls if isinstance(v, str)]
+        self.assertEqual(str_calls, [], f"bulk sonrası username çağrısı olmamalı, got {str_calls}")
+        self.assertEqual(len(config["source_chat_ids"]), 3)
+
+    def test_invite_not_parked_under_floodwait(self):
+        # İlk username FloodWait, invite link park edilmemeli
+        source_chats = ["@a", "https://t.me/+RBuRoSBONSYyMTE8", "@b"]
+        config = {"source_chats": source_chats}
+        mapping = {
+            "@a": errors.FloodWaitError(request=None, capture=34539),
+            # invite için CheckChatInviteRequest — TrackingClient yok, resolve_chat invite yolu kullanır
+            # Invite'i dialoglardan değil, doğrudan resolve_chat invite path'i ile çöz
+        }
+
+        class InviteClient(TrackingClient):
+            async def get_entity(self, value):
+                self.calls.append(("get_entity", value))
+                if value == "@a":
+                    raise errors.FloodWaitError(request=None, capture=34539)
+                if isinstance(value, str) and value.startswith("https://"):
+                    # invite link — CheckChatInviteRequest yoluna düşmeden önce _INVITE_LINK_RE kontrolü
+                    # resolve_chat invite path'i için client'e çağrı yok, doğrudan success
+                    # Biz burada invite için direkt entity döndürmeyeceğiz, resolve_chat'in invite dalı
+                    # client(functions.messages.CheckChatInviteRequest) çağırır, onu mocklamalıyız
+                    raise AssertionError("invite should not go via get_entity")
+                return await TrackingClient.get_entity(self, value)
+
+            async def __call__(self, request):
+                # CheckChatInviteRequest için
+                from telethon.tl import types as tltypes
+                chat = types.Chat(id=123456, title="PrivateInvite", photo=types.ChatPhotoEmpty(),
+                                  participants_count=1, date=0, version=0)
+                chat.username = None
+                # Simulate already joined
+                invite = tltypes.ChatInviteAlready(chat=chat)
+                return invite
+
+        client = InviteClient(mapping)
+        # Invite için ayrıca get_dialogs boş dönsün
+        asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        # @a FloodWait park, invite denendi ve başarılı, @b park
+        # Invite resolved -> 1, parked 2
+        # Check: invite resolved count 1, failures 2
+        self.assertEqual(len(bot.SOURCES), 1)
+        self.assertEqual(bot.SOURCES[0]["requested"], "https://t.me/+RBuRoSBONSYyMTE8")
+        parked = [v for v, e in bot.SOURCE_FAILURES if isinstance(e, errors.FloodWaitError)]
+        self.assertEqual(len(parked), 2)
+        self.assertIn("@a", [v for v, _ in bot.SOURCE_FAILURES])
+        self.assertIn("@b", [v for v, _ in bot.SOURCE_FAILURES])
+
+
 class ResolveChatGroupsIntegrationTest(unittest.TestCase):
     """resolve_chat_groups gerçek akış — sources/destination/control birlikte."""
 
