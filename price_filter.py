@@ -1247,17 +1247,16 @@ def _title_collect_entries(lines: list[str], hint_tokens: set[str]) -> list[tupl
     return entries
 
 
-def _title_pick_best(entries: list[tuple[float, int, str, str]]) -> tuple[float, int, str, str] | None:
+def _title_pick_best(entries: list[tuple[float, int, str, str]]) -> tuple[int, str] | None:
     """En yüksek puanlı adayı seç; düşük güven (<1.0) ise en erken satıra düş."""
     if not entries:
         return None
     entries.sort(key=lambda item: (-item[0], item[1]))
-    score, index, title, raw = entries[0]
+    score, index, title, _ = entries[0]
     if score < 1.0:
         title = next((entry[2] for entry in sorted(entries, key=lambda item: item[1])), "")
         index = next((entry[1] for entry in sorted(entries, key=lambda item: item[1])), index)
-        score = entries[0][0]
-    return score, index, title, raw
+    return index, title
 
 
 def _title_try_short_extension(title: str, index: int, lines: list[str]) -> str:
@@ -1320,7 +1319,7 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
         return ""
     picked = _title_pick_best(entries)
     assert picked is not None
-    score, index, title, _ = picked
+    index, title = picked
     title = _title_extend_with_neighbors(title, index, lines)
     return _title_finalize(title, limit)
 
