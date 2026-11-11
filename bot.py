@@ -3262,9 +3262,8 @@ def plain_offer_for_upgrade(obj: Any, offer: tuple | None) -> bool:
                         for c in candidates))
 
 
-def is_referenced_multibuy_upgrade(entry: dict[str, Any], title: str, obj: Any,
-                                    offer: tuple | None, now: float) -> bool:
-    """Conservative 3-minute bridge: same exact title, old base + lower multi-buy."""
+def _multibuy_entry_eligible(entry: dict[str, Any], title: str, offer: tuple | None, now: float) -> bool:
+    """Entry'nin 3 dakikalık bridge için uygun olup olmadığını kontrol et."""
     old = entry.get("offer")
     if (entry.get("preload") or not entry.get("plain_offer") or entry.get("failed")
             or entry.get("pending") or now - float(entry.get("first_seen", 0)) > 180
@@ -3273,20 +3272,33 @@ def is_referenced_multibuy_upgrade(entry: dict[str, Any], title: str, obj: Any,
             or not old or old[0] is None or not offer or offer[0] is None
             or not better_or_different_offer(old, offer)):
         return False
+    return True
+
+
+def _multibuy_editable_valid(entry: dict[str, Any]) -> bool:
+    """Kaydın düzenlenebilir (bot/account) mesaj ID'si geçerli mi?"""
     if entry.get("editable") == "bot":
-        if not isinstance(entry.get("bot_message_id"), int):
-            return False
-    elif entry.get("editable") == "account":
-        if not isinstance(entry.get("account_message_id"), int):
-            return False
-    else:
-        return False
+        return isinstance(entry.get("bot_message_id"), int)
+    if entry.get("editable") == "account":
+        return isinstance(entry.get("account_message_id"), int)
+    return False
+
+
+def _multibuy_blocked_by_condition_or_asin(entry: dict[str, Any], obj: Any) -> bool:
+    """Upgrade bloklayıcı koşul (ikinci el vb.) veya ASIN uyuşmazlığı var mı?"""
     text = message_text(obj)
     if _UPGRADE_CONDITION_RE.search(text):
-        return False
+        return True
     old_asins, new_asins = entry.get("product_asins") or set(), product_asins(obj)
     if old_asins and new_asins and old_asins != new_asins:
-        return False
+        return True
+    return False
+
+
+def _multibuy_price_structure_valid(entry: dict[str, Any], obj: Any, offer: tuple | None) -> bool:
+    """Mesajda eski taban fiyat + daha ucuz multi-buy yapısı doğru mu?"""
+    old = entry.get("offer")
+    text = message_text(obj)
     strike = price_filter.strike_spans_from_entities(text, entities_for_text(obj, text))
     candidates = price_filter.find_candidates(text, strike)
     base = [c for c in candidates if c.cls == "price" and c.role in {"normal", "pack_total"}
@@ -3299,6 +3311,17 @@ def is_referenced_multibuy_upgrade(entry: dict[str, Any], title: str, obj: Any,
             and not any(c.role in {"condition_price", "member_price", "discounted", "basket_coupon", "product_coupon"}
                         for c in candidates))
 
+
+def is_referenced_multibuy_upgrade(entry: dict[str, Any], title: str, obj: Any,
+                                    offer: tuple | None, now: float) -> bool:
+    """Conservative 3-minute bridge: same exact title, old base + lower multi-buy."""
+    if not _multibuy_entry_eligible(entry, title, offer, now):
+        return False
+    if not _multibuy_editable_valid(entry):
+        return False
+    if _multibuy_blocked_by_condition_or_asin(entry, obj):
+        return False
+    return _multibuy_price_structure_valid(entry, obj, offer)
 
 def dedup_offer_key(title: str, offer: tuple[float | None, str] | None = None) -> str | None:  # noqa: ARG001 - dış API uyumu
     """Tekrar anahtarı ürün adıdır; fiyat yalnızca aynı ürünün fiyat değişimini denetler.
