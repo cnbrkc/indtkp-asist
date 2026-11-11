@@ -1808,6 +1808,52 @@ def linked_product_title(obj: Any, limit: int = 160) -> str:
     return candidates[0] if len(candidates) == 1 else ""
 
 
+def _coupon_campaign_title(text: str, limit: int) -> str:
+    """Return a complete campaign sentence only for coupon-only posts.
+
+    Basket thresholds and discount amounts are useful campaign identity, not
+    product prices. Do not use this path when a plausible model/unit-bearing
+    product title exists; normal product title selection remains authoritative.
+    """
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not re.search(r"\b(?:kupon\w*|indirim\s*kodu|kampanya\s*kodu)\b", normalize(text)):
+        return ""
+    product_line = any(
+        price_filter._UNIT_RE.search(line)
+        and not re.search(r"kopyalamak|alışveriş|alisveris|üzeri", normalize(line))
+        and len(WORD_TOKEN_RE.findall(_search_line_candidate(line))) >= 5
+        for line in lines
+    )
+    if product_line:
+        return ""
+    candidates = []
+    for line in lines:
+        # Keep the currency amounts and discount wording here: the generic
+        # search cleaner intentionally removes them because they are not product
+        # identifiers, but together they form the campaign's actual title.
+        candidate = clean_disclosure_tokens(line)
+        candidate = re.sub(r"[^\w\s%₺.,:'’/-]+", " ", candidate, flags=re.UNICODE)
+        candidate = re.sub(r"\s+", " ", candidate).strip(" \t,;:.|/-")
+        plain = normalize(candidate)
+        if (candidate and re.search(r"\b(?:indirim|ındırım|indirimli|ındırımlı)\b", plain)
+                and re.search(r"(?:\d[\d.,]*\s*(?:tl|₺)|%\s*\d)", normalize(line))
+                and len(WORD_TOKEN_RE.findall(candidate)) >= 3):
+            candidates.append(candidate)
+    if not candidates:
+        return ""
+    # Prefer the self-contained explanatory line (often includes both basket
+    # minimum and discount) over a short clipped preview or a code label.
+    selected = max(candidates, key=lambda value: (len(WORD_TOKEN_RE.findall(value)), len(value))).strip()
+    # Preserve an explicit merchant named on the adjacent coupon heading when
+    # the explanatory sentence itself starts with the eligibility condition.
+    if not re.search(r"\bamazon\b", normalize(selected)) and any(
+        re.search(r"\bamazon\b", normalize(line)) and re.search(r"\b(?:indirim|kupon|kod)\b", normalize(line))
+        for line in lines
+    ):
+        selected = "Amazon " + selected
+    return selected[:limit].strip()
+
+
 def _search_query(obj: Any, limit: int = SEARCH_QUERY_LIMIT) -> str:
     """Farklı kaynak şablonlarından ürün adını bulup arama sorgusu kur.
 
@@ -1822,7 +1868,11 @@ def _search_query(obj: Any, limit: int = SEARCH_QUERY_LIMIT) -> str:
     catalog = price_filter.priced_catalog_title(message_text(obj))
     if catalog:
         return price_filter.extract_title(catalog, limit=limit)
-    text = URL_RE.sub(" ", message_text(obj))
+    raw_text = message_text(obj)
+    campaign_title = _coupon_campaign_title(raw_text, limit)
+    if campaign_title:
+        return campaign_title
+    text = URL_RE.sub(" ", raw_text)
     best_candidate = ""
     best_score = None
     for raw_line in text.splitlines():
