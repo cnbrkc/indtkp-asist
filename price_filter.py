@@ -1183,8 +1183,8 @@ def priced_catalog_title(text: str) -> str:
     return rest
 
 
-def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str:
-    """Mesajdan ürün başlığını seç. Bulamazsa boş döner."""
+def _title_handle_special(text: str, hints: Sequence[str] = (), limit: int = 160) -> str | None:
+    """Katalog fiyatı ve numaralı ürün bloklarını özel olarak çöz; devam gerekiyorsa None döndür."""
     catalog = priced_catalog_title(text)
     if catalog:
         return extract_title(catalog, hints, limit)
@@ -1196,75 +1196,110 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
         block = _PRODUCT_HEADER_RE.sub("", block, count=1)
         block = _FEATURED_PRODUCT_RE.sub("", block, count=1)
         return extract_title(block, hints, limit)
-    hint_tokens: set[str] = set()
+    return None
+
+
+def _title_hint_tokens(hints: Sequence[str]) -> set[str]:
+    """Hint kelimelerinden normalleştirilmiş token kümesi oluştur."""
+    tokens: set[str] = set()
     for hint in hints or ():
-        hint_tokens.update(norm(w) for w in _TOKEN_RE.findall(hint or ""))
+        tokens.update(norm(w) for w in _TOKEN_RE.findall(hint or ""))
+    return tokens
+
+
+def _title_piece_best_for_line(raw: str, pieces: list[str], position: int, hint_tokens: set[str]) -> tuple[float, str] | None:
+    """Bir satır içindeki parçalar arasından en yüksek puanlı başlık adayını seç."""
+    best: tuple[float, str] | None = None
+    for piece_index, piece in enumerate(pieces):
+        cleaned = _trim_edges(_remove_noise(piece))
+        combined_prefix = ""
+        if piece_index and _UNIT_RE.search(cleaned):
+            prefix = _trim_edges(_remove_noise(pieces[piece_index - 1]))
+            if prefix and not _is_noise(prefix) and not _META_WORDS_RE.search(norm(prefix)):
+                combined_prefix = prefix
+                cleaned = f"{prefix} – {cleaned}"
+        if is_generic_title(piece) or _is_noise(cleaned):
+            continue
+        score = _score_line(raw, cleaned, position, hint_tokens, bool(_PRODUCT_EMOJI_RE.match(raw)))
+        if combined_prefix and not _MODEL_RE.search(combined_prefix) \
+                and _MODEL_RE.search(cleaned[len(combined_prefix):]):
+            score += 1.0
+        if best is None or score > best[0]:
+            best = (score, cleaned)
+    return best
+
+
+def _title_collect_entries(lines: list[str], hint_tokens: set[str]) -> list[tuple[float, int, str, str]]:
+    """Satırları parçalara ayır, temizle, puanla ve aday listesini topla."""
     entries: list[tuple[float, int, str, str]] = []
     position = 0
-    lines = (text or "").split("\n")
     for index, raw in enumerate(lines):
         if not raw.strip():
             continue
-        # Folder-marked category lines are channel metadata, not product names.
-        # Do not reject category words in ordinary product titles.
         if re.match(r"^\s*📂\ufe0f?", raw):
             position += 1
             continue
         pieces = _segments(raw)
-        best: tuple[float, str] | None = None
-        for piece_index, piece in enumerate(pieces):
-            cleaned = _trim_edges(_remove_noise(piece))
-            combined_prefix = ""
-            if piece_index and _UNIT_RE.search(cleaned):
-                prefix = _trim_edges(_remove_noise(pieces[piece_index - 1]))
-                if prefix and not _is_noise(prefix) and not _META_WORDS_RE.search(norm(prefix)):
-                    combined_prefix = prefix
-                    cleaned = f"{prefix} – {cleaned}"
-            if is_generic_title(piece) or _is_noise(cleaned):
-                continue
-            score = _score_line(raw, cleaned, position, hint_tokens, bool(_PRODUCT_EMOJI_RE.match(raw)))
-            if combined_prefix and not _MODEL_RE.search(combined_prefix) \
-                    and _MODEL_RE.search(cleaned[len(combined_prefix):]):
-                # ``Ütü – 2400W … (DST5010/10)``: birleşik ad, tire sonrası
-                # model/birim kimliğini korur. Uzunluğun genel puan cezası,
-                # yalnız ``Philips 5000 Serisi Buharlı Ütü`` önekini seçtirmemeli.
-                score += 1.0
-            if best is None or score > best[0]:
-                best = (score, cleaned)
+        best = _title_piece_best_for_line(raw, pieces, position, hint_tokens)
         if best is not None:
             entries.append((best[0], index, best[1], raw))
         position += 1
+    return entries
+
+
+def _title_pick_best(entries: list[tuple[float, int, str, str]]) -> tuple[float, int, str, str] | None:
+    """En yüksek puanlı adayı seç; düşük güven (<1.0) ise en erken satıra düş."""
     if not entries:
-        return ""
+        return None
     entries.sort(key=lambda item: (-item[0], item[1]))
-    score, index, title, _ = entries[0]
+    score, index, title, raw = entries[0]
     if score < 1.0:
         title = next((entry[2] for entry in sorted(entries, key=lambda item: item[1])), "")
         index = next((entry[1] for entry in sorted(entries, key=lambda item: item[1])), index)
-    # Kısa başlık (marka) + hemen altındaki devam satırı
+        score = entries[0][0]
+    return score, index, title, raw
+
+
+def _title_try_short_extension(title: str, index: int, lines: list[str]) -> str:
+    """Kısa marka başlığını hemen alt satırla tamamlamayı dene (≤2 kelime → devam)."""
+    nxt = lines[index + 1]
+    if not nxt.strip() or re.match(r"^\s*📂\ufe0f?", nxt):
+        return title
+    cleaned = _trim_edges(_remove_noise(nxt))
+    if cleaned and not _is_noise(cleaned) and not _META_WORDS_RE.search(norm(nxt)) \
+            and not _META_LABEL_RE.match(nxt) and len(cleaned.split()) <= 12:
+        return f"{title} {cleaned}"
+    return title
+
+
+def _title_try_continuation(title: str, index: int, lines: list[str]) -> str:
+    """Önceki satırdan devam eden (+/& veya küçük harf) başlığı birleştir."""
+    prev = lines[index - 1]
+    cleaned = _trim_edges(_remove_noise(prev))
+    continuation = re.sub(r"^[+&]\s*", "", title)
+    if re.match(r"^\s*📂\ufe0f?", prev):
+        return title
+    if not (cleaned and len(cleaned.split()) <= 2 and not _is_noise(cleaned)
+            and not _META_WORDS_RE.search(norm(prev)) and not _META_LABEL_RE.match(prev)
+            and not cleaned.endswith(":")):
+        return title
+    return f"{cleaned} {continuation}"
+
+
+def _title_extend_with_neighbors(title: str, index: int, lines: list[str]) -> str:
+    """Kısa başlığı komşu satırlarla tamamla: marka+devam veya önceki satır continuations."""
     if len(title.split()) <= 2 and index + 1 < len(lines):
-        nxt = lines[index + 1]
-        if nxt.strip() and not re.match(r"^\s*📂\ufe0f?", nxt):
-            cleaned = _trim_edges(_remove_noise(nxt))
-            if cleaned and not _is_noise(cleaned) and not _META_WORDS_RE.search(norm(nxt)) \
-                    and not _META_LABEL_RE.match(nxt) and len(cleaned.split()) <= 12:
-                title = f"{title} {cleaned}"
-    elif index > 0 and (re.match(r"[a-zçğıöşü\d]", title) or title.lstrip().startswith(("+", "&"))
-                        or lines[index].lstrip().startswith(("+", "&"))) and lines[index - 1].strip():
-        prev = lines[index - 1]
-        cleaned = _trim_edges(_remove_noise(prev))
-        continuation = re.sub(r"^[+&]\s*", "", title)
-        if not re.match(r"^\s*📂\ufe0f?", prev) and cleaned and len(cleaned.split()) <= 2 and not _is_noise(cleaned) \
-                and not _META_WORDS_RE.search(norm(prev)) and not _META_LABEL_RE.match(prev) \
-                and not cleaned.endswith(":"):
-            title = f"{cleaned} {continuation}"
+        return _title_try_short_extension(title, index, lines)
+    if index > 0 and (re.match(r"[a-zçğıöşü\d]", title) or title.lstrip().startswith(("+", "&"))
+                      or lines[index].lstrip().startswith(("+", "&"))) and lines[index - 1].strip():
+        return _title_try_continuation(title, index, lines)
+    return title
+
+
+def _title_finalize(title: str, limit: int) -> str:
+    """Boşlukları normalize et ve limit aşımında kimlik koruyarak kırp."""
     title = " ".join(title.split())
     if len(title) > limit:
-        # Katalog adındaki açık model/bağlantı kimliğini kırpıp atmak, ürün
-        # kimliğini ve dedup eşleşmesini zayıflatır. Model kodu sınırın ötesinde
-        # kalan ya da USB-A/USB-C gibi katalog bağlantısı taşıyan makul uzunluktaki
-        # adlara, çağıran daha dar bir limit istemediyse 80 karakter ek alan ver;
-        # diğer uzun başlıklar mevcut 160 karakter görünümünü korur.
         identity_extension = limit >= 160 and bool(
             _MODEL_RE.search(title[limit:]) or _CATALOG_CONNECTION_RE.search(title)
         )
@@ -1273,6 +1308,21 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
             title = cut + "…"
     return title
 
+def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str:
+    """Mesajdan ürün başlığını seç. Bulamazsa boş döner."""
+    special = _title_handle_special(text, hints, limit)
+    if special is not None:
+        return special
+    hint_tokens = _title_hint_tokens(hints)
+    lines = (text or "").split("\n")
+    entries = _title_collect_entries(lines, hint_tokens)
+    if not entries:
+        return ""
+    picked = _title_pick_best(entries)
+    assert picked is not None
+    score, index, title, _ = picked
+    title = _title_extend_with_neighbors(title, index, lines)
+    return _title_finalize(title, limit)
 
 def analyze(text: str, strike: Sequence[tuple[int, int]] = (),
             hints: Sequence[str] = ()) -> tuple[str, PriceInfo]:
