@@ -5072,7 +5072,6 @@ def _is_stale_id_error(exc: Exception) -> bool:
     # Telethon RPC kalıcı hataları: varlık yok / özel / geçersiz
     stale_candidates = (
         getattr(errors, "ChannelInvalidError", None),
-        getattr(errors, "ChannelPrivateError", None),
         getattr(errors, "ChannelIdInvalidError", None),
         getattr(errors, "ChatInvalidError", None),
         getattr(errors, "ChatIdInvalidError", None),

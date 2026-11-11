@@ -599,7 +599,6 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
             (ValueError("Cannot find any entity corresponding to -1008888888888"), "ValueError"),
             (errors.ChannelInvalidError(request=None), "ChannelInvalidError"),
             (errors.UsernameNotOccupiedError(request=None), "UsernameNotOccupiedError"),
-            (errors.ChannelPrivateError(request=None), "ChannelPrivateError"),
         ]:
             with self.subTest(label=label):
                 _reset()
@@ -639,6 +638,30 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
         self.assertEqual(config["source_chat_ids"]["@b"], ids["@b"])
         self.assertEqual(config["source_chat_ids"]["@a"], ids["@a"])
         self.assertEqual(config["source_chat_ids"]["@c"], ids["@c"])
+
+    def test_channel_private_error_keeps_id_no_fallback(self):
+        """ChannelPrivateError geçici erişim hatası — ID korunur, fallback yok."""
+        source_chats = ["@good", "@priv"]
+        good_id = -1007777777777
+        priv_id = -1008888888888
+        config = {
+            "source_chats": source_chats,
+            "source_chat_ids": {"@good": good_id, "@priv": priv_id},
+        }
+        mapping = {
+            good_id: _chat(good_id),
+            priv_id: errors.ChannelPrivateError(request=None),
+            "@priv": _chan("priv", 9999),
+        }
+        client = TrackingClient(mapping)
+        asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        self.assertEqual(len(bot.SOURCES), 1)
+        self.assertEqual(bot.SOURCES[0]["requested"], "@good")
+        self.assertIn("@priv", config["source_chat_ids"])
+        self.assertEqual(config["source_chat_ids"]["@priv"], priv_id, "ChannelPrivateError'da ID silinmemeli")
+        self.assertEqual(config["source_chat_ids"]["@good"], good_id)
+        str_calls = [v for _, v in client.calls if isinstance(v, str) and "priv" in str(v).lower()]
+        self.assertEqual(str_calls, [], "ChannelPrivateError için username fallback yapılmamalı")
 
 
 class ResolveChatGroupsIntegrationTest(unittest.TestCase):
