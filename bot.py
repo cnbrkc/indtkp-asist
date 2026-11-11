@@ -1415,24 +1415,10 @@ def _remap_entities(
     return result
 
 
-def sanitize_message(obj: Any) -> SimpleNamespace:
-    """İletilecek kopyayı temizle; kaynak Telethon mesajına hiçbir zaman dokunma.
-
-    Kaldırılanlar: bağımsız ``#işbirliği``/``işbirliği``/``#reklam``/``reklam``
-    ifadeleri, doğrudan WhatsApp/Instagram URL'leri, bu hedeflere ait gizli
-    entity'ler/inline butonlar/önizlemeler ve kanal tanıtımı/salt hashtag
-    satırları (``_promo_line_spans``). Instagram tanıtım satırları kaldırılır;
-    diğer kanal ekleri, ürün metni, entity, medya ve linkler korunur.
-    Silme işleminin artığında oluşan çoklu boş satırlar tek boş satıra indirilir
-    (``_blank_line_spans``); bu adım yalnızca boşluk karakterlerini alır, metin
-    içeriğini değiştirmez.
-    """
-    message = _as_message(obj)
-    text = message_text(obj)
-    entities = message_entities(message)
+def _sanitize_collect_removed_spans(text: str, entities: Sequence[Any]) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """WhatsApp/Instagram URL'leri, disclosure ve promo satırları için silinecek aralıkları topla."""
     removed: list[tuple[int, int]] = []
     visible_urls: list[tuple[int, int]] = []
-
     for match in URL_RE.finditer(text):
         raw_url = match.group(0).rstrip(_URL_TAIL_TRIM)
         if not raw_url:
@@ -1441,80 +1427,76 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
         visible_urls.append(span)
         if is_whatsapp_url(raw_url) or is_instagram_url(raw_url):
             removed.append(_with_adjacent_space(text, *span))
-
     disclosure_spans = _disclosure_spans(text, protected=visible_urls)
     removed.extend(disclosure_spans)
-    # Kanal tanıtımı ("💚Whatsapp Önemli Fırsatlar") ve salt hashtag satırları
-    # ("#amazon #indirimalarmi") bildirime hiç girmez.
     removed.extend(_promo_line_spans(text, entities))
+    return removed, visible_urls
+
+
+def _sanitize_apply_text_cleaning(text: str, entities: Sequence[Any], removed: list[tuple[int, int]]) -> tuple[str, list[Any], list[tuple[int, int]], list[tuple[int, int]]]:
+    """Silinecek aralıkları metinden çıkar ve entity offset'lerini UTF-16 bazında kaydır."""
     removed_spans = _merge_spans(removed)
     cleaned_text = _remove_spans(text, removed_spans)
     remapped_entities = _remap_entities(text, cleaned_text, entities, removed_spans) if removed_spans else list(entities)
-    # Silinen WhatsApp/Instagram linki/#reklam etiketi çoklu boş satır bırakabilir.
-    # Bölümler arasında tek boş satır kalacak şekilde sıkıştır; ikinci geçiş
-    # ``cleaned_text`` koordinatlarında yapılır, bu yüzden entity'ler bir kez
-    # daha kaydırılır (``removed_spans`` özgün metne göre kalır).
     blank_spans = _blank_line_spans(cleaned_text)
     if blank_spans:
         compact_text = _remove_spans(cleaned_text, blank_spans)
-        remapped_entities = _remap_entities(
-            cleaned_text, compact_text, remapped_entities, blank_spans,
-        )
+        remapped_entities = _remap_entities(cleaned_text, compact_text, remapped_entities, blank_spans)
         cleaned_text = compact_text
-    # Gizli WhatsApp linkinde görünen etiket sıradan metin olarak kalsın; yalnızca
-    # link entity'sini kaldırmak, istenmeyen metin kaybını önler.
-    cleaned_entities = [
+    return cleaned_text, remapped_entities, removed_spans, blank_spans
+
+
+def _sanitize_filter_entities(remapped_entities: Sequence[Any]) -> list[Any]:
+    """Gizli WhatsApp/Instagram entity'lerini temizlenmiş listeden çıkar."""
+    return [
         entity for entity in remapped_entities
         if not is_whatsapp_url(getattr(entity, "url", None))
         and not is_instagram_url(getattr(entity, "url", None))
     ]
 
+
+def _sanitize_collect_preserved_links(
+    message: Any, text: str, entities: Sequence[Any],
+    removed_spans: Sequence[tuple[int, int]], blank_spans: Sequence[tuple[int, int]],
+) -> list[dict[str, str]]:
+    """Silinen disclosure etiketi altında kalan gizli URL'leri preserved_links'e taşı."""
     preserved_links = list(getattr(message, "preserved_links", None) or [])
     for entity in entities:
         url = getattr(entity, "url", None)
         if not url or is_whatsapp_url(url) or is_instagram_url(url):
             continue
         old_start = _utf16_to_index(text, int(getattr(entity, "offset", 0) or 0))
-        old_end = _utf16_to_index(
-            text,
-            int(getattr(entity, "offset", 0) or 0) + int(getattr(entity, "length", 0) or 0),
-        )
+        old_end = _utf16_to_index(text, int(getattr(entity, "offset", 0) or 0) + int(getattr(entity, "length", 0) or 0))
         new_start = _index_after_removals(old_start, removed_spans)
         new_end = _index_after_removals(old_end, removed_spans)
         if new_end - new_start < old_end - old_start:
-            # Etiketin bir kısmı silindi; geriye yalnızca boş satır kaldıysa onu
-            # ikinci geçiş (boş satır sıkıştırma) atar ve entity düşer. Hedef o
-            # durumda da taşınmalı. Temizliğin dokunmadığı etiketler bu dala girmez.
             new_start = _index_after_removals(new_start, blank_spans)
             new_end = _index_after_removals(new_end, blank_spans)
         if old_end > old_start and new_end <= new_start:
-            preserved_links.append({
-                "url": clean_url(url),
-                # Etiketi (#reklam/#işbirliği) temizleme kuralını tekrar
-                # eklememek için yalnızca hedef URL'yi taşı.
-                "label": "",
-                "kind": "webpage",
-            })
-    # Yeniden sanitize edilince ya da aynı URL birden fazla entity'de bulununca
-    # taşınan bağlantıları çoğaltma.
-    unique_preserved: list[dict[str, str]] = []
-    seen_preserved: set[str] = set()
+            preserved_links.append({"url": clean_url(url), "label": "", "kind": "webpage"})
+    return preserved_links
+
+
+def _sanitize_dedup_preserved_links(preserved_links: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Aynı URL'nin tekrar taşınmasını ve Instagram hedeflerini engelle."""
+    unique: list[dict[str, str]] = []
+    seen: set[str] = set()
     for item in preserved_links:
         if not isinstance(item, dict):
             continue
         url = clean_url(item.get("url"))
         key = url.rstrip("/").lower()
-        if not url or is_instagram_url(url) or key in seen_preserved:
+        if not url or is_instagram_url(url) or key in seen:
             continue
-        seen_preserved.add(key)
-        unique_preserved.append({
-            "url": url,
-            "label": str(item.get("label") or "").strip(),
-            "kind": str(item.get("kind") or "webpage"),
-        })
-    preserved_links = unique_preserved
+        seen.add(key)
+        unique.append({"url": url, "label": str(item.get("label") or "").strip(), "kind": str(item.get("kind") or "webpage")})
+    return unique
 
-    markup = getattr(message, "reply_markup", None)
+
+def _sanitize_clean_markup(markup: Any) -> tuple[Any | None, bool]:
+    """Inline butonlardaki WhatsApp/Instagram URL'lerini ve disclosure etiketlerini temizle."""
+    if markup is None:
+        return None, False
     cleaned_rows: list[SimpleNamespace] = []
     markup_changed = False
     for row in getattr(markup, "rows", None) or []:
@@ -1525,8 +1507,6 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
                 markup_changed = True
                 continue
             if not info:
-                # Callback/non-URL buttons are not rewritten; copying them is
-                # outside the Bot API URL-button path.
                 cleaned_buttons.append(button)
                 continue
             label = str(getattr(button, "text", "") or "")
@@ -1542,15 +1522,44 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
             cleaned_rows.append(SimpleNamespace(buttons=cleaned_buttons))
         elif getattr(row, "buttons", None):
             markup_changed = True
-    cleaned_markup = SimpleNamespace(rows=cleaned_rows) if markup is not None else None
+    return SimpleNamespace(rows=cleaned_rows), markup_changed
 
-    media = getattr(message, "media", None)
+
+def _sanitize_clean_media(media: Any) -> Any | None:
+    """WhatsApp/Instagram webpage önizlemesini temizle; diğer medyayı koru."""
     webpage = getattr(media, "webpage", None)
-    if webpage is not None and (
-        is_whatsapp_url(getattr(webpage, "url", None))
-        or is_instagram_url(getattr(webpage, "url", None))
-    ):
-        media = None
+    if webpage is not None and (is_whatsapp_url(getattr(webpage, "url", None)) or is_instagram_url(getattr(webpage, "url", None))):
+        return None
+    return media
+
+
+def sanitize_message(obj: Any) -> SimpleNamespace:
+    """İletilecek kopyayı temizle; kaynak Telethon mesajına hiçbir zaman dokunma.
+
+    Kaldırılanlar: bağımsız ``#işbirliği``/``işbirliği``/``#reklam``/``reklam``
+    ifadeleri, doğrudan WhatsApp/Instagram URL'leri, bu hedeflere ait gizli
+    entity'ler/inline butonlar/önizlemeler ve kanal tanıtımı/salt hashtag
+    satırları (``_promo_line_spans``). Instagram tanıtım satırları kaldırılır;
+    diğer kanal ekleri, ürün metni, entity, medya ve linkler korunur.
+    Silme işleminin artığında oluşan çoklu boş satırlar tek boş satıra indirilir
+    (``_blank_line_spans``); bu adım yalnızca boşluk karakterlerini alır, metin
+    içeriğini değiştirmez.
+    """
+    message = _as_message(obj)
+    text = message_text(obj)
+    entities = message_entities(message)
+
+    removed, _ = _sanitize_collect_removed_spans(text, entities)
+    cleaned_text, remapped_entities, removed_spans, blank_spans = _sanitize_apply_text_cleaning(text, entities, removed)
+    cleaned_entities = _sanitize_filter_entities(remapped_entities)
+
+    preserved_links = _sanitize_collect_preserved_links(message, text, entities, removed_spans, blank_spans)
+    preserved_links = _sanitize_dedup_preserved_links(preserved_links)
+
+    markup = getattr(message, "reply_markup", None)
+    cleaned_markup, markup_changed = _sanitize_clean_markup(markup)
+
+    media = _sanitize_clean_media(getattr(message, "media", None))
 
     changed = (
         cleaned_text != text
@@ -2336,6 +2345,148 @@ def smart_dedup_title(event: Any) -> str:
     return title or (fallback if not price_filter.is_generic_title(fallback) else "")
 
 
+def _compose_resolve_header(
+    obj: Any, cleaned_obj: Any, source_body: str, fallback_title: str,
+) -> tuple[str, str, str, bool]:
+    """Üst satır (fiyat + ürün adı) ve alıntı işaretini SMART_HEADER moduna göre kur."""
+    product_title = fallback_title
+    price_text = ""
+    quote_body = False
+    if SMART_HEADER:
+        smart_title, smart_price = smart_header_info(obj, cleaned_obj, source_body)
+        if smart_price.reason == "birden fazla ürün bloğu: seçim belirsiz":
+            product_title = "Birden fazla ürün"
+        else:
+            product_title = smart_title or (
+                product_title if not price_filter.is_generic_title(product_title) else ""
+            )
+        if smart_price.value is not None and smart_price.confidence in {"high", "medium"}:
+            price_text = header_price_text(smart_price.value)
+        else:
+            price_text = PRICE_MISSING_MARK
+        quote_body = bool(source_body.strip())
+    if price_text == PRICE_MISSING_MARK and not product_title:
+        price_text = ""
+    header_text = build_header_line(price_text, product_title)
+    return header_text, price_text, product_title, quote_body
+
+
+def _compose_build_appendix(cleaned_obj: Any, source_body: str, link_kinds: Sequence[str] | None) -> str:
+    """Ek link listesi ve disclosure altında kalan gizli linkleri birleştir."""
+    appendix_text = build_link_appendix(cleaned_obj, kinds=link_kinds) if link_kinds else ""
+    carried = getattr(cleaned_obj, "preserved_links", None) or []
+    if carried:
+        carried_only = SimpleNamespace(
+            message=source_body, entities=[], reply_markup=None, media=None, preserved_links=carried,
+        )
+        carried_text = build_link_appendix(carried_only, kinds=("webpage",))
+        existing_lines = set(appendix_text.splitlines())
+        extra_lines = [line for line in carried_text.splitlines() if line not in existing_lines]
+        if extra_lines:
+            appendix_text = "\n".join(part for part in (appendix_text, *extra_lines) if part)
+    return appendix_text
+
+
+def _compose_join(segments: Sequence[tuple[str, str]], sep: str) -> str:
+    """Dolu segmentleri ayırıcı ile birleştir."""
+    return sep.join(value for _, value in segments if value)
+
+
+def _compose_other_than_body(segments: Sequence[tuple[str, str]], sep: str) -> str:
+    """Gövde dışındaki parçaların birleşimini ver (limit kontrolü için)."""
+    return _compose_join([part for part in segments if part[0] != "body" and part[1]], sep)
+
+
+def _compose_drop_overflow_parts(
+    segments: list[tuple[str, str]], appendix_text: str, name: str | None, source_line: str, limit: int, sep: str,
+) -> tuple[list[tuple[str, str]], str, str | None, str]:
+    """Gövde hariç sığmama durumunda appendix/name/source sırasıyla düşer."""
+    if utf16_length(_compose_other_than_body(segments, sep)) >= limit and appendix_text:
+        segments = [(kind, "" if kind == "appendix" else value) for kind, value in segments]
+        appendix_text = ""
+    if utf16_length(_compose_other_than_body(segments, sep)) >= limit and name:
+        segments = [(kind, "" if kind == "name" else value) for kind, value in segments]
+        name = None
+    if utf16_length(_compose_other_than_body(segments, sep)) >= limit and source_line:
+        segments = [(kind, "" if kind == "source" else value) for kind, value in segments]
+        source_line = ""
+    return segments, appendix_text, name, source_line
+
+
+def _compose_truncate_header(
+    segments: list[tuple[str, str]], header_text: str, price_text: str, product_title: str, limit: int, sep: str,
+) -> tuple[list[tuple[str, str]], str, str, str]:
+    """Üst satır hâlâ sığmıyorsa kalan oda ile kırp; fiyat korunur, ad kısalır."""
+    if header_text and utf16_length(_compose_other_than_body(segments, sep)) >= limit:
+        rest = _compose_join([part for part in segments if part[0] not in ("body", "header") and part[1]], sep)
+        room = limit - utf16_length(rest) - (utf16_length(sep) if rest else 0) - utf16_length(sep)
+        header_text = fit_header_line(price_text, product_title, room) if room >= 16 else ""
+        price_text, product_title = split_header_line(header_text) if header_text else ("", "")
+        segments = [(kind, header_text if kind == "header" else value) for kind, value in segments]
+    return segments, header_text, price_text, product_title
+
+
+def _compose_truncate_body(
+    segments: list[tuple[str, str]], limit: int, sep: str,
+) -> tuple[list[tuple[str, str]], str]:
+    """Gövde için kalan odaya göre kırp; yer yoksa boş bırak."""
+    others_text = _compose_other_than_body(segments, sep)
+    current_body = next((value for kind, value in segments if kind == "body"), "")
+    gap = utf16_length(sep) if (current_body and others_text) else 0
+    body_room = max(0, limit - utf16_length(others_text) - gap)
+    if utf16_length(current_body) > body_room:
+        current_body = (utf16_budget(current_body, max(0, body_room - 1)).rstrip() + "…" if body_room else "")
+    body = current_body
+    segments = [(kind, body if kind == "body" else value) for kind, value in segments]
+    return segments, body
+
+
+def _compose_assemble_text(segments: Sequence[tuple[str, str]], sep: str) -> tuple[str, str, dict[str, int], int, int]:
+    """Segmentleri UTF-16 offset'lerle nihai metin ve content'e dönüştür."""
+    offsets: dict[str, int] = {}
+    parts: list[str] = []
+    cursor = 0
+    for kind, value in segments:
+        if not value:
+            continue
+        if parts:
+            parts.append(sep)
+            cursor += utf16_length(sep)
+        offsets.setdefault(kind, cursor)
+        parts.append(value)
+        cursor += utf16_length(value)
+    text = "".join(parts)
+    content = _compose_join([(kind, value) for kind, value in segments if kind != "name"], sep)
+    name_offset = offsets["name"] if "name" in offsets else -1
+    body_offset = offsets.get("body", 0)
+    return text, content, offsets, body_offset, name_offset
+
+
+def _compose_build_entities(
+    header_text: str, body: str, body_entities: Sequence[Any], name: str | None,
+    quote_body: bool, offsets: dict[str, int], body_offset: int, name_offset: int,
+) -> list[Any]:
+    """Üst satır kalın, alıntı ve gövde entity'lerini doğru UTF-16 konumlarda topla."""
+    content_entities: list[Any] = []
+    if header_text and "header" in offsets:
+        content_entities.append(types.MessageEntityBold(
+            offset=offsets["header"], length=utf16_length(header_text),
+        ))
+    if quote_body and body and "body" in offsets:
+        content_entities.append(types.MessageEntityBlockquote(
+            offset=body_offset, length=utf16_length(body),
+        ))
+    content_entities.extend(_entities_within(
+        shift_telethon_entities(body_entities, body_offset),
+        body_offset + utf16_length(body),
+    ))
+    if name_offset >= 0 and name:
+        content_entities.append(types.MessageEntityBold(
+            offset=name_offset, length=utf16_length(name),
+        ))
+    return content_entities
+
+
 def compose_message(
     obj: Any,
     *,
@@ -2378,62 +2529,20 @@ def compose_message(
     cleaned_obj = sanitize_message(obj)
     source_body = message_text(cleaned_obj)
     product_title = _search_query(cleaned_obj)
-    price_text = ""
-    quote_body = False
-    if SMART_HEADER:
-        smart_title, smart_price = smart_header_info(obj, cleaned_obj, source_body)
-        if smart_price.reason == "birden fazla ürün bloğu: seçim belirsiz":
-            # Never let the generic search fallback pair one product's name with
-            # another product's price; the original multi-product body follows.
-            product_title = "Birden fazla ürün"
-        else:
-            product_title = smart_title or (
-                product_title if not price_filter.is_generic_title(product_title) else ""
-            )
-        if smart_price.value is not None and smart_price.confidence in {"high", "medium"}:
-            # Yalnızca high/medium: low/none fiyat üst satıra TAŞINMAZ (❓ kalır).
-            price_text = header_price_text(smart_price.value)
-        else:
-            # Fiyat güvenle bulunamadı: uzun uyarı değil, yalnızca ❓.
-            price_text = PRICE_MISSING_MARK
-        quote_body = bool(source_body.strip())
-    if price_text == PRICE_MISSING_MARK and not product_title:
-        # Ne fiyat ne ad bulunabildi: havada kalan tek "❓" satırı bilgi
-        # taşımaz, üst satır hiç kurulmaz (gövde ve alt bloklar aynen gider).
-        price_text = ""
-    header_text = build_header_line(price_text, product_title)
+
+    header_text, price_text, product_title, quote_body = _compose_resolve_header(
+        obj, cleaned_obj, source_body, product_title,
+    )
 
     body = source_body
     body_entities = entities_for_text(cleaned_obj, source_body)
 
-    appendix_text = build_link_appendix(
-        cleaned_obj, kinds=link_kinds,
-    ) if link_kinds else ""
-    # Disclosure sözcüğü altında saklı, WhatsApp dışı hedefi metinden silme:
-    # etiket kaldırılmış olsa bile hedef URL link_appendix=off iken de korunmalı.
-    carried = getattr(cleaned_obj, "preserved_links", None) or []
-    if carried:
-        carried_only = SimpleNamespace(
-            message=source_body, entities=[], reply_markup=None, media=None, preserved_links=carried,
-        )
-        carried_text = build_link_appendix(
-            carried_only, kinds=("webpage",),
-        )
-        existing_lines = set(appendix_text.splitlines())
-        extra_lines = [line for line in carried_text.splitlines() if line not in existing_lines]
-        if extra_lines:
-            appendix_text = "\n".join(part for part in (appendix_text, *extra_lines) if part)
+    appendix_text = _compose_build_appendix(cleaned_obj, source_body, link_kinds)
 
     source_line = f"🔗 {message_link_label}: {message_link}" if message_link else ""
     name = (source_name or "").strip() or None
     sep = "\n\n"
 
-    # Blok sırası (kullanıcı isteği): ÜST SATIR (fiyat - ürün adı) → mesaj olduğu
-    # gibi → taşınamayan gizli linkler → "Mesajı Gör" → en altta kaynak grup adı.
-    # Fiyat, ürün adıyla AYNI satırda ve en baştadır (``₺56 — Ad``); böylece
-    # kesilen bildirim ön izlemesinde fiyat ile adın ilk kelimeleri birlikte
-    # okunur. Tekrarlı paylaşımda kaynak adı satırı çoklu paylaşım notuyla
-    # değiştirilir.
     segments: list[tuple[str, str]] = [
         ("header", header_text),
         ("body", body),
@@ -2442,90 +2551,18 @@ def compose_message(
         ("name", name or ""),
     ]
 
-    def _join(parts: Sequence[tuple[str, str]]) -> str:
-        return sep.join(value for _, value in parts if value)
+    segments, appendix_text, name, source_line = _compose_drop_overflow_parts(
+        segments, appendix_text, name, source_line, limit, sep,
+    )
+    segments, header_text, price_text, product_title = _compose_truncate_header(
+        segments, header_text, price_text, product_title, limit, sep,
+    )
+    segments, body = _compose_truncate_body(segments, limit, sep)
 
-    def _other_than_body() -> str:
-        return _join([part for part in segments if part[0] != "body" and part[1]])
-
-    # GÖVDE hariç parçalar sığmıyorsa sırasıyla ek link listesi, kaynak adı ve
-    # "Mesajı Gör" düşer; üst satır (gerekirse kırpılarak) ve gövde en sona
-    # kadar korunur. (Gövde uzun olduğu için bu parçaların düşmesi yanlış
-    # olurdu; gövde kırpılır.)
-    # "Sığmıyor" ölçütleri UTF-16 ile: gövde astral karakter (emoji, süslü font)
-    # içerirken karakter sayısı limiti büyük gösterip gönderilen metni Telegram
-    # sınırının taşmasına bırakıyordu.
-    if utf16_length(_other_than_body()) >= limit and appendix_text:
-        segments = [(kind, "" if kind == "appendix" else value) for kind, value in segments]
-        appendix_text = ""
-    if utf16_length(_other_than_body()) >= limit and name:
-        segments = [(kind, "" if kind == "name" else value) for kind, value in segments]
-        name = None
-    if utf16_length(_other_than_body()) >= limit and source_line:
-        segments = [(kind, "" if kind == "source" else value) for kind, value in segments]
-        source_line = ""
-    if header_text and utf16_length(_other_than_body()) >= limit:
-        # Üst satır hâlâ sığmıyor: kalan sabit parçalara göre kırp. Fiyat
-        # solda kaldığı için korunur, ürün adının kuyruğu "…" ile düşer;
-        # hiç yer yoksa satır tümüyle atılır.
-        rest = _join([part for part in segments
-                      if part[0] not in ("body", "header") and part[1]])
-        # Oda da UTF-16 ile hesaplanır: alt bloklardaki "🔗" gibi astral
-        # karakterler yüzünden karakter saymak odayı büyük gösterirdi.
-        room = limit - utf16_length(rest) - (utf16_length(sep) if rest else 0) - utf16_length(sep)
-        header_text = fit_header_line(price_text, product_title, room) if room >= 16 else ""
-        price_text, product_title = split_header_line(header_text) if header_text else ("", "")
-        segments = [(kind, header_text if kind == "header" else value)
-                    for kind, value in segments]
-
-    # Gövde için kalan yer: diğer parçalar (varsa) korunur, gövde kırpılır.
-    others_text = _other_than_body()
-    current_body = next((value for kind, value in segments if kind == "body"), "")
-    gap = utf16_length(sep) if (current_body and others_text) else 0
-    body_room = max(0, limit - utf16_length(others_text) - gap)
-    if utf16_length(current_body) > body_room:
-        current_body = (utf16_budget(current_body, max(0, body_room - 1)).rstrip() + "…"
-                        if body_room else "")
-    body = current_body
-    segments = [(kind, body if kind == "body" else value) for kind, value in segments]
-
-    offsets: dict[str, int] = {}
-    parts: list[str] = []
-    cursor = 0
-    for kind, value in segments:
-        if not value:
-            continue
-        if parts:
-            parts.append(sep)
-            cursor += utf16_length(sep)
-        offsets.setdefault(kind, cursor)
-        parts.append(value)
-        cursor += utf16_length(value)
-    text = "".join(parts)
-    # `content` en alt blok (kaynak adı) hariç her şeydir; ad en sonda olduğu
-    # için Bot API entity konumları bozulmaz.
-    content = _join([(kind, value) for kind, value in segments if kind != "name"])
-    name_offset = offsets["name"] if "name" in offsets else -1
-    body_offset = offsets.get("body", 0)
-
-    content_entities: list[Any] = []
-    if header_text and "header" in offsets:
-        # Üst satır bütünüyle kalındır: fiyat ve ürün adı aynı ağırlıkta okunur.
-        content_entities.append(types.MessageEntityBold(
-            offset=offsets["header"], length=utf16_length(header_text),
-        ))
-    if quote_body and body and "body" in offsets:
-        content_entities.append(types.MessageEntityBlockquote(
-            offset=body_offset, length=utf16_length(body),
-        ))
-    content_entities.extend(_entities_within(
-        shift_telethon_entities(body_entities, body_offset),
-        body_offset + utf16_length(body),
-    ))
-    if name_offset >= 0 and name:
-        content_entities.append(types.MessageEntityBold(
-            offset=name_offset, length=utf16_length(name),
-        ))
+    text, content, offsets, body_offset, name_offset = _compose_assemble_text(segments, sep)
+    content_entities = _compose_build_entities(
+        header_text, body, body_entities, name, quote_body, offsets, body_offset, name_offset,
+    )
 
     composed_message = SimpleNamespace(
         message=content,
@@ -2542,8 +2579,6 @@ def compose_message(
         "source_name": name,
         "source_name_offset": name_offset,
         "source_name_length": utf16_length(name) if (name_offset >= 0 and name) else 0,
-        # ``title``/``product_title`` her zaman FİYATSIZ üründür; üst satır
-        # ("header") fiyatı da taşır ama arama ve dedup bundan yararlanmaz.
         "header": header_text,
         "price": price_text,
         "product_title": product_title or None,
@@ -2552,8 +2587,6 @@ def compose_message(
         "entities": content_entities,
         "message": composed_message,
     }
-
-
 def entities_for_text(obj: Any, body: str) -> list[Any]:
     """Gövde kırpıldıysa sınırı aşan entity'leri at (Telegram hata verir)."""
     limit = utf16_length(body)
