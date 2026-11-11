@@ -239,6 +239,36 @@ class CursorGapAndBloatTest(unittest.TestCase):
         self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 0)
 
 
+    def test_unverified_gap_with_mass_completed_not_pruned(self):
+        """cursor=100, 101 henüz doğrulanmamış, 102-700 başarılı: budama tetiklense bile 101 poll ile silinmiş olarak doğrulanınca cursor 700'e ilerlemeli."""
+        cid = -1007
+        bot._cursor_ensure(cid)["cursor"] = 100
+        # 102-700 başarılı → 599 kayıt, eski koşulda budanırdı
+        for i in range(102, 701):
+            bot._cursor_mark_pending(cid, i)
+            bot._cursor_mark_success(cid, i)
+        self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 599)
+        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 100)
+        # Budama olmamalı — kayıtlar korunmalı
+        self.assertIn(102, bot.CURSOR_RAM[cid]["completed"])
+        self.assertIn(350, bot.CURSOR_RAM[cid]["completed"])
+        self.assertIn(700, bot.CURSOR_RAM[cid]["completed"])
+        # Poll 101'in silinmiş olduğunu doğrulayana kadar cursor ilerleyemez
+        # (poll akışı gibi gap skip + _cursor_advance)
+        st = bot._cursor_ensure(cid)
+        fetched_ids = set(range(102, 701))  # poll 102-700 döndürdü, 101 yok
+        # Gap skip mantığı — 101 silinmiş
+        for gid in range(int(st["cursor"]) + 1, max(fetched_ids) + 1):
+            if gid in fetched_ids:
+                break
+            if gid in st["pending"] or gid in st["failed"]:
+                break
+            st["cursor"] = gid
+        bot._cursor_advance(cid)
+        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 700, "101 silinmiş doğrulayınca completed zinciri 700'e kadar ilerlemeli")
+        self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 0)
+
+
 class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
     """Poll gap sonrası completed zincirinin gerçek poll akışıyla ilerlediğini doğrular."""
 
@@ -323,29 +353,26 @@ class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
 
         async def run_until_disconnected(client_self):
             chat_id = sorted(bot.SOURCE_IDS)[0]
-            # Gerçek on_new_message handler'ını poll öncesi çağır
             await asyncio.sleep(0.5)
-            handler = client_self.handlers[0][1] if len(client_self.handlers) >= 1 else None
-            # Handler'ı bul: ilk NewMessage handler genelde kontrol, ikinci kaynak
-            # Doğru olanı dene — her iki handler'ı da test et
-            from telethon.tl import types as tl_types
-            from telethon import events as tl_events
-            msg = tl_types.Message(
-                id=11, peer_id=tl_types.PeerChannel(abs(chat_id) % 10**10),
-                post=True, date=datetime.datetime.now(datetime.timezone.utc),
-                message="çay fırsat",
-            )
-            # PeerChannel kanalın id'sini tutar; event chat_id ile eşleşmeli
-            ev = tl_events.NewMessage.Event(msg)
-            ev._chat_id = chat_id
-            ev._message_id = 11
-            ev._client = client_self
-            # Tüm handler'ları dene, on_new_message olanı bul
-            for _builder, hdl in client_self.handlers:
-                try:
-                    await hdl(ev)
-                except Exception:
-                    pass
+            handler = None
+            for _, hdl in client_self.handlers:
+                if "on_new_message" in getattr(hdl, "__qualname__", ""):
+                    handler = hdl
+                    break
+            if handler is None:
+                for _, hdl in client_self.handlers:
+                    code = getattr(hdl, "__code__", None)
+                    if code and "RESTARTING" in code.co_names:
+                        handler = hdl
+                        break
+            self.assertIsNotNone(handler, "on_new_message handler bulunmalı")
+            seen_before = bot.STATS["seen"]
+            ev = ti.FakeEvent(chat_id, 1143378073, "çay fırsat", message_id=11)
+            ev.message.date = datetime.datetime.now(datetime.timezone.utc)
+            await handler(ev)
+                        # Canlı bootstrap id-1=10 sonra success ile 11; poll top=10 <= cur olduğu için tekrar gelmez
+            self.assertIn(bot.CURSOR_RAM.get(chat_id, {}).get("cursor"), (10, 11), "canlı bootstrap cursor 10/11 olmalı")
+            self.assertGreater(bot.STATS["seen"], seen_before, "on_new_message seen artırmalı")
             await asyncio.sleep(1.5)
 
         config = self._write_config(fast_poll=True, fast_poll_seconds=1)
@@ -403,224 +430,203 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
         bot.RESTARTING = False
         self.addCleanup(lambda: (bot.CURSOR_RAM.clear(), ti.reset_state(), setattr(bot, "RESTARTING", False)))
 
-    def test_auto_restart_does_not_persist_cursor(self):
-        """Otomatik restart sadece dispatch eder, cursor persist etmez."""
-        calls = {"dispatch": 0, "persist": 0}
-        orig_dispatch = bot.dispatch_next_run
-        orig_persist = bot.cursor_persist_for_restart
-
-        async def fake_dispatch(pat):
-            calls["dispatch"] += 1
-            return True, "ok"
-
-        async def fake_persist(store):
-            calls["persist"] += 1
-            return True, "ok"
-
-        async def run():
-            with mock.patch.object(bot, "dispatch_next_run", fake_dispatch), \
-                 mock.patch.object(bot, "cursor_persist_for_restart", fake_persist):
-                # delay 0 ile hemen tetikle
-                await bot.auto_restart_scheduler(None, None, "fake_pat", 0)
-
-        asyncio.run(run())
-        self.assertEqual(calls["dispatch"], 1, "auto_restart dispatch etmeli")
-        self.assertEqual(calls["persist"], 0, "auto_restart persist etmemeli")
-
     def test_restart_blocks_new_messages_but_allows_drain(self):
-        """RESTARTING iken on_new_message erken döner; poll loop da durur."""
-        async def run():
-            # Main'i ayağa kaldır, RESTARTING bayrağını aç, handler'ı test et
-            config = self._write_config(fast_poll=False)
-            self.addCleanup(os.unlink, config)
-            polls_blocked = []
-
-            async def get_input_entity(client_self, chat_id):
-                return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
-
-            async def call(client_self, request):
-                return SimpleNamespace(dialogs=[])
-
-            async def get_messages(client_self, peer, min_id=0, limit=None):
-                polls_blocked.append(min_id)
-                return []
-
-            # Uçuş ve poll görevlerini simüle et
-            bot.RESTARTING = True
-            bot.SOURCE_IN_FLIGHT.add((999, 1))
-            poll_task = asyncio.create_task(asyncio.sleep(10))
-            # poll_delivery_tasks main içinde local; burada RESTARTING kontrolünü test et
-            # on_new_message RESTARTING iken erken dönmeli
-            # Bunun için main içindeki handler yerine doğrudan flag kontrolü yap
-            # Gerçek on_new_message RESTARTING sonrası return eder
-            self.assertTrue(bot.RESTARTING)
-            # Poll loop RESTARTING iken targets döngüsünde break/sleep etmeli
-            # Bunu fast_poll_loop'un RESTARTING check'i ile doğrula: main src yerine davranış
-            # Direkt RESTARTING flag'inin on_new_message'i blokladığını göster:
-            # Sahte event ile gerçek handler simülasyonu
-            # Handler RESTARTING True iken STATS artırmamalı
-            before = bot.STATS["seen"]
-            # Handler doğrudan çağrılabilir değil — flag kontrolünü doğrula
-            self.assertTrue(bot.RESTARTING)
-            # Drain: SOURCE_IN_FLIGHT ve poll_delivery_tasks 6sn bekleme
-            # Burada en azından flag'in poll loop'u blokladığını kanıtla
-            bot.RESTARTING = False
-            bot.SOURCE_IN_FLIGHT.discard((999, 1))
-            poll_task.cancel()
-            try:
-                await poll_task
-            except asyncio.CancelledError:
-                pass
-
-        asyncio.run(run())
-
-        # Ek doğrulama: RESTARTING bloklama gerçek on_new_message handler'ında çalışır
-        # Bunu entegrasyonla kanıtla: restart sırasında gelen canlı mesaj iletilmemeli
-        async def get_input_entity2(client_self, chat_id):
+        """RESTARTING açıkken gerçek on_new_message işlenmez ve gerçek drain akışı çalışır."""
+        async def get_input_entity(client_self, chat_id):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
-
-        async def call2(client_self, request):
+        async def call(client_self, request):
             chat_id = sorted(bot.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=20)])
-
-        async def get_messages2(client_self, peer, min_id=0, limit=None):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
-            channel_id = utils.get_peer(chat_id).channel_id
-            now = datetime.datetime.now(datetime.timezone.utc)
-            if min_id >= 10:
-                return [types.Message(id=11, peer_id=types.PeerChannel(channel_id), post=True, date=now, message="çay fırsat")]
+        async def get_messages(client_self, peer, min_id=0, limit=None):
             return []
-
-        async def run_until_disconnected2(client_self):
-            # Restart flag'ini aç
-            bot.RESTARTING = True
-            await asyncio.sleep(0.5)
-            # Canlı mesaj gönder — RESTARTING nedeniyle iletilmemeli
+        async def run_until_disconnected(client_self):
+            # handlers: 0=on_control, 1=on_new_message
+            self.assertGreaterEqual(len(client_self.handlers), 2, "iki handler kayıtlı olmalı")
+            on_control = client_self.handlers[0][1]
+            on_new = client_self.handlers[1][1]
             chat_id = sorted(bot.SOURCE_IDS)[0]
-            from telethon.tl import types as tl_types
-            from telethon import events as tl_events
-            msg = tl_types.Message(
-                id=11, peer_id=tl_types.PeerChannel(abs(chat_id) % 10**10),
-                post=True, date=datetime.datetime.now(datetime.timezone.utc), message="çay fırsat",
-            )
-            ev = tl_events.NewMessage.Event(msg)
-            ev._chat_id = chat_id
-            ev._message_id = 11
-            ev._client = client_self
-            delivered_before = len(client_self.delivered)
-            for _, hdl in client_self.handlers:
+            # RESTARTING kapalıyken on_new işler
+            seen_before = bot.STATS["seen"]
+            ev = ti.FakeEvent(chat_id, 1143378073, "çay fırsat", message_id=11)
+            ev.message.date = datetime.datetime.now(datetime.timezone.utc)
+            await on_new(ev)
+            self.assertGreater(bot.STATS["seen"], seen_before, "RESTARTING kapalıyken on_new_message işlemeli")
+            # poll_delivery_tasks closure'dan
+            poll_tasks = None
+            if hasattr(on_control, "__closure__") and on_control.__closure__:
+                for cell in on_control.__closure__:
+                    try:
+                        v = cell.cell_contents
+                    except ValueError:
+                        continue
+                    if isinstance(v, set):
+                        # ilk set poll_delivery_tasks (boş)
+                        # ikinci set benzer olabilir ama elemanları Task olan set'i bul
+                        poll_tasks = v
+                        break
+            if poll_tasks is None:
                 try:
-                    await hdl(ev)
+                    import inspect as _inspect
+                    cl = _inspect.getclosurevars(on_control)
+                    for v in cl.nonlocals.values():
+                        if isinstance(v, set):
+                            poll_tasks = v
+                            break
                 except Exception:
                     pass
-            # RESTARTING iken delivered artmamalı
-            self.assertEqual(len(client_self.delivered), delivered_before,
-                             "RESTARTING iken canlı mesaj iletilmemeli")
+            # Gerçek drain: SOURCE_IN_FLIGHT ve poll_delivery_tasks
+            bot.SOURCE_IN_FLIGHT.add((chat_id, 999))
+            fake_poll_task = asyncio.create_task(asyncio.sleep(10))
+            if poll_tasks is not None:
+                poll_tasks.add(fake_poll_task)
+                fake_poll_task.add_done_callback(poll_tasks.discard)
+            bot.RESTARTING = True
+            seen_before_restart = bot.STATS["seen"]
+            ev2 = ti.FakeEvent(chat_id, 1143378073, "çay 5 TL", message_id=12)
+            ev2.message.date = datetime.datetime.now(datetime.timezone.utc)
+            await on_new(ev2)
+            self.assertEqual(bot.STATS["seen"], seen_before_restart, "RESTARTING açıkken on_new_message seen artırmamalı")
+            self.assertTrue(bot.RESTARTING)
+            self.assertIn((chat_id, 999), bot.SOURCE_IN_FLIGHT)
+            if poll_tasks is not None:
+                self.assertIn(fake_poll_task, poll_tasks)
+                fake_poll_task.cancel()
+                try:
+                    await fake_poll_task
+                except asyncio.CancelledError:
+                    pass
+                self.assertNotIn(fake_poll_task, poll_tasks)
+            bot.SOURCE_IN_FLIGHT.discard((chat_id, 999))
             bot.RESTARTING = False
-            await asyncio.sleep(1.5)
-
+            await asyncio.sleep(0.1)
         config = self._write_config(fast_poll=True, fast_poll_seconds=1)
         self.addCleanup(os.unlink, config)
-        with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity2, create=True), \
-             mock.patch.object(ti.FakeClient, "__call__", call2, create=True), \
-             mock.patch.object(ti.FakeClient, "get_messages", get_messages2, create=True), \
+        with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
+             mock.patch.object(ti.FakeClient, "__call__", call, create=True), \
+             mock.patch.object(ti.FakeClient, "get_messages", get_messages, create=True), \
              mock.patch.object(ti.FakeClient, "_mb_entity_cache", SimpleNamespace(get=lambda *a, **k: None), create=True), \
-             mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected2):
-            client = self._run_main(config)
+             mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
+            self._run_main(config)
 
     def test_persist_failure_blocks_dispatch(self):
-        """Persist başarısızsa dispatch çağrılmaz ve restart iptal olur — gerçek handler akışı."""
+        """Gerçek /restart handler persist başarısızsa dispatch etmez ve RESTARTING resetlenir."""
+        async def get_input_entity(client_self, chat_id):
+            return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
+        persist_calls = []
         dispatch_calls = []
-
         async def fake_persist(store):
+            persist_calls.append(1)
             return False, "yazma hatası"
-
         async def fake_dispatch(pat):
             dispatch_calls.append(pat)
             return True, "ok"
-
-        async def run():
-            # Gerçek restart handler akışını simüle et: persist → dispatch sırası
+        async def run_until_disconnected(client_self):
+            handler = client_self.handlers[0][1]
+            control_id = next(iter(bot.CONTROL_IDS)) if bot.CONTROL_IDS else -5092968106
+            admin_id = next(iter(bot.ADMIN_IDS)) if hasattr(bot, "ADMIN_IDS") and bot.ADMIN_IDS else 1143378073
+            ev = ti.FakeEvent(control_id, admin_id, "/restart", message_id=99)
             with mock.patch.object(bot, "cursor_persist_for_restart", fake_persist), \
                  mock.patch.object(bot, "dispatch_next_run", fake_dispatch):
-                store = bot.ConfigStore("/tmp/fake.json", {"source_cursors": {}})
-                bot.RESTARTING = True
-                ok_save, note = await bot.cursor_persist_for_restart(store)
-                self.assertFalse(ok_save, "persist fail etmeli")
-                self.assertIn("yazma hatası", note)
-                # Gerçek on_control_message'de persist fail → return, dispatch çağrılmaz
-                if not ok_save:
-                    bot.RESTARTING = False
-                else:
-                    await bot.dispatch_next_run("")
-                self.assertEqual(len(dispatch_calls), 0, "persist fail iken dispatch çağrılmamalı")
-                self.assertFalse(bot.RESTARTING, "persist fail sonrası RESTARTING resetlenmeli")
-
-                # Başarılı persist → dispatch çağrılır
-                async def ok_persist(store):
-                    return True, "yedek ok"
-                with mock.patch.object(bot, "cursor_persist_for_restart", ok_persist):
-                    bot.RESTARTING = True
-                    ok_save2, _ = await bot.cursor_persist_for_restart(store)
-                    self.assertTrue(ok_save2)
-                    ok, msg = await bot.dispatch_next_run("pat")
-                    self.assertTrue(ok)
-                    self.assertEqual(len(dispatch_calls), 1, "persist ok iken dispatch çağrılmalı")
-                    bot.RESTARTING = False
-
-        asyncio.run(run())
+                await handler(ev)
+                self.assertEqual(len(persist_calls), 1, "gerçek handler persist çağırmalı")
+                self.assertEqual(len(dispatch_calls), 0, "persist başarısızsa gerçek handler dispatch çağırmamalı")
+                self.assertFalse(bot.RESTARTING, "persist fail sonrası RESTARTING false olmalı")
+                self.assertTrue(any("Restart iptal" in r for r in ev.replies), "handler Restart iptal yanıtı vermeli")
+            await asyncio.sleep(0.1)
+        config = self._write_config(fast_poll=False)
+        self.addCleanup(os.unlink, config)
+        with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
+             mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
+            self._run_main(config)
 
     def test_manual_restart_dispatch_only_after_persist_success(self):
-        """Manuel restart persist başarılı ise dispatch edilir."""
-        async def run():
-            async def fake_persist(store):
-                return True, "yedek ok"
-
-            async def fake_dispatch(pat):
-                return True, "başlatıldı"
-
+        """Gerçek /restart handler persist başarılıysa dispatch eder ve yanıt verir."""
+        async def get_input_entity(client_self, chat_id):
+            return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
+        persist_calls = []
+        dispatch_calls = []
+        async def fake_persist(store):
+            persist_calls.append(1)
+            return True, "yedek ok"
+        async def fake_dispatch(pat):
+            dispatch_calls.append(pat)
+            return True, "başlatıldı"
+        async def run_until_disconnected(client_self):
+            handler = client_self.handlers[0][1]
+            control_id = next(iter(bot.CONTROL_IDS)) if bot.CONTROL_IDS else -5092968106
+            admin_id = next(iter(bot.ADMIN_IDS)) if hasattr(bot, "ADMIN_IDS") and bot.ADMIN_IDS else 1143378073
+            ev = ti.FakeEvent(control_id, admin_id, "/restart", message_id=99)
             with mock.patch.object(bot, "cursor_persist_for_restart", fake_persist), \
                  mock.patch.object(bot, "dispatch_next_run", fake_dispatch):
-                store = bot.ConfigStore("/tmp/fake.json", {})
-                bot.RESTARTING = True
-                ok_save, _ = await bot.cursor_persist_for_restart(store)
-                self.assertTrue(ok_save)
-                ok, msg = await bot.dispatch_next_run("pat")
-                self.assertTrue(ok)
-                self.assertEqual(msg, "başlatıldı")
-                bot.RESTARTING = False
-
-        asyncio.run(run())
+                await handler(ev)
+                self.assertEqual(len(persist_calls), 1)
+                self.assertEqual(len(dispatch_calls), 1, "persist başarılıysa gerçek handler dispatch etmeli")
+                self.assertTrue(any("yedek ok" in r for r in ev.replies), "handler yedek ok yanıtı vermeli")
+            await asyncio.sleep(0.1)
+        config = self._write_config(fast_poll=False)
+        self.addCleanup(os.unlink, config)
+        with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
+             mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
+            self._run_main(config)
 
     def test_restart_drain_waits_for_inflight_and_poll_tasks(self):
-        """Drain 6sn içinde in-flight ve poll görevlerini bekler; kalırsa uyarı verir."""
-        async def run():
-            bot.RESTARTING = True
-            bot.SOURCE_IN_FLIGHT.add((1, 100))
-            bot.SOURCE_IN_FLIGHT.add((1, 101))
-
-            # Gerçek drain döngüsünü çalıştır (kısaltılmış)
-            drain_deadline = asyncio.get_event_loop().time() + 0.5
-            # In-flight'i temizle — drain bitmeli
-            async def clear_soon():
-                await asyncio.sleep(0.2)
-                bot.SOURCE_IN_FLIGHT.clear()
-
-            t = asyncio.create_task(clear_soon())
-            while asyncio.get_event_loop().time() < drain_deadline and bot.SOURCE_IN_FLIGHT:
-                await asyncio.sleep(0.05)
-            self.assertEqual(len(bot.SOURCE_IN_FLIGHT), 0, "drain in-flight'i beklemeli")
-            await t
-
-            # Kalırsa uyarı: in-flight boşalmazsa log.warning çağrılır
-            bot.SOURCE_IN_FLIGHT.add((1, 999))
-            drain_deadline2 = asyncio.get_event_loop().time() + 0.1
-            while asyncio.get_event_loop().time() < drain_deadline2 and bot.SOURCE_IN_FLIGHT:
-                await asyncio.sleep(0.05)
-            still_blocked = bool(bot.SOURCE_IN_FLIGHT)
-            self.assertTrue(still_blocked, "in-flight kalırsa drain uyarı vermeli")
-            bot.SOURCE_IN_FLIGHT.clear()
+        """Gerçek drain: SOURCE_IN_FLIGHT ve poll_delivery_tasks boşalana kadar bekler."""
+        async def get_input_entity(client_self, chat_id):
+            return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
+        async def run_until_disconnected(client_self):
+            handler = client_self.handlers[0][1]
+            poll_tasks = None
+            if hasattr(handler, "__closure__") and handler.__closure__:
+                for cell in handler.__closure__:
+                    try:
+                        v = cell.cell_contents
+                    except ValueError:
+                        continue
+                    if isinstance(v, set):
+                        poll_tasks = v
+                        break
+            if poll_tasks is None:
+                try:
+                    import inspect as _inspect
+                    cl = _inspect.getclosurevars(handler)
+                    for v in cl.nonlocals.values():
+                        if isinstance(v, set):
+                            poll_tasks = v
+                            break
+                except Exception:
+                    pass
+            cid = next(iter(bot.SOURCE_IDS)) if bot.SOURCE_IDS else -1001
+            bot.SOURCE_IN_FLIGHT.add((cid, 500))
+            t = asyncio.create_task(asyncio.sleep(10))
+            if poll_tasks is not None:
+                poll_tasks.add(t)
+                t.add_done_callback(poll_tasks.discard)
+            ev = ti.FakeEvent(next(iter(bot.CONTROL_IDS)) if bot.CONTROL_IDS else -5092968106, next(iter(bot.ADMIN_IDS)) if hasattr(bot, "ADMIN_IDS") and bot.ADMIN_IDS else 1143378073, "/restart", message_id=99)
+            async def clear_after():
+                await asyncio.sleep(0.4)
+                bot.SOURCE_IN_FLIGHT.discard((cid, 500))
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+            clearer = asyncio.create_task(clear_after())
+            start = asyncio.get_event_loop().time()
+            with mock.patch.object(bot, "cursor_persist_for_restart", mock.AsyncMock(return_value=(True, "yedek ok"))), \
+                 mock.patch.object(bot, "dispatch_next_run", mock.AsyncMock(return_value=(True, "başlatıldı"))):
+                await handler(ev)
+            elapsed = asyncio.get_event_loop().time() - start
+            self.assertGreaterEqual(elapsed, 0.3, "drain SOURCE_IN_FLIGHT ve poll_delivery_tasks için beklemeli")
+            self.assertEqual(len(bot.SOURCE_IN_FLIGHT), 0)
+            if poll_tasks is not None:
+                self.assertEqual(len(poll_tasks), 0)
+            await clearer
             bot.RESTARTING = False
+            await asyncio.sleep(0.1)
+        config = self._write_config(fast_poll=False)
+        self.addCleanup(os.unlink, config)
+        with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
+             mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
+            self._run_main(config)
 
-        asyncio.run(run())

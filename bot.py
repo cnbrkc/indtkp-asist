@@ -2281,13 +2281,10 @@ def _cursor_advance(chat_id: int) -> None:
             st["cursor"] = nxt
             continue
         break
-    # Güvenli budama: yalnızca bloke yoksa — failed/pending arkasında
-    # biriken completed kaybolmamalı (101 fail, 102-400 done örneği).
-    # Bu budama yalnızca poll ile tekrar elde edilebilecek veriyi atar.
-    if len(st["completed"]) > 500 and not st["pending"] and not st["failed"]:
-        oldest = sorted(st["completed"])[:250]
-        for oid in oldest:
-            st["completed"].discard(oid)
+    # Budama kaldırıldı: cursor önünde poll ile henüz doğrulanmamış
+    # bir boşluk varken bile pending/failed boş olabilir. 500+ kayıtlı
+    # tamamlanmış zinciri silmek cursor'u kilitleyebilir; bu yüzden
+    # completed kayıtları güvenle tüketilene kadar korunur.
 
 
 def _cursor_mark_pending(chat_id: int, msg_id: int) -> None:
