@@ -5051,6 +5051,44 @@ def _lookup_source_id(source_id_map: dict[str, Any], value: Any) -> Any | None:
     return None
 
 
+def _is_transient_id_error(exc: Exception) -> bool:
+    """Ağ/timeout/ServerError gibi geçici hatalar — ID korunmalı."""
+    if isinstance(exc, (OSError, ConnectionError, TimeoutError, asyncio.TimeoutError, asyncio.CancelledError)):
+        return True
+    try:
+        from telethon.errors.rpcbaseerrors import InvalidDCError, ServerError, TimedOutError
+
+        if isinstance(exc, (ServerError, TimedOutError, InvalidDCError)):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _is_stale_id_error(exc: Exception) -> bool:
+    """Kesin geçersiz/erişilemez ID — temizlenip username fallback yapılabilir."""
+    if isinstance(exc, ValueError):
+        return True
+    # Telethon RPC kalıcı hataları: varlık yok / özel / geçersiz
+    stale_candidates = (
+        getattr(errors, "ChannelInvalidError", None),
+        getattr(errors, "ChannelPrivateError", None),
+        getattr(errors, "ChannelIdInvalidError", None),
+        getattr(errors, "ChatInvalidError", None),
+        getattr(errors, "ChatIdInvalidError", None),
+        getattr(errors, "PeerIdInvalidError", None),
+        getattr(errors, "UsernameInvalidError", None),
+        getattr(errors, "UsernameNotOccupiedError", None),
+        getattr(errors, "InviteHashInvalidError", None),
+        getattr(errors, "InviteHashExpiredError", None),
+        getattr(errors, "ChatForbiddenError", None),
+    )
+    stale_types = tuple(t for t in stale_candidates if t is not None)
+    if stale_types and isinstance(exc, stale_types):
+        return True
+    return False
+
+
 async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = False) -> list[str]:
     """Kaynakları tek tek çöz; biri bozuksa diğerleri çalışmaya devam eder."""
     global SOURCES, SOURCE_IDS, SOURCE_FAILURES
@@ -5083,15 +5121,27 @@ async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = Fa
                 failures.append((value, exc))
                 log.error("Kaynak çözülemedi (ID ile): %r -> %s: %s", value, type(exc).__name__, exc)
                 continue
-            except Exception as exc:  # noqa: BLE001 - int erişilemezse username fallback'e düş
-                log.warning("Kaynak ID %s (%r) artık erişilemiyor: %s: %s -> kullanıcı adıyla yeniden denenecek",
-                            cached_id, value, type(exc).__name__, exc)
-                # Stale ID'yi temizle — username başarılı olursa yeni ID eklenecek
-                for k in list(source_id_map.keys()):
-                    if str(source_id_map[k]) == str(cached_id) and str(k).strip().lstrip("@").lower() == key.lstrip("@").lower():
-                        source_id_map.pop(k, None)
-                if key in source_id_map and str(source_id_map.get(key)) == str(cached_id):
-                    source_id_map.pop(key, None)
+            except Exception as exc:  # noqa: BLE001 - geçici vs stale ayrımı
+                if _is_transient_id_error(exc):
+                    log.warning("Kaynak ID %s (%r) geçici hata: %s: %s — ID korunuyor, username denenmeyecek",
+                                cached_id, value, type(exc).__name__, exc)
+                    failures.append((value, exc))
+                    continue
+                if _is_stale_id_error(exc):
+                    log.warning("Kaynak ID %s (%r) artık erişilemiyor: %s: %s -> kullanıcı adıyla yeniden denenecek",
+                                cached_id, value, type(exc).__name__, exc)
+                    # Stale ID'yi temizle — username başarılı olursa yeni ID eklenecek
+                    for k in list(source_id_map.keys()):
+                        if str(source_id_map[k]) == str(cached_id) and str(k).strip().lstrip("@").lower() == key.lstrip("@").lower():
+                            source_id_map.pop(k, None)
+                    if key in source_id_map and str(source_id_map.get(key)) == str(cached_id):
+                        source_id_map.pop(key, None)
+                else:
+                    # Kesin stale değil ve transient değil — güvenli tarafta kal, ID'yi silme
+                    log.warning("Kaynak ID %s (%r) geçici/bilinmeyen hata: %s: %s — ID korunuyor",
+                                cached_id, value, type(exc).__name__, exc)
+                    failures.append((value, exc))
+                    continue
         # FloodWait aktifken yeni username denemesi yapma — ID'li kaynaklar zaten yukarıda denendi
         if flood_wait_seconds is not None:
             failures.append((value, flood_wait_exc))

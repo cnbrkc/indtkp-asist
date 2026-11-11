@@ -516,6 +516,131 @@ class AtomicAndPushGatingTest(unittest.TestCase):
             entered = _new != _orig
             self.assertFalse(entered, "ID değişmeyince push dalına girilmemeli")
 
+class StaleVsTransientDiscriminationTest(unittest.TestCase):
+    """Geçici vs kesin stale ayrımı — yalnızca stale temizlenir, ID korunur."""
+
+    def setUp(self):
+        _reset()
+
+    def tearDown(self):
+        _reset()
+
+    def test_transient_connection_timeout_keeps_id_no_username_fallback(self):
+        source_chats = ["@good", "@flaky"]
+        good_id = -1003333333333
+        flaky_id = -1004444444444
+        config = {
+            "source_chats": source_chats,
+            "source_chat_ids": {"@good": good_id, "@flaky": flaky_id},
+        }
+        # @flaky int'i TimeoutError veriyor — geçici
+        for exc in [asyncio.TimeoutError("timeout"), TimeoutError("timeout"), ConnectionError("reset"), OSError("network down")]:
+            with self.subTest(exc=type(exc).__name__):
+                _reset()
+                mapping = {
+                    good_id: _chat(good_id),
+                    flaky_id: exc,
+                    # username fallback yapılırsa bunu yakalayalım — yapılmamalı
+                    "@flaky": _chan("flaky", 9999),
+                }
+                client = TrackingClient(mapping)
+                asyncio.run(bot.resolve_sources(client, config, quiet=True))
+                # @good çözülmeli, @flaky transient — ID korunmalı, username denenmemeli
+                self.assertEqual(len(bot.SOURCES), 1)
+                self.assertEqual(bot.SOURCES[0]["requested"], "@good")
+                self.assertIn("@flaky", config["source_chat_ids"])
+                self.assertEqual(config["source_chat_ids"]["@flaky"], flaky_id, "geçici hatada ID silinmemeli")
+                # username çağrısı yapılmamalı
+                str_calls = [v for _, v in client.calls if isinstance(v, str) and "flaky" in str(v).lower()]
+                self.assertEqual(str_calls, [], f"{type(exc).__name__} için username fallback yapılmamalı")
+                self.assertTrue(any(isinstance(e, type(exc)) or e.args == exc.args for _, e in bot.SOURCE_FAILURES), "failure kaydedilmeli")
+                # diğer kaynak etkilenmemeli
+                self.assertEqual(config["source_chat_ids"]["@good"], good_id)
+
+    def test_transient_server_rpc_keeps_id(self):
+        source_chats = ["@good", "@srv"]
+        good_id = -1005555555555
+        srv_id = -1006666666666
+        config = {
+            "source_chats": source_chats,
+            "source_chat_ids": {"@good": good_id, "@srv": srv_id},
+        }
+        # Telemthones ServerError / TimedOutError transient
+        from telethon.errors.rpcbaseerrors import ServerError, TimedOutError
+
+        transient_excs = [
+            ServerError(request=None, message="Internal server error", code=500),
+            TimedOutError(request=None, message="Timeout", code=408),
+            errors.ChatGetFailedError(request=None),
+            errors.TimeoutError(request=None),
+        ]
+        for exc in transient_excs:
+            with self.subTest(exc=type(exc).__name__):
+                _reset()
+                mapping = {
+                    good_id: _chat(good_id),
+                    srv_id: exc,
+                    "@srv": _chan("srv", 9999),
+                }
+                client = TrackingClient(mapping)
+                asyncio.run(bot.resolve_sources(client, config, quiet=True))
+                self.assertEqual(len(bot.SOURCES), 1)
+                self.assertIn("@srv", config["source_chat_ids"])
+                self.assertEqual(config["source_chat_ids"]["@srv"], srv_id)
+                str_calls = [v for _, v in client.calls if isinstance(v, str) and "srv" in str(v).lower()]
+                self.assertEqual(str_calls, [])
+
+    def test_definite_stale_cleans_and_fallbacks_to_username(self):
+        source_chats = ["@good", "@stale"]
+        good_id = -1007777777777
+        stale_id = -1008888888888
+        # hem ValueError hem ChannelInvalidError gibi RPC stale'ler
+        for exc, label in [
+            (ValueError("Cannot find any entity corresponding to -1008888888888"), "ValueError"),
+            (errors.ChannelInvalidError(request=None), "ChannelInvalidError"),
+            (errors.UsernameNotOccupiedError(request=None), "UsernameNotOccupiedError"),
+            (errors.ChannelPrivateError(request=None), "ChannelPrivateError"),
+        ]:
+            with self.subTest(label=label):
+                _reset()
+                new_id = -1009999999999 if label != "ValueError" else -1009999999998
+                config = {
+                    "source_chats": source_chats,
+                    "source_chat_ids": {"@good": good_id, "@stale": stale_id},
+                }
+                mapping = {
+                    good_id: _chat(good_id),
+                    stale_id: exc,
+                    "@stale": _chan("stale_new", abs(new_id)),
+                }
+                client = TrackingClient(mapping)
+                asyncio.run(bot.resolve_sources(client, config, quiet=True))
+                self.assertEqual(len(bot.SOURCES), 2, f"{label} için fallback çalışmalı")
+                self.assertNotEqual(config["source_chat_ids"]["@stale"], stale_id)
+                self.assertIn("@good", config["source_chat_ids"])
+                self.assertEqual(config["source_chat_ids"]["@good"], good_id, "diğer kayıt etkilenmemeli")
+                # username fallback gerçekten yapılmış olmalı
+                str_calls = [v for _, v in client.calls if isinstance(v, str) and "stale" in str(v).lower()]
+                self.assertIn("@stale", str_calls)
+
+    def test_other_ids_unaffected_by_one_transient_failure(self):
+        source_chats = ["@a", "@b", "@c"]
+        ids = {"@a": -1001111111111, "@b": -1002222222222, "@c": -1003333333333}
+        config = {"source_chats": source_chats, "source_chat_ids": dict(ids)}
+        mapping = {
+            ids["@a"]: _chat(ids["@a"]),
+            ids["@b"]: OSError("temporary failure"),
+            ids["@c"]: _chat(ids["@c"]),
+        }
+        client = TrackingClient(mapping)
+        asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        self.assertEqual(len(bot.SOURCES), 2)
+        self.assertIn("@b", config["source_chat_ids"])
+        self.assertEqual(config["source_chat_ids"]["@b"], ids["@b"])
+        self.assertEqual(config["source_chat_ids"]["@a"], ids["@a"])
+        self.assertEqual(config["source_chat_ids"]["@c"], ids["@c"])
+
+
 class ResolveChatGroupsIntegrationTest(unittest.TestCase):
     """resolve_chat_groups gerçek akış — sources/destination/control birlikte."""
 
