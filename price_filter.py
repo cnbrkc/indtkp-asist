@@ -373,76 +373,100 @@ def _classify(line: str, start: int, end: int, abs_start: int,
     return _classify_check_before_and_strong(before_tokens, before_raw, line)
 
 
+def _find_scan_price_re(
+    line: str, index: int, offset: int, strike: Sequence[tuple[int, int]],
+    prev_line: str | None, candidates: list[Candidate], seen_spans: list[tuple[int, int]],
+) -> None:
+    """PRICE_RE eşleşmelerini tara, sınıflandır ve aday listesine ekle."""
+    for match in PRICE_RE.finditer(line):
+        raw = match.group("a1") or match.group("a2")
+        value = parse_amount(raw)
+        if value is None:
+            continue
+        if match.group("bin"):
+            value *= 1000
+        core_end = match.end("cur") if match.group("cur") else match.end("a1")
+        cls, strong = _classify(line, match.start(), core_end, offset + match.start(), strike)
+        if cls in {"price", "cond"} and _campaign_line_continues(prev_line, line):
+            cls, strong = "campaign", False
+        candidates.append(Candidate(value, match.group().strip(), cls, strong, index, match.start(), core_end))
+        seen_spans.append(match.span())
+
+
+def _find_scan_labeled_re(
+    line: str, index: int, offset: int, strike: Sequence[tuple[int, int]],
+    candidates: list[Candidate], seen_spans: list[tuple[int, int]],
+) -> None:
+    """LABELED_RE / EMOJI_LINE_RE etiketli tutarları tara ve aday ekle."""
+    for regex in (LABELED_RE, EMOJI_LINE_RE):
+        match = regex.search(line)
+        if not match:
+            continue
+        if any(s <= match.start("a") < e for s, e in seen_spans):
+            continue
+        coupon_label = regex is LABELED_RE and _COUPON_LABEL_RE.match(
+            norm(line[match.start():match.start("a")])
+        )
+        value = parse_amount(match.group("a"))
+        if value is None or value > 10_000_000:
+            continue
+        if coupon_label and value < 100:
+            continue
+        cls, _ = _classify(line, match.start("a"), match.end("a"), offset + match.start("a"), strike)
+        candidates.append(Candidate(value, match.group().strip(), cls, True, index, match.start("a"), match.end("a")))
+
+
+def _find_scan_bare_number(
+    line: str, index: int, offset: int, strike: Sequence[tuple[int, int]],
+    lines: list[str], candidates: list[Candidate], seen_spans: list[tuple[int, int]],
+) -> None:
+    """Parabirimsiz çıplak sayı satırını ürün bağlamı varsa fiyat adayı yap."""
+    if seen_spans:
+        return
+    bare = _BARE_NUM_LINE_RE.fullmatch(line.strip())
+    if not bare:
+        return
+    value = parse_amount(bare.group("a"))
+    if value is None or not (_BARE_PRICE_MIN <= value <= 10_000_000):
+        return
+    if not _has_product_context_before(lines, index):
+        return
+    cls, _ = _classify(line, bare.start("a"), bare.end("a"), offset + bare.start("a"), strike)
+    if cls == "price":
+        candidates.append(Candidate(value, bare.group().strip(), cls, True, index, bare.start("a"), bare.end("a")))
+
+
+def _find_demote_used_prices(text: str, candidates: list[Candidate]) -> None:
+    """İkinci el / yenilenmiş ilanlarda 'yeni fiyatı:' etiketini eski fiyata indir."""
+    used = re.search(r"\b(?:ikinci\s+el|2\s*\.\s*el|yenilenmiş|yenilenmis|refurbished|renewed)\b", norm(text))
+    if not used:
+        return
+    lines_by_index = text.split("\n")
+    references = [c for c in candidates if c.cls == "price" and re.search(
+        r"\byeni\s+(?:ürün\s+)?fiyat[ıi]\s*[:=]\s*$",
+        norm(lines_by_index[c.line][:c.start]),
+    )]
+    offers = [c for c in candidates if c not in references and c.cls == "price" and c.strong]
+    if len({c.value for c in offers}) == 1 and len({c.value for c in references}) == 1:
+        for c in references:
+            c.cls, c.strong = "old", False
+
+
 def find_candidates(text: str, strike: Sequence[tuple[int, int]] = ()) -> list[Candidate]:
+    """Mesajdaki tüm fiyat adaylarını topla ve ilişkilendir."""
     candidates: list[Candidate] = []
     offset = 0
     lines = (text or "").split("\n")
     for index, line in enumerate(lines):
         prev_line = lines[index - 1] if index else None
         seen_spans: list[tuple[int, int]] = []
-        for match in PRICE_RE.finditer(line):
-            raw = match.group("a1") or match.group("a2")
-            value = parse_amount(raw)
-            if value is None:
-                continue
-            if match.group("bin"):
-                value *= 1000
-            core_end = match.end("cur") if match.group("cur") else match.end("a1")
-            cls, strong = _classify(line, match.start(), core_end, offset + match.start(), strike)
-            if cls in {"price", "cond"} and _campaign_line_continues(prev_line, line):
-                cls, strong = "campaign", False   # çok satırlı kampanya: "2. ürün" / "1 TL"
-            candidates.append(Candidate(value, match.group().strip(), cls, strong, index, match.start(), core_end))
-            seen_spans.append(match.span())
-        for regex in (LABELED_RE, EMOJI_LINE_RE):
-            match = regex.search(line)
-            if not match:
-                continue
-            if any(s <= match.start("a") < e for s, e in seen_spans):
-                continue
-            coupon_label = regex is LABELED_RE and _COUPON_LABEL_RE.match(
-                norm(line[match.start():match.start("a")])
-            )
-            value = parse_amount(match.group("a"))
-            if value is None or value > 10_000_000:
-                continue
-            if coupon_label and value < 100:
-                # Para birimsiz kupon etiketi yalnız belirgin (en az 100 TL)
-                # fiyatları tamamlar. ``kuponla 2 al 1 öde`` içindeki 2, fiyat
-                # adayına dönüşmemeli; mevcut küçük etiketli fiyatlar değişmez.
-                continue
-            cls, _ = _classify(line, match.start("a"), match.end("a"), offset + match.start("a"), strike)
-            candidates.append(Candidate(value, match.group().strip(), cls, True, index, match.start("a"), match.end("a")))
-        # Çıplak sayı satırı: \"24999\" gibi para birimsiz satır, ürün bağlamı varsa fiyat sayılır
-        # (Dyson örneği: başlık + 24999 + link). 4+ haneli, eşik altı değerler hariç.
-        if not seen_spans:
-            bare = _BARE_NUM_LINE_RE.fullmatch(line.strip())
-            if bare:
-                value = parse_amount(bare.group("a"))
-                if value is not None and _BARE_PRICE_MIN <= value <= 10_000_000 and _has_product_context_before(lines, index):
-                    cls, _ = _classify(line, bare.start("a"), bare.end("a"), offset + bare.start("a"), strike)
-                    # Bare sayı tek başına zayıf değil: ürün bağlamıyla medium, yoksa low olmaz
-                    # _classify bare için strong=False dönebilir; burada ürün bağlamı nedeniyle güçlendir
-                    if cls == "price":
-                        candidates.append(Candidate(value, bare.group().strip(), cls, True, index, bare.start("a"), bare.end("a")))
+        _find_scan_price_re(line, index, offset, strike, prev_line, candidates, seen_spans)
+        _find_scan_labeled_re(line, index, offset, strike, candidates, seen_spans)
+        _find_scan_bare_number(line, index, offset, strike, lines, candidates, seen_spans)
         offset += len(line) + 1
-    # A warehouse/used listing may quote the new item's price for comparison.
-    # Only demote that exact label when a separate strong offer price and an
-    # explicit used/refurbished condition are present; ordinary "yeni fiyatı"
-    # announcements and independent condition prices retain their semantics.
-    used = re.search(r"\b(?:ikinci\s+el|2\s*\.\s*el|yenilenmiş|yenilenmis|refurbished|renewed)\b", norm(text))
-    if used:
-        lines_by_index = text.split("\n")
-        references = [c for c in candidates if c.cls == "price" and re.search(
-            r"\byeni\s+(?:ürün\s+)?fiyat[ıi]\s*[:=]\s*$",
-            norm(lines_by_index[c.line][:c.start]),
-        )]
-        offers = [c for c in candidates if c not in references and c.cls == "price" and c.strong]
-        if len({c.value for c in offers}) == 1 and len({c.value for c in references}) == 1:
-            for c in references:
-                c.cls, c.strong = "old", False
+    _find_demote_used_prices(text, candidates)
     _relate_candidates(text, candidates)
     return candidates
-
 
 def _relate_handle_condition_and_sepet(c: Candidate, before: str, after: str, line: str) -> bool:
     if c.cls in {"price", "cond", "other"} and re.search(
@@ -740,58 +764,58 @@ def _selected_product_block(text: str, strike: Sequence[tuple[int, int]] = ()) -
     return priced[0][1], blocks
 
 
-def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInfo:
-    """Mesajdaki ürün fiyatını seç. ``confidence`` 'low' ise filtre kullanmaz."""
+def _extract_handle_selected_block(text: str, strike: Sequence[tuple[int, int]]) -> PriceInfo | None:
+    """Numaralı ürün bloklarından tekil/öncelikli bloğu seç; belirsizse none döndür."""
     selected = _selected_product_block(text or "", strike)
-    if selected is not None:
-        block, _ = selected
-        if not block:
-            return PriceInfo(None, "", "none", "birden fazla ürün bloğu: seçim belirsiz")
-        start = (text or "").find(block)
-        local_strike = [(max(0, a - start), min(len(block), b - start))
-                        for a, b in strike if a < start + len(block) and b > start]
-        return extract_price(block, local_strike)
+    if selected is None:
+        return None
+    block, _ = selected
+    if not block:
+        return PriceInfo(None, "", "none", "birden fazla ürün bloğu: seçim belirsiz")
+    start = (text or "").find(block)
+    local_strike = [(max(0, a - start), min(len(block), b - start))
+                    for a, b in strike if a < start + len(block) and b > start]
+    return extract_price(block, local_strike)
+
+
+def _extract_handle_ambiguous_lines(text: str, strike: Sequence[tuple[int, int]]) -> PriceInfo | None:
+    """Kampanya ile aynı satırda etiketsiz tutar varsa satırı maskele ve tekrar dene."""
     lines = (text or "").split("\n")
     unsure = {index for index, line in enumerate(lines) if ambiguous_campaign_line(line)}
-    if unsure:
-        # Belirsiz satırın tutarları ürün fiyatı sayılmaz; kalan satırlarda aranır.
-        # Satırlar aynı uzunlukta boşlukla maskelenir: üstü çizili (strike) konumlar kaymaz.
-        masked = "\n".join(" " * len(line) if index in unsure else line
-                           for index, line in enumerate(lines))
-        info = extract_price(masked, strike)
-        if info.value is None:
-            return PriceInfo(None, "", "none", "kampanya ile aynı satırda etiketsiz tutar: belirsiz")
-        return info
-    cands = find_candidates(text, strike)
-    if campaign_plain_ambiguous(cands):
-        # Çok satırlı mesaj: kampanya tutarı + etiketsiz tutar, etiketli fiyat yok.
-        # Hangisinin ürün fiyatı olduğu güvenilir değil: fiyat bilinmiyor (❓).
-        return PriceInfo(None, "", "none", "kampanya tutarı ile etiketsiz tutar: belirsiz")
-    finals = [
-        c for c in cands
-        if c.role in {"discounted", "product_coupon", "basket_coupon", "condition_price", "member_price"}
-    ]
+    if not unsure:
+        return None
+    masked = "\n".join(" " * len(line) if index in unsure else line
+                       for index, line in enumerate(lines))
+    info = extract_price(masked, strike)
+    if info.value is None:
+        return PriceInfo(None, "", "none", "kampanya ile aynı satırda etiketsiz tutar: belirsiz")
+    return info
+
+
+def _extract_build_pools(cands: list[Candidate]) -> tuple[list[Candidate], list[Candidate], list[Candidate], list[Candidate]]:
+    """Adayları nihai/birim havuzlarına ayır; pool öncelik sırasını koru."""
+    finals = [c for c in cands if c.role in {"discounted", "product_coupon", "basket_coupon", "condition_price", "member_price"}]
     normal = [c for c in cands if c.cls == "price" and c not in finals]
     units = [c for c in cands if c.role in {"multi_unit", "unit"}]
-    # Önce açık nihai fiyat; çoklu alım sadece bu teklife daha avantajlı bir
-    # alternatifse seçilebilir. Eşik/kupon tutarları bu havuza hiç giremez.
     pool = finals or [c for c in normal if c.strong] or normal
-    if pool or units:
-        values = {c.value for c in pool}
-        best = pool[0] if pool else units[0]
-        ambiguous = len(values) > 1 or (not pool and bool(units) and not best.strong)
-        # A plain unit price ("tanesi 30 TL") must not replace a stated pack
-        # total. Explicit multi-buy prices retain the established offer behavior.
-        for c in units:
-            if c.role == "multi_unit" and c.value < best.value:
-                best = c
-            elif c.role == "unit" and c.value < best.value and c.line not in {p.line for p in pool}:
-                # A separately stated per-unit price remains eligible. A parenthetical
-                # unit breakdown beside a pack total does not replace that total.
-                best = c
-        # İlişkisiz farklı fiyatlarda min() ile güvenli fiyat uydurma.
-        confidence = "low" if ambiguous else "medium" if best.cls == "cond" or not best.strong else "high"
-        return PriceInfo(best.value, best.shown, confidence, best.reason)
+    return finals, normal, units, pool
+
+
+def _extract_select_best(pool: list[Candidate], units: list[Candidate]) -> tuple[Candidate, bool]:
+    """Havuz ve birim adayları arasından en iyi fiyatı ve belirsizlik bayrağını seç."""
+    values = {c.value for c in pool}
+    best = pool[0] if pool else units[0]
+    ambiguous = len(values) > 1 or (not pool and bool(units) and not best.strong)
+    for c in units:
+        if c.role == "multi_unit" and c.value < best.value:
+            best = c
+        elif c.role == "unit" and c.value < best.value and c.line not in {p.line for p in pool}:
+            best = c
+    return best, ambiguous
+
+
+def _extract_fallback_price(cands: list[Candidate], text: str) -> PriceInfo | None:
+    """Koşullu/eski/ücretsiz/kampanya fallback zincirini uygula."""
     conds = [c for c in cands if c.cls == "cond"]
     if conds:
         best = conds[0]
@@ -806,11 +830,30 @@ def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInf
         best = min(fallback, key=lambda c: (c.value, c.line, c.start))
         return PriceInfo(best.value, best.shown, "low", "yalnız eski/geçmiş fiyat")
     if any(c.cls == "campaign" for c in cands):
-        # Kampanya koşulu tutarı (ör. "2. ürün 1 TL") ürün fiyatı değildir: değeri
-        # verilmez; belirsiz fiyat davranışı (❓) korunur.
         return PriceInfo(None, "", "none", "yalnız kampanya koşulu tutarı")
     return PriceInfo(None, "", "none", "yalnız kupon/indirim/taksit tutarı")
 
+
+def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInfo:
+    """Mesajdaki ürün fiyatını seç. ``confidence`` 'low' ise filtre kullanmaz."""
+    info = _extract_handle_selected_block(text, strike)
+    if info is not None:
+        return info
+    info = _extract_handle_ambiguous_lines(text, strike)
+    if info is not None:
+        return info
+    cands = find_candidates(text, strike)
+    if campaign_plain_ambiguous(cands):
+        return PriceInfo(None, "", "none", "kampanya tutarı ile etiketsiz tutar: belirsiz")
+    finals, normal, units, pool = _extract_build_pools(cands)
+    if pool or units:
+        best, ambiguous = _extract_select_best(pool, units)
+        confidence = "low" if ambiguous else "medium" if best.cls == "cond" or not best.strong else "high"
+        return PriceInfo(best.value, best.shown, confidence, best.reason)
+    fallback = _extract_fallback_price(cands, text)
+    if fallback is not None:
+        return fallback
+    return PriceInfo(None, "", "none", "fiyat yok")
 
 def price_matches(text: str, threshold: float | None,
                   strike: Sequence[tuple[int, int]] = ()) -> tuple[bool, PriceInfo]:
