@@ -3,9 +3,7 @@
     "@firsatz",
     "@TAZEFIRSATmini",
     "@onual_ekstra",
-    "@indirimalarmigrup",
     "@ozelfirsat",
-    "@firsatlartr",
     "@firsattayfa",
     "@onual_firsat",
     "@amazonozel",
@@ -36,7 +34,6 @@
     "@indirimfirsattr",
     "@amazonsicakfirsatlar",
     "@truvaindirim",
-    "@indirimpaylasim",
     "@indirimvardiyasi",
     "@indirimfirsatburada",
     "@market_indirimleri",
@@ -49,7 +46,8 @@
     "@bufirsatalisveris",
     "@firsatgurmesi",
     "@fiyatiz",
-    "https://t.me/+RBuRoSBONSYyMTE8"
+    "https://t.me/+RBuRoSBONSYyMTE8",
+    "@indirimalarmi_tr"
   ],
   "destination": -5569562901,
   "smart_header": true,
@@ -91,7 +89,7 @@
   "exclude_enabled": true,
   "copy_mode": "copy",
   "fast_poll": true,
-  "fast_poll_seconds": 3,
+  "fast_poll_seconds": 6,
   "delivery_modes": [
     "forward",
     "copy",
