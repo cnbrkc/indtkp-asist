@@ -112,7 +112,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         # P6: açılıştaki geriye tarama, kesinti sırasında gelen (taze) mesajı
         # yakalar ama yaş sınırından eski mesajı topluca yeniden bildirmez.
         test = self
-        old_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+        old_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
 
         def make(channel_id, message_id, text, date):
             return types.Message(
@@ -150,7 +150,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
                                SimpleNamespace(get=lambda *a, **k: None), create=True), \
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
-        # Yaş sınırı (900 sn): 800 sn önceki mesaj gelir, 1 saat önceki gelmez.
+        # Yaş sınırı (3600 sn): 800 sn önceki mesaj gelir, 2 saat önceki gelmez.
         self.assertEqual(len(client.delivered), 2, "yalnızca yaş sınırının içindeki mesajlar iletilmeli")
         # Aynı mesaj canlı olayla da gelse ikinci kez işlenmez.
         chat_id = sorted(bot.SOURCE_IDS)[0]

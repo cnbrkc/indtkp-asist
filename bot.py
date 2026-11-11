@@ -2002,7 +2002,7 @@ FAST_POLL_SECONDS = 3.0
 # sırasında gelen mesajlar yalnızca bu pencere içinde yakalanır; daha eski
 # mesajlar topluca yeniden bildirilmez. Kalıcı imleç tutulmaz.
 FAST_POLL_BACKFILL_LIMIT = 100       # kaynak başına en fazla mesaj (sayı)
-FAST_POLL_BACKFILL_MAX_AGE = 900.0   # ve en fazla bu kadar saniye eski
+FAST_POLL_BACKFILL_MAX_AGE = 3600.0  # ve en fazla bu kadar saniye eski (1 saat; 6s cron arası kesinti için)
 # P0 ölçümleme: hızlı taramanın anlık durumu (/durum ve kalp atışında görünür).
 # Yalnızca sayaç/aralık bilgisi tutar; davranış değişmez.
 POLL_TELEMETRY: dict[str, float] = {
