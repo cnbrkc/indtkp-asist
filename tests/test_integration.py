@@ -2827,7 +2827,10 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(client.edited[-1][1], 777)
 
     def test_restart_campaign_header_offer_does_not_resend_identical_copy(self):
-        from test_reported_message_regressions import LENOVO_LP80, LENOVO_LP80_NOTIFICATION
+        try:
+            from test_reported_message_regressions import LENOVO_LP80, LENOVO_LP80_NOTIFICATION
+        except ModuleNotFoundError:
+            from tests.test_reported_message_regressions import LENOVO_LP80, LENOVO_LP80_NOTIFICATION
 
         old = (GROUP_ID, LENOVO_LP80_NOTIFICATION, ADMIN_ID, None, None, [], 528179)
         client = self.start([old])
