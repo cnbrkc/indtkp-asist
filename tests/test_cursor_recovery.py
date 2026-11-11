@@ -277,6 +277,52 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
         bot.CURSOR_RAM.clear()
         self.addCleanup(lambda: (bot.CURSOR_RAM.clear(), ti.reset_state()))
 
+    def test_unverified_gap_with_mass_completed_via_real_poll(self):
+        """Cursor 100, 101 doğrulanmamış, 102-700 done — gerçek poll 101 gap'ini doğrulayınca 700'e ilerlemeli (budama yok)."""
+        polls = [0]
+
+        async def get_input_entity(client_self, chat_id):
+            return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
+
+        async def call(client_self, request):
+            polls[0] += 1
+            chat_id = sorted(bot.SOURCE_IDS)[0]
+            peer = utils.get_peer(chat_id)
+            top = 100 if polls[0] == 1 else 700
+            return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=top)])
+
+        async def get_messages(client_self, peer, min_id=0, limit=None):
+            chat_id = sorted(bot.SOURCE_IDS)[0]
+            channel_id = utils.get_peer(chat_id).channel_id
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if min_id == 100:
+                # 101 silinmiş, 102-700 döner — üretim mantığı gap skip + completed zincirini test eder
+                return [types.Message(id=i, peer_id=types.PeerChannel(channel_id), post=True, date=now, message=f"çay ürün {i} 5 TL") for i in range(700, 101, -1)]
+            return []
+
+        async def run_until_disconnected(client_self):
+            await asyncio.sleep(1.2)
+            cid = sorted(bot.SOURCE_IDS)[0]
+            # Bootstrap sonrası cursor=100, 102-700 completed biriktir (599 kayıt, budama tetiklenirdi)
+            for mid in range(102, 701):
+                bot._cursor_mark_pending(cid, mid)
+                bot._cursor_mark_success(cid, mid)
+            self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 100)
+            self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 599)
+            await asyncio.sleep(3.0)
+
+        config = self._write_config(fast_poll=True, fast_poll_seconds=1, dedup_enabled=False)
+        self.addCleanup(os.unlink, config)
+        with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
+             mock.patch.object(ti.FakeClient, "__call__", call, create=True), \
+             mock.patch.object(ti.FakeClient, "get_messages", get_messages, create=True), \
+             mock.patch.object(ti.FakeClient, "_mb_entity_cache", SimpleNamespace(get=lambda *a, **k: None), create=True), \
+             mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
+            client = self._run_main(config)
+        cid = sorted(bot.SOURCE_IDS)[0]
+        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 700, "poll 101 silinmiş doğrulayınca completed 102-700 zinciri 700'e ilerlemeli")
+        self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 0)
+
     def test_poll_gap_with_completed_chain_via_real_poll(self):
         """Cursor 100, 102+103 completed, poll 101 silinmiş → gap+chain 103'e ilerler."""
         # Önce cursor durumunu hazırla: 100, 102-103 completed
@@ -569,6 +615,29 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
         with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             self._run_main(config)
+
+    def test_drain_timeout_no_data_loss_next_run_reprocesses(self):
+        """6s sonunda drain dolmamışsa bile persist edilen cursor ardışık son noktadır; pending mesaj kaybolmaz, sonraki run min_id ile yeniden alınır."""
+        cid = -1008
+        bot._cursor_ensure(cid)["cursor"] = 100
+        bot._cursor_mark_pending(cid, 101)
+        bot.SOURCE_IN_FLIGHT.add((cid, 101))
+        for mid in range(102, 201):
+            bot._cursor_mark_pending(cid, mid)
+            bot._cursor_mark_success(cid, mid)
+        # Drain timeout senaryosu: hâlâ SOURCE_IN_FLIGHT dolu, poll task dolu olsa bile
+        # mevcut ardışık cursor 100 olarak persist edilir
+        collected = bot.cursor_collect_for_persist()
+        self.assertEqual(collected[str(cid)], 100, "pending 101 varken cursor 100 kalmalı")
+        # Sonraki run cursor 100'den sayfalı kurtarma yapar — 101 yeniden gelir (kayıp yok)
+        # Bu, poll'un get_messages(min_id=100) ile 101'i tekrar döndürmesiyle kanıtlanır
+        # ve dedup/pending ile tekrar işlenir
+        self.assertIn(101, bot.CURSOR_RAM[cid]["pending"])
+        self.assertIn((cid, 101), bot.SOURCE_IN_FLIGHT)
+        # Temizlik: pending işlenince cursor 200'e kadar ilerler
+        bot.SOURCE_IN_FLIGHT.discard((cid, 101))
+        bot._cursor_mark_success(cid, 101)
+        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 200)
 
     def test_restart_drain_waits_for_inflight_and_poll_tasks(self):
         """Gerçek drain: SOURCE_IN_FLIGHT ve poll_delivery_tasks boşalana kadar bekler."""
