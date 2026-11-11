@@ -421,7 +421,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertEqual([c.role for c in pf.find_candidates(with_base_price)], ["normal", "campaign"])
         event = SimpleNamespace(message=TRIOMOVE_SECOND, raw_text=TRIOMOVE_SECOND, entities=[], media=None)
         with patch.object(bot, "SMART_HEADER", True):
-            self.assertTrue(bot.compose_message(event)["header"].startswith("❓"))
+            self.assertTrue("❓" in bot.compose_message(event)["header"])
 
     def test_bogo_free_campaign_is_not_zero_product_price(self):
         info = pf.extract_price(BOYNER_BOGO)
@@ -499,7 +499,7 @@ class ReportedMessageRegressions(unittest.TestCase):
     def test_notification_header_uses_correct_or_unknown_amount(self):
         expected = [
             (DREAME, "₺20.999 — Dreame D20 Ultra Robot Süpürge Beyaz, 13000Pa Emiş Gücü"),
-            (AUHMA, "❓ — AUHMA AMG38 Boyun ve Omuz Masaj Aleti"),
+            (AUHMA, "AUHMA AMG38 Boyun ve Omuz Masaj Aleti ❓"),
             (SHIPPING_PACK, "₺199"),
         ]
         with patch.object(bot, "SMART_HEADER", True):

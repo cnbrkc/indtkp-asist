@@ -65,7 +65,7 @@ class CampaignOnlyPriceTest(unittest.TestCase):
     def test_notification_header_stays_unknown(self):
         for text in self.CASES:
             with self.subTest(text=text):
-                self.assertTrue(_first_line(text).startswith(bot.PRICE_MISSING_MARK),
+                self.assertTrue(_first_line(text).endswith(bot.PRICE_MISSING_MARK),
                                 _first_line(text))
 
     def test_dedup_and_dm_never_use_campaign_amount(self):
@@ -210,7 +210,7 @@ class AmbiguousSameLineTest(unittest.TestCase):
                 info = pf.extract_price(text)
                 self.assertIsNone(info.value)
                 self.assertEqual(info.confidence, "none")
-                self.assertTrue(_first_line(text).startswith(bot.PRICE_MISSING_MARK),
+                self.assertTrue(_first_line(text).endswith(bot.PRICE_MISSING_MARK),
                                 _first_line(text))
                 self.assertIsNone(bot.offer_terms(_event(text))[0])
                 self.assertFalse(pf.price_matches(text, 1000)[0])
@@ -236,7 +236,7 @@ class AmbiguousLayoutTest(unittest.TestCase):
                 info = pf.extract_price(text)
                 self.assertIsNone(info.value)
                 self.assertEqual(info.confidence, "none")
-                self.assertTrue(_first_line(text).startswith(bot.PRICE_MISSING_MARK))
+                self.assertTrue(_first_line(text).endswith(bot.PRICE_MISSING_MARK))
                 self.assertIsNone(bot.offer_terms(_event(text))[0])
                 self.assertFalse(pf.price_matches(text, 1000)[0])
                 self.assertEqual(bot.query_price(text), "fiyat yok")

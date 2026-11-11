@@ -86,6 +86,8 @@ _COUPON_LABEL_RE = re.compile(r"^(?:kuponla|kuponuyla|kupon\s+ile|kodla|koduyla|
 EMOJI_LINE_RE = re.compile(
     rf"^\s*(?:[💰🏷💵💸🔥✅💲]\ufe0f?\s*)+(?P<a>{_NUM})\s*$"
 )
+_BARE_NUM_LINE_RE = re.compile(rf"^\s*(?P<a>{_NUM})\s*$")
+_BARE_PRICE_MIN = 500.0
 
 
 def parse_amount(raw: str) -> float | None:
@@ -178,6 +180,7 @@ _STRONG_BEFORE = frozenset(
 _THRESHOLD_DATIVE_RE = re.compile(
     r"^[’']\s?(?:ye|ya|e|a)\s+\d[\d.,]*\s*(?:tl|₺)?\s*(?:kupon|indirim|iade|hediye)", re.IGNORECASE
 )                                                           # "300 TL'ye 50 TL kupon" → 300 eşiktir
+_THRESHOLD_LIK_RE = re.compile(r"^[’']\s*(?:lik|lık|luk|lük)\b", re.IGNORECASE)
 _DATIVE_RE = re.compile(r"^[’']\s?(?:ye|ya|e|a)\b", re.IGNORECASE)
 _ABLATIVE_RE = re.compile(r"^[’']\s?(?:den|dan|ten|tan)\b", re.IGNORECASE)
 _MONTHLY_RE = re.compile(r"^\s*(?:/\s*ay|[x×]\s*\d|\+\s*kdv)", re.IGNORECASE)
@@ -185,7 +188,7 @@ _FREE_RE = re.compile(r"(?<![\w])(?:ücretsiz|ucretsiz|bedava|free)(?![\w])", re
 _FREE_BLOCK_RE = re.compile(
     r"kargo|teslimat|gönderim|gonderim|iade|kurulum|montaj|deneme|üyelik|uyelik|aboneli|"
     r"ilk\s+ay|değişim|degisim|nakliye|hızlı|hizli|prime|"
-    r"\d+\s+alana\s+\d+\s+bedava",
+    r"\d+\s+alana\s+\d+\s+bedava|alana\s+.*bedava",
     re.IGNORECASE,
 )
 _COUPON_SLASH_RE = re.compile(r"\d[\d.,]*\s*/\s*$")          # "1.000/300TL" → eşik/indirim yazımı
@@ -299,6 +302,8 @@ def _classify(line: str, start: int, end: int, abs_start: int,
 
     if _THRESHOLD_DATIVE_RE.match(norm(after_clean)):
         return "other", False
+    if _THRESHOLD_LIK_RE.match(after_clean) and re.search(r"alışveriş|alisveris", norm(after_clean)):
+        return "other", False
     if _DATIVE_RE.match(after_clean):
         following = _tokens(_DATIVE_RE.sub("", after_clean, count=1))[:1]
         if following and following[0].startswith(("çıkmış", "cikmis", "yükselmiş", "yukselmis")):
@@ -313,7 +318,7 @@ def _classify(line: str, start: int, end: int, abs_start: int,
     if _MONTHLY_RE.match(after_raw):
         return "other", False
 
-    connector = bool(re.match(r"^\s*[+&,;|/\-–]", after_raw))   # "6.499 TL + kargo bedava"
+    connector = bool(re.match(r"^\s*[+&,;|/\-–—]", after_raw))   # "6.499 TL + kargo bedava"
     after_tokens = _tokens(after_raw)[:2]
     if not connector and after_tokens and not re.match(r"^\s*[🚚🚛]", after_raw):
         if _stem_in(after_tokens[0], _AFTER_NEG):
@@ -387,6 +392,18 @@ def find_candidates(text: str, strike: Sequence[tuple[int, int]] = ()) -> list[C
                 continue
             cls, _ = _classify(line, match.start("a"), match.end("a"), offset + match.start("a"), strike)
             candidates.append(Candidate(value, match.group().strip(), cls, True, index, match.start("a"), match.end("a")))
+        # Çıplak sayı satırı: \"24999\" gibi para birimsiz satır, ürün bağlamı varsa fiyat sayılır
+        # (Dyson örneği: başlık + 24999 + link). 4+ haneli, eşik altı değerler hariç.
+        if not seen_spans:
+            bare = _BARE_NUM_LINE_RE.fullmatch(line.strip())
+            if bare:
+                value = parse_amount(bare.group("a"))
+                if value is not None and _BARE_PRICE_MIN <= value <= 10_000_000 and _has_product_context_before(lines, index):
+                    cls, _ = _classify(line, bare.start("a"), bare.end("a"), offset + bare.start("a"), strike)
+                    # Bare sayı tek başına zayıf değil: ürün bağlamıyla medium, yoksa low olmaz
+                    # _classify bare için strong=False dönebilir; burada ürün bağlamı nedeniyle güçlendir
+                    if cls == "price":
+                        candidates.append(Candidate(value, bare.group().strip(), cls, True, index, bare.start("a"), bare.end("a")))
         offset += len(line) + 1
     # A warehouse/used listing may quote the new item's price for comparison.
     # Only demote that exact label when a separate strong offer price and an
@@ -525,7 +542,7 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
             # belirsizliğini bozmadan güvenilir alternatif olarak ayrılır.
             c.cls, c.role, c.strong = "price", "member_price", True
         elif c.cls == "other" and re.match(
-            r"^[*_~`\s]*[—–-]\s*sepette\b[^/|]*\b(?:indirim\s+kod|kupon(?:la|uyla|\s+ile|\s+kod))", after,
+            r"^[*_~`\s]*[—–-]\s*sepette\b[^/|]*\b(?:indirim\s+kod|kupon(?:la|uyla|\s+ile|\s+kod)|kod(?:unu)?\b|kod(?:unu)?\b)", after,
         ) and (
             _PRICE_EMOJI_RE.search(line[:c.start])
             or re.search(r"(?:fiyat\w*|price)\s*[:=]?\s*$", before)
@@ -651,15 +668,23 @@ def has_campaign_marker(text: str) -> bool:
 
 _PRODUCT_HEADER_RE = re.compile(r"(?<!\w)\d+\s*\.\s*ürün\s*[:：]", re.IGNORECASE)
 _FEATURED_PRODUCT_RE = re.compile(r"\b(?:öne\s+çıkan|önerilen|seçili|ana)\s+ürün\b\s*[:：-]", re.IGNORECASE)
+_EMOJI_NUMBER_RE = re.compile(r"[1-5]️⃣")
 
 
 def _numbered_product_blocks(text: str) -> list[tuple[int, str]]:
     """Explicit ``1. ürün:`` labels delimit products; ordinary campaign text does not."""
     matches = list(_PRODUCT_HEADER_RE.finditer(text or ""))
-    if len(matches) < 2:
-        return []
-    return [(match.start(), (text or "")[match.start():matches[i + 1].start() if i + 1 < len(matches) else len(text)])
-            for i, match in enumerate(matches)]
+    if len(matches) >= 2:
+        return [(match.start(), (text or "")[match.start():matches[i + 1].start() if i + 1 < len(matches) else len(text)])
+                for i, match in enumerate(matches)]
+    # Emoji-numbered dual offers: \"1️⃣ …  💰 1580 TL\"  \"2️⃣ … 💰 1821 TL\"
+    emoji_matches = list(_EMOJI_NUMBER_RE.finditer(text or ""))
+    if len(emoji_matches) >= 2:
+        raw_blocks = [(m.start(), (text or "")[m.start():emoji_matches[i + 1].start() if i + 1 < len(emoji_matches) else len(text)])
+                for i, m in enumerate(emoji_matches)]
+        # Strip the leading emoji number ("1️⃣") so title does not retain a stray "1"
+        return [(s, _EMOJI_NUMBER_RE.sub("", b, count=1).lstrip()) for s, b in raw_blocks]
+    return []
 
 
 def _selected_product_block(text: str, strike: Sequence[tuple[int, int]] = ()) -> tuple[str, list[tuple[int, str]]] | None:
@@ -796,7 +821,7 @@ DEAL_WORDS = frozenset(
     "kacirmayin bugün bugun şimdi simdi sadece yalnızca yalnizca tl try ₺ ve ile bu da de den "
     "dan ye ya için icin sepette sepet link tıkla tikla incele git gör gor "
     "ilk adet geçerli gecerli kadar fiyatına fiyatina fiyatıyla fiyatiyla indi düşürdü dusurdu "
-    "uyarı uyari dikkat önemli onemli duyuru haber güncel guncel yenilendi 3p alımda alimda tanıtım tanitim "
+    "uyarı uyari dikkat önemli onemli duyuru haber güncel guncel yenilendi 3p alımda alimda tanıtım tanitim alalım alalim "
     "işbirliği isbirligi reklam medyanın medyanin".split()
 )
 STORES = frozenset(
@@ -923,7 +948,7 @@ def _segments(line: str) -> list[str]:
 
 
 _GENERIC_TITLE_RE = re.compile(
-    r"^(?:yoğun\s+ilgi\s+görüyor\s*$|durum\s*:|takip\s+kuponu\b|kampanya(?:lar)?\s*(?::|\d)|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
+    r"^(?:yoğun\s+ilgi\s+görüyor\s*$|durum\s*:|depo\s+ürünü|depo\s+urunu|yorum\s*:|takip\s+kuponu\b|kampanya(?:lar)?\s*(?::|\d)|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
     r"(?:anlık|anlik) indirim|bildirimlerinizi|\d+\s+adet kaldı|"
     r"ürün\s+altından\s+(?:aktif|etkinleştir)\w*|"
     r"(?:sepete\s+)?\d+\s+adet(?:\s+sepete)?\s+ekle\w*|"
@@ -931,8 +956,8 @@ _GENERIC_TITLE_RE = re.compile(
     r"(?:amazon|n11|trendyol|hepsiburada)\s+indirim kuponu\s*$|"
     r"sohbet\s+(?:grubumuz|kanalımız)(?:\s+(?:için|icin))?\s*$|"
     r"mesajı(?:\s+(?:gör|gor|beğen|begen)\w*)?(?:\s+\d+)?\s*$|"
-    r"[a-z0-9][a-z0-9_-]*\s+(?:koduyla|kodla|kuponuyla|kuponla)"
-    r"(?:\s+(?:fiyat\w*\s*)?(?:\d[\d.,]*\s*(?:tl|₺|try)|₺\s*\d[\d.,]*))?\s*$)",
+    r"[a-z0-9][a-z0-9_-]*\s+(?:koduyla|kodla|kuponuyla|kuponla|kodunu\s+uygula\w*)"
+    r"(?:\s+(?:fiyat\w*\s*)?(?:\d[\d.,]*\s*(?:tl|₺|try)|₺\s*\d[\d.,]*))?\s*$|.*kodunu\s+uygula\w*\s*$)",
     re.IGNORECASE,
 )
 _CONDITION_WORDS = frozenset(
@@ -1013,7 +1038,12 @@ def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str], le
     if 12 <= len(cleaned) <= 120:
         score += 1
     if len(cleaned) > 170:
-        score -= 3
+        # Uzun Amazon başlıkları (Apple Watch 196 karakter) gerçek üründür; model/birim
+        # barındırıyorsa ağır ceza verme — yoksa kısa meta satır (Depo Ürünü) kazanır.
+        if len(cleaned) <= 240 and (_MODEL_RE.search(cleaned) or _UNIT_RE.search(cleaned)):
+            score -= 0.5
+        else:
+            score -= 3
     plain = _SYMBOL_RE.sub("", raw).strip()
     label = _META_LABEL_RE.match(plain)
     if label and norm(label.group(1)) not in _TITLE_LABELS and len(label.group(1).split()) <= 2:
