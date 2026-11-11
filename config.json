@@ -89,7 +89,7 @@
   "exclude_enabled": true,
   "copy_mode": "copy",
   "fast_poll": true,
-  "fast_poll_seconds": 3,
+  "fast_poll_seconds": 6,
   "delivery_modes": [
     "forward",
     "copy",
