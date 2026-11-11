@@ -20,8 +20,9 @@ class IncompletePriceTests(unittest.TestCase):
         self.assertIsNone(bot.offer_terms(event)[0])
         with patch.object(bot, 'SMART_HEADER', True):
             header = bot.compose_message(event)['header']
-        # Güvenilir fiyat yok: üst satırda uzun uyarı değil yalnızca ❓.
-        self.assertEqual(header.split(bot.HEADER_SEPARATOR)[0], '❓')
+        # Güvenilir fiyat yok: üst satırda uzun uyarı değil yalnızca ❓ (başlık sonda).
+        price, _ = bot.split_header_line(header)
+        self.assertEqual(price, '❓')
         self.assertNotIn('Fiyat tespit', header)
         self.assertNotIn('💰', header)
 

@@ -48,7 +48,7 @@ class NewPricePatterns(unittest.TestCase):
                         )
                         self.assertNotIn('💰', first_line)
                     else:
-                        self.assertTrue(first_line.startswith('❓'), first_line)
+                        self.assertIn('❓', first_line)
                         self.assertNotIn('Fiyat tespit', first_line)
                     # Üst satıra yazılan fiyat arama sorgusuna karışmaz:
                     # Google/Akakçe/Cimri salt fiyatsız ürün adını arar.

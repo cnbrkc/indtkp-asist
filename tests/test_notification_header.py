@@ -1,9 +1,9 @@
-"""Bildirim üst satırı: ``₺56 — Ürün Adı`` / ``❓ — Ürün Adı`` tasarımı.
+"""Bildirim üst satırı: ``₺56 — Ürün Adı`` / ``Ürün Adı ❓`` tasarımı.
 
 Kullanıcı isteğinin kesin biçimi:
 
     ₺56 — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap
-    ❓ — Penti Kız Çocuk Basic Colorful 4lü Patik Çorap     ← fiyat bulunamayınca
+    Penti Kız Çocuk Basic Colorful 4lü Patik Çorap ❓     ← fiyat bulunamayınca
 
 Yani: fiyatın önünde 💰 YOK, ``56 TL`` değil ``56₺``, ayraç ``-`` (em-dash
 değil), fiyat yokken tek başına ``❓``. İlk satır fiyat + adı birlikte taşır;
@@ -103,7 +103,7 @@ class HeaderDesignTests(unittest.TestCase):
     def test_missing_price_is_only_the_mark(self):
         text = f"{TITLE}\n\n🎯 Sepete özel indirim başladı, linkte"
         composed = bot.compose_message(event(text))
-        self.assertEqual(composed["header"], f"❓ — {TITLE}")
+        self.assertEqual(composed["header"], f"{TITLE} ❓")
         self.assertEqual(composed["price"], "❓")
         self.assertNotIn("Fiyat tespit edilemedi", composed["text"])
         self.assertNotIn("bulunamadı", composed["text"])
@@ -149,7 +149,7 @@ class HeaderDesignTests(unittest.TestCase):
                 self.assertNotIn(",", composed["header"], "kuruş gösterilmez")
         # Bilinmeyen fiyat: ₺ yazılmaz, yalnızca ❓ (mevcut davranış).
         composed = bot.compose_message(event("Çay\nFiyat belli değil"))
-        self.assertTrue(composed["header"].startswith("❓ — "), composed["header"])
+        self.assertTrue(composed["header"].endswith(" ❓"), composed["header"])
         self.assertNotIn("₺", composed["header"])
 
     def test_low_confidence_price_is_never_carried_up(self):
@@ -239,7 +239,7 @@ class HeaderHelperTests(unittest.TestCase):
     def test_split_roundtrip_and_no_mis_split(self):
         lines = [
             f"₺56 — {TITLE}",
-            f"❓ — {TITLE}",
+            f"{TITLE} ❓",
             "₺19.999 — Beko B3RFS280DXF - No Frost 56 cm Buzdolabı",
             "₺12.299 — Xiaomi Redmi — Pro 256GB",
         ]
@@ -284,6 +284,7 @@ class HeaderHelperTests(unittest.TestCase):
         self.assertEqual(bot.fit_header_line("₺56", "A" * 80, 0), "")
         self.assertEqual(bot.header_search_title("₺56 — Penti Patik"), "Penti Patik")
         self.assertEqual(bot.header_search_title("56₺ - Penti Patik"), "Penti Patik")  # eski satır da okunur
+        self.assertEqual(bot.header_search_title("Penti Patik ❓"), "Penti Patik")
         self.assertEqual(bot.header_search_title("❓ — Penti Patik"), "Penti Patik")
         self.assertEqual(bot.header_search_title("₺56"), "")      # aranacak ad yok
         self.assertEqual(bot.header_search_title("❓"), "")        # yalnız işaret
@@ -418,7 +419,7 @@ class EntityAndLimitTests(unittest.TestCase):
     def test_only_mark_when_nothing_fits(self):
         # Fiyat yoksa ve ad sığmıyorsa satır ❓ ile açılır/kapanır.
         composed = bot.compose_message(event(f"{TITLE}\n🎯 kupon var"), limit=18)
-        self.assertTrue(composed["header"].startswith("❓"), composed["header"])
+        self.assertIn("❓", composed["header"])
         self.assertLessEqual(bot.utf16_length(composed["header"]), 18)
 
 
@@ -569,10 +570,10 @@ class RealNotificationPayloadTests(unittest.TestCase):
         client = self._run(fast_notify=True, include_keywords=[], smart_header=True)
         self._send(client, f"{TITLE}\n🎯 Sepete özel indirim başladı", media=False)
         call = self.ping_calls[-1]
-        self.assertEqual(call["text"].splitlines()[0], f"❓ — {TITLE}")
+        self.assertEqual(call["text"].splitlines()[0], f"{TITLE} ❓")
         bold = [item for item in call["entities"] if item["type"] == "bold"]
         self.assertEqual(utf16_slice(call["text"], bold[0]["offset"], bold[0]["length"]),
-                         f"❓ — {TITLE}")
+                         f"{TITLE} ❓")
         self.assertNotIn("Fiyat tespit edilemedi", call["text"])
         for label, query in decoded_queries(call["keyboard"]).items():
             self.assertNotIn("❓", query, label)
@@ -655,7 +656,8 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
         for text in ("Kalem Seti\nkargo bedava", "Deneme Ürünü bu ürün ücretsiz"):
             with self.subTest(blocked=text):
                 self.assertEqual(pf.extract_price(text).value, None)
-                self.assertEqual(self.header_of(text).split(bot.HEADER_SEPARATOR)[0], "❓")
+                price, _ = bot.split_header_line(self.header_of(text))
+                self.assertEqual(price, "❓")
 
     def test_zero_price_header_round_trips_for_search_and_dedup(self):
         # "₺0" fiyat kısmı olarak tanınmazsa geçmiş taraması satırı ürün adı
@@ -679,7 +681,7 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
                 info = pf.extract_price(f"Ürün X\n{form}")
                 self.assertFalse(info.value is not None and info.value < 0, f"negatif: {info}")
                 header = self.header_of(f"Ürün X\n{form}")
-                head = header.split(bot.HEADER_SEPARATOR)[0] if header else ""
+                head, _ = bot.split_header_line(header) if header else ("", "")
                 if head and head != bot.PRICE_MISSING_MARK:
                     # Üst satırda gösterilen her şey ayrıştırıcının BULDUĞU sayıdır
                     # (işaret düşürülmüş, kuruşu atılmış hâli); negatif biçim
@@ -697,8 +699,8 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
             with self.subTest(text=text):
                 composed = bot.compose_message(event(text), message_link=None, source_name=None)
                 if composed["header"]:
-                    self.assertEqual(composed["header"].split(bot.HEADER_SEPARATOR)[0], "❓",
-                                     composed["header"])
+                    price, _ = bot.split_header_line(composed["header"])
+                    self.assertEqual(price, "❓", composed["header"])
                 self.assertNotIn("Fiyat tespit edilemedi", composed["text"])
                 self.assertNotIn("₺", composed["header"].replace("❓", ""))
         # Ne ad ne fiyat: üst satır da içerik de yok → boş bildirim gönderilmez.
@@ -713,7 +715,7 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
         # "Eski: 19.999 TL" tek başına düşük güven → üst satıra TAŞINMAZ, gövde kalır.
         composed = bot.compose_message(event("Ürün X\nEski: 19.999 TL"),
                                        message_link=None, source_name=None)
-        self.assertEqual(composed["header"], "❓ — Ürün X")
+        self.assertEqual(composed["header"], "Ürün X ❓")
         self.assertIn("19.999", composed["body"])
         self.assertNotIn("19.999₺", composed["text"])
 

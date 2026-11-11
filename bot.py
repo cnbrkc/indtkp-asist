@@ -2090,13 +2090,16 @@ def header_price_text(value: float | None) -> str:
 
 
 def build_header_line(price_text: str, title: str) -> str:
-    """Üst satırı kur: ``<fiyat> - <ürün adı>``.
+    """Üst satırı kur: ``<fiyat> - <ürün adı>`` ya da ``<ürün adı> ❓``.
 
-    Fiyat başta, sonra ayraç, sonra ürün adı. Parçalardan biri yoksa satır ona
-    göre kısalır (yalnız fiyat ya da yalnız başlık); ikisi de yoksa boş döner.
+    Fiyat varsa başta, sonra ayraç, sonra ürün adı. Fiyat yoksa (``❓``) ürün
+    adı başa, ``❓`` sona yazılır (kullanıcı isteği: ``❓`` öne gelmesin).
+    Parçalardan biri yoksa satır ona göre kısalır; ikisi de yoksa boş döner.
     """
     price = (price_text or "").strip()
     name = " ".join((title or "").split())
+    if price == PRICE_MISSING_MARK and name:
+        return f"{name} {PRICE_MISSING_MARK}"
     if price and name:
         return f"{price}{HEADER_SEPARATOR}{name}"
     return price or name
@@ -2135,6 +2138,18 @@ def fit_header_line(price_text: str, title: str, room: int) -> str:
     """
     price = (price_text or "").strip()
     name = " ".join((title or "").split())
+    # Fiyat yoksa (❓) ürün adı başa, ❓ sona: "Ad ❓"
+    if price == PRICE_MISSING_MARK:
+        suffix = f" {PRICE_MISSING_MARK}"
+        full = f"{name}{suffix}" if name else price
+        if room <= 0 or utf16_length(full) <= room:
+            return full if room > 0 else ""
+        if not name:
+            return price if utf16_length(price) <= room else ""
+        if room - utf16_length(suffix) < 8:
+            return price if utf16_length(price) <= room else ""
+        tail = utf16_budget(name, room - utf16_length(suffix) - 1).rstrip()
+        return f"{tail}…{suffix}"
     full = build_header_line(price, name)
     if room <= 0 or utf16_length(full) <= room:
         return full if room > 0 else ""
@@ -2163,6 +2178,13 @@ def split_header_line(line: str | None) -> tuple[str, str]:
         return "", ""
     legacy = text.startswith(PRICE_LINE_PREFIX)
     body = text[len(PRICE_LINE_PREFIX):].strip() if legacy else text
+    # Yeni biçim: "Ad ❓" (fiyat sonda) — önce onu tanı, yoksa eski "❓ — Ad" ayraçları.
+    if body == PRICE_MISSING_MARK:
+        return PRICE_MISSING_MARK, ""
+    if body.endswith(f" {PRICE_MISSING_MARK}"):
+        title_part = body[:-len(PRICE_MISSING_MARK)].strip().rstrip(" -—")
+        if title_part:
+            return PRICE_MISSING_MARK, title_part
     # Güncel ayraç + önceki sürümlerin ayraçları: geçmişteki bildirimler
     # (``56₺ - Ad``, ``💰 12.299 TL — Ad``) de doğru bölünmeye devam eder.
     separators = tuple(dict.fromkeys(

@@ -171,7 +171,8 @@ class OfferContextTests(unittest.TestCase):
                     self.assertNotIn('❓', header)
                 else:
                     # Güven yok: üst satırda yalnızca ❓, uzun uyarı yok.
-                    self.assertEqual(header.split(bot.HEADER_SEPARATOR)[0], '❓')
+                    price, _ = bot.split_header_line(header)
+                    self.assertEqual(price, '❓')
                     self.assertNotIn('Fiyat tespit', output)
                     # Kaynak gövdedeki tutarlar silinmez; üretilmiş fiyat başlığı olmamalı.
                     self.assertNotIn(bot.header_price_text(value or 0) + bot.HEADER_SEPARATOR, output)
@@ -190,7 +191,8 @@ class OfferContextTests(unittest.TestCase):
         event = SimpleNamespace(message=text, raw_text=text, entities=[types.MessageEntityStrike(offset=start, length=6)], media=None)
         with patch.object(bot, 'SMART_HEADER', True):
             struck_header = bot.compose_message(event)['header']
-        self.assertEqual(struck_header.split(bot.HEADER_SEPARATOR)[0], '❓')
+        price, _ = bot.split_header_line(struck_header)
+        self.assertEqual(price, '❓')
         cleaned = bot.sanitize_message(event)
         body = bot.message_text(cleaned)
         strike = pf.strike_spans_from_entities(body, bot.entities_for_text(cleaned, body))

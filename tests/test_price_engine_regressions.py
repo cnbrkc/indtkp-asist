@@ -128,7 +128,7 @@ class PriceEngineRegressions(unittest.TestCase):
         event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
         with patch.object(bot, "SMART_HEADER", True):
             header = bot.compose_message(event)["header"]
-        self.assertEqual(header, "❓ — Birden fazla ürün", header)
+        self.assertEqual(header, "Birden fazla ürün ❓", header)
         self.assertFalse(pf.price_matches(text, 20000)[0])
         self.assertFalse(bot.dm_should_send({"dm_price_max": ["20000"]}, text))
 

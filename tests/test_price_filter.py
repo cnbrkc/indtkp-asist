@@ -272,7 +272,7 @@ class SmartHeaderLayoutTests(unittest.TestCase):
         event = SimpleNamespace(message="Güzel bir ürün var", raw_text="Güzel bir ürün var",
                                 reply_markup=None, media=None, entities=[])
         composed = bot.compose_message(event, message_link=None, source_name=None)
-        self.assertEqual(composed["header"], "❓ — Güzel bir ürün var")
+        self.assertEqual(composed["header"], "Güzel bir ürün var ❓")
         self.assertIn("❓", composed["text"])
         self.assertNotIn("Fiyat tespit", composed["text"])
         self.assertNotIn("bulunamadı", composed["text"])
