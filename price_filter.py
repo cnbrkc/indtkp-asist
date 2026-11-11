@@ -542,7 +542,7 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
             # belirsizliğini bozmadan güvenilir alternatif olarak ayrılır.
             c.cls, c.role, c.strong = "price", "member_price", True
         elif c.cls == "other" and re.match(
-            r"^[*_~`\s]*[—–-]\s*sepette\b[^/|]*\b(?:indirim\s+kod|kupon(?:la|uyla|\s+ile|\s+kod)|kod(?:unu)?\b|kod(?:unu)?\b)", after,
+            r"^[*_~`\s]*[—–-]\s*sepette\b[^/|]*\b(?:indirim\s+kod|kupon(?:la|uyla|\s+ile|\s+kod)|kod(?:unu)?\b)", after,
         ) and (
             _PRICE_EMOJI_RE.search(line[:c.start])
             or re.search(r"(?:fiyat\w*|price)\s*[:=]?\s*$", before)
