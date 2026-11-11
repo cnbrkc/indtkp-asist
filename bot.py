@@ -2279,12 +2279,15 @@ def _cursor_advance(chat_id: int) -> None:
         if nxt in st["completed"]:
             st["completed"].remove(nxt)
             st["cursor"] = nxt
-            if len(st["completed"]) > 300:
-                oldest = sorted(st["completed"])[:150]
-                for oid in oldest:
-                    st["completed"].discard(oid)
             continue
         break
+    # Güvenli budama: yalnızca bloke yoksa — failed/pending arkasında
+    # biriken completed kaybolmamalı (101 fail, 102-400 done örneği).
+    # Bu budama yalnızca poll ile tekrar elde edilebilecek veriyi atar.
+    if len(st["completed"]) > 500 and not st["pending"] and not st["failed"]:
+        oldest = sorted(st["completed"])[:250]
+        for oid in oldest:
+            st["completed"].discard(oid)
 
 
 def _cursor_mark_pending(chat_id: int, msg_id: int) -> None:
@@ -7977,6 +7980,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                             # poll bu ID’nin olmadığını doğruladı (silinmiş)
                             st["cursor"] = gid
                             log.info("Cursor gap skip (poll doğruladı, silinmiş): %s %s", chat_id, gid)
+                        # Gap atlama sonrası tamamlanmış zinciri ilerlet
+                        _cursor_advance(chat_id)
                         cur = int(st["cursor"])
                     for message in reversed(list(messages)):
                         if message.id <= cur or (chat_id, message.id) in LIVE_SEEN:
