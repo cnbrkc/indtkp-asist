@@ -445,14 +445,10 @@ def filter_state_of(config: dict) -> dict[str, bool]:
 # Ortam / yapılandırma doğrulama
 # ---------------------------------------------------------------------------
 
-def check_environment(config: dict | None = None) -> list[str]:
-    """Eksik/hatalı ayarları toplar. Boş liste = her şey hazır."""
-    problems: list[str] = []
-
+def _check_env_secrets(problems: list[str]) -> None:
     api_id = os.getenv("API_ID", "").strip()
     api_hash = os.getenv("API_HASH", "").strip()
     session_string = os.getenv("SESSION_STRING", "").strip()
-
     if not api_id:
         problems.append("API_ID secret'ı boş. Settings → Secrets and variables → Actions → Secrets sekmesine ekle.")
     else:
@@ -469,9 +465,8 @@ def check_environment(config: dict | None = None) -> list[str]:
     if not os.getenv("GH_PAT", "").strip():
         log.warning("GH_PAT boş: otomatik yenileme zinciri çalışmaz, workflow'u elle başlatman gerekir.")
 
-    if config is None:
-        return problems
 
+def _check_config_flags_and_dm(config: dict, problems: list[str]) -> None:
     if not isinstance(config.get("private_control", False), bool):
         problems.append("config.json → private_control true/false olmalı.")
     if not isinstance(config.get("dm_enabled", False), bool):
@@ -492,6 +487,8 @@ def check_environment(config: dict | None = None) -> list[str]:
     if config.get("private_control") and not os.getenv("NOTIFY_BOT_TOKEN", "").strip():
         log.warning("Özel komutlar için NOTIFY_BOT_TOKEN gerekli; Kayıtlı Mesajlar yedek kontrol olarak açık.")
 
+
+def _check_sources_and_modes(config: dict, problems: list[str]) -> None:
     sources = chat_values(config.get("source_chats"))
     if not sources:
         problems.append("config.json → source_chats boş. En az bir kanal/grup eklenmeli.")
@@ -513,6 +510,9 @@ def check_environment(config: dict | None = None) -> list[str]:
                     "config.json → delivery_modes içinde bilinmeyen değer var: "
                     f"{unknown} (geçerli: {', '.join(DELIVERY_MODES)})"
                 )
+
+
+def _check_limits_and_destination(config: dict, problems: list[str]) -> bool:
     try:
         if int(config.get("max_media_mb", 25)) < 0:
             problems.append("config.json → max_media_mb negatif olamaz.")
@@ -543,6 +543,18 @@ def check_environment(config: dict | None = None) -> list[str]:
                 group_control = True
         except ValueError as exc:
             problems.append(f"config.json → control_chat geçersiz: {exc}")
+    return group_control
+
+
+def check_environment(config: dict | None = None) -> list[str]:
+    """Eksik/hatalı ayarları toplar. Boş liste = her şey hazır."""
+    problems: list[str] = []
+    _check_env_secrets(problems)
+    if config is None:
+        return problems
+    _check_config_flags_and_dm(config, problems)
+    _check_sources_and_modes(config, problems)
+    group_control = _check_limits_and_destination(config, problems)
     if group_control and not parse_admin_ids(config.get("admin_user_id")):
         problems.append(
             "config.json → control_chat bir grup ama admin_user_id boş. "
@@ -4137,85 +4149,59 @@ def stage_price_threshold_change(
     return True, candidate, [stored], note
 
 
-def stage_telegram_list_change(
-    config: dict, field: str, action: str, raw_value: Any,
+def _stage_list_add(
+    config: dict, field: str, current: list[Any], values: list[str], title: str,
 ) -> tuple[bool, dict, list[Any], str]:
-    """İzinli bir liste değişikliğini config'e dokunmadan taslak olarak hazırla.
-
-    Tek mesajda virgül, noktalı virgül veya satır ile ayrılmış **birden çok**
-    kayıt gönderilebilir. Dönen üçüncü değer işlenen kayıtların listesidir
-    (eklenen ya da çıkarılan); hiçbiri işlenemezse ``ok=False`` döner.
-    """
-    if field not in TELEGRAM_LIST_FIELDS:
-        return False, copy.deepcopy(config), [], "Bu liste Telegram'dan düzenlenemez."
-    if action not in {"add", "remove"}:
-        return False, copy.deepcopy(config), [], "Geçersiz liste işlemi."
-
-    if field == "dm_price_max":
-        return stage_price_threshold_change(config, action, raw_value)
-
-    current = telegram_list_items(config, field)
-    values = split_values(raw_value)
-    if not values:
-        return False, copy.deepcopy(config), [], "Boş kayıt eklenemez veya çıkarılamaz."
-    if len(values) > LIST_BATCH_MAX:
-        return False, copy.deepcopy(config), [], (
-            f"Tek mesajda en fazla {LIST_BATCH_MAX} kayıt gönderebilirsin."
-        )
-
-    title = TELEGRAM_LIST_META[field]["title"]
-    if action == "add":
-        added: list[Any] = []
-        duplicates: list[str] = []
-        invalid: list[str] = []
-        keys = [telegram_list_item_key(field, item) for item in current]
-        for text in values:
-            if len(text) > LIST_ITEM_MAX_LENGTH:
-                invalid.append(f"{text[:24]}… (en fazla {LIST_ITEM_MAX_LENGTH} karakter)")
+    added: list[Any] = []
+    duplicates: list[str] = []
+    invalid: list[str] = []
+    keys = [telegram_list_item_key(field, item) for item in current]
+    for text in values:
+        if len(text) > LIST_ITEM_MAX_LENGTH:
+            invalid.append(f"{text[:24]}… (en fazla {LIST_ITEM_MAX_LENGTH} karakter)")
+            continue
+        if field == "source_chats":
+            try:
+                value: Any = parse_chat_value(text)
+            except ValueError as exc:
+                invalid.append(f"{text} ({exc})")
                 continue
-            if field == "source_chats":
-                try:
-                    value: Any = parse_chat_value(text)
-                except ValueError as exc:
-                    invalid.append(f"{text} ({exc})")
-                    continue
-            else:
-                value = telegram_list_item_key(field, text)
-            key = telegram_list_item_key(field, value)
-            if field in DM_LIST_FIELDS and len(key) > LIST_ITEM_MAX_LENGTH:
-                invalid.append(f"{text[:24]}… (normalizasyon sonrası en fazla {LIST_ITEM_MAX_LENGTH} karakter)")
-                continue
-            if key in keys:
-                duplicates.append(str(value))
-                continue
-            keys.append(key)
-            added.append(value)
-
-        if not added:
-            lines = ["ℹ️ Eklenecek yeni kayıt yok."]
-            if duplicates:
-                lines.append(f"zaten bu listede: {format_value_preview(duplicates)}")
-            if invalid:
-                lines.append(f"Geçersiz kayıt: {format_value_preview(invalid)}")
-            return False, copy.deepcopy(config), [], "\n".join(lines)
-
-        if field in DM_LIST_FIELDS and len(current) + len(added) > 100:
-            return False, copy.deepcopy(config), [], "DM listesinde en fazla 100 kayıt olabilir; hiçbir kayıt eklenmedi."
-
-        if len(added) == 1:
-            message = f"{title} listesine eklenecek: {added[0]}"
         else:
-            message = f"{title} listesine eklenecek {len(added)} kayıt: {format_value_preview(added)}"
+            value = telegram_list_item_key(field, text)
+        key = telegram_list_item_key(field, value)
+        if field in DM_LIST_FIELDS and len(key) > LIST_ITEM_MAX_LENGTH:
+            invalid.append(f"{text[:24]}… (normalizasyon sonrası en fazla {LIST_ITEM_MAX_LENGTH} karakter)")
+            continue
+        if key in keys:
+            duplicates.append(str(value))
+            continue
+        keys.append(key)
+        added.append(value)
+    if not added:
+        lines = ["ℹ️ Eklenecek yeni kayıt yok."]
         if duplicates:
-            message += f"\n⚠️ {len(duplicates)} kayıt zaten listede, atlandı: {format_value_preview(duplicates)}"
+            lines.append(f"zaten bu listede: {format_value_preview(duplicates)}")
         if invalid:
-            message += f"\n⚠️ {len(invalid)} kayıt alınamadı, atlandı: {format_value_preview(invalid)}"
+            lines.append(f"Geçersiz kayıt: {format_value_preview(invalid)}")
+        return False, copy.deepcopy(config), [], "\n".join(lines)
+    if field in DM_LIST_FIELDS and len(current) + len(added) > 100:
+        return False, copy.deepcopy(config), [], "DM listesinde en fazla 100 kayıt olabilir; hiçbir kayıt eklenmedi."
+    if len(added) == 1:
+        message = f"{title} listesine eklenecek: {added[0]}"
+    else:
+        message = f"{title} listesine eklenecek {len(added)} kayıt: {format_value_preview(added)}"
+    if duplicates:
+        message += f"\n⚠️ {len(duplicates)} kayıt zaten listede, atlandı: {format_value_preview(duplicates)}"
+    if invalid:
+        message += f"\n⚠️ {len(invalid)} kayıt alınamadı, atlandı: {format_value_preview(invalid)}"
+    candidate = copy.deepcopy(config)
+    candidate[field] = [*current, *added]
+    return True, candidate, added, message
 
-        candidate = copy.deepcopy(config)
-        candidate[field] = [*current, *added]
-        return True, candidate, added, message
 
-    # --- çıkarma: numara ya da listedeki tam değer; ikisi karışık olabilir.
+def _stage_list_remove(
+    config: dict, field: str, current: list[Any], values: list[str], title: str,
+) -> tuple[bool, dict, list[Any], str]:
     # Numaralar kullanıcının gördüğü listenin sırasıdır; kayıtlar çıkarıldıkça
     # sıra kaymasın diye numara baştan çözülür, kayıt sonra yerinden bulunur.
     remaining = list(current)
@@ -4241,7 +4227,6 @@ def stage_telegram_list_change(
             missing.append(text)
             continue
         removed.append(remaining.pop(position))
-
     if not removed:
         detail = f"Bu kayıtlar listede bulunamadı: {format_value_preview(missing)}" if missing \
             else "Çıkarılacak kayıt bulunamadı."
@@ -4250,17 +4235,44 @@ def stage_telegram_list_change(
         return False, copy.deepcopy(config), [], (
             "En az bir takip edilen grup/kanal kalmalı; son kaydı da çıkaramazsın."
         )
-
     if len(removed) == 1:
         message = f"{title} listesinden çıkarılacak: {removed[0]}"
     else:
         message = f"{title} listesinden çıkarılacak {len(removed)} kayıt: {format_value_preview(removed)}"
     if missing:
         message += f"\n⚠️ {len(missing)} kayıt listede bulunamadı, atlandı: {format_value_preview(missing)}"
-
     candidate = copy.deepcopy(config)
     candidate[field] = remaining
     return True, candidate, removed, message
+
+
+def stage_telegram_list_change(
+    config: dict, field: str, action: str, raw_value: Any,
+) -> tuple[bool, dict, list[Any], str]:
+    """İzinli bir liste değişikliğini config'e dokunmadan taslak olarak hazırla.
+
+    Tek mesajda virgül, noktalı virgül veya satır ile ayrılmış **birden çok**
+    kayıt gönderilebilir. Dönen üçüncü değer işlenen kayıtların listesidir
+    (eklenen ya da çıkarılan); hiçbiri işlenemezse ``ok=False`` döner.
+    """
+    if field not in TELEGRAM_LIST_FIELDS:
+        return False, copy.deepcopy(config), [], "Bu liste Telegram'dan düzenlenemez."
+    if action not in {"add", "remove"}:
+        return False, copy.deepcopy(config), [], "Geçersiz liste işlemi."
+    if field == "dm_price_max":
+        return stage_price_threshold_change(config, action, raw_value)
+    current = telegram_list_items(config, field)
+    values = split_values(raw_value)
+    if not values:
+        return False, copy.deepcopy(config), [], "Boş kayıt eklenemez veya çıkarılamaz."
+    if len(values) > LIST_BATCH_MAX:
+        return False, copy.deepcopy(config), [], (
+            f"Tek mesajda en fazla {LIST_BATCH_MAX} kayıt gönderebilirsin."
+        )
+    title = TELEGRAM_LIST_META[field]["title"]
+    if action == "add":
+        return _stage_list_add(config, field, current, values, title)
+    return _stage_list_remove(config, field, current, values, title)
 
 
 def resolve_confirmation_choice(text: Any) -> str | None:
