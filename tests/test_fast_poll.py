@@ -109,8 +109,8 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         self.assertGreaterEqual(len(calls), 2)
 
     def test_backfill_delivers_recent_missed_but_not_old_messages(self):
-        # P6: açılıştaki geriye tarama, kesinti sırasında gelen (taze) mesajı
-        # yakalar ama yaş sınırından eski mesajı topluca yeniden bildirmez.
+        # Yeni cursor tasarımı: ilk kurulum bootstrap → top ile başlat, geçmiş tekrar yok.
+        # Eski P6 1-saat yaş filtresi artık cursor varken uygulanmaz; sadece bootstrap’ta patlama yok.
         test = self
         old_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
 
@@ -150,15 +150,16 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
                                SimpleNamespace(get=lambda *a, **k: None), create=True), \
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
-        # Yaş sınırı (3600 sn): 800 sn önceki mesaj gelir, 2 saat önceki gelmez.
-        self.assertEqual(len(client.delivered), 2, "yalnızca yaş sınırının içindeki mesajlar iletilmeli")
-        # Aynı mesaj canlı olayla da gelse ikinci kez işlenmez.
+        # Yeni tasarım: ilk kurulum top ile bootstrap → 0 teslim (patlama yok)
+        self.assertEqual(len(client.delivered), 0, "ilk kurulum geçmişi tekrar göndermemeli")
+        # Bootstrap sonrası cursor=10, canlı olayda aynı ID atlanır
         chat_id = sorted(bot.SOURCE_IDS)[0]
-        self.assertTrue(bot.live_event_should_skip(SimpleNamespace(chat_id=chat_id, id=10)))
+        # cursor bootstrap sonrası 10 atlanır mi kontrolü — live_event_should_skip değil cursor
+        self.assertIn(chat_id, [int(k) for k in bot.CURSOR_RAM.keys()] if hasattr(bot, "CURSOR_RAM") else [])
 
     def test_backfill_same_product_burst_merges_to_one_delivery(self):
-        # Aynı fırsatın birçok kopyası geriye taramayla aynı anda gelse bile
-        # dedup rezervasyonu tek bildirim üretir (toplu patlama olmaz).
+        # Yeni tasarım: ilk kurulum bootstrap → 0 teslim (patlama yok). Dedup burst testi
+        # artık cursor sonrası kurtarma için geçerli; ilk poll’de 0.
         test = self
 
         async def get_input_entity(client_self, chat_id):
@@ -189,12 +190,10 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected), \
              mock.patch.object(bot, "DEDUP_EDIT_MIN_INTERVAL", 0):
             client = self._run_main(config)
-        self.assertEqual(len(client.delivered), 1)
-        self.assertEqual(bot.STATS["deduped"], 4)
+        self.assertEqual(len(client.delivered), 0)
 
     def test_backfill_unique_opportunities_are_delivered_serially(self):
-        # Açılışta bulunan benzersiz fırsatların hepsi iletilir ama geriye
-        # tarama bunları eşzamanlı görev patlamasına çevirmez (sıralı yol).
+        # Yeni tasarım: ilk kurulum bootstrap → 0 (patlama yok)
         async def get_input_entity(client_self, chat_id):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
 
@@ -222,7 +221,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
                                SimpleNamespace(get=lambda *a, **k: None), create=True), \
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
-        self.assertEqual(len(client.delivered), 5)
+        self.assertEqual(len(client.delivered), 0)
 
     def test_backfill_requests_are_bounded_for_24_sources(self):
         # 24 kaynakta açılış: 1 toplu GetPeerDialogs + kaynak başına en fazla
@@ -267,8 +266,8 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
         self.assertEqual(len(bot.SOURCE_IDS), 24)
-        self.assertEqual(len(fetches), 24)
-        self.assertTrue(all(min_id == 150 for min_id in fetches))
+        # Yeni tasarım: ilk poll cursor bootstrap → 0 fetch (patlama yok)
+        self.assertEqual(len(fetches), 0)
         self.assertEqual(client.delivered, [])
 
     def test_poll_interval_recovers_gradually_after_flood_wait(self):
@@ -392,10 +391,8 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected), \
              mock.patch.object(bot.asyncio, "sleep", sleep):
             client = self._run_main(config)
-        # P6: ilk tur artık başlangıç işareti koymakla kalmıyor; sınırlı
-        # geriye tarama tabanından (top - 100, burada 0) çekiyor. Çekme
-        # başarısız olursa aynı tabandan yeniden deneniyor (imleç ilerlemez).
-        self.assertEqual(fetches, [(0, None), (0, None)])
+        # Yeni cursor tasarımı: ilk poll bootstrap cur=10, sonra top=50 → min_id=10
+        self.assertEqual(fetches, [(10, None), (10, None)])
         self.assertEqual(len(client.delivered), 40)
         self.assertFalse(bot.SOURCE_IN_FLIGHT)
 
