@@ -2268,39 +2268,21 @@ def _cursor_ensure(chat_id: int) -> dict[str, Any]:
 
 
 def _cursor_advance(chat_id: int) -> None:
-    """Gap-aware ardışık ilerleme: missing ID’ler atlanır, failed bloklar."""
+    """Sade ardışık ilerleme: yalnızca completed zinciri ilerler; gap’ler poll’de doğrulanır."""
     st = _cursor_ensure(chat_id)
     while True:
         nxt = int(st["cursor"]) + 1
         if nxt in st["pending"]:
             break
         if nxt in st["failed"]:
-            # failed 30dk sonra skippable (RAM şişmesin, sonsuz blok olmasın)
-            try:
-                if time.time() - float(st["failed_at"].get(nxt, 0)) > 1800:
-                    st["failed"].discard(nxt)
-                    st["failed_at"].pop(nxt, None)
-                    log.warning("Cursor gap timeout — failed ID atlandı (chat=%s id=%s).", chat_id, nxt)
-                    st["cursor"] = nxt
-                    continue
-            except Exception:
-                pass
-            break
+            break  # başarısız — sonraki poll’de retry edilecek, kaybetme yok
         if nxt in st["completed"]:
             st["completed"].remove(nxt)
             st["cursor"] = nxt
-            # completed şişerse buda (sınırsız büyüme yok)
-            if len(st["completed"]) > 200:
-                # en eskileri at — gap zaten timeout ile çözülür, burası emniyet
-                oldest = sorted(st["completed"])[:100]
+            if len(st["completed"]) > 300:
+                oldest = sorted(st["completed"])[:150]
                 for oid in oldest:
                     st["completed"].discard(oid)
-            continue
-        # missing: pending/failed/completed hiçbirinde yok
-        # yalnızca ileride completed varsa bu ID silinmiş/missing sayılır ve atlanabilir
-        if st["completed"] and max(st["completed"]) > nxt:
-            # gap — atla (silinmiş mesaj, Telegram ID boşluğu)
-            st["cursor"] = nxt
             continue
         break
 
@@ -7967,15 +7949,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         continue
                     # cursor temelli — tek cursor/grup (RAM)
                     cur_entry = CURSOR_RAM.get(chat_id)
-                    is_new_group = cur_entry is None
-                    if is_new_group:
-                        # İlk kurulum: sınırlı bootstrap (top-100 + 30dk) — patlama yok, golden uyumlu
-                        base = max(0, int(top) - FAST_POLL_BACKFILL_LIMIT)
-                        _cursor_ensure(chat_id)["cursor"] = base
-                        cur = base
-                        log.info("Yeni kaynak için cursor bootstrap (sınırlı): %s → %s (top=%s)", chat_id, cur, top)
-                    else:
-                        cur = int(cur_entry.get("cursor", 0) or 0)
+                    if cur_entry is None:
+                        # İlk kurulum: cursor’u mevcut top’a kur, geçmişi topluca gönderme (patlama yok)
+                        _cursor_ensure(chat_id)["cursor"] = int(top)
+                        log.info("Yeni kaynak için cursor bootstrap: %s → %s", chat_id, top)
+                        continue
+                    cur = int(cur_entry.get("cursor", 0) or 0)
                     if top <= cur:
                         continue
                     # Sayfalı kurtarma: Telethon limit=None → paginated GetHistory
@@ -7984,16 +7963,24 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     except Exception as exc:  # noqa: BLE001 - çekme başarısızsa cursor ilerletme, sonra tekrar dene
                         log.warning("Geçmiş çekilemedi (kaynak=%s, cursor=%s): %s: %s", chat_id, cur, type(exc).__name__, exc)
                         continue
+                    # Poll’le doğrulanmış silinmiş ID’ler için gap skip (canlı race’te tek başına karar yok)
+                    # Sadece ardışık silinmişleri atla — pending/failed ortadaki ID’yi atlama
+                    fetched_ids = {int(getattr(m, "id", 0) or 0) for m in messages if getattr(m, "id", None)}
+                    if fetched_ids:
+                        max_fetched = max(fetched_ids)
+                        st = _cursor_ensure(chat_id)
+                        for gid in range(int(st["cursor"])+1, max_fetched+1):
+                            if gid in fetched_ids:
+                                break  # gerçek mesaj var — sonrası için tekrar poll gerekir
+                            if gid in st["pending"] or gid in st["failed"]:
+                                break  # işlemde/başarısız — poll retry ile çözülür
+                            # poll bu ID’nin olmadığını doğruladı (silinmiş)
+                            st["cursor"] = gid
+                            log.info("Cursor gap skip (poll doğruladı, silinmiş): %s %s", chat_id, gid)
+                        cur = int(st["cursor"])
                     for message in reversed(list(messages)):
                         if message.id <= cur or (chat_id, message.id) in LIVE_SEEN:
                             continue
-                        if is_new_group:
-                            try:
-                                age = time.time() - message.date.timestamp()
-                            except Exception:
-                                continue
-                            if age > FAST_POLL_BACKFILL_MAX_AGE:
-                                continue
                         _remember(POLL_DISPATCHED, chat_id, message.id)
                         event = events.NewMessage.Event(message)
                         try:

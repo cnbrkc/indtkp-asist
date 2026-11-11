@@ -117,15 +117,15 @@ class CursorIntegrationTest(ti.MainHarness, unittest.TestCase):
             top = 10 if polls[0] == 1 else 13
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=top)])
         async def get_messages(client_self, peer, min_id=0, limit=None):
-            # After bootstrap base=0, second poll should fetch min_id=0 → 11,12,13
+            # After bootstrap cur=10, second poll should fetch min_id=10 → 11,12,13
             chat_id = sorted(bot.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
-            if min_id == 0:
+            if min_id == 10:
                 return [types.Message(id=i, peer_id=types.PeerChannel(channel_id), post=True, date=now, message=f"çay ürün {i} 5 TL") for i in range(13,10,-1)]
             return []
         async def run_until_disconnected(client_self):
-            await asyncio.sleep(2.5)
+            await asyncio.sleep(3.5)
         config = self._write_config(fast_poll=True, fast_poll_seconds=1, dedup_enabled=False)
         self.addCleanup(os.unlink, config)
         with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
@@ -134,7 +134,7 @@ class CursorIntegrationTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "_mb_entity_cache", SimpleNamespace(get=lambda *a, **k: None), create=True), \
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
-        # Second poll delivers 3 (11,12,13)
+        # Second poll delivers 3 (11,12,13) after bootstrap
         self.assertEqual(len(client.delivered), 3)
 
 
@@ -167,14 +167,13 @@ class CursorGapAndBloatTest(unittest.TestCase):
         self.addCleanup(lambda: (bot.CURSOR_RAM.clear(), ti.reset_state()))
 
     def test_telegram_id_gap_skipped(self):
-        """Silinmiş ID (1522 yok) cursor’u bloklamamalı — 1523 success ile gap atlanır."""
+        """Silinmiş ID (1522 yok) — live tek başına atlamaz, cursor 1521’de kalır."""
         cid = -1001
         bot._cursor_ensure(cid)["cursor"] = 1521
-        # 1523 success, 1522 hiç var olmadı (pending/failed değil)
         bot._cursor_mark_pending(cid, 1523)
         bot._cursor_mark_success(cid, 1523)
-        # gap 1522 missing ama completed max 1523 >1522 → atla
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 1523)
+        # poll onayı olmadan gap atlanmaz — güvenli davranış
+        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 1521)
         self.assertNotIn(1522, bot.CURSOR_RAM[cid]["completed"])
 
     def test_failed_blocks_then_gap_timeout(self):
@@ -185,10 +184,11 @@ class CursorGapAndBloatTest(unittest.TestCase):
         bot._cursor_mark_pending(cid, 12)
         bot._cursor_mark_success(cid, 12)
         self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 10)  # fail blokluyor
-        # 30dk timeout sonrası gap atlanır
-        bot.CURSOR_RAM[cid]["failed_at"][11] = 0  # çok eski
-        bot._cursor_advance(cid)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 12)
+        # failed timeout yok — hatayı gizlemeden bloklar
+        # poll retry ile failed tekrar denenir (fast_poll_loop)
+        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 10)
+        self.assertIn(11, bot.CURSOR_RAM[cid]["failed"])
+        self.assertIn(12, bot.CURSOR_RAM[cid]["completed"])
 
     def test_completed_pruned_at_200(self):
         cid = -1003
@@ -202,8 +202,9 @@ class CursorGapAndBloatTest(unittest.TestCase):
         # fail 2 blokluyor, completed 3..250 birikti → 248
         self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 1)
         self.assertGreater(len(bot.CURSOR_RAM[cid]["completed"]), 200)
-        # timeout sonrası fail atlanınca cursor 250’ye kadar ilerler, prune tetiklenir
-        bot.CURSOR_RAM[cid]["failed_at"][2] = 0
+        # poll 2’nin silindiğini gösterince (failed’dan çıkar) cursor 250’ye ilerler
+        bot.CURSOR_RAM[cid]["failed"].discard(2)
+        bot.CURSOR_RAM[cid]["completed"].add(2)
         bot._cursor_advance(cid)
         self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 250)
 
@@ -267,12 +268,11 @@ class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
             chat_id = sorted(bot.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
-            if min_id == 0:
-                # 200 mesaj — Telethon paginated tek çağrı, biz tek listede döndür
+            if min_id == 10:
                 return [types.Message(id=i, peer_id=types.PeerChannel(channel_id), post=True, date=now, message=f"çay ürün {i} 5 TL") for i in range(210,10,-1)]
             return []
         async def run_until_disconnected(client_self):
-            await asyncio.sleep(3.0)
+            await asyncio.sleep(3.5)
         config = self._write_config(fast_poll=True, fast_poll_seconds=1, dedup_enabled=False)
         self.addCleanup(os.unlink, config)
         with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
