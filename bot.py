@@ -5036,14 +5036,127 @@ def changed_groups(before: dict, after: dict) -> set[str]:
     return {"sources"} if before.get("source_chats") != after.get("source_chats") else set()
 
 
+def _lookup_source_id(source_id_map: dict[str, Any], value: Any) -> Any | None:
+    key = str(value).strip()
+    if key in source_id_map:
+        return source_id_map[key]
+    if isinstance(value, str) and value.startswith("@"):
+        alt = value.lstrip("@")
+        if alt in source_id_map:
+            return source_id_map[alt]
+        low = alt.lower()
+        for k, v in source_id_map.items():
+            if isinstance(k, str) and k.lstrip("@").lower() == low:
+                return v
+    return None
+
+
+def _is_transient_id_error(exc: Exception) -> bool:
+    """Ağ/timeout/ServerError gibi geçici hatalar — ID korunmalı."""
+    if isinstance(exc, (OSError, ConnectionError, TimeoutError, asyncio.TimeoutError, asyncio.CancelledError)):
+        return True
+    try:
+        from telethon.errors.rpcbaseerrors import InvalidDCError, ServerError, TimedOutError
+
+        if isinstance(exc, (ServerError, TimedOutError, InvalidDCError)):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _is_stale_id_error(exc: Exception) -> bool:
+    """Kesin geçersiz/erişilemez ID — temizlenip username fallback yapılabilir."""
+    if isinstance(exc, ValueError):
+        return True
+    # Telethon RPC kalıcı hataları: varlık yok / özel / geçersiz
+    stale_candidates = (
+        getattr(errors, "ChannelInvalidError", None),
+        getattr(errors, "ChannelIdInvalidError", None),
+        getattr(errors, "ChatInvalidError", None),
+        getattr(errors, "ChatIdInvalidError", None),
+        getattr(errors, "PeerIdInvalidError", None),
+        getattr(errors, "UsernameInvalidError", None),
+        getattr(errors, "UsernameNotOccupiedError", None),
+        getattr(errors, "InviteHashInvalidError", None),
+        getattr(errors, "InviteHashExpiredError", None),
+        getattr(errors, "ChatForbiddenError", None),
+    )
+    stale_types = tuple(t for t in stale_candidates if t is not None)
+    if stale_types and isinstance(exc, stale_types):
+        return True
+    return False
+
+
 async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = False) -> list[str]:
     """Kaynakları tek tek çöz; biri bozuksa diğerleri çalışmaya devam eder."""
     global SOURCES, SOURCE_IDS, SOURCE_FAILURES
     resolved: list[dict[str, Any]] = []
     failures: list[tuple[Any, Exception]] = []
-    for value in chat_values(config.get("source_chats")):
+    stored_ids = config.get("source_chat_ids")
+    source_id_map: dict[str, Any] = dict(stored_ids) if isinstance(stored_ids, dict) else {}
+    values = chat_values(config.get("source_chats"))
+    flood_wait_seconds: int | None = None
+    flood_wait_exc: Exception | None = None
+    for idx, value in enumerate(values):
+        key = str(value).strip()
+        cached_id = _lookup_source_id(source_id_map, value)
+        if cached_id is not None:
+            try:
+                peer_id, name, entity = await resolve_chat(client, int(cached_id))
+                resolved.append({
+                    "id": peer_id,
+                    "name": name,
+                    "requested": value,
+                    "username": getattr(entity, "username", None),
+                    "joined": not bool(getattr(entity, "left", False)),
+                })
+                if str(source_id_map.get(key)) != str(peer_id):
+                    source_id_map[key] = peer_id
+                continue
+            except errors.FloodWaitError as exc:
+                flood_wait_seconds = max(flood_wait_seconds or 0, int(getattr(exc, "seconds", 0) or 0))
+                flood_wait_exc = exc
+                failures.append((value, exc))
+                log.error("Kaynak çözülemedi (ID ile): %r -> %s: %s", value, type(exc).__name__, exc)
+                continue
+            except Exception as exc:  # noqa: BLE001 - geçici vs stale ayrımı
+                if _is_transient_id_error(exc):
+                    log.warning("Kaynak ID %s (%r) geçici hata: %s: %s — ID korunuyor, username denenmeyecek",
+                                cached_id, value, type(exc).__name__, exc)
+                    failures.append((value, exc))
+                    continue
+                if _is_stale_id_error(exc):
+                    log.warning("Kaynak ID %s (%r) artık erişilemiyor: %s: %s -> kullanıcı adıyla yeniden denenecek",
+                                cached_id, value, type(exc).__name__, exc)
+                    # Stale ID'yi temizle — username başarılı olursa yeni ID eklenecek
+                    for k in list(source_id_map.keys()):
+                        if str(source_id_map[k]) == str(cached_id) and str(k).strip().lstrip("@").lower() == key.lstrip("@").lower():
+                            source_id_map.pop(k, None)
+                    if key in source_id_map and str(source_id_map.get(key)) == str(cached_id):
+                        source_id_map.pop(key, None)
+                else:
+                    # Kesin stale değil ve transient değil — güvenli tarafta kal, ID'yi silme
+                    log.warning("Kaynak ID %s (%r) geçici/bilinmeyen hata: %s: %s — ID korunuyor",
+                                cached_id, value, type(exc).__name__, exc)
+                    failures.append((value, exc))
+                    continue
+        # FloodWait aktifken yeni username denemesi yapma — ID'li kaynaklar zaten yukarıda denendi
+        if flood_wait_seconds is not None:
+            failures.append((value, flood_wait_exc))
+            log.warning("Kaynak atlandı (FloodWait park %ss): %r", flood_wait_seconds, value)
+            continue
         try:
             peer_id, name, entity = await resolve_chat(client, value)
+        except errors.FloodWaitError as exc:
+            flood_wait_seconds = int(getattr(exc, "seconds", 0) or 0)
+            flood_wait_exc = exc
+            failures.append((value, exc))
+            log.error("Kaynak çözülemedi: %r -> %s: %s", value, type(exc).__name__, exc)
+            log.warning("FloodWait %ss: kalan bilinmeyen kaynaklar bu oturumda park edildi; "
+                        "bilinen ID'lerle devam ediliyor (sonraki açılışta tekrar denenecek)",
+                        flood_wait_seconds)
+            continue
         except Exception as exc:  # noqa: BLE001 - tek kanal tüm bot'u düşürmemeli
             failures.append((value, exc))
             log.error("Kaynak çözülemedi: %r -> %s: %s", value, type(exc).__name__, exc)
@@ -5055,6 +5168,26 @@ async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = Fa
             "username": getattr(entity, "username", None),
             "joined": not bool(getattr(entity, "left", False)),
         })
+        if source_id_map.get(key) != peer_id:
+            source_id_map[key] = peer_id
+    # Kalıcı haritayı yalnızca mevcut source_chats anahtarlarıyla sınırla (stale temizlenir)
+    # Fakat FloodWait'te park edilenler için eski ID varsa koru — yoksa sonraki restart'ta tekrar username dener
+    if source_id_map:
+        allowed_keys = {str(v).strip() for v in values}
+        pruned: dict[str, Any] = {}
+        for k, v in source_id_map.items():
+            if k in allowed_keys:
+                pruned[k] = v
+        # Park edilenlerin eski ID'sini kaybetmemek için pruned üzerine başarılıları ekle
+        # Zaten pruned içinde var, resolved ile güncellendi; parked'ler pruned'da kalır
+        config["source_chat_ids"] = pruned
+        # Başarılıları kesin ekle (pruned sonrası override)
+        for item in resolved:
+            rk = str(item["requested"]).strip()
+            if config["source_chat_ids"].get(rk) != item["id"]:
+                config["source_chat_ids"][rk] = item["id"]
+    elif resolved:
+        config["source_chat_ids"] = {str(item["requested"]).strip(): item["id"] for item in resolved}
     SOURCES, SOURCE_FAILURES = resolved, failures
     SOURCE_IDS = {item["id"] for item in resolved}
     notes: list[str] = []
@@ -5065,11 +5198,29 @@ async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = Fa
                      item["name"], item["id"], item["requested"], flag)
         elif not item["joined"]:
             notes.append(f"⚠️ {item['name']} kanalına üye değilsin; mesaj gelmez.")
-    for value, exc in failures:
-        log.warning("Kaynak atlandı: %r (%s)", value, exc)
+    # Ayırt edici rapor: tanımlı / çözülen / park edilen
+    defined = len(values)
+    resolved_cnt = len(resolved)
+    parked_cnt = sum(1 for _, exc in failures if isinstance(exc, errors.FloodWaitError))
+    other_fail = len(failures) - parked_cnt
     if failures:
-        notes.append(f"⚠️ {len(failures)} kaynak çözülemedi: "
-                     + ", ".join(str(value) for value, _ in failures[:5]))
+        for value, exc in failures:
+            log.warning("Kaynak atlandı: %r (%s)", value, exc)
+        if parked_cnt:
+            wait_h = f" ({humanize(flood_wait_seconds)} bekle)" if flood_wait_seconds else ""
+            notes.append(f"⚠️ {parked_cnt} kaynak FloodWait nedeniyle park edildi{wait_h}: "
+                         + ", ".join(str(v) for v, e in failures if isinstance(e, errors.FloodWaitError))[:200])
+        if other_fail:
+            notes.append(f"⚠️ {other_fail} kaynak çözülemedi: "
+                         + ", ".join(str(value) for value, exc in failures if not isinstance(exc, errors.FloodWaitError))[:200])
+        if resolved_cnt < defined:
+            # Kısmi başlatmayı normal gibi gösterme — açıkça raporla
+            log.warning("⚠️ KISMI BAŞLATMA: %s/%s kaynak dinleniyor, %s park edildi, %s hatalı",
+                        resolved_cnt, defined, parked_cnt, other_fail)
+            notes.append(f"ℹ️ Tanımlı {defined}, çözülen {resolved_cnt}, park edilen {parked_cnt}, hatalı {other_fail}")
+    else:
+        if not quiet:
+            log.info("Kaynaklar tamam: %s/%s çözüldü", resolved_cnt, defined)
     return notes
 
 
@@ -5724,6 +5875,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         log.info("Tekrar birleştirme kapalı: her eşleşme ayrı mesaj olarak iletilir.")
 
     # --- Kaynakları, kontrol sohbetini ve hedefi çöz.
+    _orig_ids = dict(store.config.get("source_chat_ids") or {}) if isinstance(store.config.get("source_chat_ids"), dict) else {}
     notes, fatal = await resolve_chat_groups(
         client, config, {"sources", "destination", "control"},
     )
@@ -5731,6 +5883,19 @@ async def main(argv: Sequence[str] | None = None) -> int:
         log.info("%s", note)
     if fatal:
         raise SystemExit(f"{fatal}; source_chats listesini ve hesap üyeliğini kontrol et.")
+    # Kaynak ID'lerini kalıcılaştır — sonraki açılışlarda username FloodWait'ini önler
+    _new_ids = store.config.get("source_chat_ids")
+    if isinstance(_new_ids, dict) and _new_ids != _orig_ids:
+        try:
+            await asyncio.to_thread(atomic_write_json, store.path, store.config)
+            log.info("Kaynak ID'leri kalıcılaştırıldı: %s/%s", len(_new_ids), len(chat_values(store.config.get("source_chats"))))
+            # GitHub kalıcılığı: bir sonraki runner aynı ID'leri görsün; sessiz, hatası startup'ı öldürmez
+            # Yalnızca gerçek repo checkout'unda push et — testteki /tmp dosyası repo dışı
+            if push_token() and git_repo_root(store.path.parent) is not None:
+                _st, _dt = await asyncio.to_thread(commit_and_push, store.path, "kaynak ID'leri güncellendi")
+                log.info("Kaynak ID push: %s %s", _st, _dt)
+        except Exception as exc:  # noqa: BLE001 - kalıcılık hatası bot'u durdurmasın
+            log.warning("Kaynak ID'leri yazılamadı: %s: %s", type(exc).__name__, exc)
     not_joined = [item["name"] for item in SOURCES if not item["joined"]]
     if not_joined:
         log.warning(
