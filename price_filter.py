@@ -607,6 +607,14 @@ def _relate_handle_fallback_slash(c: Candidate, before: str, after: str) -> bool
 def _relate_refine_roles(candidates: list[Candidate], lines: list[str]) -> None:
     for c in candidates:
         line = lines[c.line]
+        # Common warehouse template: “old price → current price”. The arrow is
+        # explicit relation evidence; do not select the first (reference) price.
+        if c.role == "normal" and any(
+            previous.line == c.line and previous.end < c.start
+            and re.fullmatch(r"\s*(?:→|➜|⟶|->|➔)\s*", line[previous.end:c.start])
+            for previous in candidates
+        ):
+            c.role, c.strong = "discounted", True
         if c.role == "normal" and (
             any(unit.role == "unit" and unit.line == c.line and unit.start > c.end
                 for unit in candidates)
