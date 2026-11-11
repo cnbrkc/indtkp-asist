@@ -3255,8 +3255,13 @@ def is_referenced_multibuy_upgrade(entry: dict[str, Any], title: str, obj: Any,
                         for c in candidates))
 
 
-def dedup_offer_key(title: str, offer: tuple[float | None, str]) -> str | None:
-    """Tekrar anahtarı ürün adıdır; fiyat yalnızca aynı ürünün fiyat değişimini denetler."""
+def dedup_offer_key(title: str, offer: tuple[float | None, str] | None = None) -> str | None:  # noqa: ARG001 - dış API uyumu
+    """Tekrar anahtarı ürün adıdır; fiyat yalnızca aynı ürünün fiyat değişimini denetler.
+
+    `offer` geriye dönük uyumluluk için korunur; anahtar yalnızca başlığa
+    bağlıdır. Çağıranlar fiyatı ayrıca `better_or_different_offer` ile
+    karşılaştırır.
+    """
     return dedup_key(title)
 
 
@@ -4914,10 +4919,11 @@ async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = Fa
 
 
 async def resolve_control(client: TelegramClient, config: dict,
-                          quiet: bool = False) -> tuple[list[str], bool]:
+                          quiet: bool = False) -> tuple[list[str], bool]:  # noqa: ARG001 - dış API uyumu
     """Kontrol sohbetlerini çöz; Kayıtlı Mesajlar her zaman açık kalır.
 
     Dönen ikinci değer: istenen sohbetlerden en az biri çözülebildi mi?
+    `quiet` ileriye dönük sessiz mod için ayrılmıştır.
     """
     global CONTROL_IDS, CONTROL_NAMES
     ids: set[int] = set()
@@ -4942,8 +4948,11 @@ async def resolve_control(client: TelegramClient, config: dict,
     return [f"🎛 Komut sohbeti: {', '.join(names)}"], resolved
 
 
-async def resolve_destination(client: TelegramClient, config: dict, quiet: bool = False) -> list[str]:
-    """Hedef sohbeti çöz; olmazsa Kayıtlı Mesajlar'a düş."""
+async def resolve_destination(client: TelegramClient, config: dict, quiet: bool = False) -> list[str]:  # noqa: ARG001 - dış API uyumu
+    """Hedef sohbeti çöz; olmazsa Kayıtlı Mesajlar'a düş.
+
+    `quiet` ileriye dönük sessiz mod için ayrılmıştır.
+    """
     global DESTINATION, DESTINATION_ID, DESTINATION_LABEL
     value = parse_chat_value(config.get("destination", "me"))
     try:
@@ -5439,8 +5448,12 @@ def build_query_lines(texts: Iterable[str], pattern: Any) -> list[str]:
 # Ana akış
 # ---------------------------------------------------------------------------
 
-async def auto_restart_scheduler(client: TelegramClient, destination: Any, pat: str, delay_seconds: int) -> None:
-    """Actions job bitmeden bir sonraki job'u zincirleme başlatır."""
+async def auto_restart_scheduler(client: TelegramClient, destination: Any, pat: str, delay_seconds: int) -> None:  # noqa: ARG001 - dış API uyumu
+    """Actions job bitmeden bir sonraki job'u zincirleme başlatır.
+
+    `client` ve `destination` imza uyumluluğu için korunur; yeniden
+    başlatma yalnızca `pat` üzerinden tetiklenir.
+    """
     await asyncio.sleep(delay_seconds)
     log.info("Takipçi oturumu yenileniyor (%s doldu).", humanize(delay_seconds))
     await dispatch_next_run(pat)
