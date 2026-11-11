@@ -1208,6 +1208,10 @@ def is_instagram_url(url: Any) -> bool:
 def _utf16_to_index(text: str, offset: int) -> int:
     """Telegram UTF-16 offset'ini Python karakter indeksine çevir."""
     target = max(0, int(offset or 0))
+    if target == 0:
+        # Offset 0 metnin başıdır; aşağıdaki döngü onu ilk karakterin içi
+        # sayıp 1 döndürürdü ve baştaki biçim ilk karakterini kaybederdi.
+        return 0
     units = 0
     for index, char in enumerate(text):
         width = 2 if ord(char) > 0xFFFF else 1
@@ -1465,6 +1469,12 @@ def sanitize_message(obj: Any) -> SimpleNamespace:
         )
         new_start = _index_after_removals(old_start, removed_spans)
         new_end = _index_after_removals(old_end, removed_spans)
+        if new_end - new_start < old_end - old_start:
+            # Etiketin bir kısmı silindi; geriye yalnızca boş satır kaldıysa onu
+            # ikinci geçiş (boş satır sıkıştırma) atar ve entity düşer. Hedef o
+            # durumda da taşınmalı. Temizliğin dokunmadığı etiketler bu dala girmez.
+            new_start = _index_after_removals(new_start, blank_spans)
+            new_end = _index_after_removals(new_end, blank_spans)
         if old_end > old_start and new_end <= new_start:
             preserved_links.append({
                 "url": clean_url(url),
@@ -3982,8 +3992,11 @@ def resolve_telegram_list(text: Any) -> str | None:
 def _webtakip_count(store: Any) -> int | None:
     """product_watches.json'daki takip edilen ürün sayısı (okunamazsa None)."""
     try:
+        from product_tracker import load_state
+
         return len(load_state(store.path.with_name("product_watches.json")).get("items", []))
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - menü yine de gösterilir; neden log'a düşer
+        log.warning("Web takip kayıt sayısı okunamadı: %s: %s", type(exc).__name__, exc)
         return None
 
 
@@ -4941,7 +4954,7 @@ async def resolve_chat_groups(
     if "destination" in groups:
         notes += await resolve_destination(client, config)
         if strict and DESTINATION_ID is None:
-            return notes, "destination çözülemedi; sohbet ID'sini/​kullanıcı adını kontrol et"
+            return notes, "destination çözülemedi; sohbet ID'sini/kullanıcı adını kontrol et"
     if "control" in groups:
         control_notes, resolved = await resolve_control(client, config)
         notes += control_notes
@@ -5642,7 +5655,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     tracker = None
     if private_api and config_flag(store.config.get("private_control"), False):
         try:
-            from product_tracker import ProductTracker, load_state
+            from product_tracker import ProductTracker
 
             def persist_products(path, data):
                 # Contents API avoids dirtying the shared checkout while config
@@ -5659,6 +5672,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     url = f"https://api.github.com/repos/{repository}/contents/{path.name}"
                     ok, remote, detail = _github_api("GET", f"{url}?ref={urllib.parse.quote(branch, safe='')}", token)
                     if not ok or not isinstance(remote, dict) or not remote.get("sha"):
+                        log.warning("Ürün takip dosyasının GitHub sürümü okunamadı: %s",
+                                    detail or "beklenmeyen yanıt")
                         return False, "Takip dosyasının GitHub sürümü okunamadı."
                     payload = {
                         "message": "config: ürün takip güncellemesi",
@@ -5666,6 +5681,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         "content": base64.b64encode((json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode()).decode(),
                     }
                     ok, _, detail = _github_api("PUT", url, token, payload)
+                    if not ok:
+                        log.warning("Ürün takip ayarı GitHub'a yazılamadı: %s", detail)
                     return ok, "Ürün takip ayarı GitHub'a yazıldı." if ok else "GitHub yazımı başarısız."
 
             tracker = ProductTracker(
@@ -5816,7 +5833,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if not isinstance(event, PrivateControlEvent) or event.sender_id != SELF_ID:
             await control_reply(event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
             return
-        key = pending_key(event)
         if command == COMMAND_DM_STATUS:
             await control_reply(event, dm_status() + (
                 "\n\nBu komut yalnızca bilgi gösterir. Kelime eklemek / çıkarmak için /ekle veya "
@@ -7027,6 +7043,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                      "yalnızca tekrar bastırma için kayda alınacak.")
         now = time.time()
         added = 0
+        failed = 0
+        first_error = ""
         for message in reversed(recent):  # eskiden yeniye: ilk kopya kanonik olur
             try:
                 text = getattr(message, "message", None) or ""
@@ -7133,14 +7151,21 @@ async def main(argv: Sequence[str] | None = None) -> int:
                             record["account_message_id"] = message_id
                         DEDUP_CACHE[target_key] = record
                         added += 1
-                    elif not existing_conflict and not existing.get("pending"):
+                    elif not existing.get("pending"):
                         if badge_count > 1:
                             existing["count"] = max(int(existing.get("count", 1)), badge_count)
                         else:
                             existing["count"] = int(existing.get("count", 1)) + 1
                         existing["last_seen"] = max(float(existing.get("last_seen", seen_at)), seen_at)
             except Exception as exc:  # noqa: BLE001 - tek ileti taramayı durdurmaz
+                failed += 1
+                first_error = first_error or f"{type(exc).__name__}: {exc}"
                 log.debug("Önbelleğe alınamayan ileti: %s: %s", type(exc).__name__, exc)
+        if failed:
+            # İletiler tek tek debug düzeyinde kalır; toplamı görünür olmalı: buradaki bir
+            # kod hatası taramanın bir dalını sessizce devre dışı bırakabilir.
+            log.warning("Tekrar önbelleği: %d/%d ileti işlenemedi (ilk hata: %s).",
+                        failed, len(recent), first_error)
         if added:
             log.info("Tekrar önbelleği ısıtıldı: %d başlık (son %d ileti tarandı).",
                      added, len(recent))

@@ -216,7 +216,7 @@ _HISTORY_HINT_RE = re.compile(r"\bgün|\bay\b|geçmiş|gecmis|ortalama|haftan|ay
 class Candidate:
     value: float
     shown: str
-    cls: str          # price | old | history | other
+    cls: str          # price | cond | old | history | campaign | other
     strong: bool
     line: int
     start: int
@@ -282,10 +282,10 @@ def is_campaign_extra_amount(line: str, start: int, end: int, prev_line: str | N
                 and _CAMPAIGN_LABEL_RE.search(before) and "fiyat" not in before)
 
 
-def _classify(line: str, start: int, end: int, abs_start: int, strike: Sequence[tuple[int, int]],
-              suffix: str = "") -> tuple[str, bool]:
-    """Tutarın türünü belirle. ``end`` para biriminin bittiği yerdir; ``suffix`` 'ye/'den gibi ektir."""
-    after_raw = line[end:]  # end zaten para biriminin sonu; ek kaynak metinde mevcut
+def _classify(line: str, start: int, end: int, abs_start: int,
+              strike: Sequence[tuple[int, int]]) -> tuple[str, bool]:
+    """Tutarın türünü belirle. ``end`` para biriminin bittiği yerdir; 'ye/'den gibi ek ondan sonra gelir."""
+    after_raw = line[end:]
     before_raw = line[:start]
     after_clean = after_raw.strip()
     before_tokens = _tokens(before_raw)[-3:]
@@ -363,8 +363,7 @@ def find_candidates(text: str, strike: Sequence[tuple[int, int]] = ()) -> list[C
             if match.group("bin"):
                 value *= 1000
             core_end = match.end("cur") if match.group("cur") else match.end("a1")
-            cls, strong = _classify(line, match.start(), core_end, offset + match.start(), strike,
-                                    suffix=match.group("suf") or "")
+            cls, strong = _classify(line, match.start(), core_end, offset + match.start(), strike)
             if cls in {"price", "cond"} and _campaign_line_continues(prev_line, line):
                 cls, strong = "campaign", False   # çok satırlı kampanya: "2. ürün" / "1 TL"
             candidates.append(Candidate(value, match.group().strip(), cls, strong, index, match.start(), core_end))
