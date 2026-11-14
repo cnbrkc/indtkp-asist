@@ -516,6 +516,18 @@ def _relate_handle_coupon_threshold(c: Candidate, before: str, after: str, line:
 
 
 def _relate_handle_threshold_words(c: Candidate, before: str, after: str, line: str, candidates: list[Candidate]) -> bool:
+    # Coupon copy often phrases a basket minimum as "2.000 TL'ye 500 TL daha
+    # indirim" rather than the more easily recognized "2.000 TL ve üzeri".
+    # Neither the minimum nor the discount amount is an item price.
+    if c.cls in {"price", "other"} and re.match(
+        r"^['’]?(?:ye|ya|e|a)\s+\d[\d.,]*\s*(?:tl|₺|try)\s+(?:daha\s+)?indirim\b", after,
+    ):
+        c.cls, c.role, c.strong = "other", "threshold", False
+        return True
+    if c.cls in {"price", "other"} and re.search(r"\d[\d.,]*\s*(?:tl|₺|try)['’]?(?:ye|ya|e|a)\s*$", before) \
+            and re.match(r"^(?:daha\s+)?indirim\b", after):
+        c.cls, c.role, c.strong = "other", "discount_amount", False
+        return True
     if re.match(r"^(?:ve\s+)?(?:üzeri|uzeri|üstü|ustu|alışveriş|harcama)", after):
         c.cls, c.role = "other", "threshold"
         return True
@@ -632,6 +644,12 @@ def _relate_refine_roles(candidates: list[Candidate], lines: list[str]) -> None:
             elif re.search(r"taksit|aylık|aylik", context):
                 c.role = "installment"
         c.reason = c.role
+        # A price explicitly tied to a named coupon code is the final payable
+        # amount, unlike an earlier generic payment-stage discount.
+        if c.role == "discounted" and re.search(
+            r"\b[a-z0-9ıişğüçö]{4,}\s+kod(?:uyla|unu|u|la)?\s*$", norm(line[:c.start]),
+        ):
+            c.reason = "code_discounted"
 
 
 def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
@@ -811,6 +829,9 @@ def _extract_build_pools(cands: list[Candidate]) -> tuple[list[Candidate], list[
 
 def _extract_select_best(pool: list[Candidate], units: list[Candidate]) -> tuple[Candidate, bool]:
     """Havuz ve birim adayları arasından en iyi fiyatı ve belirsizlik bayrağını seç."""
+    coded_prices = [candidate for candidate in pool if candidate.reason == "code_discounted"]
+    if len(coded_prices) == 1:
+        return coded_prices[0], False
     values = {c.value for c in pool}
     best = pool[0] if pool else units[0]
     ambiguous = len(values) > 1 or (not pool and bool(units) and not best.strong)
@@ -857,7 +878,8 @@ def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInf
     if pool or units:
         best, ambiguous = _extract_select_best(pool, units)
         confidence = "low" if ambiguous else "medium" if best.cls == "cond" or not best.strong else "high"
-        return PriceInfo(best.value, best.shown, confidence, best.reason)
+        reason = "discounted" if best.reason == "code_discounted" else best.reason
+        return PriceInfo(best.value, best.shown, confidence, reason)
     fallback = _extract_fallback_price(cands, text)
     if fallback is not None:
         return fallback

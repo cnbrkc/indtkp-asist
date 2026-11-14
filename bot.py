@@ -1731,11 +1731,19 @@ def _search_line_candidate(raw_line: str) -> str:
     line = re.sub(r"(?<!\w)#(?=\w)", "", line)
     line = _SEARCH_PRICE_RE.sub(" ", line)
     line = _SEARCH_DISCOUNT_RE.sub(" ", line)
-    line = WORD_TOKEN_RE.sub(
-        lambda match: " " if normalize(match.group()) in _SEARCH_NOISE_WORDS
-        or normalize(match.group()) in _SEARCH_CTA_ONLY_WORDS else match.group(),
-        line,
-    )
+    def remove_search_noise(match: re.Match[str]) -> str:
+        token = normalize(match.group())
+        # "link" is CTA noise as a standalone word, but part of the brand
+        # TP-Link when hyphenated. Preserve that one compound brand token.
+        hyphenated_link = (
+            token == "link" and match.start() > 1 and line[match.start() - 1] == "-"
+            and line[match.start() - 2].isalpha()
+        )
+        return " " if not hyphenated_link and (
+            token in _SEARCH_NOISE_WORDS or token in _SEARCH_CTA_ONLY_WORDS
+        ) else match.group()
+
+    line = WORD_TOKEN_RE.sub(remove_search_noise, line)
     line = _LEADING_NOISE_RE.sub("", line)
     line = re.sub(r"[^\w\s&+.,;:'’/–—-]+", " ", line, flags=re.UNICODE)
     line = re.sub(r"[()\[\]{}]+", " ", line)
@@ -1808,7 +1816,21 @@ def linked_product_title(obj: Any, limit: int = 160) -> str:
     return candidates[0] if len(candidates) == 1 else ""
 
 
-def _coupon_campaign_title(text: str, limit: int) -> str:
+def _coupon_codes(text: str) -> list[str]:
+    """Return explicit uppercase promo codes, excluding ordinary words near "kod"."""
+    code_pattern = r"[A-Z0-9İĞÜŞÖÇ]{4,}"
+    patterns = (
+        rf"\b({code_pattern})\s+(?i:kod(?:u|uyla|unu)?|kuponu)\b",
+        rf"(?i:\b(?:kod(?:u|uyla|unu)?|kupon(?:u)?)\s*[:：]?\s*)({code_pattern})\b",
+    )
+    codes = [match.group(1) for pattern in patterns for match in re.finditer(pattern, text or "")]
+    return list(dict.fromkeys(codes))
+
+
+def _coupon_campaign_title(
+    text: str, limit: int, *, include_code: bool = False,
+    allow_code_only_marker: bool = False,
+) -> str:
     """Return a complete campaign sentence only for coupon-only posts.
 
     Basket thresholds and discount amounts are useful campaign identity, not
@@ -1816,7 +1838,10 @@ def _coupon_campaign_title(text: str, limit: int) -> str:
     product title exists; normal product title selection remains authoritative.
     """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    if not re.search(r"\b(?:kupon\w*|indirim\s*kodu|kampanya\s*kodu)\b", normalize(text)):
+    campaign_marker = r"\b(?:kupon\w*|indirim\s*kodu|kampanya\s*kodu)\b"
+    if allow_code_only_marker:
+        campaign_marker = r"\b(?:kupon\w*|kod\w*|indirim\s*kodu|kampanya\s*kodu)\b"
+    if not re.search(campaign_marker, normalize(text)):
         return ""
     product_line = any(
         price_filter._UNIT_RE.search(line)
@@ -1844,6 +1869,20 @@ def _coupon_campaign_title(text: str, limit: int) -> str:
     # Prefer the self-contained explanatory line (often includes both basket
     # minimum and discount) over a short clipped preview or a code label.
     selected = max(candidates, key=lambda value: (len(WORD_TOKEN_RE.findall(value)), len(value))).strip()
+    # Category-only eligibility (e.g. Amazon Temizlik kuponu) commonly sits on
+    # a separate line and is part of the offer identity, not a product name.
+    category_line = next((line for line in lines if re.search(r"\bkategori\s*[:：]", line, re.I)), "")
+    category_match = re.search(r"\bkategori\s*[:：]\s*(.+)$", category_line, re.I)
+    category = _search_line_candidate(category_match.group(1)) if category_match else ""
+    if category and normalize(category) not in normalize(selected):
+        selected = f"{category} {selected}"
+    if include_code:
+        # Codes distinguish otherwise identical campaign copy; without this,
+        # two different offers can collapse onto the same sentence-only key.
+        codes = _coupon_codes(text)
+        missing_codes = [code for code in codes if normalize(code) not in normalize(selected)]
+        if missing_codes:
+            selected += " — " + ", ".join(missing_codes)
     # Preserve an explicit merchant named on the adjacent coupon heading when
     # the explanatory sentence itself starts with the eligibility condition.
     if not re.search(r"\bamazon\b", normalize(selected)) and any(
@@ -1852,6 +1891,65 @@ def _coupon_campaign_title(text: str, limit: int) -> str:
     ):
         selected = "Amazon " + selected
     return selected[:limit].strip()
+
+
+def _campaign_title_if_clipped(
+    text: str, title: str, limit: int, *, include_code: bool = False,
+    allow_code_only_marker: bool = False,
+) -> str:
+    """Use a complete coupon sentence only when the chosen title is its prefix fragment."""
+    campaign = _coupon_campaign_title(
+        text, limit, include_code=include_code,
+        allow_code_only_marker=allow_code_only_marker,
+    )
+    if not campaign:
+        return ""
+    # A bare product price followed by generic coupon instructions is not a
+    # complete campaign title. Require an eligibility threshold or both the
+    # basket minimum and discount amounts before replacing a teaser.
+    amounts = re.findall(r"\d[\d.,]*\s*(?:tl|₺|try)(?![a-z])", normalize(campaign))
+    has_threshold = bool(re.search(
+        r"\b(?:ve\s+)?(?:uzeri|üstü|alisveris|harcama|kategorisinde|kategorilerinde)\b",
+        normalize(campaign),
+    ))
+    if not has_threshold and len(amounts) < 2:
+        return ""
+    title_tokens = {normalize(token) for token in WORD_TOKEN_RE.findall(title or "")}
+    campaign_tokens = {normalize(token) for token in WORD_TOKEN_RE.findall(campaign)}
+    # Don't replace a distinct product name. A clipped preview title is a strict
+    # subset of the complete sentence and is materially shorter.
+    if title_tokens and title_tokens <= campaign_tokens and len(campaign_tokens) >= len(title_tokens) + 2:
+        return campaign
+    if include_code and title_tokens:
+        base_campaign = _coupon_campaign_title(
+            text, limit, allow_code_only_marker=allow_code_only_marker,
+        )
+        base_tokens = {normalize(token) for token in WORD_TOKEN_RE.findall(base_campaign)}
+        if title_tokens == base_tokens and campaign_tokens > base_tokens:
+            return campaign
+    return ""
+
+
+def _coupon_dedup_identity(text: str) -> str:
+    """Canonical identity for coupon-only campaigns; stable across copy variants."""
+    campaign = _coupon_campaign_title(
+        text, MESSAGE_LIMIT, include_code=True, allow_code_only_marker=True,
+    )
+    codes = _coupon_codes(text)
+    if not campaign or not codes:
+        return ""
+    merchant = next((store for store in sorted(price_filter.STORES, key=len, reverse=True)
+                     if re.search(rf"\b{re.escape(normalize(store))}\b", normalize(text))), "")
+    category_line = next((line for line in (text or "").splitlines()
+                          if re.search(r"\bkategori\s*[:：]", line, re.I)), "")
+    category_match = re.search(r"\bkategori\s*[:：]\s*(.+)$", category_line, re.I)
+    category = _search_line_candidate(category_match.group(1)) if category_match else ""
+    amounts = []
+    for shown in re.findall(r"\d[\d.,]*\s*(?:tl|try|₺)", normalize(campaign)):
+        value = price_filter.parse_threshold(shown)
+        if value is not None:
+            amounts.append(f"{value:.2f}")
+    return "Kampanya " + " ".join(part for part in (merchant, category, *codes, *amounts) if part)
 
 
 def _search_query(obj: Any, limit: int = SEARCH_QUERY_LIMIT) -> str:
@@ -1889,7 +1987,11 @@ def _search_query(obj: Any, limit: int = SEARCH_QUERY_LIMIT) -> str:
             score += 2
         if best_score is None or score > best_score:
             best_candidate, best_score = candidate, score
-    return best_candidate[:limit].strip()
+    best_candidate = best_candidate[:limit].strip()
+    complete_campaign = _campaign_title_if_clipped(
+        raw_text, best_candidate, limit, allow_code_only_marker=True,
+    )
+    return complete_campaign or best_candidate
 
 
 PRICE_LINE_LABEL = "Fiyat:"
@@ -2448,7 +2550,14 @@ def smart_header_info(obj: Any, cleaned_obj: Any, body: str) -> tuple[str, "pric
         entities = entities_for_text(cleaned_obj, body)
         strike = price_filter.strike_spans_from_entities(body, entities)
         title, info = price_filter.analyze(body, strike, _webpage_hints(obj))
-        return linked_product_title(cleaned_obj) or title, info
+        linked = linked_product_title(cleaned_obj)
+        campaign_title = _campaign_title_if_clipped(
+            body, title, MESSAGE_LIMIT, allow_code_only_marker=True,
+        )
+        # Coupon-only posts sometimes start with a preview clipped mid-sentence.
+        # Replace only a genuine prefix fragment; a real product title remains
+        # authoritative even when its post also contains a coupon.
+        return linked or campaign_title or title, info
     except Exception as exc:  # noqa: BLE001 - başlık/fiyat hatası bildirimi engellemesin
         log.warning("Başlık/fiyat tespiti başarısız (%s): %s", type(exc).__name__, exc)
         return "", price_filter.PriceInfo(None, "", "none", "hata")
@@ -2466,6 +2575,18 @@ def smart_dedup_title(event: Any) -> str:
     linked = linked_product_title(cleaned, limit=MESSAGE_LIMIT)
     if linked:
         return linked
+    campaign_identity = _coupon_dedup_identity(text)
+    if campaign_identity:
+        return campaign_identity
+    campaign_title = _campaign_title_if_clipped(
+        text,
+        price_filter.extract_title(text, _webpage_hints(event), limit=MESSAGE_LIMIT),
+        MESSAGE_LIMIT,
+        include_code=True,
+        allow_code_only_marker=True,
+    )
+    if campaign_title:
+        return campaign_title
     # If the source's first line already contains "price - product name",
     # keep that product name; otherwise a following Prime/shipping line can be
     # mistaken for the title by generic title extraction.
@@ -7556,9 +7677,15 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         # rastgele satır toplamak yanlış anahtara yol açabilir.
                         if not history_title:
                             continue
-                        title = history_title
+                        title = _campaign_title_if_clipped(
+                            base, history_title, MESSAGE_LIMIT, include_code=True,
+                            allow_code_only_marker=True,
+                        ) or history_title
                     elif first_line:
-                        title = first_line   # başlığın tek başına üstte olduğu düzen
+                        title = _campaign_title_if_clipped(
+                            base, first_line, MESSAGE_LIMIT, include_code=True,
+                            allow_code_only_marker=True,
+                        ) or first_line   # başlığın tek başına üstte olduğu düzen
                 terms = offer_terms(message, prefer_header=True)
                 key = dedup_offer_key(title, terms)
                 if not key:
