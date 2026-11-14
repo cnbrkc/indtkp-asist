@@ -72,6 +72,13 @@ class CursorMechanismTest(unittest.TestCase):
         collected = bot.cursor_collect_for_persist()
         self.assertEqual(collected, {"-1001": 1521, "-1002": 870})
 
+    def test_uninitialized_live_cursor_is_not_persisted(self):
+        bot.CURSOR_RAM[-1001] = {"cursor": 0, "pending": {17}, "completed": set(),
+                                 "failed": set(), "failed_at": {}, "initialized": False}
+        bot._cursor_ensure(-1002)["cursor"] = 44
+        self.assertEqual(bot.cursor_collect_for_persist(), {"-1002": 44},
+                         "ilk live ID tek başına restart cursor'ı olarak kaydedilmemeli")
+
     def test_fast_poll_backfill_age_is_1800(self):
         self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 1800.0)
 
@@ -83,16 +90,17 @@ class CursorIntegrationTest(ti.MainHarness, unittest.TestCase):
         self.addCleanup(lambda: (bot.CURSOR_RAM.clear(), ti.reset_state()))
 
     def test_bootstrap_no_replay(self):
-        """İlk kurulum: top ile bootstrap → 0 teslim"""
+        """İlk kurulumda yalnızca sınırlı/yaş filtreli geçmiş okunur; eski ileti gönderilmez."""
         async def get_input_entity(client_self, chat_id):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
         async def call(client_self, request):
             chat_id = sorted(bot.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=10)])
-        async def get_messages(client_self, peer, min_id=0, limit=None):
-            # Should not be called when bootstrap
-            self.fail("bootstrap’ta get_messages çağrılmamalı")
+        fetches = []
+        async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
+            fetches.append((min_id, limit, max_id, reverse))
+            return []
         async def run_until_disconnected(client_self):
             await asyncio.sleep(1.2)
         config = self._write_config(fast_poll=True, fast_poll_seconds=1)
@@ -104,6 +112,7 @@ class CursorIntegrationTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
         self.assertEqual(len(client.delivered), 0)
+        self.assertEqual(fetches, [(0, bot.FAST_POLL_BACKFILL_LIMIT, 11, False)])
 
     def test_cursor_based_recovery_delivers_after_bootstrap(self):
         """Cursor sonrası yeni mesajlar cursor’dan alınır, sayfalı."""
@@ -116,7 +125,7 @@ class CursorIntegrationTest(ti.MainHarness, unittest.TestCase):
             peer = utils.get_peer(chat_id)
             top = 10 if polls[0] == 1 else 13
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=top)])
-        async def get_messages(client_self, peer, min_id=0, limit=None):
+        async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
             # After bootstrap cur=10, second poll should fetch min_id=10 → 11,12,13
             chat_id = sorted(bot.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
@@ -291,7 +300,7 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
             top = 100 if polls[0] == 1 else 700
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=top)])
 
-        async def get_messages(client_self, peer, min_id=0, limit=None):
+        async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
             chat_id = sorted(bot.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -340,7 +349,7 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
             top = 100 if polls[0] == 1 else 103
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=top)])
 
-        async def get_messages(client_self, peer, min_id=0, limit=None):
+        async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
             chat_id = sorted(bot.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -384,8 +393,8 @@ class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
         bot.CURSOR_RAM.clear()
         self.addCleanup(lambda: (bot.CURSOR_RAM.clear(), ti.reset_state()))
 
-    def test_live_before_first_poll_does_not_replay_history(self):
-        """İlk poll öncesi canlı mesaj gerçek on_new_message ile → bootstrap id-1, geçmiş tekrar yok."""
+    def test_live_before_first_poll_uses_limited_poll_bootstrap(self):
+        """Live olay, önceki tek bir ID'yi cursor varsaymaz; poll sınırlı geçmişi belirler."""
         async def get_input_entity(client_self, chat_id):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
 
@@ -394,8 +403,10 @@ class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
             peer = utils.get_peer(chat_id)
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=10)])
 
-        async def get_messages(client_self, peer, min_id=0, limit=None):
-            self.fail("ilk poll öncesi canlı sonrası get_messages çağrılmamalı (cursor zaten 10)")
+        fetches = []
+        async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
+            fetches.append((min_id, limit, max_id, reverse))
+            return []
 
         async def run_until_disconnected(client_self):
             chat_id = sorted(bot.SOURCE_IDS)[0]
@@ -416,8 +427,7 @@ class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
             ev = ti.FakeEvent(chat_id, 1143378073, "çay fırsat", message_id=11)
             ev.message.date = datetime.datetime.now(datetime.timezone.utc)
             await handler(ev)
-                        # Canlı bootstrap id-1=10 sonra success ile 11; poll top=10 <= cur olduğu için tekrar gelmez
-            self.assertIn(bot.CURSOR_RAM.get(chat_id, {}).get("cursor"), (10, 11), "canlı bootstrap cursor 10/11 olmalı")
+            self.assertIn(bot.CURSOR_RAM.get(chat_id, {}).get("cursor"), (0, 10, 11), "ilk poll güvenli cursor'ı belirlemeli")
             self.assertGreater(bot.STATS["seen"], seen_before, "on_new_message seen artırmalı")
             await asyncio.sleep(1.5)
 
@@ -447,7 +457,7 @@ class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
             peer = utils.get_peer(chat_id)
             top = 10 if polls[0] == 1 else 210
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=top)])
-        async def get_messages(client_self, peer, min_id=0, limit=None):
+        async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
             chat_id = sorted(bot.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -484,7 +494,7 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
             chat_id = sorted(bot.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=20)])
-        async def get_messages(client_self, peer, min_id=0, limit=None):
+        async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
             return []
         async def run_until_disconnected(client_self):
             # handlers: 0=on_control, 1=on_new_message

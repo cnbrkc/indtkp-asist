@@ -300,7 +300,7 @@ def reset_state():
     bot.CURSOR_RAM.clear()
     bot.STATS["cleaned_commands"] = 0
     bot.STATS.update({"seen": 0, "matched": 0, "forwarded": 0, "failed": 0,
-                      "commands": 0, "modes": {}, "cleaned": 0, "last_match": None,
+                      "notification_failed": 0, "commands": 0, "modes": {}, "cleaned": 0, "last_match": None,
                       "last_match_source": None, "source_seen": {}, "deduped": 0, "dedup_edits": 0})
 
 
@@ -2156,6 +2156,43 @@ class SingleMessageTest(unittest.TestCase):
         self._send(client)
         self.assertEqual(len(client.delivered), 1, "bot yoksa normal zincir çalışmalı")
         self.assertEqual(client.deleted, [], "bildirim yoksa kopya silinmemeli")
+        self.assertEqual(bot.STATS["notification_failed"], 0, "yapılandırılmamış bildirim arızası sayılmamalı")
+
+    def test_bot_notification_failure_is_not_counted_as_notification_success(self):
+        async def failed_ping(token, chat_id, text, **kwargs):
+            return False, "simulated Bot API rejection"
+
+        patcher = mock.patch.object(bot, "send_bot_ping", failed_ping)
+        patcher.start()
+        self._patchers.append(patcher)
+        client = self._run(fast_notify=True)
+        self._send(client)
+        self.assertEqual(len(client.delivered), 1, "normal hesap kopyası yedek olarak kalmalı")
+        self.assertEqual(bot.STATS["forwarded"], 1, "hedef içerik gerçekten iletildi")
+        self.assertEqual(bot.STATS["notification_failed"], 1, "telefon bildirimi ayrı başarısız kaydedilmeli")
+        self.assertEqual(bot.STATS["failed"], 0, "hedefe içerik teslimi başarısız değil")
+        source_cursor = bot.CURSOR_RAM[next(iter(bot.SOURCE_IDS))]
+        self.assertIn(7, source_cursor["completed"],
+                      "içerik teslimi tamamlanmış olarak tutulmalı; başlangıç cursor'ı henüz poll belirlemedi")
+
+    def test_gateway_503_retries_bot_notification_before_account_fallback(self):
+        calls = []
+
+        async def flaky_ping(token, chat_id, text, **kwargs):
+            calls.append(text)
+            if len(calls) == 1:
+                return False, "HTTP 503: upstream unavailable"
+            return True, "sent"
+
+        ping = mock.patch.object(bot, "send_bot_ping", flaky_ping)
+        ping.start()
+        self._patchers.append(ping)
+        client = self._run(fast_notify=True)
+        self._send(client)
+        self.assertEqual(len(calls), 2, "belirgin HTTP 503 yeniden denenmeli")
+        self.assertEqual(client.delivered, [], "bildirim başarılı olunca hesap kopyasına düşülmemeli")
+        self.assertEqual(bot.STATS["notification_failed"], 0)
+        self.assertEqual(bot.STATS["forwarded"], 1)
 
     def test_default_keeps_account_copy_then_bot_order(self):
         client = self._run()

@@ -325,8 +325,8 @@ class FastPollTest(Harness, unittest.TestCase):
         dates = {self.CHANNELS["@firsatz"]: now - datetime.timedelta(seconds=first_age),
                  self.CHANNELS["@firsattayfa"]: now - datetime.timedelta(seconds=second_age)}
 
-        async def get_messages(client_self, peer, min_id=0, limit=None):
-            if test.polls < 2:
+        async def get_messages(client_self, peer, min_id=0, limit=30, max_id=0, reverse=False):
+            if max_id or test.polls < 2:
                 return []
             return [types.Message(id=11, peer_id=types.PeerChannel(peer.channel_id), post=True,
                                   date=dates[peer.channel_id], message=texts[peer.channel_id])]

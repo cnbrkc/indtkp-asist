@@ -73,7 +73,8 @@ STATS = {
     "seen": 0,        # kaynaklarda görülen mesaj
     "matched": 0,     # anahtar kelimeye uyan mesaj
     "forwarded": 0,   # hedefe iletilen mesaj
-    "failed": 0,      # iletimi başarısız mesaj
+    "failed": 0,      # hedefe hiçbir teslim yolu çalışmayan kaynak mesajı
+    "notification_failed": 0,  # içerik iletilse bile Bot API telefon bildirimi başarısız
     "commands": 0,    # çalıştırılan komut
     "modes": {},      # hangi iletim yolu kaç kez işe yaradı
     "cleaned": 0,     # bildirim gittikten sonra silinen hesap kopyası
@@ -2174,13 +2175,15 @@ FAST_POLL_SECONDS = 3.0
 # P6: açılışta her kaynak için geriye dönük tarama sınırları. Kesinti
 # sırasında gelen mesajlar yalnızca bu pencere içinde yakalanır; daha eski
 # mesajlar topluca yeniden bildirilmez. Kalıcı imleç tutulmaz.
-FAST_POLL_BACKFILL_LIMIT = 100       # kaynak başına en fazla mesaj (sayı)
-FAST_POLL_BACKFILL_MAX_AGE = 1800.0  # ve en fazla bu kadar saniye eski (30 dk; tek seferlik bootstrap koruması)
+FAST_POLL_BACKFILL_LIMIT = 100       # yeni/yeniden başlayan kaynak başına başlangıç penceresi
+FAST_POLL_BACKFILL_MAX_AGE = 1800.0  # başlangıçta yalnızca son 30 dk içindeki iletiler
+FAST_POLL_BATCH_LIMIT = 30           # kaynak başına bir turda en fazla 30 yeni ileti
 # P0 ölçümleme: hızlı taramanın anlık durumu (/durum ve kalp atışında görünür).
 # Yalnızca sayaç/aralık bilgisi tutar; davranış değişmez.
 POLL_TELEMETRY: dict[str, float] = {
     "interval": FAST_POLL_SECONDS,   # o an kullanılan yoklama aralığı (sn)
-    "last_elapsed": 0.0,             # son GetPeerDialogs isteğinin süresi (sn)
+    "last_elapsed": 0.0,             # son tam tarama turunun süresi (sn)
+    "last_dialog_elapsed": 0.0,      # son GetPeerDialogs isteğinin süresi (sn)
     "flood_count": 0,                # bu oturumdaki tarama FloodWait sayısı
     "last_flood_wait": 0.0,          # son tarama FloodWait beklemesi (sn)
 }
@@ -2415,7 +2418,7 @@ def live_event_should_skip(event: Any) -> bool:
 def _cursor_ensure(chat_id: int) -> dict[str, Any]:
     cid = int(chat_id)
     if cid not in CURSOR_RAM:
-        CURSOR_RAM[cid] = {"cursor": 0, "pending": set(), "completed": set(), "failed": set(), "failed_at": {}}
+        CURSOR_RAM[cid] = {"cursor": 0, "pending": set(), "completed": set(), "failed": set(), "failed_at": {}, "initialized": True}
     return CURSOR_RAM[cid]
 
 
@@ -2476,14 +2479,18 @@ def cursor_load_from_config(config: dict) -> None:
         try:
             cid = int(k)
             cur = int(v)
-            CURSOR_RAM[cid] = {"cursor": cur, "pending": set(), "completed": set(), "failed": set(), "failed_at": {}}
+            CURSOR_RAM[cid] = {"cursor": cur, "pending": set(), "completed": set(), "failed": set(), "failed_at": {}, "initialized": True}
         except Exception:
             continue
 
 
 def cursor_collect_for_persist() -> dict[str, int]:
-    """RAM cursor’larını tek toplu dict’e topla (persist için)."""
-    return {str(int(cid)): int(st["cursor"]) for cid, st in CURSOR_RAM.items()}
+    """Yalnızca başlangıç noktası belirlenmiş RAM cursor’larını kalıcılaştır."""
+    return {
+        str(int(cid)): int(st["cursor"])
+        for cid, st in CURSOR_RAM.items()
+        if st.get("initialized", True)
+    }
 
 
 async def cursor_persist_for_restart(store: ConfigStore) -> tuple[bool, str]:
@@ -4146,7 +4153,9 @@ def build_status_text(config: dict, *, connected: bool = True) -> str:
         + (f" (çözülemeyen {len(SOURCE_FAILURES)})" if SOURCE_FAILURES else "")
         + "\n"
         f"• Görülen: {STATS['seen']} | Eşleşen: {STATS['matched']} | İletilen: {STATS['forwarded']}"
-        + (f" | Hatalı: {STATS['failed']}" if STATS["failed"] else "")
+        + (f" | Hedefe iletilemeyen: {STATS['failed']}" if STATS["failed"] else "")
+        + (f" | Telefon bildirimi başarısız: {STATS['notification_failed']}"
+           if STATS.get("notification_failed") else "")
         + "\n"
         f"• Son eşleşme: {last_line}\n"
         f"• Hedef: {DESTINATION_LABEL}\n"
@@ -5985,15 +5994,29 @@ def build_query_lines(texts: Iterable[str], pattern: Any) -> list[str]:
 # Ana akış
 # ---------------------------------------------------------------------------
 
-async def auto_restart_scheduler(client: TelegramClient, destination: Any, pat: str, delay_seconds: int) -> None:  # noqa: ARG001 - dış API uyumu
-    """Actions job bitmeden bir sonraki job'u zincirleme başlatır.
+async def auto_restart_scheduler(
+    client: TelegramClient, destination: Any, pat: str, delay_seconds: int, *,
+    prepare_restart: Callable[[], Any] | None = None,
+    resume_after_failure: Callable[[], Any] | None = None,
+) -> None:  # noqa: ARG001 - dış API uyumu
+    """Eski Actions çalışmasını güvenli biçimde devret, sonra yenisini başlat.
 
-    `client` ve `destination` imza uyumluluğu için korunur; yeniden
-    başlatma yalnızca `pat` üzerinden tetiklenir.
+    ``prepare_restart`` cursor'ı kalıcılaştırıp devam eden teslimatları
+    boşaltmalıdır. Yeni workflow başlatılamazsa ``resume_after_failure`` eski
+    sürecin kaynakları dinlemeye devam etmesini sağlar.
     """
     await asyncio.sleep(delay_seconds)
     log.info("Takipçi oturumu yenileniyor (%s doldu).", humanize(delay_seconds))
-    await dispatch_next_run(pat)
+    if prepare_restart is not None:
+        prepared = await prepare_restart()
+        if not prepared:
+            log.error("Otomatik yenileme iptal: kaynak cursor'ı güvenle kaydedilemedi.")
+            return
+    ok, detail = await dispatch_next_run(pat)
+    if not ok:
+        log.error("Otomatik yenileme başlatılamadı: %s", detail)
+        if resume_after_failure is not None:
+            await resume_after_failure()
 
 
 async def heartbeat() -> None:
@@ -7789,7 +7812,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         """
         no_info: dict[str, Any] = {}
         if not NOTIFY_BOT_TOKEN or DESTINATION_ID is None:
-            return False, no_info
+            return False, no_info, ""
         message_link = offer_link(event)
         footer_name = source_name if SOURCE_FOOTER else None
 
@@ -7851,7 +7874,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         "text": composed["text"],
                         "entities": entities,
                         "keyboard": keyboard,
-                    }
+                    }, ""
                 log.warning("Bildirim medyası gönderilemedi (%s) → metne düşülüyor.", detail)
 
         composed = compose_message(
@@ -7874,9 +7897,30 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 "text": text,
                 "entities": entities,
                 "keyboard": keyboard,
-            }
+            }, ""
         log.warning("Bildirim gönderilemedi: %s", detail)
-        return False, no_info
+        return False, no_info, str(detail)
+
+    async def notify_offer_with_retry(
+        event: events.NewMessage.Event, source_name: str,
+    ) -> tuple[bool, dict[str, Any], str]:
+        """Explicit gateway failures are retryable; ambiguous network errors are not replayed."""
+        retry_delays = (0.5, 2.0)
+        for attempt in range(len(retry_delays) + 1):
+            sent, info, detail = await notify_offer(event, source_name)
+            if sent:
+                return True, info, ""
+            # Telegram's own request_with_retry already handles 429. A definite
+            # 502/503/504 can be retried without retrying timeouts/connection
+            # failures whose first send may have been accepted.
+            retryable = any(f"HTTP {status}:" in detail for status in (502, 503, 504))
+            if not retryable or attempt >= len(retry_delays):
+                return False, info, detail
+            delay = retry_delays[attempt]
+            log.warning("Bildirim geçici HTTP ağ geçidi hatası; aynı bildirim %.1f sn sonra yeniden denenecek (%d/%d).",
+                        delay, attempt + 1, len(retry_delays))
+            await asyncio.sleep(delay)
+        return False, {}, "yeniden deneme sınırı"
 
     async def deliver(
         event: events.NewMessage.Event, source_name: str,
@@ -7898,10 +7942,18 @@ async def main(argv: Sequence[str] | None = None) -> int:
         except Exception:  # noqa: BLE001 - tarih yoksa ölçüm atlanır
             received_lag = -1.0
         skip_bot = False
+
+        def note_notification_failure(detail: str = "") -> None:
+            if NOTIFY_BOT_TOKEN and DESTINATION_ID is not None:
+                STATS["notification_failed"] = int(STATS.get("notification_failed", 0) or 0) + 1
+                log.error("Hedef içeriği iletilmiş olsa da telefon bildirimi başarısız (kaynak=%s, mesaj=%s, neden=%s); toplam=%d.",
+                          source_name, getattr(event, "id", "?"), detail or "bilinmeyen hata",
+                          STATS["notification_failed"])
+
         if FAST_NOTIFY and NOTIFY_BOT_TOKEN and DESTINATION_ID is not None:
             # Hızlı yol: önce bildirim botu. Başarılıysa hesap kopyası hiç atılmaz
             # (silinecek bir şey kalmaz); başarısızsa normal zincir aynen çalışır.
-            bot_sent, bot_info = await notify_offer(event, source_name)
+            bot_sent, bot_info, bot_error = await notify_offer_with_retry(event, source_name)
             if bot_sent:
                 STATS["forwarded"] += 1
                 STATS["modes"]["bot"] = STATS["modes"].get("bot", 0) + 1
@@ -7917,6 +7969,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                          source_name, received_lag, time.perf_counter() - t_begin)
                 maybe_report_slow(client, source_name, received_lag, [("Bildirim (hızlı yol)", time.perf_counter() - t_begin)])
                 return True, "bot", info
+            note_notification_failure(bot_error)
             skip_bot = True
             log.info("Hızlı bildirim gönderilemedi → normal iletim zincirine dönülüyor (kaynak: %s).", source_name)
         sanitized = sanitize_message(event)
@@ -7949,7 +8002,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if skip_bot:
                 bot_sent, bot_info = False, {}
             else:
-                bot_sent, bot_info = await notify_offer(event, source_name)
+                bot_sent, bot_info, bot_error = await notify_offer_with_retry(event, source_name)
+                if not bot_sent:
+                    note_notification_failure(bot_error)
             t_notified = time.perf_counter()
             account_deleted = False
             if bot_sent and SINGLE_MESSAGE:
@@ -7991,7 +8046,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     cursor_load_from_config(store.config)
     # İlk kurulum: source_cursors yoksa bootstrap ilk poll’de top ile yapılır (patlama yok)
     if not store.config.get("source_cursors"):
-        log.info("Cursor: kalıcı kayıt yok — ilk poll’de her kaynak top ile bootstrap edilecek (geçmiş tekrarı yok).")
+        log.info("Cursor: kalıcı kayıt yok — ilk poll’de sınırlı geriye tarama yapılacak; başlangıçtan önceki geçmiş bastırılacak.")
 
     # Handler'lara `chats=` VERMİYORUZ: Telethon o filtreyi ilk mesajda çözer ve
     # çözümleme hatası tüm update akışını öldürür. Filtreyi burada kendimiz yapıyoruz.
@@ -8179,8 +8234,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
         try:
             _cid = int(event.chat_id); _mid = int(event.id)
             if _cid not in CURSOR_RAM:
-                _cursor_ensure(_cid)["cursor"] = max(0, _mid - 1)
-                log.info("Yeni kaynak canlı bootstrap (poll öncesi): %s → cursor=%s", _cid, _cursor_ensure(_cid)["cursor"])
+                # İlk live update mesajı tek başına güvenli bir başlangıç noktası
+                # değildir: update'ler eşzamanlı işlenirken daha eski ID önce
+                # gelebilir. Poll, sınırlı/yaş filtreli bootstrap'ı belirleyecek.
+                CURSOR_RAM[_cid] = {"cursor": 0, "pending": set(), "completed": set(),
+                                    "failed": set(), "failed_at": {}, "initialized": False}
+                log.info("Yeni kaynak canlı olayla görüldü; güvenli cursor poll'de belirlenecek: %s", _cid)
             _cur = int(CURSOR_RAM.get(_cid, {}).get("cursor", 0) or 0)
             if _mid <= _cur:
                 return
@@ -8301,108 +8360,203 @@ async def main(argv: Sequence[str] | None = None) -> int:
         POLL_TELEMETRY["interval"] = poll_interval
         log.info("⚡ Hızlı tarama açık: kaynaklar %.0f sn'de bir yoklanacak.", FAST_POLL_SECONDS)
 
+        delivery_slots = asyncio.Semaphore(4)
+
         async def run_event(event: Any) -> None:
             try:
-                await on_new_message(event)
+                async with delivery_slots:
+                    await on_new_message(event)
             except Exception as exc:  # noqa: BLE001 - tek mesaj hatası taramayı durdurmasın
                 log.warning("Hızlı tarama mesajı işlenemedi (%s): %s", type(exc).__name__, exc)
+
+        source_retry_log_at: dict[tuple[int, str], float] = {}
+        source_not_before: dict[int, float] = {}
+
+        def defer_source_after_flood(chat_id: int, exc: BaseException, stage: str) -> None:
+            wait = max(1, int(getattr(exc, "seconds", 1) or 1)) + 1
+            source_not_before[int(chat_id)] = max(
+                source_not_before.get(int(chat_id), 0.0), time.monotonic() + wait,
+            )
+            log.warning("Kaynak taraması FloodWait (%s, kaynak=%s): %s sn ertelendi; diğer kaynaklar sürüyor.",
+                        stage, chat_id, wait)
+
+        def should_log_source_retry(chat_id: int, stage: str) -> bool:
+            key = (int(chat_id), stage)
+            now = time.monotonic()
+            if now - source_retry_log_at.get(key, 0.0) >= 300:
+                source_retry_log_at[key] = now
+                return True
+            return False
 
         while True:
             try:
                 await asyncio.sleep(max(FAST_POLL_SECONDS, poll_interval))
                 if not FAST_POLL:
                     continue
+                poll_started = time.monotonic()
                 targets: list[tuple[int, Any]] = []
                 for chat_id in sorted(SOURCE_IDS - CONTROL_IDS):
+                    if source_not_before.get(chat_id, 0.0) > time.monotonic():
+                        continue
                     peer = input_peers.get(chat_id)
                     if peer is None:
                         try:
                             peer = await client.get_input_entity(chat_id)
-                        except Exception:  # noqa: BLE001 - çözülemeyen kaynak atlanır
+                        except errors.FloodWaitError as exc:
+                            defer_source_after_flood(chat_id, exc, "entity")
+                            continue
+                        except Exception as exc:  # noqa: BLE001 - source isolated; retry next cycle
+                            if should_log_source_retry(chat_id, "entity"):
+                                log.warning("Hızlı taramada kaynak çözümlenemedi (kaynak=%s): %s: %s; sonraki turda yeniden denenecek.",
+                                            chat_id, type(exc).__name__, exc)
                             continue
                         input_peers[chat_id] = peer
                     targets.append((chat_id, peer))
                 if not targets:
+                    POLL_TELEMETRY["last_elapsed"] = time.monotonic() - poll_started
                     continue
-                poll_started = time.monotonic()
+                dialog_started = time.monotonic()
                 result = await client(functions.messages.GetPeerDialogsRequest(
                     peers=[types.InputDialogPeer(peer) for _, peer in targets],
                 ))
-                poll_elapsed = time.monotonic() - poll_started
-                # Telethon normally absorbs short FloodWaits internally. A slow
-                # poll must back off too, otherwise our except block never sees
-                # the recurring 3–5 second waits. Do not mutate the client's
-                # global flood policy: account sends/commands share that client.
-                POLL_TELEMETRY["last_elapsed"] = poll_elapsed
-                if poll_elapsed >= max(2.0, FAST_POLL_SECONDS):
-                    poll_interval = next_poll_interval(poll_interval, poll_elapsed)
-                    POLL_TELEMETRY["interval"] = poll_interval
-                    log.info("Hızlı tarama isteği %.1f sn sürdü; yoklama aralığı %.0f sn'ye çıkarıldı.",
-                             poll_elapsed, poll_interval)
+                dialog_elapsed = time.monotonic() - dialog_started
+                POLL_TELEMETRY["last_dialog_elapsed"] = dialog_elapsed
                 if RESTARTING:
+                    POLL_TELEMETRY["last_elapsed"] = time.monotonic() - poll_started
                     await asyncio.sleep(0.5)
                     continue
                 tops = {utils.get_peer_id(d.peer): int(d.top_message or 0) for d in result.dialogs}
+                events_by_source: dict[int, list[Any]] = {}
                 for chat_id, peer in targets:
                     if RESTARTING:
                         break
                     top = tops.get(chat_id)
                     if top is None:
+                        if should_log_source_retry(chat_id, "dialog"):
+                            log.warning("Hızlı tarama yanıtında kaynak diyaloğu yok (kaynak=%s); sonraki turda yeniden denenecek.", chat_id)
                         continue
-                    # cursor temelli — tek cursor/grup (RAM)
                     cur_entry = CURSOR_RAM.get(chat_id)
-                    if cur_entry is None:
-                        # İlk kurulum: cursor’u mevcut top’a kur, geçmişi topluca gönderme (patlama yok)
-                        _cursor_ensure(chat_id)["cursor"] = int(top)
-                        log.info("Yeni kaynak için cursor bootstrap: %s → %s", chat_id, top)
-                        continue
-                    cur = int(cur_entry.get("cursor", 0) or 0)
-                    if top <= cur:
-                        continue
-                    # Sayfalı kurtarma: Telethon limit=None → paginated GetHistory
-                    try:
-                        messages = await client.get_messages(peer, min_id=cur, limit=None)
-                    except Exception as exc:  # noqa: BLE001 - çekme başarısızsa cursor ilerletme, sonra tekrar dene
-                        log.warning("Geçmiş çekilemedi (kaynak=%s, cursor=%s): %s: %s", chat_id, cur, type(exc).__name__, exc)
-                        continue
-                    # Poll’le doğrulanmış silinmiş ID’ler için gap skip (canlı race’te tek başına karar yok)
-                    # Sadece ardışık silinmişleri atla — pending/failed ortadaki ID’yi atlama
+                    initializing = cur_entry is None or not cur_entry.get("initialized", True)
+                    if initializing:
+                        # Cursor yoksa/toparlanmış kaynaksa sınırlı bir start-up
+                        # pencere tara. Eski geçmişi patlatma; son 30 dk ve en
+                        # fazla 100 ileti. Geçmiş sorgusu hata verirse cursor'ı
+                        # ilerletme, sonraki turda güvenle tekrar dene.
+                        try:
+                            messages = await client.get_messages(
+                                peer, limit=FAST_POLL_BACKFILL_LIMIT, max_id=int(top) + 1,
+                            )
+                        except errors.FloodWaitError as exc:
+                            defer_source_after_flood(chat_id, exc, "bootstrap history")
+                            continue
+                        except Exception as exc:  # noqa: BLE001 - retry without changing cursor
+                            if should_log_source_retry(chat_id, "bootstrap-history"):
+                                log.warning("Başlangıç geçmişi çekilemedi (kaynak=%s): %s: %s; sonraki turda yeniden denenecek.",
+                                            chat_id, type(exc).__name__, exc)
+                            continue
+                        cutoff = time.time() - FAST_POLL_BACKFILL_MAX_AGE
+                        recent = []
+                        for message in messages:
+                            try:
+                                stamp = message.date.timestamp()
+                            except Exception:  # noqa: BLE001 - malformed/missing date is not safe to replay
+                                continue
+                            if stamp >= cutoff:
+                                recent.append(message)
+                        recent.sort(key=lambda message: int(message.id))
+                        st = _cursor_ensure(chat_id)
+                        known_ids = set(st["pending"]) | set(st["failed"]) | set(st["completed"])
+                        known_ids = {int(mid) for mid in known_ids if int(mid) > 0}
+                        if not recent:
+                            st["cursor"] = min(int(top), min(known_ids) - 1) if known_ids else int(top)
+                            st["initialized"] = True
+                            _cursor_advance(chat_id)
+                            log.info("Yeni kaynak için cursor bootstrap: %s → %s (son %d ileti içinde son %.0f dk'da ileti yok).",
+                                     chat_id, st["cursor"], FAST_POLL_BACKFILL_LIMIT, FAST_POLL_BACKFILL_MAX_AGE / 60)
+                            continue
+                        baseline_ids = [int(recent[0].id), *known_ids]
+                        st["cursor"] = max(0, min(baseline_ids) - 1)
+                        st["initialized"] = True
+                        # Mark stale messages that fall *inside* the recent ID
+                        # range as intentionally skipped; otherwise a later
+                        # min_id poll could rediscover and deliver them.
+                        recent_ids = {int(message.id) for message in recent}
+                        for stale_message in messages:
+                            stale_id = int(getattr(stale_message, "id", 0) or 0)
+                            if stale_id > st["cursor"] and stale_id not in recent_ids:
+                                _cursor_mark_success(chat_id, stale_id)
+                        messages = recent
+                        log.info("Yeni kaynak için sınırlı kurtarma: %s → cursor=%s, %d ileti (son %.0f dk).",
+                                 chat_id, st["cursor"], len(messages), FAST_POLL_BACKFILL_MAX_AGE / 60)
+                        cur = int(st["cursor"])
+                    else:
+                        cur = int(cur_entry.get("cursor", 0) or 0)
+                        if top <= cur:
+                            continue
+                        try:
+                            # oldest-first, capped batch: a noisy source cannot
+                            # monopolize this pass; remaining IDs stay beyond cursor.
+                            messages = await client.get_messages(
+                                peer, min_id=cur, limit=FAST_POLL_BATCH_LIMIT, reverse=True,
+                            )
+                        except errors.FloodWaitError as exc:
+                            defer_source_after_flood(chat_id, exc, "history")
+                            continue
+                        except Exception as exc:  # noqa: BLE001 - don't move cursor; retry next cycle
+                            if should_log_source_retry(chat_id, "history"):
+                                log.warning("Geçmiş çekilemedi (kaynak=%s, cursor=%s): %s: %s; sonraki turda yeniden denenecek.",
+                                            chat_id, cur, type(exc).__name__, exc)
+                            continue
+                        messages = sorted(messages, key=lambda message: int(getattr(message, "id", 0) or 0))
+                    # Poll-confirmed leading ID gaps are deleted messages; do not
+                    # skip an ID currently being delivered or awaiting retry.
                     fetched_ids = {int(getattr(m, "id", 0) or 0) for m in messages if getattr(m, "id", None)}
                     if fetched_ids:
                         max_fetched = max(fetched_ids)
                         st = _cursor_ensure(chat_id)
-                        for gid in range(int(st["cursor"])+1, max_fetched+1):
+                        for gid in range(int(st["cursor"]) + 1, max_fetched + 1):
                             if gid in fetched_ids:
-                                break  # gerçek mesaj var — sonrası için tekrar poll gerekir
+                                break
                             if gid in st["pending"] or gid in st["failed"]:
-                                break  # işlemde/başarısız — poll retry ile çözülür
-                            # poll bu ID’nin olmadığını doğruladı (silinmiş)
+                                break
                             st["cursor"] = gid
-                            log.info("Cursor gap skip (poll doğruladı, silinmiş): %s %s", chat_id, gid)
-                        # Gap atlama sonrası tamamlanmış zinciri ilerlet
                         _cursor_advance(chat_id)
                         cur = int(st["cursor"])
-                    for message in reversed(list(messages)):
-                        if message.id <= cur or (chat_id, message.id) in LIVE_SEEN:
+                    for message in messages:
+                        mid = int(getattr(message, "id", 0) or 0)
+                        if mid <= cur or (chat_id, mid) in LIVE_SEEN:
                             continue
-                        _remember(POLL_DISPATCHED, chat_id, message.id)
+                        _remember(POLL_DISPATCHED, chat_id, mid)
                         event = events.NewMessage.Event(message)
                         try:
                             event._set_client(client)
-                        except Exception:  # noqa: BLE001 - varlık önbelleği yoksa istemci yine de bağlansın
+                        except Exception:  # noqa: BLE001 - attach client even without entity cache
                             event._client = client
                         event._fast_poll = True
-                        log.info("⚡ Hızlı tarama yeni mesajı yakaladı (kaynak=%s, mesaj=%s).", chat_id, message.id)
-                        # Kurtarma patlamasını önle: çoklu mesajlı gap sırayla, tekil yeni mesaj eşzamanlı
-                        if len(messages) > 12:
-                            await run_event(event)
-                        else:
-                            task = asyncio.create_task(run_event(event))
+                        log.info("⚡ Hızlı tarama yeni mesajı yakaladı (kaynak=%s, mesaj=%s).", chat_id, mid)
+                        events_by_source.setdefault(chat_id, []).append(event)
+                # Interleave dispatch by source: a backlog in the first channel
+                # must not put every other source behind it in the delivery lock.
+                if not RESTARTING:
+                    source_order = sorted(events_by_source)
+                    while any(events_by_source.values()):
+                        for chat_id in source_order:
+                            pending_events = events_by_source[chat_id]
+                            if not pending_events:
+                                continue
+                            task = asyncio.create_task(run_event(pending_events.pop(0)))
                             poll_delivery_tasks.add(task)
                             task.add_done_callback(poll_delivery_tasks.discard)
-                # Yalnızca hızlı ve başarılı yoklamalar aralığı gevşetir;
-                # yavaş (Telethon'un içte beklediği) yoklamalar gevşetmez.
-                if poll_elapsed < max(2.0, FAST_POLL_SECONDS):
+                # Measure the whole scan pass (entity resolution, dialog request,
+                # and all per-source history fetches), not just GetPeerDialogs.
+                poll_elapsed = time.monotonic() - poll_started
+                POLL_TELEMETRY["last_elapsed"] = poll_elapsed
+                if poll_elapsed >= max(2.0, FAST_POLL_SECONDS):
+                    poll_interval = next_poll_interval(poll_interval, poll_elapsed)
+                    POLL_TELEMETRY["interval"] = poll_interval
+                    log.info("Tam hızlı tarama turu %.1f sn sürdü (diyalog isteği %.1f sn); aralık %.0f sn'ye çıkarıldı.",
+                             poll_elapsed, dialog_elapsed, poll_interval)
+                else:
                     recovered = recover_poll_interval(poll_interval, FAST_POLL_SECONDS)
                     if recovered != poll_interval:
                         poll_interval = recovered
@@ -8443,8 +8597,34 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     break
                 await asyncio.sleep(0.25)
 
+    async def prepare_scheduled_restart() -> bool:
+        global RESTARTING
+        RESTARTING = True
+        drain_deadline = time.time() + 6
+        while time.time() < drain_deadline and (SOURCE_IN_FLIGHT or poll_delivery_tasks):
+            await asyncio.sleep(0.2)
+        if SOURCE_IN_FLIGHT or poll_delivery_tasks:
+            log.warning("Otomatik restart drain %ss doldu — %s uçuş + %s poll görevi kaldı; güvenli cursor kaydedilip yenileme sürüyor.",
+                        6, len(SOURCE_IN_FLIGHT), len(poll_delivery_tasks))
+        ok_save, save_note = await cursor_persist_for_restart(store)
+        if not ok_save:
+            RESTARTING = False
+            log.error("Otomatik restart cursor kaydı başarısız; mevcut süreç dinlemeye devam edecek: %s", save_note)
+            return False
+        log.info("Otomatik restart cursor'ı kaydedildi: %s", save_note)
+        return True
+
+    async def resume_after_scheduled_restart_failure() -> None:
+        global RESTARTING
+        RESTARTING = False
+        log.warning("Yeni çalışma başlatılamadı; mevcut süreç kaynakları dinlemeye devam edecek.")
+
     if auto_restart and gh_pat:
-        asyncio.create_task(auto_restart_scheduler(client, DESTINATION, gh_pat, max(60, restart_minutes * 60)))
+        asyncio.create_task(auto_restart_scheduler(
+            client, DESTINATION, gh_pat, max(60, restart_minutes * 60),
+            prepare_restart=prepare_scheduled_restart,
+            resume_after_failure=resume_after_scheduled_restart_failure,
+        ))
     elif auto_restart:
         log.warning("auto_restart açık ama GH_PAT yok; oturum Actions süresi bitince kapanacak.")
     asyncio.create_task(heartbeat())
