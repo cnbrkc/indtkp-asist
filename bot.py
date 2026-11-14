@@ -1823,8 +1823,11 @@ def _coupon_codes(text: str) -> list[str]:
     patterns = (
         rf"\b({code_pattern})\s+(?i:kod(?:u|uyla|unu)?|kuponu)\b",
         rf"(?i:\b(?:kod(?:u|uyla|unu)?|kupon(?:u)?)\s*[:：]?\s*)({code_pattern})\b",
+        rf"\b({code_pattern})\s*\(\s*kopyalamak\s+için\s+dokun\s*\)",
     )
     codes = [match.group(1) for pattern in patterns for match in re.finditer(pattern, text or "")]
+    generic_labels = {"INDIRIM", "İNDİRİM", "KUPO", "KUPON", "COUPON", "KOD", "KODU"}
+    codes = [code for code in codes if code.upper() not in generic_labels]
     return list(dict.fromkeys(codes))
 
 
@@ -1832,11 +1835,11 @@ def _coupon_campaign_title(
     text: str, limit: int, *, include_code: bool = False,
     allow_code_only_marker: bool = False,
 ) -> str:
-    """Return a complete campaign sentence only for coupon-only posts.
+    """Return a complete coupon/campaign heading, not a clipped teaser.
 
-    Basket thresholds and discount amounts are useful campaign identity, not
-    product prices. Do not use this path when a plausible model/unit-bearing
-    product title exists; normal product title selection remains authoritative.
+    Coupon-only announcements often contain only eligibility and discount
+    amounts, not a product price. Product/model-bearing messages remain on the
+    normal title path so coupon metadata cannot replace a real product name.
     """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     campaign_marker = r"\b(?:kupon\w*|indirim\s*kodu|kampanya\s*kodu)\b"
@@ -1844,54 +1847,110 @@ def _coupon_campaign_title(
         campaign_marker = r"\b(?:kupon\w*|kod\w*|indirim\s*kodu|kampanya\s*kodu)\b"
     if not re.search(campaign_marker, normalize(text)):
         return ""
-    product_line = any(
-        price_filter._UNIT_RE.search(line)
-        and not re.search(r"kopyalamak|alışveriş|alisveris|üzeri", normalize(line))
-        and len(WORD_TOKEN_RE.findall(_search_line_candidate(line))) >= 5
-        for line in lines
-    )
+    product_line = False
+    for line in lines:
+        title_markers = [match.start() for pattern in (
+            price_filter._UNIT_RE, price_filter._MODEL_RE,
+        ) if (match := pattern.search(line))]
+        title_markers.extend(match.start() for match in re.finditer(r"\d{7,}|\d+\.\d+-\d+", line))
+        marker = min(title_markers, default=len(line))
+        title_prefix = line[:marker]
+        if (
+            len(WORD_TOKEN_RE.findall(_search_line_candidate(line))) >= 5
+            and (
+                (not re.search(r"kopyalamak|alışveriş|alisveris|üzeri|indirim|kupon|kod", normalize(line))
+                 and bool(title_markers))
+                or (bool(price_filter._UNIT_RE.search(line))
+                    and len(WORD_TOKEN_RE.findall(_search_line_candidate(title_prefix))) >= 3
+                    and not re.search(r"indirim|kupon|kod", normalize(title_prefix)))
+            )
+        ):
+            product_line = True
+            break
     if product_line:
         return ""
-    candidates = []
-    for line in lines:
-        # Keep the currency amounts and discount wording here: the generic
-        # search cleaner intentionally removes them because they are not product
-        # identifiers, but together they form the campaign's actual title.
+
+    candidates: list[tuple[int, str]] = []
+    for index, line in enumerate(lines):
+        # Preserve currency/percent/coupon words: generic product-title cleanup
+        # correctly removes these from product titles but must not clip offers.
         candidate = clean_disclosure_tokens(line)
         candidate = re.sub(r"[^\w\s%₺.,:'’/-]+", " ", candidate, flags=re.UNICODE)
         candidate = re.sub(r"\s+", " ", candidate).strip(" \t,;:.|/-")
         plain = normalize(candidate)
-        if (candidate and re.search(r"\b(?:indirim|ındırım|indirimli|ındırımlı)\b", plain)
-                and re.search(r"(?:\d[\d.,]*\s*(?:tl|₺)|%\s*\d)", normalize(line))
-                and len(WORD_TOKEN_RE.findall(candidate)) >= 3):
-            candidates.append(candidate)
+        has_amount = bool(re.search(r"(?:\d[\d.,]*\s*(?:tl|₺|try)|%\s*\d)", normalize(line)))
+        has_campaign_word = bool(re.search(r"\b(?:indirim|ındırım)\w*\b", plain))
+        category_coupon_line = bool(
+            re.search(r"\b(?:kupon|coupon)\w*\b", plain)
+            and index > 0
+            and re.search(r"linkteki|kategori", normalize(lines[index - 1]))
+        )
+        percent_coupon_line = bool(
+            re.search(r"\bkupon\w*\b", plain)
+            and re.search(r"%\s*\d", normalize(line))
+            and re.search(r"\bek\b", plain)
+        )
+        if candidate and has_amount and (has_campaign_word or category_coupon_line or percent_coupon_line) and len(WORD_TOKEN_RE.findall(candidate)) >= 3:
+            candidates.append((index, candidate))
+
     if not candidates:
         return ""
-    # Prefer the self-contained explanatory line (often includes both basket
-    # minimum and discount) over a short clipped preview or a code label.
-    selected = max(candidates, key=lambda value: (len(WORD_TOKEN_RE.findall(value)), len(value))).strip()
-    # Category-only eligibility (e.g. Amazon Temizlik kuponu) commonly sits on
-    # a separate line and is part of the offer identity, not a product name.
+
+    # Prefer the most self-contained threshold/discount sentence.
+    selected_index, selected = max(
+        candidates,
+        key=lambda item: (len(WORD_TOKEN_RE.findall(item[1])), len(item[1])),
+    )
+    # A category context immediately before a short coupon line is part of the
+    # offer, not a product name (e.g. “Sofra Mutfak / 75 TL kupon”).
+    if selected_index > 0 and re.search(r"linkteki|kategori", normalize(lines[selected_index - 1])):
+        prefix = _search_line_candidate(lines[selected_index - 1])
+        if prefix and normalize(prefix) not in normalize(selected):
+            selected = f"{prefix} {selected}"
+
     category_line = next((line for line in lines if re.search(r"\bkategori\s*[:：]", line, re.I)), "")
     category_match = re.search(r"\bkategori\s*[:：]\s*(.+)$", category_line, re.I)
     category = _search_line_candidate(category_match.group(1)) if category_match else ""
     if category and normalize(category) not in normalize(selected):
         selected = f"{category} {selected}"
     if include_code:
-        # Codes distinguish otherwise identical campaign copy; without this,
-        # two different offers can collapse onto the same sentence-only key.
         codes = _coupon_codes(text)
         missing_codes = [code for code in codes if normalize(code) not in normalize(selected)]
         if missing_codes:
             selected += " — " + ", ".join(missing_codes)
-    # Preserve an explicit merchant named on the adjacent coupon heading when
-    # the explanatory sentence itself starts with the eligibility condition.
     if not re.search(r"\bamazon\b", normalize(selected)) and any(
-        re.search(r"\bamazon\b", normalize(line)) and re.search(r"\b(?:indirim|kupon|kod)\b", normalize(line))
+        re.search(r"\bamazon\b", normalize(line))
+        and re.search(r"\b(?:indirim|kupon|kod)\b", normalize(line))
         for line in lines
     ):
         selected = "Amazon " + selected
     return selected[:limit].strip()
+
+
+def _coupon_preview_message(text: str, campaign_title: str) -> bool:
+    """True when the source starts with a code card or a genuinely clipped teaser."""
+    first = next((line.strip() for line in (text or "").splitlines() if line.strip()), "")
+    if re.fullmatch(r"[A-Z0-9İĞÜŞÖÇ]{4,}\s*\(\s*kopyalamak\s+için\s+dokun\s*\)\s*❓?", first):
+        return True
+    if "❓" not in first or not campaign_title:
+        return False
+    first_tokens = {normalize(token) for token in WORD_TOKEN_RE.findall(first)}
+    campaign_tokens = {normalize(token) for token in WORD_TOKEN_RE.findall(campaign_title)}
+    shared = first_tokens & campaign_tokens
+    clipped_to_fragment = len(first_tokens) <= 2 and len(campaign_tokens) >= 6
+    return bool((len(shared) >= 4 and len(campaign_tokens) >= len(shared) + 2)
+                or clipped_to_fragment)
+
+
+def _is_coupon_teaser_title(title: str) -> bool:
+    """Recognize non-product previews such as promo-code cards/category coupons."""
+    plain = normalize(title)
+    first = next((line.strip() for line in (title or "").splitlines() if line.strip()), "")
+    code_preview = bool(re.fullmatch(
+        r"[A-Z0-9İĞÜŞÖÇ]{4,}\s*\(\s*kopyalamak\s+için\s+dokun\s*\)\s*❓?", first,
+    ))
+    category_coupon = bool(re.search(r"\blinkteki\b.*\b(?:ürünlerinde|urunlerinde)\b", plain))
+    return code_preview or category_coupon
 
 
 def _campaign_title_if_clipped(
@@ -1950,7 +2009,10 @@ def _coupon_dedup_identity(text: str) -> str:
         value = price_filter.parse_threshold(shown)
         if value is not None:
             amounts.append(f"{value:.2f}")
-    return "Kampanya " + " ".join(part for part in (merchant, category, *codes, *amounts) if part)
+    return "Kampanya " + " ".join(
+        part for part in (merchant, category, *codes, *amounts)
+        if part and normalize(part) not in {"indirim", "kupon", "coupon", "kod", "kodu"}
+    )
 
 
 def _search_query(obj: Any, limit: int = SEARCH_QUERY_LIMIT) -> str:
@@ -2551,6 +2613,26 @@ def _webpage_hints(obj: Any) -> list[str]:
     return hints
 
 
+def _multi_product_titles(text: str) -> list[str]:
+    """Explicitly numbered/listed product blocks yield separate title identities."""
+    blocks = price_filter._numbered_product_blocks(text or "")
+    if len(blocks) < 2:
+        return []
+    titles = []
+    for _, block in blocks:
+        title = price_filter.extract_title(block, limit=MESSAGE_LIMIT)
+        if (title and not price_filter.is_generic_title(title)
+                and len(WORD_TOKEN_RE.findall(title)) >= 3
+                and not re.search(r"\b(?:ürün|urun)\b", normalize(title))):
+            titles.append(title)
+    return titles if len(titles) >= 2 else []
+
+
+def _multi_product_display_title(titles: Sequence[str]) -> str:
+    """Keep a compact, readable five-word label for each product in the header."""
+    return " — ".join(" ".join(title.split()[:5]) for title in titles)
+
+
 def smart_header_info(obj: Any, cleaned_obj: Any, body: str) -> tuple[str, "price_filter.PriceInfo"]:
     """Temizlenmiş mesajdan (başlık, fiyat) üret; hata olursa boş döner."""
     try:
@@ -2558,13 +2640,26 @@ def smart_header_info(obj: Any, cleaned_obj: Any, body: str) -> tuple[str, "pric
         strike = price_filter.strike_spans_from_entities(body, entities)
         title, info = price_filter.analyze(body, strike, _webpage_hints(obj))
         linked = linked_product_title(cleaned_obj)
+        if info.reason == "birden fazla ürün bloğu: seçim belirsiz":
+            product_titles = _multi_product_titles(body)
+            if product_titles:
+                return _multi_product_display_title(product_titles), info
         campaign_title = _campaign_title_if_clipped(
             body, title, MESSAGE_LIMIT, allow_code_only_marker=True,
         )
-        # Coupon-only posts sometimes start with a preview clipped mid-sentence.
-        # Replace only a genuine prefix fragment; a real product title remains
-        # authoritative even when its post also contains a coupon.
-        return linked or campaign_title or title, info
+        full_campaign_title = _coupon_campaign_title(
+            body, MESSAGE_LIMIT, include_code=True,
+            allow_code_only_marker=True,
+        )
+        # A card-code/category teaser is not a product name. Multi-tier coupon
+        # tables likewise need the campaign heading, never one arbitrary tier.
+        coupon_preview = bool(
+            full_campaign_title and (
+                _is_coupon_teaser_title(title)
+                or _coupon_preview_message(body, full_campaign_title)
+            )
+        )
+        return linked or (full_campaign_title if coupon_preview else campaign_title) or title, info
     except Exception as exc:  # noqa: BLE001 - başlık/fiyat hatası bildirimi engellemesin
         log.warning("Başlık/fiyat tespiti başarısız (%s): %s", type(exc).__name__, exc)
         return "", price_filter.PriceInfo(None, "", "none", "hata")
@@ -2585,6 +2680,9 @@ def smart_dedup_title(event: Any) -> str:
     campaign_identity = _coupon_dedup_identity(text)
     if campaign_identity:
         return campaign_identity
+    product_titles = _multi_product_titles(text)
+    if product_titles:
+        return " / ".join(product_titles)[:MESSAGE_LIMIT]
     campaign_title = _campaign_title_if_clipped(
         text,
         price_filter.extract_title(text, _webpage_hints(event), limit=MESSAGE_LIMIT),
@@ -2619,14 +2717,23 @@ def _compose_resolve_header(
     quote_body = False
     if SMART_HEADER:
         smart_title, smart_price = smart_header_info(obj, cleaned_obj, source_body)
-        if smart_price.reason == "birden fazla ürün bloğu: seçim belirsiz":
-            product_title = "Birden fazla ürün"
-        else:
-            product_title = smart_title or (
-                product_title if not price_filter.is_generic_title(product_title) else ""
-            )
+        multiple_products = smart_price.reason == "birden fazla ürün bloğu: seçim belirsiz"
+        product_title = smart_title or (
+            ("Birden fazla ürün" if multiple_products else "")
+            or (product_title if not price_filter.is_generic_title(product_title) else "")
+        )
         if smart_price.value is not None and smart_price.confidence in {"high", "medium"}:
             price_text = header_price_text(smart_price.value)
+        elif multiple_products and product_title != "Birden fazla ürün":
+            price_text = ""  # reliable per-item titles are enough; there is no single bundle price
+        elif multiple_products:
+            price_text = PRICE_MISSING_MARK
+        elif product_title and _coupon_preview_message(
+            source_body, _coupon_campaign_title(
+                source_body, MESSAGE_LIMIT, include_code=True, allow_code_only_marker=True,
+            ),
+        ):
+            price_text = ""  # replaced coupon teaser is not an unknown product price
         else:
             price_text = PRICE_MISSING_MARK
         quote_body = bool(source_body.strip())
@@ -3511,6 +3618,23 @@ def product_asins(obj: Any) -> set[str]:
             if (match := _ASIN_RE.search(link["url"]))}
 
 
+def product_link_ids(obj: Any) -> set[str]:
+    """Stable explicit product references used only as a conservative dedup bridge."""
+    identities: set[str] = set()
+    for link in extract_links(obj):
+        try:
+            parsed = urllib.parse.urlsplit(clean_url(link["url"]))
+        except ValueError:
+            continue
+        host = (parsed.hostname or "").lower().rstrip(".")
+        path = parsed.path.rstrip("/")
+        # Hepsiburada's short links are stable product references; the t.me
+        # source permalink and generated search buttons are not product IDs.
+        if host == "app.hb.biz" and path:
+            identities.add(f"hb:{path.lower()}")
+    return identities
+
+
 def plain_offer_for_upgrade(obj: Any, offer: tuple | None) -> bool:
     """Only a clearly standalone normal offer may be replaced automatically."""
     if not offer or offer[0] is None:
@@ -3525,6 +3649,56 @@ def plain_offer_for_upgrade(obj: Any, offer: tuple | None) -> bool:
             and _dedup_whole_tl(prices[0].value) == _dedup_whole_tl(offer[0])
             and not any(c.role in {"multi_unit", "condition_price", "member_price", "discounted", "basket_coupon", "product_coupon"}
                         for c in candidates))
+
+
+def _simple_linked_offer_price(obj: Any, offer: tuple | None) -> bool:
+    """Accept only one clear, unconditional final price for a linked product."""
+    if not offer or offer[0] is None:
+        return False
+    text = message_text(obj)
+    if _UPGRADE_CONDITION_RE.search(text):
+        return False
+    strike = price_filter.strike_spans_from_entities(text, entities_for_text(obj, text))
+    info = price_filter.extract_price(text, strike)
+    if info.value is None or info.confidence not in {"high", "medium"} or info.value != offer[0]:
+        return False
+    candidates = price_filter.find_candidates(text, strike)
+    blocked_roles = {"multi_unit", "unit", "condition_price", "member_price", "basket_coupon", "product_coupon"}
+    if any(candidate.role in blocked_roles for candidate in candidates):
+        return False
+    values = {candidate.value for candidate in candidates if candidate.cls == "price"}
+    return values == {offer[0]}
+
+
+def is_referenced_product_price_drop(
+    entry: dict[str, Any], title: str, obj: Any,
+    offer: tuple | None, now: float,
+) -> bool:
+    """Allow a safe replacement only for the same explicit item link and a lower price.
+
+    Generic matching still announces genuine price drops separately. This narrow
+    bridge is reserved for repeated listings whose product URL/ASIN and title
+    both agree, so a cheaper copy can replace the old notice and carry the share
+    badge without merging similarly named variants.
+    """
+    old = entry.get("offer")
+    old_links = set(entry.get("product_link_ids") or ())
+    old_links.update(f"asin:{asin}" for asin in entry.get("product_asins") or ())
+    new_links = product_link_ids(obj)
+    new_links.update(f"asin:{asin}" for asin in product_asins(obj))
+    if (entry.get("failed") or entry.get("pending")
+            or not _multibuy_editable_valid(entry)
+            or not old_links or old_links != new_links
+            or not titles_match_product(entry.get("title"), title)
+            or not old or old[0] is None or not offer or offer[0] is None
+            or not better_or_different_offer(old, offer)):
+        return False
+    first_seen = float(entry.get("first_seen", 0) or 0)
+    if now < first_seen or now - first_seen > 180:
+        return False
+    if not _simple_linked_offer_price(entry.get("text") or "", old):
+        return False
+    return _simple_linked_offer_price(obj, offer)
 
 
 def _multibuy_entry_eligible(entry: dict[str, Any], title: str, offer: tuple | None, now: float) -> bool:
@@ -3846,14 +4020,23 @@ def titles_match_product(title_a: str | None, title_b: str | None) -> bool:
 
 def _find_matching_dedup_key(
     cache: dict[str, dict[str, Any]], title: str | None,
+    asins: Iterable[str] = (), link_ids: Iterable[str] = (),
 ) -> str | None:
-    """Başlık anahtarı farklıysa aynı ürün model koduyla önceki kaydı bul."""
-    if not _title_has_strong_identity(title):
+    """Find an earlier item by strong title match or identical explicit product ID."""
+    current_asins = set(asins or ())
+    current_links = set(link_ids or ())
+    can_match_title = _title_has_strong_identity(title)
+    if not can_match_title and not (current_asins or current_links):
         return None
     best_key: str | None = None
     best_rank: tuple[int, float] = (-1, -1.0)
     for cand_key, cand_entry in cache.items():
-        if cand_entry.get("failed") or not titles_match_product(cand_entry.get("title"), title):
+        if cand_entry.get("failed"):
+            continue
+        same_asins = bool(current_asins) and current_asins == set(cand_entry.get("product_asins") or ())
+        same_links = bool(current_links) and current_links == set(cand_entry.get("product_link_ids") or ())
+        same_title = can_match_title and titles_match_product(cand_entry.get("title"), title)
+        if not (same_asins or same_links or same_title):
             continue
         rank = (0 if cand_entry.get("pending") else 1, float(cand_entry.get("last_seen", 0.0)))
         if rank > best_rank:
@@ -7311,7 +7494,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 prune_dedup_cache(DEDUP_CACHE, time.time(), DEDUP_WINDOW_SECONDS, DEDUP_MAX_ENTRIES)
                 active_key = (
                     key if key in DEDUP_CACHE
-                    else (_find_matching_dedup_key(DEDUP_CACHE, title) or key)
+                    else (_find_matching_dedup_key(
+                        DEDUP_CACHE, title,
+                        product_asins(event) if event is not None else (),
+                        product_link_ids(event) if event is not None else (),
+                    ) or key)
                 )
                 entry = DEDUP_CACHE.get(active_key)
                 if entry is None or entry.get("failed") or (
@@ -7319,14 +7506,18 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     and better_or_different_offer(entry.get("offer"), offer)
                 ):
                     target_key = active_key
-                    previous = entry if entry and event is not None and is_referenced_multibuy_upgrade(
-                        entry, title, event, offer, time.time()
+                    previous = entry if entry and event is not None and (
+                        is_referenced_multibuy_upgrade(entry, title, event, offer, time.time())
+                        or is_referenced_product_price_drop(entry, title, event, offer, time.time())
                     ) else None
                     entry = new_dedup_entry(title, token, source_name, footer_name)
                     entry["owner"] = asyncio.current_task()
                     entry["offer"] = offer
                     entry["plain_offer"] = plain_offer_for_upgrade(event, offer) if event is not None else False
                     entry["product_asins"] = product_asins(event) if event is not None else set()
+                    link_ids = product_link_ids(event) if event is not None else set()
+                    if link_ids:
+                        entry["product_link_ids"] = link_ids
                     if previous:
                         entry["upgrade_previous"] = previous
                         entry["count"] = int(previous.get("count", 1)) + 1
@@ -7338,6 +7529,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     _keep_detailed_prefix_title(entry, title)
                     if event is not None:
                         entry.setdefault("product_asins", set()).update(product_asins(event))
+                        link_ids = product_link_ids(event)
+                        if link_ids:
+                            entry.setdefault("product_link_ids", set()).update(link_ids)
                     entry["count"] += 1
                     entry["last_seen"] = time.time()
                     note_dedup_source(entry, source_name)
