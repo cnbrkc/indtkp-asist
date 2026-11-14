@@ -317,6 +317,11 @@ def _classify_check_threshold_and_dative(after_clean: str, after_raw: str, befor
 def _classify_check_after_tokens(after_raw: str, after_tokens: list[str]) -> tuple[str, bool] | None:
     connector = bool(re.match(r"^\s*[+&,;|/\-–—]", after_raw))
     if not connector and after_tokens and not re.match(r"^\s*[🚚🚛]", after_raw):
+        # Bare “1074 TL düştü” is commonly shorthand for the final offer price;
+        # explicit discount amounts (“100 TL indirimle düştü”) still hit the
+        # negative-word checks below and stay excluded.
+        if after_tokens[0] in {"düştü", "dustu"}:
+            return "price", True
         if _stem_in(after_tokens[0], _AFTER_NEG):
             return "other", False
         if len(after_tokens) > 1 and after_tokens[0] in {"ve", "ya", "veya"} \
@@ -1053,7 +1058,7 @@ def _segments(line: str) -> list[str]:
 
 
 _GENERIC_TITLE_RE = re.compile(
-    r"^(?:yoğun\s+ilgi\s+görüyor\s*$|durum\s*:|depo\s+ürünü|depo\s+urunu|yorum\s*:|takip\s+kuponu\b|kampanya(?:lar)?\s*(?::|\d)|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
+    r"^(?:yoğun\s+ilgi\s+görüyor\s*$|durum\s*:|(?:yeni\s+)?depo\s+ürünü|(?:yeni\s+)?depo\s+urunu|yorum\s*:|takip\s+kuponu\b|kampanya(?:lar)?\s*(?::|\d)|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
     r"(?:anlık|anlik) indirim|bildirimlerinizi|\d+\s+adet kaldı|"
     r"ürün\s+altından\s+(?:aktif|etkinleştir)\w*|"
     r"(?:sepete\s+)?\d+\s+adet(?:\s+sepete)?\s+ekle\w*|"
@@ -1243,7 +1248,10 @@ def _title_piece_best_for_line(raw: str, pieces: list[str], position: int, hint_
     for piece_index, piece in enumerate(pieces):
         cleaned = _trim_edges(_remove_noise(piece))
         combined_prefix = ""
-        if piece_index and _UNIT_RE.search(cleaned):
+        if piece_index and (
+            _UNIT_RE.search(cleaned)
+            or (_MODEL_RE.search(cleaned) and not PRICE_RE.search(pieces[piece_index - 1]))
+        ):
             prefix = _trim_edges(_remove_noise(pieces[piece_index - 1]))
             if prefix and not _is_noise(prefix) and not _META_WORDS_RE.search(norm(prefix)):
                 combined_prefix = prefix

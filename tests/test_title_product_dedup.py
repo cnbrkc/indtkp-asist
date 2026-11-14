@@ -427,5 +427,79 @@ class TitleMatcherUnitTests(unittest.TestCase):
 
 
 
+class UserReportedProductIdentityRegressions(Harness, unittest.TestCase):
+    """Precise link identity bridges for the two product examples in the report."""
+
+    def test_shared_amazon_asin_merges_detailed_and_short_catalog_titles(self):
+        client = self.start()
+        asin = "B0CBVWVGHL"
+        long_title = "JACK & JONES JJIGLENN JJCOLE AM 171 SN Kot Pantolon Erkek"
+        short_title = "JACK & JONES Pantolon"
+        self.assertFalse(bot.titles_match_product(long_title, short_title))
+        self.offers(client, [
+            (self.first_id, 101, deal(long_title, "804", f"https://www.amazon.com.tr/dp/{asin}?tag=butcedostum-21")),
+            (SECOND_CHANNEL_ID, 201, deal(short_title, "804", f"https://www.amazon.com.tr/dp/{asin}?tag=firsatdolu010-21")),
+        ])
+        self.assertEqual(len(self.ping_calls), 1, "aynı ASIN güçlü ürün kimliğidir")
+        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(len(self.edit_text_calls), 1)
+        self.assertIn("2 kere paylaşıldı", self.edit_text_calls[0]["text"])
+
+    def test_same_hepsiburada_listing_price_drop_replaces_old_notice_with_badge(self):
+        client = self.start()
+        title = "Shark StainStriker – Pet Başlıklı Koltuk Yıkama Makinesi PX200EUT"
+        link = "https://app.hb.biz/K3SfR0p2p7XH"
+        deleted = []
+
+        async def delete_bot(token, chat_id, message_id):
+            deleted.append(message_id)
+            return True, "deleted"
+
+        self._patch("delete_bot_message", delete_bot)
+        self.offers(client, [
+            (self.first_id, 101, deal(title, "6299", link)),
+            (SECOND_CHANNEL_ID, 201, deal(title, "5999", link)),
+        ])
+        self.assertEqual(len(self.ping_calls), 2, "daha ucuz yeni bildirim gönderilmeli")
+        self.assertEqual(len(self.edit_text_calls), 1)
+        self.assertIn("2 kere paylaşıldı", self.edit_text_calls[0]["text"])
+        self.assertEqual(self.edit_text_calls[0]["message_id"], self.ping_calls[1]["message_id"])
+        self.assertEqual(deleted, [self.ping_calls[0]["message_id"]],
+                         "sadece yeni ileti/rozet başarıyla tamamlanınca pahalı eskisi silinmeli")
+
+    def test_same_amazon_asin_price_drop_replaces_old_notice_with_badge(self):
+        client = self.start()
+        title = "Shark StainStriker – Pet Başlıklı Koltuk Yıkama Makinesi PX200EUT"
+        asin = "B0DTSHRK01"
+        deleted = []
+
+        async def delete_bot(token, chat_id, message_id):
+            deleted.append(message_id)
+            return True, "deleted"
+
+        self._patch("delete_bot_message", delete_bot)
+        self.offers(client, [
+            (self.first_id, 101, deal(title, "6299", f"https://www.amazon.com.tr/dp/{asin}")),
+            (SECOND_CHANNEL_ID, 201, deal(title, "5999", f"https://www.amazon.com.tr/dp/{asin}?tag=offer")),
+        ])
+        self.assertEqual(len(self.ping_calls), 2)
+        self.assertEqual(len(self.edit_text_calls), 1)
+        self.assertIn("2 kere paylaşıldı", self.edit_text_calls[0]["text"])
+        self.assertEqual(deleted, [self.ping_calls[0]["message_id"]])
+
+    def test_higher_price_same_hepsiburada_listing_still_merges_into_cheaper_notice(self):
+        client = self.start()
+        title = "Shark StainStriker – Pet Başlıklı Koltuk Yıkama Makinesi PX200EUT"
+        link = "https://app.hb.biz/K3SfR0p2p7XH"
+        self.offers(client, [
+            (self.first_id, 101, deal(title, "5999", link)),
+            (SECOND_CHANNEL_ID, 201, deal(title, "6299", link)),
+        ])
+        self.assertEqual(len(self.ping_calls), 1)
+        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(len(self.edit_text_calls), 1)
+        self.assertIn("2 kere paylaşıldı", self.edit_text_calls[0]["text"])
+
+
 if __name__ == "__main__":
     unittest.main()

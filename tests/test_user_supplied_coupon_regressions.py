@@ -22,7 +22,7 @@ class UserSuppliedCouponRegressions(unittest.TestCase):
         self.assertEqual(bot.smart_dedup_title(event(text)), "Kampanya hepsiburada EFSOCUMA50 300.00 50.00")
         with patch.object(bot, "SMART_HEADER", True):
             header = bot.compose_message(event(text))["text"].splitlines()[0]
-        self.assertEqual(header, "300 TL ve üzerine 50 TL indirim kodu ❓")
+        self.assertEqual(header, expected)
         self.assertIsNone(pf.extract_price(text).value)
 
     def test_coupon_title_is_distinguished_by_code_for_dedup(self):

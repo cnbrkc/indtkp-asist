@@ -509,5 +509,147 @@ class ReportedMessageRegressions(unittest.TestCase):
                     self.assertEqual(bot.compose_message(event)["header"], wanted)
 
 
+class UserCouponAndTitleRegressionTests(unittest.TestCase):
+    """Kullanıcının bu rapordaki kupon, çoklu ürün ve ürün-kimliği örnekleri."""
+
+    @staticmethod
+    def event(text):
+        return SimpleNamespace(message=text, raw_text=text, entities=[], media=None, reply_markup=None)
+
+    def test_percent_coupon_preview_is_replaced_by_complete_campaign_without_question(self):
+        text = (
+            "Sırma, Hayat, Akmina Ürünlerinde Sepette 'a ek ❓\n\n"
+            "Sırma, Hayat, Akmina Ürünlerinde Sepette %60'a ek 300TL'ye 100 TL Kupon\n"
+            "https://app.hb.biz/SFe9QmyXtI1F"
+        )
+        event = self.event(text)
+        with patch.object(bot, "SMART_HEADER", True):
+            header = bot.compose_message(event)["header"]
+        self.assertIn("%60", header)
+        self.assertIn("100 TL Kupon", header)
+        self.assertNotIn("❓", header)
+
+    def test_supermarket_percent_coupon_preview_is_complete(self):
+        text = (
+            "Süpermarket Ürünlerinde Sepette 'a ek ❓\n\n"
+            "Süpermarket Ürünlerinde Sepette %10'a ek 600 TL'ye 100 TL kupon\n"
+            "https://app.hb.biz/qRfGv2CV4hZm"
+        )
+        event = self.event(text)
+        with patch.object(bot, "SMART_HEADER", True):
+            header = bot.compose_message(event)["header"]
+        self.assertIn("%10", header)
+        self.assertIn("100 TL kupon", header)
+        self.assertNotIn("❓", header)
+
+    def test_coupon_code_only_preview_uses_full_campaign_title(self):
+        text = (
+            "HSONU1000 (kopyalamak için dokun) ❓\n\n"
+            "🎟️ İNDİRİM KUPONU 🎟️\n"
+            "🔑 HSONU1000 (kopyalamak için dokun)\n"
+            "💸 12000 TL YE 1000 TL İNDİRİM\n"
+            "🛒 AMAZON'A GİT\n"
+            "📱 Yalnızca Amazon mobil uygulamasında geçerlidir."
+        )
+        event = self.event(text)
+        with patch.object(bot, "SMART_HEADER", True):
+            header = bot.compose_message(event)["header"]
+        self.assertIn("12000 TL", header)
+        self.assertIn("1000 TL", header)
+        self.assertIn("HSONU1000", header)
+        self.assertNotIn("❓", header)
+
+    def test_same_code_campaign_variants_share_canonical_identity(self):
+        variants = [
+            "SEPET600 (kopyalamak için dokun)\n⚡ İNDİRİM KUPONU\nAmazon mobil\n7500 TL YE 600 TL İNDİRİM",
+            "Amazon İndirim Kodu\n7.500 TL ve üzeri alışverişte 600 TL indirim\nKod: SEPET600",
+            "SEPET600 koduyla Amazon'da 7500 TL ve üzeri 600 TL indirim",
+            "Amazon'da 7500 TL ve üzeri alışverişlerinizde geçerli 600 TL indirim kodu\nSEPET600",
+        ]
+        identities = [bot._coupon_dedup_identity(text) for text in variants]
+        self.assertTrue(all(identities), identities)
+        self.assertEqual(len(set(identities)), 1, identities)
+
+    def test_hepsiburada_coupon_heading_keeps_category_and_coupon_amount(self):
+        text = (
+            "Hepsiburada'da linkteki Sofra Mutfak ürünlerinde ❓\n\n"
+            "📢 Hepsiburada'da linkteki Sofra Mutfak ürünlerinde\n"
+            "sepette alt limitsiz 75 TL kupon\nhttps://app.hb.biz/2hBnJLGLSGII"
+        )
+        event = self.event(text)
+        with patch.object(bot, "SMART_HEADER", True):
+            header = bot.compose_message(event)["header"]
+        self.assertIn("Sofra Mutfak", header)
+        self.assertIn("75 TL", header)
+        self.assertNotIn("❓", header)
+
+    def test_multi_product_header_summarizes_each_product_and_keeps_bundle_identity(self):
+        text = (
+            "🎁 ÇOKLU FIRSATLAR\n\n"
+            "1️⃣ JJXX JJXX JXPOPPY SUMMER HW SHORTS PNT Şort Kadın\n💰 180.95 TL\n\n"
+            "2️⃣ Philips 5000 Serisi Tıraş Makinesi S5445/03, Sinekkaydı Tıraş, Islak ve Kuru Kullanım\n"
+            "💰 2099.00 TL\n🛍 Amazon"
+        )
+        other = text.replace("Philips 5000", "Philips 7000")
+        event = self.event(text)
+        with patch.object(bot, "SMART_HEADER", True):
+            header = bot.compose_message(event)["header"]
+        self.assertIn("JJXX JJXX JXPOPPY SUMMER HW", header)
+        self.assertIn("Philips 5000 Serisi Tıraş Makinesi", header)
+        self.assertNotIn("Birden fazla ürün", header)
+        self.assertNotIn("❓", header)
+        self.assertNotEqual(bot.smart_dedup_title(event), bot.smart_dedup_title(self.event(other)))
+        self.assertEqual(bot.smart_dedup_title(event), bot.smart_dedup_title(self.event(text)))
+
+    def test_model_bearing_dash_prefix_is_retained_in_product_title(self):
+        text = (
+            "₺5.999 — Pet Başlıklı, Koltuk Yıkama ve Leke Çıkarma Makinesi PX200EUT\n\n"
+            "🛒 Shark StainStriker – Pet Başlıklı, Koltuk Yıkama ve Leke Çıkarma Makinesi PX200EUT\n"
+            "🎯 Sepette 5999 TL\nhttps://app.hb.biz/K3SfR0p2p7XH"
+        )
+        title = pf.extract_title(text)
+        self.assertTrue(title.startswith("Shark StainStriker – Pet Başlıklı"), title)
+        self.assertEqual(pf.extract_price(text).value, 5999)
+
+    def test_coupon_adjusted_price_followed_by_dustu_is_a_final_price(self):
+        text = "Reebok Unıc Run I\nKupon kodu ZİNDE200\n1074 tl düştü\nHepsiburada"
+        info = pf.extract_price(text)
+        self.assertEqual((info.value, info.confidence), (1074, "high"))
+        event = self.event(text)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(event)["header"], "₺1.074 — Reebok Unıc Run I")
+
+    def test_new_warehouse_label_is_not_the_product_title(self):
+        text = (
+            "📦 Yeni Depo Ürünü!\n\n"
+            "STANLEY The Aerolight Transit Mug 16oz Termos 0.47 Litre - Goldenrod Coral | Paslanmaz Çelik\n"
+            "💰 806.40 TL\n📋 Durum: Çok İyi"
+        )
+        expected = "STANLEY The Aerolight Transit Mug 16oz Termos 0.47 Litre - Goldenrod Coral"
+        self.assertEqual(pf.extract_title(text), expected)
+        event = self.event(text)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertIn(expected, bot.compose_message(event)["header"])
+
+    def test_same_amazon_asin_bridges_short_and_detailed_product_titles(self):
+        asin = "B0CBVWVGHL"
+        short = "JACK & JONES Pantolon"
+        detailed = "JACK & JONES JJIGLENN JJCOLE AM 171 SN Kot Pantolon Erkek"
+        cache = {"detailed": {"title": detailed, "product_asins": {asin}, "last_seen": 1.0}}
+        self.assertNotEqual(bot.dedup_key(short), bot.dedup_key(detailed))
+        self.assertEqual(bot._find_matching_dedup_key(cache, short, {asin}), "detailed")
+
+    def test_emotion_decimal_comma_price_is_reliably_detected(self):
+        text = (
+            "EMOTION DETOX FLORAL Deodorant, 150 Ml\n\n"
+            "💰 Fiyat: 89,69 ₺\n🎉 Herhangi 3 veya daha fazlasında %25 tasarruf edin."
+        )
+        self.assertEqual(pf.extract_price(text).value, 89.69)
+        event = self.event(text)
+        with patch.object(bot, "SMART_HEADER", True):
+            self.assertEqual(bot.compose_message(event)["header"],
+                             "₺89 — EMOTION DETOX FLORAL Deodorant, 150 Ml")
+
+
 if __name__ == "__main__":
     unittest.main()
