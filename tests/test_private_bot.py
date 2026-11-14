@@ -1014,14 +1014,37 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.assertFalse(bot.PENDING)
         await self.run_scenario(scenario, dm_exclude_keywords=["tcl"])
 
-    async def test_auto_restart_dispatches_without_any_telegram_message(self):
+    async def test_auto_restart_persists_and_drains_before_dispatch(self):
         client = mock.Mock(send_message=mock.AsyncMock())
+        order = []
+
+        async def prepare():
+            order.append("prepared")
+            return True
+
+        async def dispatch(pat):
+            order.append("dispatched")
+            return True, "started"
+
         with mock.patch.object(bot.asyncio, "sleep", new_callable=mock.AsyncMock) as sleep, \
-             mock.patch.object(bot, "dispatch_next_run", new_callable=mock.AsyncMock) as dispatch:
-            await bot.auto_restart_scheduler(client, GROUP_ID, "test-pat", 3600)
+             mock.patch.object(bot, "dispatch_next_run", side_effect=dispatch) as mocked_dispatch:
+            await bot.auto_restart_scheduler(
+                client, GROUP_ID, "test-pat", 3600, prepare_restart=prepare,
+            )
         sleep.assert_awaited_once_with(3600)
-        dispatch.assert_awaited_once_with("test-pat")
+        mocked_dispatch.assert_awaited_once_with("test-pat")
+        self.assertEqual(order, ["prepared", "dispatched"], "cursor hazırlığı dispatch'ten önce olmalı")
         client.send_message.assert_not_awaited()
+
+    async def test_auto_restart_aborts_if_cursor_prepare_fails(self):
+        client = mock.Mock(send_message=mock.AsyncMock())
+        prepare = mock.AsyncMock(return_value=False)
+        with mock.patch.object(bot.asyncio, "sleep", new_callable=mock.AsyncMock), \
+             mock.patch.object(bot, "dispatch_next_run", new_callable=mock.AsyncMock) as dispatch:
+            await bot.auto_restart_scheduler(client, GROUP_ID, "test-pat", 60,
+                                            prepare_restart=prepare)
+        prepare.assert_awaited_once()
+        dispatch.assert_not_awaited()
 
     async def test_master_command_lists_all_canonical_commands(self):
         async def scenario():
