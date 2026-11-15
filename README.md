@@ -674,8 +674,12 @@ ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığ
    telefonun bildiriminde kesilen metinde **fiyat + ürün adının ilk kelimelerinin**
    birlikte görünmesini sağlar.
 2. Altına **orijinal mesaj** — satırları, fiyatı, linkleri ve emojileriyle aynen.
-3. Altına `🔗 Mesajı Gör: <t.me linki>` — orijinal mesajın adresi.
-4. En alta **kaynak grup adı** (kalın; etiket ve link yok).
+3. Altına **`👉 Ürün Linki 👈`** — ürün adresi bu yazının içine gömülüdür (dokununca
+   açılır, URL metinde görünmez). Kaynak adresi butona, yazının altına ya da açık
+   URL olarak koysa da satır her grupta aynıdır; alıntıdaki özgün bağlantı yedek
+   olarak yerinde kalır ([8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri)).
+4. Altına `🔗 Mesajı Gör: <t.me linki>` — orijinal mesajın adresi.
+5. En alta **kaynak grup adı** (kalın; etiket ve link yok).
 
 ```text
 ₺225 — Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici Banyo ve Duş Jeli 500ml x 4 Adet
@@ -688,6 +692,8 @@ ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığ
 
 🛒 https://link.amazon/B02W5SjPe
 
+👉 Ürün Linki 👈         ← ürün adresi bu yazıya gömülü (tıklanabilir)
+
 🔗 Mesajı Gör: https://t.me/indirimdeal/50953
 
 İndirimde Al            ← kalın, etiketsiz, linksiz (hangi gruptan geldiği)
@@ -696,6 +702,16 @@ ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığ
 Tekrarlı paylaşımda (bkz. 9. bölüm) **hangi gruptan geldiği satırı kaldırılır** ve
 yerine çoklu paylaşım notu yazılır: `📌 3 kere paylaşıldı: FırsatZ, İndirimde Al, OnuAl`.
 
+- **İçeriksiz yanıtlar bildirilmez.** Kaynaklar kendi fırsatına açıklamasız bir
+  görsel ya da çıkartmayla yanıt verir; böyle bir ileti yalnızca `Mesajı Gör` satırı
+  ve kaynak adından oluşan boş bir bildirim üretirdi. Kural bilerek dardır (gerçek
+  fırsat kaçmasın): ileti **başka bir mesaja yanıt** olmalı, temizlenmiş metninde
+  **tek bir harf/rakam** ve **hiçbir bağlantı** (gizli hyperlink, buton, önizleme,
+  görünür URL) bulunmamalıdır. Metin, fiyat, bağlantı ya da buton taşıyan her yanıt
+  ve yanıt olmayan açıklamasız görsel eskisi gibi iletilir. Bunun dışında yalnızca
+  metni `Yoğun ilgi görüyor` olan duyuru elenir (emoji, noktalama ve kalın yazı gibi
+  biçimler sayılmaz; görsel, bağlantı ya da buton taşıyorsa iletilir). Elenen her
+  ileti günlüğe `İçeriksiz mesaj elendi (chat=… id=…)` diye yazılır.
 - Ürün başlığı bulunamayan mesajlarda (kupon/duyuru gibi) üst satır yalnızca fiyatı
   (`₺56`) ya da fiyat yoksa yalnızca `❓` taşır; **ikisi de bulunamazsa üst satır hiç
   kurulmaz**, mesaj ve alt satırlar aynen iletilir.
@@ -799,9 +815,83 @@ denenmez; sırayla deneyip ilk başarılı olanı kullanır:
 
 | Gizleme yolu | Örnek | Bot ne yapar |
 |---|---|---|
-| Metin altına gizlenmiş hyperlink | "**Fırsata Git**" yazısı görünür, link altındadır | Mesaj olduğu gibi iletildiği için link gövdede tıklanabilir kalır; `link_appendix: "all"` açılırsa ayrıca ek link listesine yazılır |
-| Inline buton | Yazıda link yok, butondadır | `smart` modunda bağlantı metne yazılır; bot, bağlantı metinde başarıyla taşındıysa fazladan ürün düğmesini kaldırır, taşınamadıysa korur |
-| Link önizlemesi | Metinde link yok, önizleme kartı var | Önizleme hedefi ek link listesine girer (taşınamayan linkler kaybolmaz) |
+| Metin altına gizlenmiş hyperlink | "**Fırsata Git**" yazısı ya da ürün adının kendisi görünür, link altındadır | Mesaj olduğu gibi iletildiği için link gövdede tıklanabilir kalır (yedek); adres ayrıca `👉 Ürün Linki 👈` satırına gömülür |
+| Inline buton | Yazıda link yok, butondadır (`✅ Satın Al ✅`) | Adres `👉 Ürün Linki 👈` yazısına gömülür; bot, adres metinde taşındıysa fazladan ürün düğmesini kaldırır, taşınamadıysa korur |
+| Açık URL | `Link: https://ty.gl/…` | Alıntıda aynen kalır; aynı adres `👉 Ürün Linki 👈` satırına da gömülür |
+| Link önizlemesi | Metinde link yok, önizleme kartı var | Mesajda başka ürün bağlantısı yoksa önizleme hedefi `👉 Ürün Linki 👈` olur |
+
+### Ürün linki her grupta aynı görünür: `👉 Ürün Linki 👈`
+
+Eskiden buton linki alta `🔗 ✅ Satın Al ✅: https://www.amazon.com.tr/dp/…?tag=…` diye,
+etiketi ve upuzun adresiyle yazılırdı. Artık ürün adresi **tek ve sabit bir yazının
+içine gömülür**; URL metinde görünmez, yazıya dokununca açılır:
+
+- **Hangi bağlantı?** Buton kaynağın bilinçli "ürüne git" çağrısıdır: ürüne gidebilen
+  her buton listelenir (tek ise `👉 Ürün Linki 👈`, birden fazlaysa kaynak sırasıyla
+  `👉 Ürün Linki 1 👈`, `👉 Ürün Linki 2 👈` …; en çok 4). Buton yoksa mesajdaki **ilk**
+  ürün bağlantısı (gizli hyperlink → önizleme → açık URL) tek satır olur.
+- **Ne ürün linki sayılmaz?**
+  - Google (web/Alışveriş), Akakçe ve Cimri aramaları;
+  - sohbet, sosyal ağ ve topluluk adresleri: Telegram, WhatsApp, Instagram, YouTube,
+    X/Twitter, Facebook (fb.com, fb.me, m.me dahil), TikTok, Discord, LinkedIn, Pinterest
+    (ülke alan adlarıyla), Reddit, Threads, Twitch, Snapchat, Tumblr, VK, Bluesky, BiP,
+    Linktree; çekiliş/anket formları (forms.gle, docs.google.com);
+  - yolu olmayan mağaza ana sayfası — yalnız iş ortaklığı/izleme etiketi taşısa da
+    (`https://www.amazon.com.tr/?tag=kanal-21`, `…/?utm_source=telegram`). Tanınmayan
+    tek bir sorgu anahtarı (`?p=123`, `?url=https://…`) varsa adres ürüne gidebilir
+    sayılır;
+  - doğrudan görsel/video dosyası (`…/urun.jpg`): kaynak botlarının mesajın başındaki
+    görünmez karaktere gömdüğü önizleme görseli "ilk bağlantı" olup ürün linki sanılmaz.
+
+  Alan adı tam ya da alt alan adı olarak eşleşir; büyük/küçük harf, sondaki nokta, port
+  fark etmez: `m.facebook.com` elenir, `netflix.com` (x.com'la biter) ya da
+  `x.com.magaza.example` elenmez. Mağaza/kısaltıcı alan adları sınırsız olduğu için
+  (amzn.to, ty.gl, app.hb.biz, fenom.io, t.co, bit.ly …) beyaz liste tutulmaz; yalnız bu
+  kesin "ürün değil" adresler elenir. Ürün sayılmayan bağlantı **kaybolmaz**: eski
+  `🔗 etiket: adres` biçimiyle yazılır ya da klavyede düğme olarak kalır.
+- **Kaynağın arama butonları.** Kaynaktaki Google/Akakçe/Cimri butonu bot bildiriminde
+  link satırı olmaz; klavyede arama düğmesi olarak durur ve satır hakkı tüketmez.
+  Kullanıcı hesabı klavye gönderemediği için **hesap kopyasında** (bot gönderemediğinde
+  atılan yedek) bu butonlar `🔗 etiket: adres` satırı olarak yazılır. Gövdedeki gizli
+  arama linki alıntıda tıklanabilir kalır; `all` modunda eskisi gibi ayrıca listelenir.
+- **Kaç satır?** En çok 4 ürün satırı ve ayrıca en çok 4 `🔗` satırı yazılır (etiketi
+  silinen gizli linkler için 4 satır daha). Başka yerde taşınan adres — ürün satırı,
+  klavyedeki arama düğmesi — bu hakkı tüketmez; arkasındaki kupon/kanal linki düşmez.
+  Satır alamayan buton bot bildiriminde klavyede kalır (5. ve sonraki ürün butonu da).
+  Klavyesiz hesap kopyasında 5. ve sonraki ürün butonları da bu 4 `🔗` satırını
+  kullanır; daha fazlası taşınamaz (eskiden toplam sınır 4 satırdı).
+- **Karakter sınırı** (fotoğraf açıklaması 1024, metin 4096). Ölçü, bu özellikten
+  önceki yalın düzendir (gövde + mesajın ilk 4 gizli bağlantısının `🔗` satırı +
+  `Mesajı Gör`): **o düzende açılabilen hiçbir bağlantı kapanmaz.** Bunun içinde
+  öncelik sırası:
+  1. Kaynak mesajın metni ve içindeki bağlantılar. Gövdenin tamamı sığmıyorsa fazladan
+     `🔗` satırları sondan başlayarak yazılmaz; gövdeyi hiç kırpmazlar. Fazladan satır:
+     ilk 4 bağlantıdan sonrakiler, bot bildiriminde klavyede de duran buton satırları
+     ve yalın düzen eki hiç sığdıramıyorsa satırların tamamı.
+  2. `👉 Ürün Linki 👈` satırları. Yer yoksa gövde metninin sonundan yer alırlar; ama
+     yazılmasalardı gövdeden açılacak bir bağlantıyı kesecekse ya da yalın düzenin
+     satırlarına yer bırakmayacaksa sondan başlayarak yazılmazlar (bot bildiriminde
+     butonları klavyede kalır).
+  3. `🔗 Mesajı Gör` satırı; ek uğruna bırakılmaz.
+  4. Diğer `🔗` satırları ilk bırakılanlardır. Tek istisna, yalın düzenin yazabildiği
+     ilk 4 bağlantıdan başka taşıyıcısı olmayanların satırıdır (klavyesiz hesap
+     kopyasında hepsi; bot bildiriminde klavyede durmayanlar): eskisi gibi gövdeden
+     önce gelirler, yoksa önceki düzende açılan bağlantı kapanırdı.
+
+  Bot bildiriminde satırı yazılmayan her buton klavyede kalır. Ölçüm ve yöntemi:
+  [analiz belgesi](docs/product-link-and-blank-reply-analysis.md), `python tests/link_reach_audit.py`.
+- **Alıntı yedektir.** Gövdedeki özgün hyperlink/URL değişmez. Ürün linki yanlış
+  seçilse bile doğru adres alıntıda ve `🔗 Mesajı Gör` altında durur.
+- **Bot bildiriminde hiçbir buton kaybolmaz** (üç modda da): adresi metinde görünür ya
+  da gömülü taşınmayan her kaynak butonu klavyede kalır — ek satırı sınıra sığmayıp
+  düşse ya da `link_appendix: "off"` olsa bile. Bilinen sınırlar: `smart` modunda bot
+  bildirimi önizleme kartının adresini yalnız ürün linki seçildiğinde taşır (hesap
+  kopyası onu `🔗 başlık: adres` satırı olarak yazar); hesap kopyası `off` modunda
+  buton linki taşımaz; sınırı aşan gövde kırpılırsa kırpılan kısımdaki bağlantılar
+  `🔗 Mesajı Gör` üzerinden açılır.
+- Yazıya gömülü adres bot bildiriminde, hesap kopyasında, tekrar (📌) notu işlenirken
+  ve özel (DM) kopyada aynı konumda korunur. Yalnız biçimsiz giden son çare iletisinde
+  (`link` yolu) adres açıkça yazılır: `👉 Ürün Linki 👈: https://…`.
 
 Bildirim botu, kaynakta aynı arama hizmetine ait bir URL/buton yoksa eksik düğmeleri şu
 sırayla ekler:
@@ -861,16 +951,15 @@ kopyalama/yedek zinciri temizlenmiş metin ve entity offset'leriyle çalışır.
 reklam/işbirliği etiketleri, doğrudan WhatsApp URL'leri ve WhatsApp URL butonları
 forward ile geri eklenmez.
 
-Orijinal mesajın altına `🔗 Mesajı Gör: <t.me linki>`, en alta kaynak grup adı eklenir.
-Gövdede tıklanabilir kalan gizli hyperlink'ler ek listeye yazılmaz.
-`link_appendix: "smart"` (varsayılan) hesap kopyasında yalnızca başka türlü
-taşınamayan linkleri (buton ve önizleme linkleri) orijinal mesajın altına ekler.
-Bot bildiriminde buton URL'si de metne eklenir; gövdede zaten görünür olan URL
-tekrarlanmaz. Ürün düğmesi yalnız URL metinde veya tıklanabilir hyperlink olarak
-korunmuşsa kaldırılır; kesilme veya `off` gibi durumlarda düğme yedekte kalır.
-Metin altındaki hyperlink korunur, önizleme hedefi bot bildiriminde
-ayrı yazılmaz; ona `🔗 Mesajı Gör` üzerinden ulaşılabilir. `"all"` gizli hyperlink'leri de yazar; `"off"` ek bağlantı
-listesi yazmaz.
+Orijinal mesajın altına `👉 Ürün Linki 👈`, `🔗 Mesajı Gör: <t.me linki>` ve en alta
+kaynak grup adı eklenir. `link_appendix: "smart"` (varsayılan) ürün adresini bu yazıya
+gömer; ham URL ikinci kez yazılmaz, gövdedeki hyperlink/URL yedek olarak aynen kalır.
+Ürün düğmesi yalnız adres metinde (görünür ya da gömülü) korunmuşsa kaldırılır; kesilme
+veya `off` gibi durumlarda düğme yedekte kalır. `"all"` ürün satırı üretmez, eskisi gibi
+gizli hyperlink/buton/önizleme adreslerini `🔗 etiket: adres` biçiminde ham URL olarak
+döker; `"off"` ek bağlantı satırı yazmaz. Kaynağın arama butonları bot bildiriminde üç
+modda da satır olmaz (klavyede durur); klavyesiz hesap kopyasında `smart` ve `all`
+modlarında satır olarak yazılır.
 
 ---
 
@@ -997,7 +1086,7 @@ doğru ID'yi al.
 | Grup komutları çalışmıyor | `admin_user_id` boş veya `control_chat` yanlış | `/id` ile ID'leri doğrula; config'i güncelle |
 | Mesaj geliyor ama bildirim yok | Kendi hesabın gönderiyor; Telegram bildirim üretmez | [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin) |
 | Mesaj hiç gelmiyor | Kanal listede değil / hesap üye değil / kelime eşleşmiyor | `/kaynaklar` ve `/durum`a bak; log'daki `ÜYE DEĞİLSİN` uyarılarını kontrol et |
-| "Fırsata Git" var ama ham link yok | Link yazının altına gizlenmiş; tıklanabilir | Yazıya dokun. Ham URL istersen `link_appendix: "all"` |
+| "Fırsata Git" var ama ham link yok | Link yazının altına gizlenmiş; tıklanabilir | `👉 Ürün Linki 👈` yazısına ya da alıntıdaki yazıya dokun. Ham URL istersen `link_appendix: "all"` |
 | Fotoğraf "unnamed" dosya olarak geliyor | Eski sürüm hatası | Bot'u güncelle |
 | `⚠️ ... yalnızca bu oturumda geçerli` | Ayar değişikliği depoya yazılamadı | [14. bölüm](#14-bu-güncellemeden-sonra-yapılacaklar) |
 | `GH_PAT` ile yenileme olmuyor | Token izni yok veya süresi dolmuş | Token'da **Actions: Read and write** olduğunu ve expiration tarihini kontrol et |
@@ -1142,6 +1231,25 @@ Bu repodaki güncel davranış değişiklikleri:
     [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin),
     [8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri) ve
     [9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj).
+14. **Ürün linki `👉 Ürün Linki 👈` yazısına gömüldü; içeriksiz yanıtlar eleniyor.**
+    Alttaki `🔗 ✅ Satın Al ✅: https://…` gibi ham link satırı kalktı: ürün adresi
+    her kaynakta (buton, gizli hyperlink, açık URL) aynı yazının içine gömülür,
+    alıntı yedek olarak aynen kalır; kaynağın Google/Akakçe/Cimri arama butonları
+    bot bildiriminde link satırı olmaz (klavyede durur; klavyesiz hesap kopyasında
+    satır olarak yazılır). Çok linkli mesajlarda satır sınırı (4 ürün + 4 bağlantı)
+    başka yerde taşınan adresi saymaz; sığmayan buton satırı gövdeyi kırpmak yerine
+    klavyede kalır. Karakter sınırında hiçbir ek satırı, önceki düzende açılabilen
+    bir bağlantıyı kapatmaz: fazladan `🔗` satırı gövdeyi kırpmaz, ürün satırı
+    gövdedeki bağlantıyı kesmez. Bir fırsata açıklamasız görselle verilen yanıtlar ve
+    `Yoğun ilgi görüyor 📣` duyurusu artık bildirim üretmez. Tekrar (📌) notu çok
+    emojili mesajlarda bağlantıyı etiketinden kaydırmaz. Başlık/fiyat tarafında:
+    cümle sonundan sonraki kelime tutarı nitelemez (`… adeti 99 TL. Farklı …` →
+    99 TL), `1000TL` gibi bitişik tutar model kodu sayılmaz (kampanya satırı ürün
+    adını geçemez) ve `Bu fiyat uzun sürmez!` gibi şablon sloganları ürün adı
+    yapılmaz. Kök neden incelemesi:
+    [docs/product-link-and-blank-reply-analysis.md](docs/product-link-and-blank-reply-analysis.md).
+    Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin) ve
+    [8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri).
 
 ### 1. PR'ı `main`'e merge et
 

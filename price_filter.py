@@ -161,6 +161,11 @@ _AFTER_NEG = (
     "teslimat", "gönderim", "gonderim", "harcama", "sepet", "tık", "tik",
 )
 _AFTER_OLD = ("yerine", "idi", "iken", "vardı", "vardi", "olan", "olarak satılıyordu", "liste")
+# Tutardan sonra cümle biter ve büyük harfle yenisi başlarsa ("99 TL. Farklı varyantlar …",
+# "349 TL! Kargo bedava") sonraki kelime tutarı nitelemez. Tek başına cümle açamayan
+# edatlar ise noktadan sonra da tutara bağlıdır ("100 TL. Üzeri alışverişlerde" eşiktir).
+_SENTENCE_BREAK_RE = re.compile(r"^\s*[.!?…]+\s+(?=[A-ZÇĞİÖŞÜ])")
+_AFTER_NEG_BOUND = ("üzeri", "uzeri", "üstü", "ustu", "değerinde", "degerinde")
 _BEFORE_NEG = (
     "taksit", "kupon", "kod", "indirim", "kargo", "iade", "puan", "hediye", "cashback", "limit",
     "fark", "tasarruf", "bonus", "promosyon", "kazanç", "kazanc", "aylık", "aylik", "ödül",
@@ -316,6 +321,10 @@ def _classify_check_threshold_and_dative(after_clean: str, after_raw: str, befor
 
 def _classify_check_after_tokens(after_raw: str, after_tokens: list[str]) -> tuple[str, bool] | None:
     connector = bool(re.match(r"^\s*[+&,;|/\-–—]", after_raw))
+    if not connector and _SENTENCE_BREAK_RE.match(after_raw):
+        # Bağlaç gibi cümle sonu da ilişkiyi keser: "Farklı" tutarı niteleyen "fark"
+        # değildir. Küçük harfle süren özensiz yazım ("100 TL. üzeri") eskisi gibi kalır.
+        connector = not (after_tokens and _stem_in(after_tokens[0], _AFTER_NEG_BOUND))
     if not connector and after_tokens and not re.match(r"^\s*[🚚🚛]", after_raw):
         # Bare “1074 TL düştü” is commonly shorthand for the final offer price;
         # explicit discount amounts (“100 TL indirimle düştü”) still hit the
@@ -1066,6 +1075,10 @@ _GENERIC_TITLE_RE = re.compile(
     r"(?:amazon|n11|trendyol|hepsiburada)\s+indirim kuponu\s*$|"
     r"sohbet\s+(?:grubumuz|kanalımız)(?:\s+(?:için|icin))?\s*$|"
     r"mesajı(?:\s+(?:gör|gor|beğen|begen)\w*)?(?:\s+\d+)?\s*$|"
+    # Bildirimin kendi "👉 Ürün Linki 👈" satırı ("Mesajı Gör" gibi) ürün adı değildir:
+    # açılış taraması eski bildirimleri okurken bu satırdan tekrar anahtarı kurmamalı.
+    r"ürün\s+linki(?:\s+\d+)?\s*$|"
+    r"(?:bu\s+)?(?:fiyat\s+)?uzun\s+sürmez|stoklar\s+tükenmeden|aşağıdaki\s+butona|"
     r"[a-z0-9][a-z0-9_-]*\s+(?:koduyla|kodla|kuponuyla|kuponla|kodunu\s+uygula\w*)"
     r"(?:\s+(?:fiyat\w*\s*)?(?:\d[\d.,]*\s*(?:tl|₺|try)|₺\s*\d[\d.,]*))?\s*$|.*kodunu\s+uygula\w*\s*$)",
     re.IGNORECASE,
@@ -1137,7 +1150,9 @@ def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str], le
     if count == 0:
         return -99.0
     score = 0.0
-    if _MODEL_RE.search(cleaned):
+    # "1000TL" gibi bitişik yazılmış tutar model kodu değildir; aksi halde kampanya
+    # satırı ("… 1000TL seçili ürün satın aldığınızda …") ürün adını geçer.
+    if _MODEL_RE.search(PRICE_RE.sub(" ", cleaned)):
         score += 3
     if _UNIT_RE.search(cleaned):
         score += 2
