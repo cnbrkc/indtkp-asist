@@ -134,6 +134,17 @@ MESSAGE_LIMIT = 4096          # normal mesaj metni
 CAPTION_LIMIT = 1024          # medya açıklaması
 LINK_APPENDIX_LIMIT = 4       # ileti sonuna en fazla kaç gizli bağlantı yazılsın
 MESSAGE_LINK_LABEL = "Mesajı Gör"
+# Ürün bağlantısı her kaynakta aynı görünür: URL bu yazının içine gömülür
+# (kullanıcı isteği: "🔗 ✅ Satın Al ✅: https://…" yerine "👉 Ürün Linki 👈").
+PRODUCT_LINK_TEXT = "👉 Ürün Linki 👈"
+# "Ürün linki" OLAMAYACAK adresler. Mağaza ve kısaltıcı alan adları sınırsızdır
+# (amzn.to, ty.gl, app.hb.biz, fenom.io …); bu yüzden beyaz liste tutulmaz, yalnız
+# kesin ürün olmayanlar elenir: sohbet/sosyal ağ adresleri ve fiyat arama servisleri
+# (bkz. ``is_search_link``).
+NON_PRODUCT_HOSTS = (
+    "t.me", "telegram.me", "telegram.dog", "youtube.com", "youtu.be",
+    "x.com", "twitter.com", "facebook.com", "tiktok.com",
+)
 # Arama bağlantıları mesaj metnine yazılmaz; yalnızca Bot API inline klavyesine
 # eklenir. Böylece arama düğmeleri Telegram'ın 4096/1024 karakter sınırını tüketmez.
 # Arama düğmelerinin kullanıcı isteğindeki sabit sırası.
@@ -597,7 +608,7 @@ def print_report(config: dict, problems: list[str]) -> None:
     print(f"İletim sırası      : {' → '.join(build_delivery_chain(config))}", flush=True)
     print(f"Medya sınırı       : {config.get('max_media_mb', 25)} MB", flush=True)
     mode = link_appendix_mode(config)
-    mode_label = {"smart": "akıllı (buton/önizleme)", "all": "tüm gizli linkler", "off": "kapalı"}[mode]
+    mode_label = {"smart": f"akıllı ({PRODUCT_LINK_TEXT})", "all": "tüm gizli linkler", "off": "kapalı"}[mode]
     print(f"Bağlantı ekleri     : {mode_label} "
           f"| mesaj linki: {'açık' if config_flag(config.get('message_link')) else 'kapalı'} "
           f"| bildirim medyası: {'açık' if config_flag(config.get('notify_media')) else 'kapalı'} "
@@ -1631,6 +1642,24 @@ def extract_links(obj: Any) -> list[dict[str, str]]:
     return found
 
 
+def is_blank_reply(obj: Any) -> bool:
+    """Başka bir mesaja YANIT olan ve ürün/fiyat/bağlantı taşıyamayan ileti mi?
+
+    Kaynaklar kendi fırsatına açıklamasız görsel ya da çıkartmayla yanıt verir; bu
+    ileti yalnız "Mesajı Gör" satırı ile kaynak adından oluşan boş bir bildirim
+    üretiyordu. Fail-open: temizlenmiş metinde tek bir harf/rakam ya da herhangi
+    türde bağlantı (gizli hyperlink, buton, önizleme, görünür URL) varsa ileti
+    korunur; yanıt OLMAYAN açıklamasız görsel de (afiş bir fırsat olabilir) eskisi
+    gibi iletilir. Forum konusunun kök bağlantısı yanıt sayılmaz.
+    """
+    header = getattr(_as_message(obj), "reply_to", None)
+    if header is None or (getattr(header, "forum_topic", False)
+                          and getattr(header, "reply_to_top_id", None) is None):
+        return False
+    cleaned = sanitize_message(obj)
+    return not any(char.isalnum() for char in message_text(cleaned)) and not extract_links(cleaned)
+
+
 def visible_urls(text: str) -> set[str]:
     """Metinde gözle görülen bağlantılar (bunları tekrar yazmaya gerek yok)."""
     return {clean_url(url).rstrip("/").lower() for url in URL_RE.findall(text or "")}
@@ -1671,7 +1700,9 @@ def build_link_appendix(
     excluded = {clean_url(url).rstrip("/").lower() for url in exclude_urls if url}
     lines: list[str] = []
     for item in missing_links(obj, kinds=kinds):
-        if item["url"].rstrip("/").lower() in excluded:
+        # Google/Akakçe/Cimri araması ürün linki değildir; link satırı olarak yazılmaz.
+        # Bot bildiriminde bu adresler zaten arama düğmesi olarak durur.
+        if item["url"].rstrip("/").lower() in excluded or is_search_link(item["url"]):
             continue
         label = (item.get("label") or "").strip()
         if label and label.lower() not in item["url"].lower():
@@ -1679,6 +1710,61 @@ def build_link_appendix(
         else:
             lines.append(f"🔗 {item['url']}")
     return "\n".join(lines)
+
+
+def is_search_link(url: Any) -> bool:
+    """Adres bir fiyat/web araması mı (Google, Akakçe, Cimri)? Etikete bakılmaz."""
+    cleaned = clean_url(url)
+    if _price_search_service(cleaned):
+        return True
+    try:
+        parsed = urllib.parse.urlsplit(cleaned)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    # Gövdedeki "🔎 Google" web aramasıdır; play.google.com gibi mağazalar ürün kalır.
+    return host.removeprefix("www.") in {"google.com", "google.com.tr"} and parsed.path.startswith("/search")
+
+
+def is_product_link(url: Any) -> bool:
+    """Bağlantı ürün/fırsat sayfasına götürebilir mi? (bkz. ``NON_PRODUCT_HOSTS``)
+
+    Yolu ve sorgusu olmayan adres (``https://www.amazon.com.tr``) mağazanın ana
+    sayfasıdır; "🛍 Amazon" gibi mağaza adına gömülü böyle bir link ürün linki sayılmaz.
+    """
+    cleaned = clean_url(url)
+    if not cleaned or is_search_link(cleaned) or is_whatsapp_url(cleaned) or is_instagram_url(cleaned):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(cleaned)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return (parsed.scheme in {"http", "https"} and "." in host
+            and bool(parsed.path.strip("/") or parsed.query)
+            and not any(host == item or host.endswith("." + item) for item in NON_PRODUCT_HOSTS))
+
+
+def product_links(obj: Any, limit: int = LINK_APPENDIX_LIMIT) -> list[dict[str, str]]:
+    """Bildirimde ``👉 Ürün Linki 👈`` olarak verilecek bağlantılar (kaynak sırasıyla).
+
+    Kaynak şablonları farklıdır; ürün adresi butonda, yazının altına gizli
+    hyperlink'te, görünür URL'de ya da yalnız önizlemede durabilir. Buton,
+    kaynağın bilinçli "ürüne git" çağrısıdır: ürüne gidebilen HER buton listelenir
+    (aynı adres gövdede gizli link olsa da). Buton yoksa mesajdaki İLK ürün
+    bağlantısı tek satır olur; alıntıdaki diğer bağlantılar yerinde, yedek olarak
+    kalır. Arama servisleri ve sohbet/sosyal ağ adresleri ürün linki sayılmaz.
+    """
+    links = [item for item in extract_links(obj) if is_product_link(item["url"])]
+    markup = getattr(_as_message(obj), "reply_markup", None)
+    button_urls = {
+        info[0].rstrip("/").lower()
+        for row in getattr(markup, "rows", None) or []
+        for button in getattr(row, "buttons", None) or []
+        if (info := button_link(button))
+    }
+    buttons = [item for item in links if item["url"].rstrip("/").lower() in button_urls]
+    return buttons[:limit] if buttons else links[:1]
 
 
 # Fiyatlar ve indirim yüzdeleri ürün adı değildir; bazı kaynaklar bunları
@@ -2743,20 +2829,47 @@ def _compose_resolve_header(
     return header_text, price_text, product_title, quote_body
 
 
-def _compose_build_appendix(cleaned_obj: Any, source_body: str, link_kinds: Sequence[str] | None) -> str:
-    """Ek link listesi ve disclosure altında kalan gizli linkleri birleştir."""
-    appendix_text = build_link_appendix(cleaned_obj, kinds=link_kinds) if link_kinds else ""
+def _compose_build_appendix(
+    cleaned_obj: Any, source_body: str, link_kinds: Sequence[str] | None, hidden_links: bool = True,
+) -> tuple[str, list[tuple[int, int, str]]]:
+    """Ek satırlar: önce ``👉 Ürün Linki 👈``, sonra başka türlü taşınamayan linkler.
+
+    İkinci değer ürün satırlarının ek içindeki ``(UTF-16 başlangıç, uzunluk, URL)``
+    konumlarıdır; URL metne yazılmaz, bu aralığa gizli hyperlink olarak gömülür.
+    ``hidden_links=False`` (biçimsiz son çare iletisi) URL'yi satıra açıkça yazar.
+    ``link_appendix: all`` (gizli hyperlink'ler de listelenir) ham URL dökümünü,
+    ``off`` ise eksiz düzeni aynen korur; ikisinde de ürün satırı üretilmez.
+    """
+    products = product_links(cleaned_obj) if link_kinds and "entity" not in link_kinds else []
+    product_lines: list[str] = []
+    spans: list[tuple[int, int, str]] = []
+    cursor = 0
+    for number, item in enumerate(products, 1):
+        label = PRODUCT_LINK_TEXT if len(products) == 1 else PRODUCT_LINK_TEXT.replace("Linki", f"Linki {number}")
+        if hidden_links:
+            spans.append((cursor, utf16_length(label), item["url"]))
+        else:
+            label = f"{label}: {item['url']}"
+        product_lines.append(label)
+        cursor += utf16_length(label) + 1
+    appendix_text = "\n".join(part for part in (
+        *product_lines,
+        build_link_appendix(cleaned_obj, kinds=link_kinds, exclude_urls=[item["url"] for item in products])
+        if link_kinds else "",
+    ) if part)
     carried = getattr(cleaned_obj, "preserved_links", None) or []
     if carried:
         carried_only = SimpleNamespace(
             message=source_body, entities=[], reply_markup=None, media=None, preserved_links=carried,
         )
-        carried_text = build_link_appendix(carried_only, kinds=("webpage",))
+        carried_text = build_link_appendix(
+            carried_only, kinds=("webpage",), exclude_urls=[item["url"] for item in products],
+        )
         existing_lines = set(appendix_text.splitlines())
         extra_lines = [line for line in carried_text.splitlines() if line not in existing_lines]
         if extra_lines:
             appendix_text = "\n".join(part for part in (appendix_text, *extra_lines) if part)
-    return appendix_text
+    return appendix_text, spans
 
 
 def _compose_join(segments: Sequence[tuple[str, str]], sep: str) -> str:
@@ -2837,8 +2950,9 @@ def _compose_assemble_text(segments: Sequence[tuple[str, str]], sep: str) -> tup
 def _compose_build_entities(
     header_text: str, body: str, body_entities: Sequence[Any], name: str | None,
     quote_body: bool, offsets: dict[str, int], body_offset: int, name_offset: int,
+    appendix_links: Sequence[tuple[int, int, str]] = (),
 ) -> list[Any]:
-    """Üst satır kalın, alıntı ve gövde entity'lerini doğru UTF-16 konumlarda topla."""
+    """Üst satır kalın, alıntı, gövde entity'leri ve ürün linklerini doğru UTF-16 konumlarda topla."""
     content_entities: list[Any] = []
     if header_text and "header" in offsets:
         content_entities.append(types.MessageEntityBold(
@@ -2852,6 +2966,11 @@ def _compose_build_entities(
         shift_telethon_entities(body_entities, body_offset),
         body_offset + utf16_length(body),
     ))
+    if "appendix" in offsets:
+        content_entities.extend(
+            types.MessageEntityTextUrl(offset=offsets["appendix"] + start, length=length, url=url)
+            for start, length, url in appendix_links
+        )
     if name_offset >= 0 and name:
         content_entities.append(types.MessageEntityBold(
             offset=name_offset, length=utf16_length(name),
@@ -2867,6 +2986,7 @@ def compose_message(
     message_link: str | None = None,
     message_link_label: str = MESSAGE_LINK_LABEL,
     source_name: str | None = None,
+    hidden_links: bool = True,
 ) -> dict[str, Any]:
     """Basit bildirim düzenini kur (kullanıcı isteği):
 
@@ -2879,8 +2999,10 @@ def compose_message(
     2. altında kaynak mesaj **olduğu gibi** (yalnızca güvenlik temizliği
        uygulanır: reklam/işbirliği etiketleri, WhatsApp/Instagram linkleri,
        Instagram tanıtımları, kanal tanıtımı ve salt hashtag satırları),
-    3. ``🔗 <etiket>: <t.me linki>`` — orijinal mesajın adresi,
-    4. en altta kaynak grup adı (kalın; etiket ve link yok).
+    3. ``👉 Ürün Linki 👈`` — ürün adresi bu yazıya gömülüdür (bkz. ``product_links``);
+       alıntıdaki özgün bağlantılar yedek olarak yerinde kalır,
+    4. ``🔗 <etiket>: <t.me linki>`` — orijinal mesajın adresi,
+    5. en altta kaynak grup adı (kalın; etiket ve link yok).
 
     Üst satır YALNIZCA görünen metindir: arama sorguları (Google Alışveriş,
     Akakçe, Cimri) ve tekrar (dedup) anahtarı kaynak mesajdan ayıklanan
@@ -2909,7 +3031,7 @@ def compose_message(
     body = source_body
     body_entities = entities_for_text(cleaned_obj, source_body)
 
-    appendix_text = _compose_build_appendix(cleaned_obj, source_body, link_kinds)
+    appendix_text, appendix_links = _compose_build_appendix(cleaned_obj, source_body, link_kinds, hidden_links)
 
     source_line = f"🔗 {message_link_label}: {message_link}" if message_link else ""
     name = (source_name or "").strip() or None
@@ -2934,6 +3056,7 @@ def compose_message(
     text, content, offsets, body_offset, name_offset = _compose_assemble_text(segments, sep)
     content_entities = _compose_build_entities(
         header_text, body, body_entities, name, quote_body, offsets, body_offset, name_offset,
+        appendix_links if appendix_text else (),
     )
 
     composed_message = SimpleNamespace(
@@ -3447,7 +3570,11 @@ def _rebase_entities_for_dedup_badge(
     *,
     bot_api: bool = False,
 ) -> list[Any]:
-    """Entity offset'lerini notun kaldırılıp sona eklenmesine göre taşı."""
+    """Entity offset'lerini notun kaldırılıp sona eklenmesine göre taşı.
+
+    Bütün konumlar (``removed``, ``insert_at``, ``insert_length``) entity'lerle aynı
+    birimde, yani UTF-16 kod birimi olarak verilir.
+    """
     old_start, old_end, replacement_length = removed
     removed_length = max(0, old_end - old_start)
     after_delta = replacement_length - removed_length
@@ -6289,8 +6416,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
     log.info("Bağlanıldı: %s (id=%s)", display_name(me), me.id)
 
     if LINK_APPENDIX_MODE == "smart":
-        log.info("Bağlantı ekleri: akıllı mod — gizli hyperlink'ler mesajda tıklanabilir kalır; "
-                 "hesap kopyasında buton/önizleme, bot bildiriminde buton linkleri metne yazılır.")
+        log.info("Bağlantı ekleri: akıllı mod — ürün adresi '%s' yazısına gömülür "
+                 "(buton, gizli hyperlink ya da görünür URL); alıntıdaki bağlantılar yedek kalır.",
+                 PRODUCT_LINK_TEXT)
     elif LINK_APPENDIX_MODE == "all":
         log.info("Bağlantı ekleri: tüm gizli linkler iletinin sonuna yazılacak.")
     if MESSAGE_LINK_LINE:
@@ -7436,6 +7564,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         composed = compose_message(
             event, limit=2000, link_kinds=LINK_KINDS,
             message_link=link, source_name=footer_name,
+            hidden_links=False,  # bu ileti biçimsiz gider; URL metinde görünmeli
         )
         if composed_has_content(composed):
             body = composed["text"]
@@ -7714,6 +7843,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     continue
                 tried.add(badge)
                 new_text, insert_at, insert_length, badge_offset = dedup_badge_insertion(base, badge)
+                # Entity konumları UTF-16 birimidir; ekleme noktası da aynı birimle
+                # verilmelidir. Karakter sayısıyla verildiğinde emojili mesajlarda
+                # gövdenin sonundaki entity'ler (alıntı, ``👉 Ürün Linki 👈`` bağlantısı)
+                # rozet kadar kayıyor, bağlantı etiketinden kopuyordu.
+                insert_at, insert_length = (utf16_length(new_text[:insert_at]),
+                                            utf16_length(new_text[insert_at:]))
                 headline = badge.split("\n")[0]
                 if editable == "bot":
                     limit = CAPTION_LIMIT if kind == "media" else MESSAGE_LIMIT
@@ -8458,13 +8593,19 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if isinstance(source_seen, dict):
             source_seen[event.chat_id] = int(source_seen.get(event.chat_id, 0) or 0) + 1
         text = event.raw_text or ""
-        # Exact, content-free teaser only. Any media, URL, entity, or button may
-        # carry a real deal; fail open rather than suppressing it.
+        # Exact, content-free teaser only. Any media, URL, hidden link, or button may
+        # carry a real deal; fail open rather than suppressing it. Kaynak bu ifadeyi
+        # "Yoğun ilgi görüyor 📣" diye yazar: emoji/noktalama karşılaştırmaya girmez.
+        # Kelimeler birebir bu üçü olduğundan biçim entity'si (kalın, özel emoji)
+        # içerik ekleyemez; bağlantı taşıyan entity'yi ``extract_links`` yakalar.
         msg = _as_message(event)
-        if (normalize(text).strip().strip(" .!…") == "yoğun ilgi görüyor"
-                and getattr(msg, "media", None) is None
-                and not message_entities(msg) and not getattr(msg, "reply_markup", None)
-                and not extract_links(event)):
+        teaser = (WORD_TOKEN_RE.findall(normalize(text)) == ["yoğun", "ilgi", "görüyor"]
+                  and getattr(msg, "media", None) is None
+                  and not getattr(msg, "reply_markup", None)
+                  and not extract_links(event))
+        if teaser or is_blank_reply(event):
+            log.info("İçeriksiz mesaj elendi (chat=%s id=%s): ürün, fiyat ya da bağlantı yok.",
+                     event.chat_id, event.id)
             _cursor_mark_success(int(event.chat_id), int(event.id))
             return
         if not matches(text, FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE,

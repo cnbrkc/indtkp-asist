@@ -58,7 +58,10 @@ class ReportedExamples(unittest.TestCase):
         self.assertTrue(result['text'].startswith('₺953 — OTL Technologies - SUPER MARIO TWS KULAKLIK'), result['text'])
         self.assertEqual(pf.extract_price(OTL).value, 953.42)
         self.assertIn('💰 953.42 TL', result['text'])
-        self.assertIn('🔗 Fırsata Git: https://example.com/deal', result['text'])
+        # Buton linki artık ham URL satırı değil; ``👉 Ürün Linki 👈`` yazısına gömülür.
+        self.assertIn('\n\n👉 Ürün Linki 👈\n\n', result['text'])
+        self.assertEqual([entity.url for entity in result['entities'] if getattr(entity, 'url', None)],
+                         ['https://example.com/deal'])
         self.assertIn('https://t.me/depoindirim/88707', result['text'])
         self.assertEqual(bot.build_link_appendix(message(OTL + '\nhttps://example.com/deal', [button]),
                                                   kinds=('button',)), '')

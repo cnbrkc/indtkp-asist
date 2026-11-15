@@ -1316,12 +1316,16 @@ class NotificationTest(unittest.TestCase):
             "Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici "
             "Banyo ve Duş Jeli 500ml x 4 Adet"
             "\n\n" + text
-            + "\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"
+            + "\n\n👉 Ürün Linki 👈"
+            "\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"
             "\n\nfirsatz"
         ))
         delivered = self.calls[0]["text"]
         self.assertEqual(delivered.count("225 TL"), 1, "fiyat satırı aynen korunur")
-        self.assertEqual(delivered.count("https://link.amazon/B02W5SjPe"), 1)
+        self.assertEqual(delivered.count("https://link.amazon/B02W5SjPe"), 1,
+                         "görünür adres yalnız alıntıda (yedek) kalır")
+        self.assertEqual([item["url"] for item in self._links(self.calls[0]["entities"])],
+                         ["https://link.amazon/B02W5SjPe"], "ürün linki yazının içine gömülür")
         self.assertNotIn("Ürün fırsat linki", delivered, "ataç + link yeter")
         self.assertIn("🛍️ Palmolive", delivered, "mesaj hiçbir satırı silinmeden iletilir")
 
@@ -1343,9 +1347,12 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(delivered, (
             "Abc Deterjan Çamaşır Sodası Soda Matik 500 Gr"
             "\n\n" + text
-            + "\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"
+            + "\n\n👉 Ürün Linki 👈"
+            "\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"
             "\n\nfirsatz"
         ))
+        self.assertEqual([item["url"] for item in self._links(self.calls[0]["entities"])],
+                         ["https://onu.al/feMF"])
         self.assertIn("🏷️", delivered, "fiyat etiketi aynen korunur")
         self.assertEqual(delivered.count("33 TL"), 1)
         self.assertEqual(delivered.count("22 TL"), 1, "3'lü alım fiyatı korunur")
@@ -1445,8 +1452,9 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         call = self.calls[0]
         self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", call["text"])
-        self.assertIn("🔗 Fırsata Git: https://amzn.to/btn", call["text"])
-        self.assertEqual(call["text"].count("https://amzn.to/btn"), 1)
+        self.assertIn("\n\n👉 Ürün Linki 👈\n\n", call["text"])
+        self.assertNotIn("https://amzn.to/btn", call["text"], "adres yazının içine gömülür")
+        self.assertEqual([item["url"] for item in self._links(call["entities"])], ["https://amzn.to/btn"])
         keyboard = call["keyboard"]["inline_keyboard"]
         self.assertEqual([button["text"] for button in keyboard[0]], [
             "Google Alışveriş", "Akakçe'de ara", "Cimri'de ara",
@@ -1457,7 +1465,8 @@ class NotificationTest(unittest.TestCase):
         client = self._run({"notify_bot_token": "123:ABC", "notify_media": False})
         markup = FakeMarkup([FakeRow([FakeButton("Fırsat", url="https://amzn.to/eski")])])
         self._send(client, "çay", reply_markup=markup)
-        self.assertIn("https://amzn.to/eski", self.calls[0]["text"])
+        self.assertEqual([item["url"] for item in self._links(self.calls[0]["entities"])],
+                         ["https://amzn.to/eski"])
         self.assertNotIn("https://amzn.to/eski", str(self.calls[0]["keyboard"]))
 
     def test_text_only_message_notification(self):
@@ -1483,9 +1492,10 @@ class NotificationTest(unittest.TestCase):
         call = self.calls[0]
         self.assertIs(call["link_preview"], False)
         self.assertIn(label, call["text"])
+        # Alıntıdaki özgün bağlantı (yedek) + ``👉 Ürün Linki 👈`` satırı.
         self.assertEqual(
             [item["url"] for item in self._links(call["entities"])],
-            ["https://www.amazon.com.tr/dp/B123"],
+            ["https://www.amazon.com.tr/dp/B123"] * 2,
         )
 
     def test_account_text_fallback_also_disables_link_preview(self):
@@ -1832,6 +1842,16 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         chunks += [str(caption or "") for *_, caption in client.files]
         return "\n".join(chunks)
 
+    @staticmethod
+    def _hidden_urls(client) -> list:
+        """Hesap kopyasında yazının içine gömülü (``👉 Ürün Linki 👈`` vb.) adresler."""
+        return [
+            entity.url
+            for kwargs in client.sent_kwargs + client.file_kwargs
+            for entity in kwargs.get("formatting_entities") or []
+            if getattr(entity, "url", None)
+        ]
+
     def test_hidden_entity_link_stays_in_the_verbatim_body(self):
         """Basit düzen: mesaj olduğu gibi gider; gizli link gövdede tıklanabilir kalır."""
         self.client.fail_modes.update({"forward", "copy", "media", "download"})
@@ -1855,8 +1875,8 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         self._send(text, entities=[entity])
         self.assertEqual(len(self.client.files), 1)
         caption = self.client.files[0][2]
-        self.assertEqual(caption.split("\n\n")[:3], [
-            "çay", "çay 5 TL", "🔗 Mesajı Gör: https://t.me/firsatz/1",
+        self.assertEqual(caption.split("\n\n")[:4], [
+            "çay", "çay 5 TL", "👉 Ürün Linki 👈", "🔗 Mesajı Gör: https://t.me/firsatz/1",
         ])
         self.assertNotIn("https://amzn.to/kapak", caption,
                          "gövdede tıklanabilir kalan link tekrar yazılmaz")
@@ -1883,8 +1903,9 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
             FakeRow([FakeButton("Fırsata Git", inner_url="https://amzn.to/buton")]),
         ]))
         delivered = self._texts(self.client)
-        self.assertIn("https://amzn.to/buton", delivered)
-        self.assertNotIn("Ürün fırsat linki", delivered, "ataç + link yeter")
+        self.assertIn("\n\n👉 Ürün Linki 👈\n\n", delivered)
+        self.assertEqual(self._hidden_urls(self.client), ["https://amzn.to/buton"])
+        self.assertNotIn("https://amzn.to/buton", delivered, "adres yazının içine gömülür")
 
     def test_text_fallback_lists_hidden_links_and_source(self):
         """Son çare metin: hem buton linki hem orijinal mesaja giden link eklenir."""
@@ -1893,7 +1914,7 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
             FakeRow([FakeButton("Fırsata Git", url="https://amzn.to/kart")]),
         ]))
         delivered = self._texts(self.client)
-        self.assertIn("https://amzn.to/kart", delivered)
+        self.assertEqual(self._hidden_urls(self.client), ["https://amzn.to/kart"])
         self.assertIn("https://t.me/firsatz/1", delivered, "kaynak mesaj linki de olmalı")
         self.assertEqual(bot.STATS["modes"].get("text"), 1)
 
@@ -1947,7 +1968,7 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         delivered = self._texts(self.client)
         self.assertEqual(self.client.forwarded, [], "WhatsApp düğmesi için forward atlanmalı")
         self.assertNotIn("wa.me", delivered)
-        self.assertIn("https://amzn.to/firsat", delivered)
+        self.assertEqual(self._hidden_urls(self.client), ["https://amzn.to/firsat"])
 
     def test_channel_promo_and_hashtag_lines_are_cleaned_from_the_copy(self):
         """Kullanıcı isteği: "💚Whatsapp Önemli Fırsatlar" ve hashtag satırı gitmesin."""
