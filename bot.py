@@ -37,7 +37,7 @@ import urllib.request
 import uuid
 import unicodedata
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -132,7 +132,7 @@ DEDUP_LOCK = asyncio.Lock()  # kayıt/rezervasyon kısa kritik bölümü
 # Telegram sınırları (Bot API ve kullanıcı hesabı için ortak olanlar).
 MESSAGE_LIMIT = 4096          # normal mesaj metni
 CAPTION_LIMIT = 1024          # medya açıklaması
-LINK_APPENDIX_LIMIT = 4       # ileti sonuna en fazla kaç gizli bağlantı yazılsın
+LINK_APPENDIX_LIMIT = 4       # ileti sonuna en fazla kaç ürün satırı ve (ayrıca) kaç 🔗 satırı yazılsın
 MESSAGE_LINK_LABEL = "Mesajı Gör"
 # Ürün bağlantısı her kaynakta aynı görünür: URL bu yazının içine gömülür
 # (kullanıcı isteği: "🔗 ✅ Satın Al ✅: https://…" yerine "👉 Ürün Linki 👈").
@@ -140,11 +140,40 @@ PRODUCT_LINK_TEXT = "👉 Ürün Linki 👈"
 # "Ürün linki" OLAMAYACAK adresler. Mağaza ve kısaltıcı alan adları sınırsızdır
 # (amzn.to, ty.gl, app.hb.biz, fenom.io …); bu yüzden beyaz liste tutulmaz, yalnız
 # kesin ürün olmayanlar elenir: sohbet/sosyal ağ adresleri ve fiyat arama servisleri
-# (bkz. ``is_search_link``).
+# (bkz. ``is_search_link``). Alan adı TAM ya da alt alan adı olarak eşleşir:
+# ``m.facebook.com`` elenir; ``netflix.com`` (x.com) ve ``x.com.magaza.example`` elenmez.
+# Genel kısaltıcılar (t.co, bit.ly …) ürüne de gidebildiği için listede yoktur.
 NON_PRODUCT_HOSTS = (
     "t.me", "telegram.me", "telegram.dog", "youtube.com", "youtu.be",
     "x.com", "twitter.com", "facebook.com", "tiktok.com",
+    # Topluluk/sosyal ağ davet, profil ve gönderi adresleri.
+    "discord.gg", "discord.com", "discordapp.com", "linkedin.com", "lnkd.in",
+    "pinterest.com", "pin.it", "reddit.com", "redd.it", "threads.net", "threads.com",
+    "fb.com", "fb.me", "m.me", "twitch.tv", "snapchat.com", "tumblr.com", "vk.com", "bsky.app",
+    "bip.ai", "linktr.ee",
+    # Çekiliş/anket formları ve paylaşılan belgeler.
+    "forms.gle", "docs.google.com",
 )
+# Pinterest ülke alan adlarını da kullanır (pinterest.co.uk, pinterest.de, pinterest.com.tr).
+# Benzer adlar (mypinterest.de, pinterest.shop, pinterest.de.magaza.example) eşleşmez.
+NON_PRODUCT_HOST_RE = re.compile(r"(?:^|\.)pinterest\.(?:[a-z]{2,3}|com?\.[a-z]{2})$")
+# Yolu olmayan adres mağazanın ana sayfasıdır; aşağıdaki sorgu anahtarları onu ürün
+# sayfasına çevirmez (iş ortaklığı etiketi, kampanya/tıklama izleme). Bunların dışında
+# tek bir anahtar (``?p=123``, ``?url=https://…``) varsa adres ürüne gidebilir sayılır.
+TRACKING_QUERY_KEYS = frozenset({
+    "tag", "linkcode", "linkid", "camp", "creative", "creativeasin", "ascsubtag", "ref", "ref_",
+    "language", "_encoding", "ie",
+    "gclid", "gbraid", "wbraid", "dclid", "fbclid", "msclkid", "yclid", "ttclid", "twclid",
+    "igshid", "srsltid", "aff", "affid", "affiliate", "source", "src",
+})
+TRACKING_QUERY_PREFIXES = ("utm_", "adjust_", "wt_", "aff_", "pf_rd_", "pd_rd_")
+# Doğrudan görsel/video dosyası ürün sayfası değildir. Kaynak botları önizleme görselini
+# çoğu zaman mesajın başındaki görünmez karaktere gömer; "ilk bağlantı" o olmamalı.
+MEDIA_FILE_PATH_RE = re.compile(r"\.(?:jpe?g|png|webp|gif|bmp|avif|mp4|mov|webm)(?:/|$)", re.IGNORECASE)
+# Ek satırlarının karakter sınırındaki önceliği (bkz. ``_compose_fit_appendix``):
+# yedekli satır gövdeye yer bırakır, vazgeçilmez satır gövdeden önce gelir, ürün satırı
+# en son düşer.
+APPENDIX_SPARE, APPENDIX_REQUIRED, APPENDIX_PRODUCT = range(3)
 # Arama bağlantıları mesaj metnine yazılmaz; yalnızca Bot API inline klavyesine
 # eklenir. Böylece arama düğmeleri Telegram'ın 4096/1024 karakter sınırını tüketmez.
 # Arama düğmelerinin kullanıcı isteğindeki sabit sırası.
@@ -1669,10 +1698,14 @@ def missing_links(
     obj: Any,
     limit: int = LINK_APPENDIX_LIMIT,
     kinds: Sequence[str] | None = ("button", "webpage"),
+    skip: Callable[[dict[str, str]], bool] | None = None,
 ) -> list[dict[str, str]]:
     """Metinde görünmeyen bağlantılar: gizli hyperlink, buton, link önizlemesi.
 
     ``kinds`` verilirse yalnızca o türler döner (bkz. ``LINK_KIND_GROUPS``).
+    ``skip`` çağıranın zaten başka yerde taşıdığı bağlantıları eler. Eleme sınırdan
+    ÖNCE yapılır: elenen bağlantı ``limit`` hakkı tüketmez, arkasındaki gerçek
+    bağlantı düşmez.
     """
     visible = visible_urls(message_text(obj))
     allowed = None if kinds is None else set(kinds)
@@ -1684,10 +1717,51 @@ def missing_links(
             continue
         if item["url"].rstrip("/").lower() in visible:
             continue
+        if skip is not None and skip(item):
+            continue
         result.append(item)
         if len(result) >= limit:
             break
     return result
+
+
+def link_appendix_lines(
+    obj: Any,
+    kinds: Sequence[str] | None = ("button", "webpage"),
+    *,
+    exclude_urls: Iterable[str] = (),
+    has_keyboard: bool = False,
+) -> list[tuple[str, bool]]:
+    """Gizli bağlantıların ``🔗`` satırları: ``(satır, vazgeçilmez mi?)``.
+
+    Başka yerde açılabilen adres satır olmaz: ``exclude_urls`` çağıranın kendi
+    taşıdığı adreslerdir (``👉 Ürün Linki 👈`` satırı); kaynağın Google/Akakçe/Cimri
+    arama butonu ise ileti inline klavyeyle gidiyorsa (``has_keyboard``; bot bildirimi)
+    orada düğme olarak kalır. Klavyesi olmayan hesap kopyasında arama butonunun tek
+    taşıyıcısı bu satırdır; o yüzden orada yazılır.
+
+    Bu elemeler sınırdan önce yapıldığı için elenen bağlantı satır hakkı tüketmez.
+    Mesajın ilk ``LINK_APPENDIX_LIMIT`` gizli bağlantısı (hiç eleme olmasaydı
+    yazılacak olanlar) vazgeçilmezdir. Eleme sayesinde yer bulan sonraki bağlantılar
+    ve klavyede de durabilen buton satırları yedeklidir: ``compose_message`` bunları
+    yalnız gövdeyi kırpmayacaksa yazar.
+    """
+    excluded = {clean_url(url).rstrip("/").lower() for url in exclude_urls if url}
+
+    def carried_elsewhere(item: dict[str, str]) -> bool:
+        if item["url"].rstrip("/").lower() in excluded:
+            return True
+        return has_keyboard and item["kind"] == "button" and is_search_link(item["url"])
+
+    first = {item["url"].rstrip("/").lower() for item in missing_links(obj, kinds=kinds)}
+    lines: list[tuple[str, bool]] = []
+    for item in missing_links(obj, kinds=kinds, skip=carried_elsewhere):
+        label = (item.get("label") or "").strip()
+        text = (f"🔗 {label[:40]}: {item['url']}" if label and label.lower() not in item["url"].lower()
+                else f"🔗 {item['url']}")
+        required = item["url"].rstrip("/").lower() in first and not (has_keyboard and item["kind"] == "button")
+        lines.append((text, required))
+    return lines
 
 
 def build_link_appendix(
@@ -1695,21 +1769,14 @@ def build_link_appendix(
     kinds: Sequence[str] | None = ("button", "webpage"),
     *,
     exclude_urls: Iterable[str] = (),
+    has_keyboard: bool = False,
 ) -> str:
-    """Gizli bağlantıları iletinin sonuna ekle; istenen URL'leri yineleme."""
-    excluded = {clean_url(url).rstrip("/").lower() for url in exclude_urls if url}
-    lines: list[str] = []
-    for item in missing_links(obj, kinds=kinds):
-        # Google/Akakçe/Cimri araması ürün linki değildir; link satırı olarak yazılmaz.
-        # Bot bildiriminde bu adresler zaten arama düğmesi olarak durur.
-        if item["url"].rstrip("/").lower() in excluded or is_search_link(item["url"]):
-            continue
-        label = (item.get("label") or "").strip()
-        if label and label.lower() not in item["url"].lower():
-            lines.append(f"🔗 {label[:40]}: {item['url']}")
-        else:
-            lines.append(f"🔗 {item['url']}")
-    return "\n".join(lines)
+    """Gizli bağlantıları iletinin sonuna ekle; başka yerde açılabilen adresi yineleme.
+
+    Satır kuralları için bkz. ``link_appendix_lines``.
+    """
+    return "\n".join(
+        text for text, _ in link_appendix_lines(obj, kinds, exclude_urls=exclude_urls, has_keyboard=has_keyboard))
 
 
 def is_search_link(url: Any) -> bool:
@@ -1726,11 +1793,26 @@ def is_search_link(url: Any) -> bool:
     return host.removeprefix("www.") in {"google.com", "google.com.tr"} and parsed.path.startswith("/search")
 
 
+def _is_tracking_query(query: str) -> bool:
+    """Sorgu yalnız izleme/iş ortaklığı etiketi mi taşıyor? (bkz. ``TRACKING_QUERY_KEYS``)
+
+    Fail-open: tanınmayan tek bir anahtar ya da değeri adres olan bir parametre
+    (yönlendirme hedefi) varsa sorgu içerik sayılır.
+    """
+    return all(
+        "://" not in value
+        and (key.lower() in TRACKING_QUERY_KEYS or key.lower().startswith(TRACKING_QUERY_PREFIXES))
+        for key, value in urllib.parse.parse_qsl(query, keep_blank_values=True)
+    )
+
+
 def is_product_link(url: Any) -> bool:
     """Bağlantı ürün/fırsat sayfasına götürebilir mi? (bkz. ``NON_PRODUCT_HOSTS``)
 
-    Yolu ve sorgusu olmayan adres (``https://www.amazon.com.tr``) mağazanın ana
-    sayfasıdır; "🛍 Amazon" gibi mağaza adına gömülü böyle bir link ürün linki sayılmaz.
+    Yolu olmayan adres (``https://www.amazon.com.tr``) mağazanın ana sayfasıdır; "🛍 Amazon"
+    gibi mağaza adına gömülü böyle bir link ürün linki sayılmaz. Ana sayfaya eklenen
+    iş ortaklığı/izleme etiketi (``/?tag=kanal-21``, ``/?utm_source=…``) bunu değiştirmez.
+    Doğrudan görsel/video dosyası da (``…/urun.jpg``) ürün sayfası değildir.
     """
     cleaned = clean_url(url)
     if not cleaned or is_search_link(cleaned) or is_whatsapp_url(cleaned) or is_instagram_url(cleaned):
@@ -1741,7 +1823,9 @@ def is_product_link(url: Any) -> bool:
         return False
     host = (parsed.hostname or "").lower().rstrip(".")
     return (parsed.scheme in {"http", "https"} and "." in host
-            and bool(parsed.path.strip("/") or parsed.query)
+            and bool(parsed.path.strip("/") or not _is_tracking_query(parsed.query))
+            and not MEDIA_FILE_PATH_RE.search(parsed.path)
+            and not NON_PRODUCT_HOST_RE.search(host)
             and not any(host == item or host.endswith("." + item) for item in NON_PRODUCT_HOSTS))
 
 
@@ -2831,17 +2915,26 @@ def _compose_resolve_header(
 
 def _compose_build_appendix(
     cleaned_obj: Any, source_body: str, link_kinds: Sequence[str] | None, hidden_links: bool = True,
-) -> tuple[str, list[tuple[int, int, str]]]:
+    has_keyboard: bool = False,
+) -> tuple[list[tuple[str, int]], list[tuple[int, int, str]]]:
     """Ek satırlar: önce ``👉 Ürün Linki 👈``, sonra başka türlü taşınamayan linkler.
 
-    İkinci değer ürün satırlarının ek içindeki ``(UTF-16 başlangıç, uzunluk, URL)``
-    konumlarıdır; URL metne yazılmaz, bu aralığa gizli hyperlink olarak gömülür.
-    ``hidden_links=False`` (biçimsiz son çare iletisi) URL'yi satıra açıkça yazar.
-    ``link_appendix: all`` (gizli hyperlink'ler de listelenir) ham URL dökümünü,
-    ``off`` ise eksiz düzeni aynen korur; ikisinde de ürün satırı üretilmez.
+    İlk değer ``(satır, öncelik)`` listesidir (bkz. ``APPENDIX_PRODUCT`` …); sınıra
+    sığdırma ``_compose_fit_appendix`` içindedir. İkinci değer ürün satırlarının ek
+    içindeki ``(UTF-16 başlangıç, uzunluk, URL)`` konumlarıdır; URL metne yazılmaz, bu
+    aralığa gizli hyperlink olarak gömülür. ``hidden_links=False`` (biçimsiz son çare
+    iletisi) URL'yi satıra açıkça yazar. ``link_appendix: all`` (gizli hyperlink'ler de
+    listelenir) ham URL dökümünü, ``off`` ise eksiz düzeni aynen korur; ikisinde de
+    ürün satırı üretilmez.
+
+    En çok ``LINK_APPENDIX_LIMIT`` ürün satırı ve ayrıca en çok o kadar ``🔗`` satırı
+    yazılır. Satır alamayan ürün butonu ``has_keyboard`` (bot bildirimi) ise klavyede
+    düğme olarak kalır; klavyesiz hesap kopyasında ``🔗 etiket: adres`` satırı olur.
     """
-    products = product_links(cleaned_obj) if link_kinds and "entity" not in link_kinds else []
-    product_lines: list[str] = []
+    candidates = (product_links(cleaned_obj, limit=MAX_INLINE_KEYBOARD_BUTTONS)
+                  if link_kinds and "entity" not in link_kinds else [])
+    products = candidates[:LINK_APPENDIX_LIMIT]
+    lines: list[tuple[str, int]] = []
     spans: list[tuple[int, int, str]] = []
     cursor = 0
     for number, item in enumerate(products, 1):
@@ -2850,26 +2943,62 @@ def _compose_build_appendix(
             spans.append((cursor, utf16_length(label), item["url"]))
         else:
             label = f"{label}: {item['url']}"
-        product_lines.append(label)
+        lines.append((label, APPENDIX_PRODUCT))
         cursor += utf16_length(label) + 1
-    appendix_text = "\n".join(part for part in (
-        *product_lines,
-        build_link_appendix(cleaned_obj, kinds=link_kinds, exclude_urls=[item["url"] for item in products])
-        if link_kinds else "",
-    ) if part)
+
+    def extend(found: Sequence[tuple[str, bool]]) -> None:
+        # Aynı satır iki gruptan da gelebilir (korunan link ``all`` modunda ana grupta
+        # da görünür); tek kez yazılır ve en yüksek önceliği alır.
+        written = {text: index for index, (text, _) in enumerate(lines)}
+        for text, required in found:
+            rank = APPENDIX_REQUIRED if required else APPENDIX_SPARE
+            if text not in written:
+                written[text] = len(lines)
+                lines.append((text, rank))
+            elif lines[written[text]][1] < rank:
+                lines[written[text]] = (text, rank)
+
+    if link_kinds:
+        extend(link_appendix_lines(
+            cleaned_obj, link_kinds, has_keyboard=has_keyboard,
+            exclude_urls=[item["url"] for item in (candidates if has_keyboard else products)],
+        ))
     carried = getattr(cleaned_obj, "preserved_links", None) or []
     if carried:
         carried_only = SimpleNamespace(
             message=source_body, entities=[], reply_markup=None, media=None, preserved_links=carried,
         )
-        carried_text = build_link_appendix(
-            carried_only, kinds=("webpage",), exclude_urls=[item["url"] for item in products],
-        )
-        existing_lines = set(appendix_text.splitlines())
-        extra_lines = [line for line in carried_text.splitlines() if line not in existing_lines]
-        if extra_lines:
-            appendix_text = "\n".join(part for part in (appendix_text, *extra_lines) if part)
-    return appendix_text, spans
+        extend(link_appendix_lines(
+            carried_only, ("webpage",), exclude_urls=[item["url"] for item in products],
+        ))
+    return lines, spans
+
+
+def _compose_fit_appendix(
+    lines: Sequence[tuple[str, int]], header: str, body: str, tail: Sequence[str], limit: int, sep: str,
+) -> str:
+    """Ek satırlarını sınıra sığdır; hangi satırın önce düşeceği önceliğe bağlıdır.
+
+    1. Mesaj gövdesiyle birlikte sığmıyorsa yedekli (``APPENDIX_SPARE``) satırlar
+       sondan başlayarak bırakılır: bunlar gövdeyi asla kırpmaz. Bot bildiriminde
+       bırakılan buton inline klavyede düğme olarak kalır.
+    2. Vazgeçilmez ``🔗`` satırları gövdeden önce gelir (gövde kırpılır). Gövdesiz
+       bile sığmıyorlarsa hepsi birden düşer, gövde yerini geri alır.
+    3. ``👉 Ürün Linki 👈`` satırları en son düşer (bkz. ``_compose_drop_overflow_parts``).
+    """
+    def size(items: Sequence[tuple[str, int]], content: str) -> int:
+        parts = (header, content, "\n".join(text for text, _ in items), *tail)
+        return utf16_length(sep.join(part for part in parts if part))
+
+    kept = list(lines)
+    while size(kept, body) > limit:
+        spare = [index for index, (_, rank) in enumerate(kept) if rank == APPENDIX_SPARE]
+        if not spare:
+            break
+        del kept[spare[-1]]
+    if size(kept, "") >= limit:
+        kept = [item for item in kept if item[1] == APPENDIX_PRODUCT]
+    return "\n".join(text for text, _ in kept)
 
 
 def _compose_join(segments: Sequence[tuple[str, str]], sep: str) -> str:
@@ -2987,6 +3116,7 @@ def compose_message(
     message_link_label: str = MESSAGE_LINK_LABEL,
     source_name: str | None = None,
     hidden_links: bool = True,
+    has_keyboard: bool = False,
 ) -> dict[str, Any]:
     """Basit bildirim düzenini kur (kullanıcı isteği):
 
@@ -3000,7 +3130,8 @@ def compose_message(
        uygulanır: reklam/işbirliği etiketleri, WhatsApp/Instagram linkleri,
        Instagram tanıtımları, kanal tanıtımı ve salt hashtag satırları),
     3. ``👉 Ürün Linki 👈`` — ürün adresi bu yazıya gömülüdür (bkz. ``product_links``);
-       alıntıdaki özgün bağlantılar yedek olarak yerinde kalır,
+       alıntıdaki özgün bağlantılar yedek olarak yerinde kalır. Altında, başka türlü
+       taşınamayan bağlantılar ``🔗 etiket: adres`` satırı olur (bkz. ``link_appendix_lines``),
     4. ``🔗 <etiket>: <t.me linki>`` — orijinal mesajın adresi,
     5. en altta kaynak grup adı (kalın; etiket ve link yok).
 
@@ -3014,6 +3145,12 @@ def compose_message(
     bkz. ``_dedup_apply_badge``). Ürün başlığı bulunamayan mesajlarda
     üst satır yalnızca fiyatı taşır; başlık da bulunamadıysa üst satır olmaz,
     gövde ve alt satırlar aynen iletilir.
+
+    ``has_keyboard`` iletinin inline klavyeyle gideceğini söyler (yalnız bot bildirimi;
+    kullanıcı hesabı klavye gönderemez). Klavyede duran kaynak butonu satır olmak
+    zorunda değildir: arama butonları hiç yazılmaz, diğer buton satırları da yalnız
+    gövdeyi kırpmıyorsa yazılır (bkz. ``_compose_fit_appendix``). Klavyesiz kopyada
+    bu satırlar butonun tek taşıyıcısıdır.
 
     Kaynak mesaj nesnesine hiçbir zaman dokunulmaz; yalnızca kopya yeniden
     kurulur. ``body`` orijinal mesajı, ``content`` en alt blok (kaynak adı)
@@ -3031,11 +3168,14 @@ def compose_message(
     body = source_body
     body_entities = entities_for_text(cleaned_obj, source_body)
 
-    appendix_text, appendix_links = _compose_build_appendix(cleaned_obj, source_body, link_kinds, hidden_links)
+    appendix_lines, appendix_links = _compose_build_appendix(
+        cleaned_obj, source_body, link_kinds, hidden_links, has_keyboard,
+    )
 
     source_line = f"🔗 {message_link_label}: {message_link}" if message_link else ""
     name = (source_name or "").strip() or None
     sep = "\n\n"
+    appendix_text = _compose_fit_appendix(appendix_lines, header_text, body, (source_line, name or ""), limit, sep)
 
     segments: list[tuple[str, str]] = [
         ("header", header_text),
@@ -8157,7 +8297,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if descriptor is not None:
             composed = compose_message(
                 event, limit=CAPTION_LIMIT - 24, link_kinds=BOT_LINK_KINDS,
-                message_link=message_link, source_name=footer_name,
+                message_link=message_link, source_name=footer_name, has_keyboard=True,
             )
             entities = bot_api_entities(composed["message"], composed["content"]) + source_name_entity(composed)
             keyboard = build_inline_keyboard(event, body_text=composed["text"], body_entities=entities)
@@ -8208,7 +8348,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         composed = compose_message(
             event, limit=MESSAGE_LIMIT - 200, link_kinds=BOT_LINK_KINDS,
-            message_link=message_link, source_name=footer_name,
+            message_link=message_link, source_name=footer_name, has_keyboard=True,
         )
         entities = bot_api_entities(composed["message"], composed["content"]) + source_name_entity(composed)
         text = composed["text"] or f"🔔 Yeni fırsat – {source_name}"

@@ -1213,7 +1213,9 @@ class NotificationTest(unittest.TestCase):
         self._patchers = []
 
     def tearDown(self):
-        for patcher in self._patchers:
+        # Ters sırayla: aynı hedefi iki kez yamalayan testte ilk yama en son sökülmeli,
+        # yoksa sahte ``send_bot_ping`` sonraki test modüllerine sızar.
+        for patcher in reversed(self._patchers):
             patcher.stop()
         reset_state()
 
@@ -2041,7 +2043,9 @@ class SingleMessageTest(unittest.TestCase):
             self._patchers.append(patcher)
 
     def tearDown(self):
-        for patcher in self._patchers:
+        # Ters sırayla: aynı hedefi iki kez yamalayan testte ilk yama en son sökülmeli,
+        # yoksa sahte ``send_bot_ping`` sonraki test modüllerine sızar.
+        for patcher in reversed(self._patchers):
             patcher.stop()
         reset_state()
 
@@ -2676,7 +2680,9 @@ class DedupBotBadgeTest(unittest.TestCase):
         self._next_bot_id = 5000
 
     def tearDown(self):
-        for patcher in self._patchers:
+        # Ters sırayla: aynı hedefi iki kez yamalayan testte ilk yama en son sökülmeli,
+        # yoksa sahte ``send_bot_ping`` sonraki test modüllerine sızar.
+        for patcher in reversed(self._patchers):
             patcher.stop()
         FakeClient.default_history = []
         reset_state()

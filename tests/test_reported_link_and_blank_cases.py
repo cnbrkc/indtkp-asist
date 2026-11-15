@@ -84,6 +84,8 @@ def only() -> SimpleNamespace:
 
 
 def compose(obj, mode: str = "smart", *, as_bot: bool = True, **extra):
+    """Üretimdeki iki çağrı: bot bildirimi (inline klavyeli) ve hesap kopyası (klavyesiz)."""
+    extra.setdefault("has_keyboard", as_bot)
     with mock.patch.object(bot, "SMART_HEADER", True):
         return bot.compose_message(obj, link_kinds=bot.link_kinds_for(mode, bot=as_bot),
                                    message_link=MESSAGE_LINK, source_name="Kaynak", **extra)
@@ -192,20 +194,24 @@ class ProductLinkTest(unittest.TestCase):
             self.assertTrue(bot.is_product_link(url), url)
             self.assertFalse(bot.is_search_link(url), url)
 
-    def test_search_buttons_are_never_listed_and_channel_button_keeps_old_line(self):
+    def test_search_buttons_stay_on_the_bot_keyboard_and_channel_button_keeps_old_line(self):
+        akakce, google = "https://www.akakce.com/arama/?q=nivea", "https://www.google.com/search?q=nivea"
         obj = message("NIVEA Kadın Roll On 50ml\n268 TL", buttons=[
-            ("Akakçe'de ara", "https://www.akakce.com/arama/?q=nivea"),
-            ("Google", "https://www.google.com/search?q=nivea"),
-            ("Kanalımız", "https://t.me/kanal"),
+            ("Akakçe'de ara", akakce), ("Google", google), ("Kanalımız", "https://t.me/kanal"),
         ])
-        for as_bot in (True, False):
-            composed = compose(obj, as_bot=as_bot)
-            self.assertEqual(composed["appendix"], "🔗 Kanalımız: https://t.me/kanal")
+        for mode in ("smart", "all"):
+            composed = compose(obj, mode)
+            self.assertEqual(composed["appendix"], "🔗 Kanalımız: https://t.me/kanal", mode)
             self.assertEqual(product_links(composed), [])
-        self.assertEqual(compose(obj, "all")["appendix"], "🔗 Kanalımız: https://t.me/kanal")
-        # Arama butonları kaybolmaz: bot bildiriminde düğme olarak kalır.
-        self.assertEqual(keyboard_labels(obj, compose(obj)), ["Google", "Google Alışveriş", "Akakçe'de ara",
-                                                              "Cimri'de ara"])
+            # Arama butonları kaybolmaz: bot bildiriminde düğme olarak kalır.
+            self.assertEqual(keyboard_labels(obj, composed),
+                             ["Google", "Google Alışveriş", "Akakçe'de ara", "Cimri'de ara"], mode)
+        # Hesap kopyasında klavye yoktur; arama butonunun tek taşıyıcısı bu satırdır.
+        for mode in ("smart", "all"):
+            account = compose(obj, mode, as_bot=False)
+            self.assertEqual(account["appendix"], (f"🔗 Akakçe'de ara: {akakce}\n🔗 {google}\n"
+                                                   "🔗 Kanalımız: https://t.me/kanal"), mode)
+            self.assertEqual(product_links(account), [])
 
     def test_several_product_buttons_are_numbered_in_source_order(self):
         first, second = "https://www.amazon.com.tr/dp/B0AAAAAAA1", "https://ty.gl/abc123"
@@ -231,8 +237,9 @@ class ProductLinkTest(unittest.TestCase):
         self.assertEqual(off["appendix"], "")
         self.assertEqual(keyboard_labels(obj, off), ["✅ Satın Al ✅", *SEARCH_ROW], "off: buton yedekte kalır")
         everything = compose(obj, "all")
-        self.assertEqual(everything["appendix"], f"🔗 ✅ Satın Al ✅: {PLATINUM_URL}",
-                         "all: ham URL dökümü; Google araması yine listelenmez")
+        self.assertEqual(everything["appendix"],
+                         f"🔗 {PLATINUM_GOOGLE}\n🔗 ✅ Satın Al ✅: {PLATINUM_URL}",
+                         "all: ham URL dökümü değişmez; gövdedeki gizli arama linki de listelenir")
         self.assertEqual(product_links(everything), [])
 
     def test_dropped_appendix_keeps_the_source_button(self):
