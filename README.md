@@ -860,11 +860,26 @@ içine gömülür**; URL metinde görünmez, yazıya dokununca açılır:
   Satır alamayan buton bot bildiriminde klavyede kalır (5. ve sonraki ürün butonu da).
   Klavyesiz hesap kopyasında 5. ve sonraki ürün butonları da bu 4 `🔗` satırını
   kullanır; daha fazlası taşınamaz (eskiden toplam sınır 4 satırdı).
-- **Karakter sınırı** (fotoğraf açıklaması 1024, metin 4096). Bot bildiriminde buton
-  satırı gövdeyi kırpmaz: sığmıyorsa yazılmaz, buton klavyede kalır. Hesap kopyasında
-  mesajın ilk 4 gizli bağlantısı eskisi gibi gövdeden önce gelir (gövde kısalır);
-  sonraki satırlar yalnız yer varsa eklenir. `🔗` satırları hiç sığmıyorsa onlar düşer,
-  `👉 Ürün Linki 👈` satırı kalır.
+- **Karakter sınırı** (fotoğraf açıklaması 1024, metin 4096). Ölçü, bu özellikten
+  önceki yalın düzendir (gövde + mesajın ilk 4 gizli bağlantısının `🔗` satırı +
+  `Mesajı Gör`): **o düzende açılabilen hiçbir bağlantı kapanmaz.** Bunun içinde
+  öncelik sırası:
+  1. Kaynak mesajın metni ve içindeki bağlantılar. Gövdenin tamamı sığmıyorsa fazladan
+     `🔗` satırları sondan başlayarak yazılmaz; gövdeyi hiç kırpmazlar. Fazladan satır:
+     ilk 4 bağlantıdan sonrakiler, bot bildiriminde klavyede de duran buton satırları
+     ve yalın düzen eki hiç sığdıramıyorsa satırların tamamı.
+  2. `👉 Ürün Linki 👈` satırları. Yer yoksa gövde metninin sonundan yer alırlar; ama
+     yazılmasalardı gövdeden açılacak bir bağlantıyı kesecekse ya da yalın düzenin
+     satırlarına yer bırakmayacaksa sondan başlayarak yazılmazlar (bot bildiriminde
+     butonları klavyede kalır).
+  3. `🔗 Mesajı Gör` satırı; ek uğruna bırakılmaz.
+  4. Diğer `🔗` satırları ilk bırakılanlardır. Tek istisna, yalın düzenin yazabildiği
+     ilk 4 bağlantıdan başka taşıyıcısı olmayanların satırıdır (klavyesiz hesap
+     kopyasında hepsi; bot bildiriminde klavyede durmayanlar): eskisi gibi gövdeden
+     önce gelirler, yoksa önceki düzende açılan bağlantı kapanırdı.
+
+  Bot bildiriminde satırı yazılmayan her buton klavyede kalır. Ölçüm ve yöntemi:
+  [analiz belgesi](docs/product-link-and-blank-reply-analysis.md), `python tests/link_reach_audit.py`.
 - **Alıntı yedektir.** Gövdedeki özgün hyperlink/URL değişmez. Ürün linki yanlış
   seçilse bile doğru adres alıntıda ve `🔗 Mesajı Gör` altında durur.
 - **Bot bildiriminde hiçbir buton kaybolmaz** (üç modda da): adresi metinde görünür ya
@@ -1223,7 +1238,9 @@ Bu repodaki güncel davranış değişiklikleri:
     bot bildiriminde link satırı olmaz (klavyede durur; klavyesiz hesap kopyasında
     satır olarak yazılır). Çok linkli mesajlarda satır sınırı (4 ürün + 4 bağlantı)
     başka yerde taşınan adresi saymaz; sığmayan buton satırı gövdeyi kırpmak yerine
-    klavyede kalır. Bir fırsata açıklamasız görselle verilen yanıtlar ve
+    klavyede kalır. Karakter sınırında hiçbir ek satırı, önceki düzende açılabilen
+    bir bağlantıyı kapatmaz: fazladan `🔗` satırı gövdeyi kırpmaz, ürün satırı
+    gövdedeki bağlantıyı kesmez. Bir fırsata açıklamasız görselle verilen yanıtlar ve
     `Yoğun ilgi görüyor 📣` duyurusu artık bildirim üretmez. Tekrar (📌) notu çok
     emojili mesajlarda bağlantıyı etiketinden kaydırmaz. Başlık/fiyat tarafında:
     cümle sonundan sonraki kelime tutarı nitelemez (`… adeti 99 TL. Farklı …` →

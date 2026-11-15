@@ -186,32 +186,117 @@ Düzeltme (`link_appendix_lines`, `_compose_build_appendix`, `_compose_fit_appen
 * En çok 4 ürün satırı + 4 `🔗` satırı (+ etiketi silinen linkler için 4). Satır
   alamayan buton bot bildiriminde klavyede kalır; hesap kopyasında 5. ve sonraki
   ürün butonları da 4 `🔗` satırını kullanır (eskiden toplam sınır 4 satırdı).
-* Karakter sınırında satırların önceliği vardır. Mesajın ilk 4 gizli bağlantısı
-  (PR öncesinde de yazılanlar) gövdeden önce gelir. Eleme sayesinde yer bulan
-  sonraki satırlar ve klavyede de durabilen buton satırları **yedeklidir**:
-  yalnız gövdeyi kırpmıyorsa yazılır. `🔗` satırları hiç sığmıyorsa onlar düşer,
-  ürün satırı kalır (eskiden ek tümüyle düşerdi).
+* Karakter sınırında ölçü **yalın düzendir** (PR öncesinin kurduğu ileti: gövde +
+  mesajın ilk 4 gizli bağlantısının `🔗` satırı + `Mesajı Gör`): o düzende
+  açılabilen hiçbir bağlantı kapanmaz. Ayrıntısı aşağıda, "Karakter sınırı"
+  başlığındadır.
 * `all` modu PR öncesindeki ham dökümüne döndü (gövdedeki gizli arama linki de
-  listelenir). Hesap kopyasında `all` çıktısı ve her iki hedefte `off` çıktısı
-  PR öncesiyle aynıdır (aşağıdaki rastgele kümelerin tamamında birebir). Bot
+  listelenir). Her iki hedefte `off` çıktısı PR öncesiyle birebir aynıdır
+  (aşağıdaki kümelerin tamamında). Hesap kopyasında `all` çıktısı da aynıdır; tek
+  fark, dört satırın hiçbir şekilde sığmadığı iletilerde artık tam gövdenin
+  yanına sığan satırların yazılmasıdır (eskiden hiçbiri yazılmazdı). Bot
   bildiriminde `all` modunun farkı: kaynağın arama butonları satır yerine
   klavyede durur ve buton satırları gövdeyi kırpmaz.
 
-Ölçüm (PR öncesi `13ad981` → bu sürüm; "yeni kayıp" = önce açılabilen, şimdi
-açılamayan bağlantı):
+#### Karakter sınırı: yalın düzenin açtığı bağlantı kapanmaz
 
-| Küme | PR'ın ilk hâli | Bu sürüm |
+İkinci commit (`cd33f46`) uzun adresli mesajlarda hâlâ bağlantı kaybediyordu.
+Kayıpların dört biçimi vardı; hepsi "PR öncesinde açılabilen bağlantı, yeni
+satırlar yüzünden açılamıyor" demektir:
+
+| Biçim | PR öncesi | `cd33f46` |
 |---|---|---|
-| 17 elle kurulmuş çok linkli senaryo × 3 mod × bot/hesap | 32 yeni kayıp (hepsi hesap kopyasında arama butonu) | 0 |
-| 3.000 rastgele çok linkli mesaj × 3 mod × bot/hesap × metin/fotoğraf sınırı (36.000 ileti) | 6.572 yeni kayıp | 0 |
-| Aynı üreteç, 40–400 karakterlik sorgu ekli adreslerle 1.500 mesaj (18.000 ileti) | 2.966 yeni kayıp | 53 |
+| Ek sığmıyordu | Dört `🔗` satırı gövdesiz de sığmaz; ek tümüyle düşer, gövde kalır | Ürün satırı ve eleme sayesinde kısalan ek sığar, gövdeden önce gelir; gövde kısalır, sonundaki bağlantılar kapanır |
+| Yalnız ürün satırı | Ek düşmüş, gövde kalan yere kırpılmış | 16–18 birimlik ürün satırı kırpma noktasını öne çeker; tam orada biten bağlantı kapanır |
+| Ürün satırı + `🔗` satırları | Dört `🔗` satırı yazılır, gövde kırpılır | İlk dört bağlantı arasında olmayan ürün butonlarının satırları eklenir; kırpma noktası 2–29 birim öne gelir |
+| Sınırı dolduran satırlar | Dört uzun `🔗` satırı 14–25 birimlik gövdeyle sığar | Ürün satırlarıyla birlikte gövdesiz de sığmaz; `🔗` satırlarının hepsi düşer (klavyesiz kopyada tek taşıyıcıydılar) |
 
-Rastgele üreteç bilerek zorlayıcıdır (12 butona kadar, her beş bağlantıdan biri
-arama linki, etiketi silinen linkler). Son satırdaki 53 kaybın 49'u, PR öncesi
-kodun eki **tümüyle** düşürüp gövdeyi koruduğu iletilerdedir (yeni kod satırları
-korur, gövde kısalır); 4'ü `👉 Ürün Linki 👈` satırının kapladığı 18 birim yüzünden
-kesme noktasının bir satır öne gelmesidir. Aynı kümede PR öncesine göre 3.107
-bağlantı yeniden açılabilir hâle geldi; hiçbir ileti sınırı aşmadı.
+Kural (`_compose_fit_appendix`): yalın düzenin açtığı hiçbir bağlantı kapanmaz.
+Bunun içinde öncelik sırası şudur:
+
+1. **Kaynak mesajın metni ve içindeki bağlantılar.** Gövdenin tamamı sığmıyorsa
+   fazladan `🔗` satırları sondan başlayarak bırakılır; bunlar gövdeyi hiç
+   kırpmaz. Fazladan satır şunlardır: yalın düzende olmayan satırlar (ilk dört
+   bağlantıdan sonrakiler), bot bildiriminde klavyede de duran buton satırları
+   ve yalın düzen eki hiç yazamıyorsa satırların tamamı. Önce klavyede de duran
+   ya da sonradan eklenen satırlar, en son tek taşıyıcı satırlar bırakılır.
+2. **`👉 Ürün Linki 👈` satırları.** Yer yoksa gövde *metninin* sonundan yer
+   alırlar; gövdedeki bir bağlantıyı ise kesemezler. Ölçü ürün satırsız düzendir:
+   ürün satırları hiç yazılmasaydı gövdeden açılacak her bağlantı açık kalır
+   (adresini ekin kendisi taşımıyorsa). Bu düzen yalın düzenden dar değildir (bot
+   bildiriminde buton satırları klavyeye bırakıldığı için daha geniştir);
+   dolayısıyla yalın düzenin açtığı bağlantı da kapanmaz. Bir bağlantıyı kesecek
+   ya da yalın düzenin satırlarına yer bırakmayacak ürün satırı sondan başlayarak
+   yazılmaz. Bot bildiriminde o ürünün butonu klavyede kalır; hesap kopyasında
+   ilk dört bağlantıdan biriyse `🔗` satırı olur.
+3. **`🔗 Mesajı Gör`** ve kaynak adı ek uğruna bırakılmaz. Bu satırlar ve üst
+   satır kısadır (ürün adı en çok 200 karakter); en dar sınırda bile ürün
+   satırlarıyla aynı iletiye sığarlar, aralarında seçim yapmak gerekmez.
+   Ölçümde `Mesajı Gör` hiçbir iletide düşmedi.
+4. **Diğer `🔗` satırları** en önce bırakılanlardır (1. madde). Tek istisna, yalın
+   düzenin *yazabildiği* satırlardan başka taşıyıcısı olmayanlardır: klavyesiz
+   hesap kopyasında hepsi; bot bildiriminde klavyede durmayanlar (`all` modunun
+   gizli linkleri ve önizleme adresi, etiketi silinen linkler). Bunlar eskisi gibi
+   gövdeden önce gelir; bırakılsalardı PR öncesinde açılan bağlantı kapanırdı.
+
+Ölçüm `tests/link_reach_audit.py` ile yapılır: iki sürümü aynı tohumlu mesajlarla
+çalıştırıp ileti ileti karşılaştırır ("yeni kayıp" = PR öncesi `13ad981`
+çıktısında açılabilen, karşılaştırılan sürümde açılamayan bağlantı).
+
+```
+python tests/link_reach_audit.py --cells            # PR öncesi ile çalışma ağacı, ≈2 dk
+python tests/link_reach_audit.py --base cd33f46     # başka bir sürümle karşılaştır
+python tests/link_reach_audit.py --seed 7 --show 3  # başka tohum; kayıp örneklerini yazdır
+```
+
+| Küme | PR'ın ilk hâli `94de953` | İkinci commit `cd33f46` | Bu sürüm |
+|---|---|---|---|
+| 17 elle kurulmuş çok linkli senaryo × 3 mod × bot/hesap (102 ileti) | 28 | 0 | **0** |
+| 3.000 rastgele çok linkli mesaj × 3 mod × bot/hesap × metin/fotoğraf sınırı (36.000 ileti) | 8.284 | 5 | **0** |
+| Aynı üreteç, 40–400 karakterlik sorgu ekli adreslerle 1.500 mesaj (18.000 ileti) | 3.804 | 550 | **0** |
+
+Bu sürümde üç kümenin hiçbir iletisi sınırı aşmaz, bot bildiriminde hiçbir buton
+kaybolmaz, `Mesajı Gör` satırı her iletide durur. Kural geliştirilirken hiç
+kullanılmayan iki tohumla (`--seed 7`, `--seed 424242`; 108.204 ileti daha) sonuç
+yine 0 / 0 / 0'dır. PR öncesine göre yeniden açılabilir hâle gelen bağlantı: 15 /
+4.617 / 4.481 (açılabilen bağlantı 353 → 368, 175.366 → 179.983, 79.234 → 83.715).
+
+Bu tablo ikinci commit'le birlikte bildirilen 0 / 0 / 53 ile **doğrudan
+karşılaştırılamaz**: o ölçümün üreteci saklanmamıştı. Betik yeniden yazıldı ve
+depoya eklendi; üreteci eskisinden zorlayıcıdır (gizli linkler gövdenin her
+yerine dağılır, görünür `Link: …` satırları, 90 satıra varan gövdeler, 12 butona
+kadar). Aynı ikinci commit yeni betikte 0 / 5 / 550 verir.
+
+Bedel, ikinci commit'e göre (aynı kümeler):
+
+* 17 senaryonun 102 iletisi ve rastgele kümenin 36.000 iletisinden 35.938'i
+  ikinci commit'le aynıdır (ek satırları, gövde uzunluğu, klavye, açılabilen
+  adresler). Farklı 62 iletinin 5'i yukarıdaki 5 kaybın düzeldiği iletilerdir
+  (hepsi hesap kopyası, fotoğraf sınırı): gövdedeki bağlantı geri gelir,
+  karşılığında ikinci commit'in ürün satırıyla açtığı 4 bağlantı açılmaz (PR
+  öncesinde de açılmıyorlardı). Kalan 57'si bot bildirimidir: ürün satırı
+  gövdedeki bir bağlantıyı keseceği için yazılmaz, butonu klavyede kalır; 56
+  bağlantı açılır, hiçbiri kapanmaz.
+* Uzun adresli kümede 18.000 iletinin 16.667'si aynıdır. İkinci commit'in açtığı
+  1.086 bağlantı (645 ileti) artık açılmaz: 1.025'i gövdeyi kırparak yazılan
+  `🔗` satırı, 61'i ürün satırıdır; hiçbiri PR öncesinde de açılamıyordu.
+  Karşılığında 861 bağlantı açılır (550'si yukarıdaki kayıplar), 830 iletide
+  gövde uzar (3 iletide kısalır; son maddedeki çatışma). Açılabilen bağlantı
+  toplamı 83.940 → 83.715 olur (PR öncesi 79.234): sıra gereği gövde, fazladan
+  satırdan önce gelir.
+* Ürün satırı uzun kümenin 6.000 `smart` iletisinin 68'inde (40'ında hiç
+  kalmaz), rastgele kümenin 12.000 `smart` iletisinin 62'sinde (25'inde hiç
+  kalmaz) azalır; toplam 10.844 → 10.713 ve 20.840 → 20.727 satır. 127'sinde
+  neden, satırın gövdedeki bir bağlantıyı kesecek olmasıdır: 96'sı bot
+  bildirimi, 31'i hesap kopyasıdır. Kalan 3'ünde (hepsi uzun kümede, hesap
+  kopyası, fotoğraf sınırı) yalın düzenin dört uzun `🔗` satırı ürün satırına
+  yer bırakmaz; burada "sıfır yeni kayıp" hedefi ile "ürün satırı `🔗`
+  satırından önce gelir" sırası çatışır ve hedef kazanır (ileti PR öncesindeki
+  gibidir). Bot bildiriminde yazılmayan ürün satırının bağlantısı 96 iletinin
+  95'inde açık kalır (butonu klavyededir ya da bağlantı gövdededir); kalan 1
+  iletide ürün bağlantısı buton değil, gövdenin kırpılan kısmındaki gizli
+  bağlantıdır. O adres ve hesap kopyasında yazılmayan ürün satırlarının
+  adresleri PR öncesinde de açılamıyordu.
 
 ### 3. Bot API gövdesi
 
@@ -265,14 +350,25 @@ ve işlenmiş sayılır (yeniden denenmez).
   yeniden başlatma taraması, uçtan uca eleme ve fail-open durumları). 23 testin
   22'si düzeltmeler geri alındığında kırılır; kalan biri (ek sınırda düşünce
   kaynak butonunun korunması) zaten var olan güvenceyi sabitler.
-* QA testleri: `tests/test_product_link_qa.py` (27 test: alan adı tabloları,
+* QA testleri: `tests/test_product_link_qa.py` (40 test: alan adı tabloları,
   çok linkli senaryolar, karakter sınırı, rastgele mesajlarda değişmezler, ağ
-  sınırında Bot API gövdesi, bot reddedince hesap kopyası). 27 testin 21'i PR'ın
-  ilk hâlinde kırılır; kalan 6'sı zaten doğru çalışan davranışı sabitler (benzer
-  alan adları, bozuk adresler, kısaltıcılar, bot bildiriminde butonların
+  sınırında Bot API gövdesi, bot reddedince hesap kopyası). İlk 27 testin 21'i
+  PR'ın ilk hâlinde kırılır; kalan 6'sı zaten doğru çalışan davranışı sabitler
+  (benzer alan adları, bozuk adresler, kısaltıcılar, bot bildiriminde butonların
   korunması, hesap kopyasında ilk 4 bağlantı, çok butonlu bildirimin Bot API
   gövdesi). Düzeltmelere yapılan 18 ayrı bozma denemesinin (mutasyon) tamamı bu
   testlerce yakalanır.
+* Karakter sınırı kuralının 13 testi aynı dosyadadır: 12'si `LimitPressureTest`
+  içindedir; biri (`BotApiWireTest`) sınırda yazılmayan ürün ve `🔗` satırlarının
+  butonlarını Telegram'a giden isteğin klavyesinde arar. Yalın düzen testte
+  bağımsız olarak yeniden kurulur (`plain_layout`); bu model, denetim betiğinin
+  54.102 iletisinin tamamında gerçek `13ad981` çıktısıyla aynı adresleri verir.
+  Böylece "yalın düzenin açtığı bağlantı kapanmaz" değişmezi git geçmişi
+  gerekmeden CI'da da sınanır (uzun adresli kümenin ilk 120 mesajı, 1.440
+  ileti). 13 testin 9'u ikinci commit'te kırılır; kalan 4'ü aşırı düzeltmeye
+  karşıdır (ürün satırı gövde metninden yer alabilmeli, kendi taşıdığı ya da
+  zaten yarım kalan adres yüzünden geri çekilmemeli, tek taşıyıcı satır en son
+  bırakılmalı). Kuralın 22 ayrı bozma denemesinin tamamı yakalanır.
 * Altın referans (testlerden derlenmiş 563 dondurulmuş örnek mesaj):
   **fiyat/başlık katmanında tek değişiklik yok**. İletim katmanlarındaki
   farklar yalnız şunlardır: ek satırının biçimi, ona ait `text_link` entity'si,
@@ -303,8 +399,22 @@ ve işlenmiş sayılır (yeniden denenmez).
   buton linki taşımaz; sınırı aşan gövde kırpılırsa kırpılan kısımdaki gizli ve
   açık bağlantılar yalnız `🔗 Mesajı Gör` üzerinden açılır.
 * Canlı Telegram'da tıklanabilirlik denenmedi (yukarıda, QA 3. başlık).
-* Çok uzun medya açıklamalarında ürün satırına yer açmak için alıntı 18 birim
-  daha erken kesilir (alıntı zaten kesilmiştir; tamamı `Mesajı Gör` altındadır).
+* Çok uzun medya açıklamalarında ürün satırına yer açmak için alıntı satır
+  başına 17–18 birim daha erken kesilir (alıntı zaten kesilmiştir; tamamı
+  `Mesajı Gör` altındadır). Kesilecek kısımda bir bağlantı varsa ürün satırı
+  yazılmaz (bot bildiriminde butonu klavyede kalır); yalnız metin kısalır,
+  bağlantı kapanmaz. Ölçümde gövde, PR öncesine göre rastgele kümenin 36.000
+  iletisinin 636'sında ve uzun adresli kümenin 18.000 iletisinin 927'sinde
+  kısadır (ortanca 17–19, en çok 79 birim); 3.492 ve 1.543 iletide ise uzundur
+  (ham `🔗 etiket: adres` satırının yerini 16 birimlik ürün satırı aldığı için).
+* "Sıfır yeni kayıp" bağlantı sayar, metin saymaz: PR öncesi düzen gövdeyi dört
+  uzun `🔗` satırı uğruna birkaç birime indiriyorsa bu sürüm de öyle yapar
+  (o satırlar klavyesiz kopyada tek taşıyıcıdır) ve kalan yer ürün satırına
+  yetmiyorsa ürün satırı yazılmaz. Ölçümde 54.000 iletinin 3'ü.
+* Bot bildiriminde, kesilecek gövde bağlantısı aynı zamanda klavyede duran bir
+  butonun adresiyse ürün satırı yine de geri çekilir (kural, gövde bağlantıları
+  için klavyeye güvenmez). Bağlantı kaybı yoktur; yalnız o iletide ürün satırı
+  eksik kalır, ürünün butonu klavyededir (ölçümde 54.102 iletinin 5'i, 7 satır).
 * Cümle sonu kuralının bedeli: niteleyicinin tutardan **sonraki ayrı cümlede**
   geldiği yazımlar (`250 TL. İndirim!`, `49 TL. Kargo ücreti`) mesajdaki tek
   tutarsa artık fiyat sayılır. Aynı cümledeki yazım (`250 TL indirim`,

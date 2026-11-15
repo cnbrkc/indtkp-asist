@@ -171,8 +171,9 @@ TRACKING_QUERY_PREFIXES = ("utm_", "adjust_", "wt_", "aff_", "pf_rd_", "pd_rd_")
 # çoğu zaman mesajın başındaki görünmez karaktere gömer; "ilk bağlantı" o olmamalı.
 MEDIA_FILE_PATH_RE = re.compile(r"\.(?:jpe?g|png|webp|gif|bmp|avif|mp4|mov|webm)(?:/|$)", re.IGNORECASE)
 # Ek satırlarının karakter sınırındaki önceliği (bkz. ``_compose_fit_appendix``):
-# yedekli satır gövdeye yer bırakır, vazgeçilmez satır gövdeden önce gelir, ürün satırı
-# en son düşer.
+# yedekli ``🔗`` satırı gövdeye yer bırakır; vazgeçilmez ``🔗`` satırı, yalın düzende de
+# yazılabiliyorsa gövdeden önce gelir; ürün satırı gövde metninden yer alabilir ama
+# gövdedeki bir bağlantıyı kesemez.
 APPENDIX_SPARE, APPENDIX_REQUIRED, APPENDIX_PRODUCT = range(3)
 # Arama bağlantıları mesaj metnine yazılmaz; yalnızca Bot API inline klavyesine
 # eklenir. Böylece arama düğmeleri Telegram'ın 4096/1024 karakter sınırını tüketmez.
@@ -2915,8 +2916,8 @@ def _compose_resolve_header(
 
 def _compose_build_appendix(
     cleaned_obj: Any, source_body: str, link_kinds: Sequence[str] | None, hidden_links: bool = True,
-    has_keyboard: bool = False,
-) -> tuple[list[tuple[str, int]], list[tuple[int, int, str]]]:
+    has_keyboard: bool = False, product_limit: int = LINK_APPENDIX_LIMIT,
+) -> tuple[list[tuple[str, int]], list[tuple[int, int, str]], list[str]]:
     """Ek satırlar: önce ``👉 Ürün Linki 👈``, sonra başka türlü taşınamayan linkler.
 
     İlk değer ``(satır, öncelik)`` listesidir (bkz. ``APPENDIX_PRODUCT`` …); sınıra
@@ -2927,13 +2928,17 @@ def _compose_build_appendix(
     listelenir) ham URL dökümünü, ``off`` ise eksiz düzeni aynen korur; ikisinde de
     ürün satırı üretilmez.
 
-    En çok ``LINK_APPENDIX_LIMIT`` ürün satırı ve ayrıca en çok o kadar ``🔗`` satırı
-    yazılır. Satır alamayan ürün butonu ``has_keyboard`` (bot bildirimi) ise klavyede
+    En çok ``product_limit`` ürün satırı ve ayrıca en çok ``LINK_APPENDIX_LIMIT`` ``🔗``
+    satırı yazılır. Satır alamayan ürün butonu ``has_keyboard`` (bot bildirimi) ise klavyede
     düğme olarak kalır; klavyesiz hesap kopyasında ``🔗 etiket: adres`` satırı olur.
+
+    Üçüncü değer yalın ektir: ürün satırı ve eleme olmasaydı yazılacak ``🔗`` satırları
+    (mesajın ilk ``LINK_APPENDIX_LIMIT`` gizli bağlantısı ve etiketi silinen linkler).
+    Karakter sınırında ölçü olarak kullanılır (bkz. ``_compose_fit_appendix``).
     """
     candidates = (product_links(cleaned_obj, limit=MAX_INLINE_KEYBOARD_BUTTONS)
                   if link_kinds and "entity" not in link_kinds else [])
-    products = candidates[:LINK_APPENDIX_LIMIT]
+    products = candidates[:max(0, min(LINK_APPENDIX_LIMIT, product_limit))]
     lines: list[tuple[str, int]] = []
     spans: list[tuple[int, int, str]] = []
     cursor = 0
@@ -2958,11 +2963,13 @@ def _compose_build_appendix(
             elif lines[written[text]][1] < rank:
                 lines[written[text]] = (text, rank)
 
+    plain: list[str] = []
     if link_kinds:
         extend(link_appendix_lines(
             cleaned_obj, link_kinds, has_keyboard=has_keyboard,
             exclude_urls=[item["url"] for item in (candidates if has_keyboard else products)],
         ))
+        plain.extend(text for text, _ in link_appendix_lines(cleaned_obj, link_kinds))
     carried = getattr(cleaned_obj, "preserved_links", None) or []
     if carried:
         carried_only = SimpleNamespace(
@@ -2971,34 +2978,96 @@ def _compose_build_appendix(
         extend(link_appendix_lines(
             carried_only, ("webpage",), exclude_urls=[item["url"] for item in products],
         ))
-    return lines, spans
+        plain.extend(text for text, _ in link_appendix_lines(carried_only, ("webpage",)) if text not in plain)
+    return lines, spans, plain
+
+
+def _compose_cut_body(body: str, room: int) -> str:
+    """Gövdeyi ``room`` UTF-16 birimine sığdır; kırpılan gövde ``…`` ile biter, yer yoksa boş kalır."""
+    if utf16_length(body) <= room:
+        return body
+    return utf16_budget(body, room - 1).rstrip() + "…" if room > 0 else ""
+
+
+def _compose_body_links(cleaned_obj: Any, body: str, room: int) -> set[str]:
+    """``room`` birime sığdırılan gövdeden açılabilen adresler: görünür URL'ler ve gizli hyperlink'ler.
+
+    Kırpma noktasının gerisinde kalan bağlantı açılamaz. Yarım kalan bir URL'nin baştaki
+    parçası da adres gibi görünür; çağıran bunu gövdenin tamamındaki adreslerle eler.
+    """
+    text = _compose_cut_body(body, room)
+    return visible_urls(text) | {
+        clean_url(entity.url).rstrip("/").lower()
+        for entity in entities_for_text(cleaned_obj, text) if getattr(entity, "url", None)
+    }
 
 
 def _compose_fit_appendix(
-    lines: Sequence[tuple[str, int]], header: str, body: str, tail: Sequence[str], limit: int, sep: str,
-) -> str:
-    """Ek satırlarını sınıra sığdır; hangi satırın önce düşeceği önceliğe bağlıdır.
+    build: Callable[[int], tuple[list[tuple[str, int]], list[tuple[int, int, str]], list[str]]],
+    cleaned_obj: Any, header: str, body: str, tail: Sequence[str], limit: int, sep: str,
+) -> tuple[str, list[tuple[int, int, str]]]:
+    """Eki karakter sınırına sığdır: ``(ek metni, ürün satırı konumları)``.
 
-    1. Mesaj gövdesiyle birlikte sığmıyorsa yedekli (``APPENDIX_SPARE``) satırlar
-       sondan başlayarak bırakılır: bunlar gövdeyi asla kırpmaz. Bot bildiriminde
-       bırakılan buton inline klavyede düğme olarak kalır.
-    2. Vazgeçilmez ``🔗`` satırları gövdeden önce gelir (gövde kırpılır). Gövdesiz
-       bile sığmıyorlarsa hepsi birden düşer, gövde yerini geri alır.
-    3. ``👉 Ürün Linki 👈`` satırları en son düşer (bkz. ``_compose_drop_overflow_parts``).
+    ``build(n)`` en çok ``n`` ürün satırlı eki kurar (bkz. ``_compose_build_appendix``).
+
+    Ölçü yalın düzendir: gövde + mesajın ilk gizli bağlantılarının ``🔗`` satırları (hepsi
+    birlikte gövdesiz sığmıyorsa hiçbiri) + ``Mesajı Gör``. O düzenin açtığı hiçbir bağlantı
+    kapanmaz. Bunun içinde öncelik sırası:
+
+    1. Kaynak mesajın metni ve içindeki bağlantılar. Gövdenin tamamı sığmıyorsa ``🔗``
+       satırları sondan başlayarak bırakılır: önce yedekliler (``APPENDIX_SPARE``; botta
+       butonu klavyede kalır), yalın düzen hiç satır yazamıyorsa vazgeçilmezler de (o düzende
+       de yoklardı). Bu satırlar gövdeyi hiç kırpmaz. Yalın düzenin yazdığı vazgeçilmez
+       satırlar yerinde kalır: klavyesiz kopyada bağlantının tek taşıyıcısıdır.
+    2. ``👉 Ürün Linki 👈`` satırları. Yer yoksa gövde metninin sonundan yer alırlar; ama
+       gövdedeki bir bağlantıyı kesemezler: ürün satırı hiç yazılmasaydı gövdeden açılacak
+       her bağlantı açık kalır (adresini ekin kendisi taşımıyorsa). O düzen yalın düzenden
+       dar olmadığı için yalın düzenin açtığı bağlantı da kapanmaz. Ek ayrıca gövdesiz de
+       sığmalıdır (yalın düzenin satırları dışarıda kalmaz). Buna uymayan ürün satırı
+       sondan başlayarak yazılmaz; bağlantısı botta klavye düğmesi olarak kalır, hesap
+       kopyasında ilk gizli bağlantılardansa ``🔗`` satırı olur.
+    3. ``🔗 Mesajı Gör`` satırı ve kaynak adı ek uğruna bırakılmaz.
     """
-    def size(items: Sequence[tuple[str, int]], content: str) -> int:
-        parts = (header, content, "\n".join(text for text, _ in items), *tail)
+    def size(texts: Sequence[str], units: int) -> int:
+        """Gövde ``units`` birim olsaydı iletinin uzunluğu."""
+        parts = (header, "x" * units, "\n".join(texts), *tail)
         return utf16_length(sep.join(part for part in parts if part))
 
-    kept = list(lines)
-    while size(kept, body) > limit:
-        spare = [index for index, (_, rank) in enumerate(kept) if rank == APPENDIX_SPARE]
-        if not spare:
+    def whole(texts: Sequence[str]) -> bool:
+        """Gövdenin tamamı sığıyor mu? (Ek, gövde dışındaki yerin hepsini de doldurmamalı.)"""
+        return size(texts, utf16_length(body)) <= limit and size(texts, 0) < limit
+
+    def body_links(texts: Sequence[str]) -> set[str]:
+        """Bu ekle birlikte gövdeye kalan yerden açılabilen adresler."""
+        return _compose_body_links(cleaned_obj, body, max(0, limit - size(texts, 1) + 1))
+
+    def fit(count: int) -> tuple[list[str], list[tuple[int, int, str]], int]:
+        """En çok ``count`` ürün satırlı ek; ``🔗`` satırları 1. maddeye göre bırakılmış hâliyle."""
+        lines, spans, plain = build(count)
+        if size(plain, 0) >= limit:  # yalın düzen satırlarının hiçbirini yazamıyor
+            plain = []
+        texts = [text for text, _ in lines]
+        ranks = [rank for _, rank in lines]
+        for spare in (APPENDIX_SPARE, APPENDIX_REQUIRED)[:1 if plain else 2]:
+            while spare in ranks and not whole(texts):
+                last = len(ranks) - 1 - ranks[::-1].index(spare)
+                del texts[last], ranks[last]
+        return texts, spans, ranks.count(APPENDIX_PRODUCT)
+
+    wanted: set[str] | None = None
+    count = LINK_APPENDIX_LIMIT
+    while True:
+        texts, spans, count = fit(count)
+        if not count or whole(texts):
             break
-        del kept[spare[-1]]
-    if size(kept, "") >= limit:
-        kept = [item for item in kept if item[1] == APPENDIX_PRODUCT]
-    return "\n".join(text for text, _ in kept)
+        # Gövde kırpılacak: ürün satırları, hiç yazılmasalardı gövdeden açılacak bağlantıyı kapatmamalı.
+        if wanted is None:
+            wanted = body_links(fit(0)[0]) & _compose_body_links(cleaned_obj, body, utf16_length(body))
+        carried = visible_urls("\n".join(texts)) | {clean_url(url).rstrip("/").lower() for _, _, url in spans}
+        if size(texts, 0) < limit and wanted <= body_links(texts) | carried:
+            break
+        count -= 1
+    return "\n".join(texts), spans
 
 
 def _compose_join(segments: Sequence[tuple[str, str]], sep: str) -> str:
@@ -3048,9 +3117,7 @@ def _compose_truncate_body(
     current_body = next((value for kind, value in segments if kind == "body"), "")
     gap = utf16_length(sep) if (current_body and others_text) else 0
     body_room = max(0, limit - utf16_length(others_text) - gap)
-    if utf16_length(current_body) > body_room:
-        current_body = (utf16_budget(current_body, max(0, body_room - 1)).rstrip() + "…" if body_room else "")
-    body = current_body
+    body = _compose_cut_body(current_body, body_room)
     segments = [(kind, body if kind == "body" else value) for kind, value in segments]
     return segments, body
 
@@ -3168,14 +3235,14 @@ def compose_message(
     body = source_body
     body_entities = entities_for_text(cleaned_obj, source_body)
 
-    appendix_lines, appendix_links = _compose_build_appendix(
-        cleaned_obj, source_body, link_kinds, hidden_links, has_keyboard,
-    )
-
     source_line = f"🔗 {message_link_label}: {message_link}" if message_link else ""
     name = (source_name or "").strip() or None
     sep = "\n\n"
-    appendix_text = _compose_fit_appendix(appendix_lines, header_text, body, (source_line, name or ""), limit, sep)
+    appendix_text, appendix_links = _compose_fit_appendix(
+        lambda product_limit: _compose_build_appendix(
+            cleaned_obj, source_body, link_kinds, hidden_links, has_keyboard, product_limit),
+        cleaned_obj, header_text, body, (source_line, name or ""), limit, sep,
+    )
 
     segments: list[tuple[str, str]] = [
         ("header", header_text),
