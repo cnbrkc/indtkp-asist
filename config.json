@@ -112,25 +112,14 @@
   "notify_on_start": false,
   "clean_commands": true,
   "private_control": true,
-  "dm_enabled": true,
+  "dm_enabled": false,
   "dm_exclude_keywords": [
     "nextstar",
     "grundig",
     "pensan",
     "iffalcon"
   ],
-  "dm_keywords": [
-    "tlc 75",
-    "tcl 65",
-    "lg 75",
-    "lg 65",
-    "samsung 75",
-    "samsung 65",
-    "qd-mini",
-    "qned",
-    "mini led",
-    "miniled"
-  ],
+  "dm_keywords": [],
   "dm_price_max": [
     "10"
   ],
