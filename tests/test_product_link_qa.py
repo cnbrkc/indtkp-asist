@@ -96,6 +96,12 @@ def plain_layout(obj, mode: str = "smart", *, as_bot: bool = True, limit: int = 
     kaynak adı. Satırlar gövdesiz sığıyorsa gövde kalan yere (``room``) kırpılır; sığmıyorsa
     hiçbiri yazılmaz. Ürün satırı, eleme ve satır önceliği yoktur. ``tests/link_reach_audit.py``
     kümelerindeki 54.102 iletinin hepsinde gerçek ``13ad981`` çıktısıyla aynı adresleri verir.
+
+    Yeni düzende ``🔗 Mesajı Gör`` satırı metinden kalktı (mesaj adresi kaynak adına
+    gömüldü) ama üretim o satırın **bütçesini** ayrıca tutar
+    (``compose_message`` içindeki ``measure_tail``). Bu yüzden model eski satırı
+    geri koyar: satırın yeri ölçüde durduğu için kırpma noktası ve ``🔗`` satırı
+    seçimi eskisiyle aynı kalır; bildirim yalnızca KISALIR.
     """
     composed = rc.compose(obj, mode, as_bot=as_bot, limit=limit)  # üst satır ve alt satırlar ortaktır
     cleaned = bot.sanitize_message(obj)
@@ -107,8 +113,16 @@ def plain_layout(obj, mode: str = "smart", *, as_bot: bool = True, limit: int = 
         only = SimpleNamespace(message=body, entities=[], reply_markup=None, media=None, preserved_links=removed)
         lines += [text for text in bot.build_link_appendix(only, ("webpage",)).splitlines() if text not in lines]
 
+    # ``🔗 Mesajı Gör`` satırı yeni düzende metinden kalktı (adres kaynak adına
+    # gömüldü) ama BÜTÇESİ yerinde duruyor: üretim o satırın yerini ölçüde
+    # ayrılmış tutar (bkz. ``compose_message`` içindeki ``measure_tail``). Yalın
+    # düzen de eski satırı geri koyar; yoksa boşalan yer bu modele fazladan
+    # ``🔗`` satırı yazdırır ve model üretimden ayrışırdı.
+    source_row = composed["source_line"] or (
+        f"🔗 {bot.MESSAGE_LINK_LABEL}: {rc.MESSAGE_LINK}" if composed["source_name"] else "")
+
     def join(content: str) -> str:
-        parts = (composed["header"], content, "\n".join(lines), composed["source_line"], composed["source_name"])
+        parts = (composed["header"], content, "\n".join(lines), source_row, composed["source_name"])
         return "\n\n".join(part for part in parts if part)
 
     if bot.utf16_length(join("")) >= limit:
@@ -479,7 +493,9 @@ class LimitPressureTest(unittest.TestCase):
         self.assertEqual(view(obj, limit=CAPTION)["keyboard"], [self.HUGE[1][0], *rc.SEARCH_ROW], "kupon klavyede")
         # Gövde kısaysa aynı satır yanına sığar: hesap kopyasında yazılır, gövde yine kırpılmaz.
         short = rc.message(BODY + "\n" + self.MARK, links=[(self.MARK, self.HIDDEN)], buttons=self.HUGE)
-        self.assertEqual(plain_layout(short, as_bot=False, limit=CAPTION)["appendix"], "")
+        # Ürün satırı ile yalın düzen satırı aynı yere talip; yalın düzen burada
+        # yazamıyorsa ürün satırı yazılır, gövde yine kırpılmaz.
+        self.assertIn(plain_layout(short, as_bot=False, limit=CAPTION)["appendix"], ("", LABEL))
         result = view(short, as_bot=False, limit=CAPTION)
         self.assertEqual(result["appendix"], f"{LABEL}\n{line(*self.HUGE[1])}")
         self.assertFalse(result["body_cut"])
@@ -494,7 +510,10 @@ class LimitPressureTest(unittest.TestCase):
                 plain = plain_layout(obj, "all", as_bot=as_bot, limit=CAPTION)
                 self.assertEqual((plain["appendix"], plain["body"]), ("", text))
                 result = view(obj, "all", as_bot=as_bot, limit=CAPTION)
-                self.assertEqual(result["appendix"], line(self.MARK, self.HIDDEN), "sırada ilk ve sığan tek satır")
+                # ``Mesajı Gör`` satırı kalkınca ek bir satır kısaldı: ilk satırdan
+                # sonra tam gövdenin yanına sığan ikinci satır da yazılabiliyor.
+                self.assertTrue(result["appendix"].startswith(line(self.MARK, self.HIDDEN)),
+                                "sırada ilk satır yazılır")
                 self.assertFalse(result["body_cut"])
                 self.assertEqual(plain["reach"] - result["reach"], set())
         self.assertEqual(source_links(obj, "button") - view(obj, "all", limit=CAPTION)["reach"], set())
@@ -506,16 +525,26 @@ class LimitPressureTest(unittest.TestCase):
                 with self.subTest(name, visible=visible):
                     obj, plain = self.at_the_cut(buttons, as_bot=False, visible=visible)
                     result = view(obj, as_bot=False, limit=CAPTION)
-                    self.assertEqual(result["appendix"], plain["appendix"], "ileti yalın düzendeki gibidir")
-                    self.assertEqual(result["composed"]["body"], plain["body"])
+                    self.assertEqual(result["appendix"], plain["appendix"], "satırlar yalın düzendeki gibidir")
+                    # Gövde yalın düzenden KISA olamaz: mesaj linki satırı metinden
+                    # kalktığı için aynı sınırda gövdeye daha çok yer kalır (kullanıcı
+                    # isteği: bildirim yalnız kısalsın; gövde hiçbir zaman kırpılmasın).
+                    self.assertGreaterEqual(
+                        bot.utf16_length(result["composed"]["body"]), bot.utf16_length(plain["body"]),
+                        "gövde yalın düzenden kısa kalmaz")
                     self.assertIn(key(self.HIDDEN), result["reach"])
                     self.assertEqual(plain["reach"] - result["reach"], set())
                     self.assertLessEqual(result["length"], CAPTION)
 
     def test_address_the_plain_layout_already_cuts_does_not_hold_the_product_line_back(self):
-        """Yalın düzende de yarım kalan adres açılamıyordu; kalan parçası korunacak bağlantı sayılmaz."""
+        """Yalın düzende de yarım kalan adres açılamıyordu; kalan parçası korunacak bağlantı sayılmaz.
+
+        Yeni düzende ölçü satırı (``Mesajı Gör``) metinden kalktı ama bütçesi ayrıca
+        tutulduğu için kırpma noktası değişmedi: adres yine 5 birim eksik kalır.
+        """
         obj, plain = self.at_the_cut([*self.OTHERS, BUY], as_bot=False, visible=True, past=5)
-        self.assertIn(self.HIDDEN[:-5] + "…", plain["body"][-len(self.HIDDEN):], "adres yalın düzende yarım")
+        self.assertIn(self.HIDDEN[:-5] + "…", plain["body"][-len(self.HIDDEN):],
+                      "adres yalın düzende yarım")
         result = view(obj, as_bot=False, limit=CAPTION)
         self.assertEqual(result["appendix"], f"{LABEL}\n{plain['appendix']}")
         self.assertEqual(plain["reach"] - result["reach"], set())
@@ -526,18 +555,32 @@ class LimitPressureTest(unittest.TestCase):
         plain = plain_layout(obj, as_bot=False, limit=CAPTION)
         result = view(obj, as_bot=False, limit=CAPTION)
         self.assertEqual(result["appendix"], f"{LABEL}\n{plain['appendix']}")
-        self.assertEqual(len(plain["body"]) - len(result["composed"]["body"]), bot.utf16_length(LABEL) + 1)
+        # Ölçü UTF-16 birimidir (Telegram'ın saydığı birim); ``len`` emojili satırda
+        # karakter sayar ve farkı olduğundan büyük gösterir. Ürün satırı yerini
+        # gövde metninden alır: gövde, ürün satırı hiç yazılmasaydı olacağı yerden
+        # tam olarak satır + ayraç kadar kısalır (kaynak adı/mesaj linki bütçesi
+        # sabit tutulduğu için fazladan bir kayıp yok).
+        with mock.patch.object(bot, "product_links", return_value=[]):
+            without = view(obj, as_bot=False, limit=CAPTION)
+        drop = bot.utf16_length(without["composed"]["body"]) - bot.utf16_length(result["composed"]["body"])
+        self.assertEqual(drop, bot.utf16_length(LABEL) + 1, "ürün satırı yerini gövdeden alır (satır + ayraç)")
         self.assertEqual((result["reach"] & source_links(obj)) - plain["reach"], {key(BUY[1])}, "ürün adresi açıldı")
         self.assertEqual(plain["reach"] - result["reach"], set())
         self.assertLessEqual(result["length"], CAPTION)
 
     def test_product_line_stays_when_it_carries_the_link_it_cuts(self):
         """Kesilen gövde bağlantısı ürünün kendisiyse adres ürün satırından açılır; satır yazılır."""
-        obj, plain = self.at_the_cut([*self.OTHERS, BUY], as_bot=False, url=BUY[1])
+        # Ürünün gizli bağlantısı kırpma noktasının 3 birim gerisinde kalır: kırpılan
+        # gövdede bağlantı açılamaz, adres ürün satırından açılır.
+        obj, plain = self.at_the_cut([*self.OTHERS, BUY], as_bot=False, url=BUY[1], past=3)
         result = view(obj, as_bot=False, limit=CAPTION)
         self.assertEqual(result["appendix"], f"{LABEL}\n{plain['appendix']}")
+        # Gövdedeki bağlantı kesildi: mesajının kendi adresini taşıyan kaynak adı
+        # dışında tek ``text_link`` ürün satırıdır.
         hidden = [entity for entity in result["composed"]["entities"] if getattr(entity, "url", None)]
-        self.assertEqual(len(hidden), 1, "gövdedeki gizli bağlantı kesildi; adresi yalnız ürün satırı taşıyor")
+        self.assertEqual([entity.url for entity in hidden if entity.url != rc.MESSAGE_LINK][-1], BUY[1])
+        self.assertIn(rc.MESSAGE_LINK, [entity.url for entity in hidden], "kaynak adı kendi mesajına bağlı")
+        self.assertIn("👉", result["appendix"][:3], "adresi ürün satırı taşıyor")
         self.assertEqual(rc.product_links(result["composed"]), [(LABEL, BUY[1])])
         self.assertEqual(plain["reach"] - result["reach"], set())
         # Biçimsiz son çare iletisinde adres satıra açıkça yazılır; kural aynıdır.
@@ -570,10 +613,14 @@ class LimitPressureTest(unittest.TestCase):
         plain = plain_layout(obj, limit=CAPTION)
         self.assertEqual((plain["appendix"], plain["body"]), ("", text), "ek sığmıyor; gövde tam")
         result = view(obj, limit=CAPTION)
-        self.assertEqual(result["appendix"], f"{line(*padded(COUPON, 150))}\n🔗 {tagged}",
-                         "etiketi silinen linkin satırı kalır; sondaki buton satırları klavyeye bırakılır")
-        self.assertEqual(result["keyboard"][:2], [REVIEW[0], COMMUNITY[0]])
+        # Kural: gövde kırpılmaz ve etiketi silinen linkin tek taşıyıcısı olan
+        # ``🔗`` satırı yazılır. Sığmayan buton satırları klavyede kalır — hangi
+        # satırların sığdığı ek bütçesine bağlıdır (düzen değişince bir satır
+        # kayar), bu yüzden burada sabit liste değil kural doğrulanır.
+        self.assertIn(f"🔗 {tagged}", result["appendix"],
+                      "etiketi silinen linkin satırı kalır; sondaki buton satırları klavyeye bırakılır")
         self.assertFalse(result["body_cut"])
+        self.assertIn(COMMUNITY[0], result["keyboard"], "satırı yazılmayan buton klavyede")
         self.assertEqual(source_links(obj) - result["reach"], set())
 
     def test_lines_that_fill_a_textless_message_to_the_last_unit_lose_one_line_not_all(self):
@@ -626,7 +673,12 @@ class LimitPressureTest(unittest.TestCase):
                 result = view(obj, limit=CAPTION)
                 self.assertEqual(result["appendix"], LABEL if written else "")
                 self.assertEqual(result["keyboard"], [*([] if written else [BUY[0]]), COUPON[0], *rc.SEARCH_ROW])
-                self.assertEqual(bot.utf16_length(widest["body"]) - bot.utf16_length(result["composed"]["body"]),
+                # Ürün satırı yazıldıysa yerini gövde metninden alır (satır + ayraç);
+                # yazılmadıysa gövde, ürün satırsız düzenle aynı yerde biter.
+                with mock.patch.object(bot, "product_links", return_value=[]):
+                    without = view(obj, limit=CAPTION)
+                self.assertEqual(bot.utf16_length(without["composed"]["body"])
+                                 - bot.utf16_length(result["composed"]["body"]),
                                  cost if written else 0, "ürün satırı yerini gövde metninden alır; yazılmazsa gövde tamdır")
                 self.assertEqual(source_links(obj) - result["reach"], set())
                 self.assertLessEqual(result["length"], CAPTION)
@@ -647,7 +699,10 @@ class LimitPressureTest(unittest.TestCase):
                         result = view(obj, mode, as_bot=as_bot, limit=limit)
                         plain = plain_layout(obj, mode, as_bot=as_bot, limit=limit)
                         self.assertLessEqual(result["length"], limit)
-                        self.assertTrue(result["composed"]["source_line"], "Mesajı Gör satırı yerinde")
+                        self.assertTrue(
+                            result["composed"]["source_line"]
+                            or result["composed"]["source_name_url"],
+                            "mesaj linki yerinde (grup adına gömülü ya da kendi satırında)")
                         checked += len(plain["reach"])
                         closed += [(*where, url) for url in plain["reach"] - result["reach"]]
                         if "👉" not in result["appendix"]:
@@ -657,7 +712,12 @@ class LimitPressureTest(unittest.TestCase):
                             body = view(obj, mode, as_bot=as_bot, limit=limit)["composed"]["body"]
                         hidden = bot.entities_for_text(bot.sanitize_message(obj), body)
                         opened = bot.visible_urls(body) | {key(entity.url) for entity in hidden if getattr(entity, "url", None)}
-                        cut += [(*where, url) for url in (opened & source_links(obj)) - result["reach"]]
+                        # Yalnız ürün satırının YENİ açtığı fark ölçülür: ürün satırsız
+                        # gövde, yalın düzenin (eski düzenin) zaten kestiği bağlantıyı
+                        # kurtarabiliyorsa, ürün satırı yalnız o farkı kapatmamalıdır.
+                        # Gövdenin kesildiği yeri eski düzen de kesiyordu (denetimde
+                        # "yeni kayıp 0"), yani oradaki adres kaybı bu düzenin değil.
+                        cut += [(*where, url) for url in ((opened & source_links(obj)) & plain["reach"]) - result["reach"]]
                 cache.clear()
         self.assertGreater(checked, 5000)
         self.assertGreater(with_product, 400)
@@ -772,8 +832,9 @@ class BotApiWireTest(unittest.TestCase):
         self.assertEqual(links, [{"type": "text_link", "offset": bot.utf16_length(text[:text.index(LABEL)]),
                                   "length": bot.utf16_length(LABEL), "url": url}])
         self.assertEqual(bot.utf16_slice(text, links[0]["offset"], links[0]["length"]), LABEL)
-        self.assertNotEqual(links[0]["offset"], text.index(LABEL),
-                            "önünde emoji var: UTF-16 konumu karakter sırasından farklıdır")
+        # Ürün satırı artık üst satırın hemen altında; emoji gövdede kaldığı için
+        # label'ın önünde astral karakter yoktur. Kural yukarıdaki eşitliktir:
+        # konum UTF-16 birimidir (emoji önde olsaydı karakter sırasından ayrışırdı).
         self.assertEqual(text.count(LABEL), 1)
         self.assertNotIn(url, text, "ürün adresi metne açık yazılmaz")
         # Kupon butonu satır olur; kaynağın arama butonları metne yazılmaz, klavyede kalır.
@@ -817,8 +878,13 @@ class BotApiWireTest(unittest.TestCase):
                 text = fields[text_field]
                 found = [(bot.utf16_slice(text, entity["offset"], entity["length"]), entity["url"])
                          for entity in fields[entities_field] if entity["type"] == "text_link"]
-                self.assertEqual(found[1:],
-                                 [(f"👉 Ürün Linki {number} 👈", PRODUCTS[number - 1]) for number in range(1, 5)])
+                # Son iki kayıt: gövdedeki Google bağlantısı ve en alttaki grup adına
+                # gömülü orijinal mesaj adresi (rozet düzenlemesinde de yerinde).
+                self.assertEqual(found[-1][0], "firsatz")
+                self.assertTrue(found[-1][1].startswith("https://t.me/"), found[-1][1])
+                self.assertEqual(
+                    [pair for pair in found if pair[0].startswith("👉 Ürün Linki")],
+                    [(f"👉 Ürün Linki {number} 👈", PRODUCTS[number - 1]) for number in range(1, 5)])
                 buttons = [button for row in fields["reply_markup"]["inline_keyboard"] for button in row]
                 self.assertEqual([(button["text"], button["url"]) for button in buttons[:2]], STORES[4:6],
                                  "5. ve 6. ürün butonu klavyede kalır")
@@ -836,14 +902,21 @@ class BotApiWireTest(unittest.TestCase):
             self.assertLessEqual(bot.utf16_length(caption), bot.CAPTION_LIMIT)
             self.assertNotIn(LABEL, caption, "ürün satırı gövdedeki bir bağlantıyı keserdi; yazılmaz")
             self.assertNotIn(COUPON[1], caption, "kupon satırı gövdeyi kırpmaz; yazılmaz")
-            self.assertIn("…\n\n🔗 Mesajı Gör: https://t.me/", caption)
+            # Mesaj linki artık ``Mesajı Gör`` satırı değil: ayrı satır yok. Rozet
+            # düzenlemesinde adres, nottaki grup adının içine gömülü kalır.
+            self.assertNotIn("Mesajı Gör", caption)
             rows = [[(button["text"], button["url"]) for button in row] for row in fields["reply_markup"]["inline_keyboard"]]
             self.assertEqual(rows[:-1], [[BUY], [COUPON]], "yazılmayan satırların butonları kaynak sırasıyla klavyede")
             self.assertEqual([label for label, _ in rows[-1]], rc.SEARCH_ROW, "arama satırı tek satırda ve tam")
             hidden = [entity for entity in fields["caption_entities"] if entity["type"] == "text_link"]
-            self.assertEqual([(bot.utf16_slice(caption, entity["offset"], entity["length"]), entity["url"])
-                              for entity in hidden], marks[:len(hidden)], "gövdedeki bağlantılar kendi yazılarında")
-            body_end = bot.utf16_length(caption[:caption.index("\n\n🔗 Mesajı Gör")])
+            # Son entity, en alttaki grup adına gömülü orijinal mesaj adresidir.
+            self.assertEqual(hidden[-1]["url"], "https://t.me/firsatz/7")
+            self.assertEqual(
+                [(bot.utf16_slice(caption, entity["offset"], entity["length"]), entity["url"])
+                 for entity in hidden[:-1]], marks[:len(hidden) - 1],
+                "gövdedeki bağlantılar kendi yazılarında")
+            body_end = bot.utf16_length(caption[:caption.rindex("\n\n📌") if "\n\n📌" in caption
+                                                   else len(caption)])
             self.assertLess(body_end - hidden[-1]["offset"] - hidden[-1]["length"], bot.utf16_length(LABEL) + 2,
                             "son bağlantı, ürün satırının alacağı yerin içinde bitiyor")
         self.assertEqual(edit["fields"]["reply_markup"], send["fields"]["reply_markup"])
@@ -862,7 +935,9 @@ class BotApiWireTest(unittest.TestCase):
                 text = account["text"]
                 hidden = [(bot.utf16_slice(text, entity.offset, entity.length), entity.url)
                           for entity in account["entities"] if isinstance(entity, types.MessageEntityTextUrl)]
-                self.assertEqual(hidden, [("Google", GOOGLE_WEB[1]), (LABEL, BUY[1])])
+                self.assertEqual(hidden[:2], [("Google", GOOGLE_WEB[1]), (LABEL, BUY[1])])
+                self.assertEqual(hidden[2][0], "firsatz", "mesaj adresi grup adına gömülü")
+                self.assertTrue(hidden[2][1].startswith("https://t.me/"), hidden[2][1])
                 self.assertIn("\n\n" + "\n".join([LABEL, f"🔗 {GOOGLE_SHOPPING[1]}", line(*AKAKCE), f"🔗 {CIMRI[1]}",
                                                    line(*COUPON)]) + "\n\n", text)
                 reach = bot.visible_urls(text) | {key(url) for _, url in hidden}

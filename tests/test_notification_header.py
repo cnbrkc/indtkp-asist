@@ -116,7 +116,10 @@ class HeaderDesignTests(unittest.TestCase):
         self.assertIn(body, composed["text"], "gövde olduğu gibi (kampanya açıklaması dahil)")
         self.assertIn("🛒 https://amazon.com.tr/dp/B0X", composed["text"])
         self.assertTrue(composed["text"].endswith("FırsatZ"), "kaynak adı en altta")
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", composed["text"])
+        # Mesaj linki ayrı satır değil: en alttaki grup adının içine gömülür.
+        self.assertNotIn("Mesajı Gör", composed["text"])
+        self.assertEqual([item["url"] for item in bot.source_name_entity(composed)
+                          if item["type"] == "text_link"], ["https://t.me/firsatz/1"])
 
     def test_price_number_formats_reach_the_header(self):
         for source, expected in [
@@ -751,7 +754,8 @@ class PresentationOnlyTests(unittest.TestCase):
         blocks = composed["text"].split("\n\n")
         self.assertEqual(blocks[0], composed["header"])
         self.assertEqual(blocks[-1], "Kaynak")
-        self.assertEqual(blocks[-2], "🔗 Mesajı Gör: https://t.me/x/1")
+        self.assertEqual(composed["source_name_url"], "https://t.me/x/1",
+                         "mesaj linki en alttaki kaynak adına gömülür")
 
     def test_numeric_policy_is_display_independent(self):
         # Gösterim yalnız üst satırda değişir; format_price/eşik/DM yolu aynı kalır.

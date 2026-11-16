@@ -106,9 +106,9 @@ FILTER_MODE = "any"           # any | all (dahili kelimeler nasıl eşleşsin)
 FILTER_INCLUDE_ENABLED = True  # 🔎 dahili kelime filtresi açık mı?
 FILTER_EXCLUDE_ENABLED = True  # 🚫 harici kelime engeli açık mı?
 ADMIN_IDS: set[int] = set()
-SOURCE_FOOTER = True  # bildirimin en altına kaynak grup adını KALIN yaz (etiket/link yok)
+SOURCE_FOOTER = True  # bildirimin en altına kaynak grup adını KALIN yaz (etiket yok; link: mesajın kendisi)
 NOTIFY_MEDIA = True   # bildirim botu medyayı da göndersin
-MESSAGE_LINK_LINE = True      # iletinin sonuna "🔗 Mesajı Gör: <t.me linki>" ekle
+MESSAGE_LINK_LINE = True      # mesajın t.me adresini kaynak adına göm (ad yoksa "🔗 Mesajı Gör" satırı)
 LINK_APPENDIX_MODE = "smart"  # smart | all | off (bkz. link_appendix_mode)
 # Tek mesaj modu: bildirim botu mesajı gruba attıysa, hesabın attığı kopya silinir.
 # Böylece her fırsat grupta tek mesaj olarak kalır (botun bildirimi = uyarı düşen mesaj).
@@ -640,10 +640,10 @@ def print_report(config: dict, problems: list[str]) -> None:
     mode = link_appendix_mode(config)
     mode_label = {"smart": f"akıllı ({PRODUCT_LINK_TEXT})", "all": "tüm gizli linkler", "off": "kapalı"}[mode]
     print(f"Bağlantı ekleri     : {mode_label} "
-          f"| mesaj linki: {'açık' if config_flag(config.get('message_link')) else 'kapalı'} "
+          f"| mesaj linki (grup adına gömülü): {'açık' if config_flag(config.get('message_link')) else 'kapalı'} "
           f"| bildirim medyası: {'açık' if config_flag(config.get('notify_media')) else 'kapalı'} "
           f"| tek mesaj: {'açık' if config_flag(config.get('single_message')) else 'kapalı'} "
-          f"| kaynak adı (kalın): {'açık' if config_flag(config.get('source_footer')) else 'kapalı'} "
+          f"| kaynak adı (kalın, mesaja bağlı): {'açık' if config_flag(config.get('source_footer')) else 'kapalı'} "
           f"| komut temizliği: {'açık' if config_flag(config.get('clean_commands')) else 'kapalı'}", flush=True)
     try:
         window_hours = int(config.get("dedup_window_hours", 12))
@@ -3005,14 +3005,16 @@ def _compose_body_links(cleaned_obj: Any, body: str, room: int) -> set[str]:
 def _compose_fit_appendix(
     build: Callable[[int], tuple[list[tuple[str, int]], list[tuple[int, int, str]], list[str]]],
     cleaned_obj: Any, header: str, body: str, tail: Sequence[str], limit: int, sep: str,
+    real_tail: Sequence[str] | None = None,
 ) -> tuple[str, list[tuple[int, int, str]]]:
     """Eki karakter sınırına sığdır: ``(ek metni, ürün satırı konumları)``.
 
     ``build(n)`` en çok ``n`` ürün satırlı eki kurar (bkz. ``_compose_build_appendix``).
 
     Ölçü yalın düzendir: gövde + mesajın ilk gizli bağlantılarının ``🔗`` satırları (hepsi
-    birlikte gövdesiz sığmıyorsa hiçbiri) + ``Mesajı Gör``. O düzenin açtığı hiçbir bağlantı
-    kapanmaz. Bunun içinde öncelik sırası:
+    birlikte gövdesiz sığmıyorsa hiçbiri) + kaynak adı. O düzenin açtığı hiçbir bağlantı
+    kapanmaz (mesaj adresi adın içinde olduğu için metinde yer kaplamaz). Bunun içinde
+    öncelik sırası:
 
     1. Kaynak mesajın metni ve içindeki bağlantılar. Gövdenin tamamı sığmıyorsa ``🔗``
        satırları sondan başlayarak bırakılır: önce yedekliler (``APPENDIX_SPARE``; botta
@@ -3026,12 +3028,35 @@ def _compose_fit_appendix(
        sığmalıdır (yalın düzenin satırları dışarıda kalmaz). Buna uymayan ürün satırı
        sondan başlayarak yazılmaz; bağlantısı botta klavye düğmesi olarak kalır, hesap
        kopyasında ilk gizli bağlantılardansa ``🔗`` satırı olur.
-    3. ``🔗 Mesajı Gör`` satırı ve kaynak adı ek uğruna bırakılmaz.
+    3. Kaynak adı (ve içine gömülü mesaj adresi) ek uğruna bırakılmaz; ad hiç
+       yazılamıyorsa adres ``🔗 Mesajı Gör: <t.me>`` satırı olarak geri gelir.
+
+    ``real_tail``: metne GERÇEKTEN giren kuyruk (mesaj linki artık ayrı satır
+    değil, kaynak adının içinde). ``tail`` bilerek eski, geniş bütçeyi korur:
+    satır kalktı diye boşalan yer fazladan ``🔗`` satırlarına verilirse onlar
+    gövdenin sonundan yer alıp gövdedeki bağlantıyı kapatırdı (kullanıcı isteği:
+    bildirim yalnız KISALSIN). Ama ileti her şeyiyle SİĞİYORSA hiçbir satır
+    bırakılmaz: bütçedeki ayrılmış yer yalnız baskı altında satır seçimini
+    belirler, sığan iletiyi kısaltmaz.
     """
     def size(texts: Sequence[str], units: int) -> int:
         """Gövde ``units`` birim olsaydı iletinin uzunluğu."""
         parts = (header, "x" * units, "\n".join(texts), *tail)
         return utf16_length(sep.join(part for part in parts if part))
+
+    def everything_fits(texts: Sequence[str]) -> bool:
+        """Gövdenin tamamı ve bütün satırlar GERÇEK uzunlukla sığıyor mu?"""
+        parts = (header, body, "\n".join(texts), *(tail if real_tail is None else real_tail))
+        actual = utf16_length(sep.join(part for part in parts if part))
+        if actual > limit:
+            return False
+        parts = (header, "\n".join(texts), *(tail if real_tail is None else real_tail))
+        return utf16_length(sep.join(part for part in parts if part)) < limit
+
+    if real_tail is not None:
+        everything = build(LINK_APPENDIX_LIMIT)
+        if everything_fits([text for text, _ in everything[0]]):
+            return "\n".join(text for text, _ in everything[0]), everything[1]
 
     def whole(texts: Sequence[str]) -> bool:
         """Gövdenin tamamı sığıyor mu? (Ek, gövde dışındaki yerin hepsini de doldurmamalı.)"""
@@ -3147,8 +3172,14 @@ def _compose_build_entities(
     header_text: str, body: str, body_entities: Sequence[Any], name: str | None,
     quote_body: bool, offsets: dict[str, int], body_offset: int, name_offset: int,
     appendix_links: Sequence[tuple[int, int, str]] = (),
-) -> list[Any]:
-    """Üst satır kalın, alıntı, gövde entity'leri ve ürün linklerini doğru UTF-16 konumlarda topla."""
+    name_url: str | None = None,
+) -> tuple[list[Any], list[Any]]:
+    """Üst satır, alıntı, gövde ve ek linklerini + kaynak adı biçimini topla.
+
+    İki liste döner: ``(içerik, kaynak adı)``. Kaynak adı bloğu Bot API'ye ayrı
+    eklenir (``source_name_entity``); ayırmak, alanın metin dışına taşmadığı
+    sürece iki listede de aynı biçimde durmasını sağlar.
+    """
     content_entities: list[Any] = []
     if header_text and "header" in offsets:
         content_entities.append(types.MessageEntityBold(
@@ -3167,11 +3198,18 @@ def _compose_build_entities(
             types.MessageEntityTextUrl(offset=offsets["appendix"] + start, length=length, url=url)
             for start, length, url in appendix_links
         )
+    name_entities: list[Any] = []
     if name_offset >= 0 and name:
-        content_entities.append(types.MessageEntityBold(
+        name_entities.append(types.MessageEntityBold(
             offset=name_offset, length=utf16_length(name),
         ))
-    return content_entities
+        if name_url:
+            # Kullanıcı isteği: "Mesajı Gör" satırı kalkar; orijinal mesajın
+            # adresi en alttaki grup adının İÇİNE gömülür.
+            name_entities.append(types.MessageEntityTextUrl(
+                offset=name_offset, length=utf16_length(name), url=name_url,
+            ))
+    return content_entities, name_entities
 
 
 def compose_message(
@@ -3184,8 +3222,9 @@ def compose_message(
     source_name: str | None = None,
     hidden_links: bool = True,
     has_keyboard: bool = False,
+    source_name_url: str | None = None,
 ) -> dict[str, Any]:
-    """Basit bildirim düzenini kur (kullanıcı isteği):
+    """Basit bildirim düzenini kur (kullanıcı istekleri):
 
     1. en üstte TEK SATIR üst başlık (kalın) — ``smart_header`` açıksa önce
        fiyat, sonra ``—``, sonra ürün adı (``₺56 — Penti Kız Çocuk ...``);
@@ -3193,14 +3232,21 @@ def compose_message(
        (``❓ — Penti Kız Çocuk ...``). Kapalıysa yalnız ürün adı gelir.
        Fiyatın başta olması, bildirimin kesilen ön izlemesinde fiyat ile ürün
        adının ilk kelimelerinin birlikte görülmesini sağlar,
-    2. altında kaynak mesaj **olduğu gibi** (yalnızca güvenlik temizliği
-       uygulanır: reklam/işbirliği etiketleri, WhatsApp/Instagram linkleri,
-       Instagram tanıtımları, kanal tanıtımı ve salt hashtag satırları),
-    3. ``👉 Ürün Linki 👈`` — ürün adresi bu yazıya gömülüdür (bkz. ``product_links``);
+    2. ``👉 Ürün Linki 👈`` — ürün adresi bu yazıya gömülüdür (bkz. ``product_links``);
        alıntıdaki özgün bağlantılar yedek olarak yerinde kalır. Altında, başka türlü
        taşınamayan bağlantılar ``🔗 etiket: adres`` satırı olur (bkz. ``link_appendix_lines``),
-    4. ``🔗 <etiket>: <t.me linki>`` — orijinal mesajın adresi,
-    5. en altta kaynak grup adı (kalın; etiket ve link yok).
+    3. altında kaynak mesaj **olduğu gibi** (yalnızca güvenlik temizliği
+       uygulanır: reklam/işbirliği etiketleri, WhatsApp/Instagram linkleri,
+       Instagram tanıtımları, kanal tanıtımı ve salt hashtag satırları),
+    4. en altta kaynak grup adı (kalın) — **orijinal mesajın adresi bu adın
+       İÇİNE gömülüdür** (dokununca açılır, URL metinde görünmez). Kullanıcı
+       isteği: ayrı ``🔗 Mesajı Gör`` satırı kaldırıldı; mesaj kısaldı ve
+       bağlantı yine tek dokunuşla ulaşılabilir.
+
+    Ürün satırı (2) bilerek alıntının ÜSTÜNDEDİR (kullanıcı isteği): fiyat-ad
+    satırının hemen altında ürün adresi durur, kaynak mesaj onun altına iner.
+    Aynı gerekçe, bildirimin kesilen ön izlemesinde ürün bağlantısının da
+    görünmesini sağlar.
 
     Üst satır YALNIZCA görünen metindir: arama sorguları (Google Alışveriş,
     Akakçe, Cimri) ve tekrar (dedup) anahtarı kaynak mesajdan ayıklanan
@@ -3209,9 +3255,14 @@ def compose_message(
 
     Tekrarlı paylaşımlarda kaynak grup adı satırı kaldırılır ve yerine
     çoklu paylaşım notu yazılır (``📌 N kere paylaşıldı: <gruplar>``;
-    bkz. ``_dedup_apply_badge``). Ürün başlığı bulunamayan mesajlarda
-    üst satır yalnızca fiyatı taşır; başlık da bulunamadıysa üst satır olmaz,
-    gövde ve alt satırlar aynen iletilir.
+    bkz. ``_dedup_apply_badge``). Notta yazan HER grup adı, o grubun kendi
+    mesajına bağlanır. Ürün başlığı bulunamayan mesajlarda üst satır yalnızca
+    fiyatı taşır; başlık da bulunamadıysa üst satır olmaz, gövde ve alt
+    satırlar aynen iletilir.
+
+    Kaynak adı kapanmışsa (``source_footer: false`` ya da ad hiç yoksa)
+    orijinal mesajın adresi kaybolmaz: yerine eski ``🔗 Mesajı Gör: <t.me>``
+    satırı yazılır (tek başına bu satır, adresin son taşıyıcısıdır).
 
     ``has_keyboard`` iletinin inline klavyeyle gideceğini söyler (yalnız bot bildirimi;
     kullanıcı hesabı klavye gönderemez). Klavyede duran kaynak butonu satır olmak
@@ -3235,19 +3286,40 @@ def compose_message(
     body = source_body
     body_entities = entities_for_text(cleaned_obj, source_body)
 
-    source_line = f"🔗 {message_link_label}: {message_link}" if message_link else ""
     name = (source_name or "").strip() or None
+    # Kaynak adı varsa orijinal mesajın adresi ADIN İÇİNE gömülür; ayrı satır
+    # yazılmaz (kullanıcı isteği). Ad yoksa adresin tek taşıyıcısı eski
+    # ``🔗 Mesajı Gör`` satırıdır, o yüzden yalnız o durumda yazılır.
+    # Çoklu paylaşım notunda adlar kendi paylaşımlarına bağlandığı için ilk
+    # bildirimin adı da ona gönderilen adrese bağlanır (``source_name_url``).
+    name_url = (source_name_url or message_link) if name else None
+    source_line = (
+        f"🔗 {message_link_label}: {message_link}" if (message_link and not name_url) else ""
+    )
     sep = "\n\n"
+    # ÖLÇÜ BÜTÇESİ SABİT: ek satırları, eskiden ``🔗 Mesajı Gör`` satırının durduğu
+    # yeri de hesaba katar. Mesaj linki artık ada gömülü olduğu için o satır
+    # metinden kalktı; bütçe de birlikte büyüseydi fazladan ``🔗`` satırları
+    # gövdenin sonundan yer yerdi (gövde bir satır uzun kalabildiği için ürün
+    # satırı artık "sığmıyor" görünüp düşerdi). Bütçeyi sabit tutmak iki şeyi
+    # garanti eder: hiçbir bağlantı yeni yer işgali yüzünden kapanmaz ve ürün
+    # satırları eskisi gibi yazılmaya devam eder. Kullanıcı isteği: bildirim
+    # yalnız KISALSIN, başka hiçbir şey değişmesin.
+    # ``real_tail`` gerçek metindir (mesaj linki adın içinde, ayrı satır yok);
+    # ``measure_tail`` ise o satırın bütçesini de taşır.
+    measure_tail = (source_line or (f"🔗 {message_link_label}: {message_link}" if message_link else ""),
+                    name or "")
     appendix_text, appendix_links = _compose_fit_appendix(
         lambda product_limit: _compose_build_appendix(
             cleaned_obj, source_body, link_kinds, hidden_links, has_keyboard, product_limit),
-        cleaned_obj, header_text, body, (source_line, name or ""), limit, sep,
+        cleaned_obj, header_text, body, measure_tail, limit, sep,
+        real_tail=(source_line, name or ""),
     )
 
     segments: list[tuple[str, str]] = [
         ("header", header_text),
-        ("body", body),
         ("appendix", appendix_text),
+        ("body", body),
         ("source", source_line),
         ("name", name or ""),
     ]
@@ -3255,21 +3327,32 @@ def compose_message(
     segments, appendix_text, name, source_line = _compose_drop_overflow_parts(
         segments, appendix_text, name, source_line, limit, sep,
     )
+    if not name:
+        # Kaynak adı düştüyse gömülü adres de düşerdi: adresin son taşıyıcısı
+        # olarak ``Mesajı Gör`` satırını geri getir (metin ve entity tutarlı).
+        source_line = f"🔗 {message_link_label}: {message_link}" if message_link else ""
+        name_url = None
+        segments = [(kind, source_line if kind == "source" else value) for kind, value in segments]
+        segments, appendix_text, name, source_line = _compose_drop_overflow_parts(
+            segments, appendix_text, name, source_line, limit, sep,
+        )
+        if not source_line:
+            name_url = None
     segments, header_text, price_text, product_title = _compose_truncate_header(
         segments, header_text, price_text, product_title, limit, sep,
     )
     segments, body = _compose_truncate_body(segments, limit, sep)
 
     text, content, offsets, body_offset, name_offset = _compose_assemble_text(segments, sep)
-    content_entities = _compose_build_entities(
+    content_entities, name_entities = _compose_build_entities(
         header_text, body, body_entities, name, quote_body, offsets, body_offset, name_offset,
-        appendix_links if appendix_text else (),
+        appendix_links if appendix_text else (), name_url,
     )
 
     composed_message = SimpleNamespace(
         message=content,
         raw_text=content,
-        entities=list(content_entities[:len(content_entities) - (1 if name_offset >= 0 else 0)]),
+        entities=list(content_entities),
     )
     return {
         "text": text,
@@ -3277,16 +3360,18 @@ def compose_message(
         "content": content,
         "appendix": appendix_text,
         "source_line": source_line,
-        "source_url": message_link if source_line else None,
+        "source_url": message_link if (source_line or name_url) else None,
         "source_name": name,
         "source_name_offset": name_offset,
         "source_name_length": utf16_length(name) if (name_offset >= 0 and name) else 0,
+        "source_name_url": name_url if name_offset >= 0 else None,
+        "source_name_entities": name_entities,
         "header": header_text,
         "price": price_text,
         "product_title": product_title or None,
         "title": product_title,
         "body_offset": body_offset,
-        "entities": content_entities,
+        "entities": [*content_entities, *name_entities],
         "message": composed_message,
     }
 def entities_for_text(obj: Any, body: str) -> list[Any]:
@@ -3367,8 +3452,8 @@ def bot_api_entities(obj: Any, body: str) -> list[dict[str, Any]]:
 def composed_has_content(composed: dict[str, Any]) -> bool:
     """İletilecek gerçek içerik var mı?
 
-    ``content`` "Mesajı Gör" satırını da taşır; yalnızca o satırın bulunması
-    metin sayılmaz. Kaynakta metin yoksa iletim zincirinin son çaresi
+    ``content`` kaynak adını (ya da ad yazılamadıysa "Mesajı Gör" satırını) da
+    taşır; yalnızca onların bulunması metin sayılmaz. Kaynakta metin yoksa iletim zincirinin son çaresi
     (t.me bağlantı kartı) devreye girebilsin diye bu ayrım gerekir.
     """
     return any(
@@ -3378,16 +3463,24 @@ def composed_has_content(composed: dict[str, Any]) -> bool:
 
 
 def source_name_entity(composed: dict[str, Any]) -> list[dict[str, Any]]:
-    """En alttaki kaynak grup adını KALIN yap.
+    """En alttaki kaynak grup adını KALIN yap ve adresini adın içine göm.
 
-    Kullanıcı isteği: "Fırsatı Gönderen" gibi bir etiket yazılmasın, ad bir
-    linke bağlanmasın; yalnızca hangi gruptan geldiği kalın olarak görünsün.
+    Kullanıcı isteği: "Fırsatı Gönderen" gibi bir etiket yazılmasın; ad kalın
+    kalsın, ama orijinal mesajın adresi artık ayrı ``🔗 Mesajı Gör`` satırı
+    olarak değil, **bu adın içinde** dursun (dokununca açılır, URL görünmez).
     """
     offset = composed.get("source_name_offset", -1)
     length = composed.get("source_name_length", 0)
     if offset is None or length is None or offset < 0 or length <= 0:
         return []
-    return [{"type": "bold", "offset": int(offset), "length": int(length)}]
+    entities: list[dict[str, Any]] = [
+        {"type": "bold", "offset": int(offset), "length": int(length)},
+    ]
+    url = composed.get("source_name_url")
+    if url:
+        entities.append({"type": "text_link", "offset": int(offset),
+                         "length": int(length), "url": str(url)})
+    return entities
 
 
 def media_upload_name(obj: Any) -> str:
@@ -3576,13 +3669,16 @@ def dedup_key(title: str | None) -> str | None:
 
 def dedup_badge(
     count: int, *, sources: Sequence[str] | None = None, short: bool = False,
+    compact: bool = False,
 ) -> str:
     """Çoklu paylaşım notunun metni; ilk gönderimde (``count < 2``) boş döner.
 
     Kullanıcı isteği: "2-3-4 kere paylaşıldı şu şu şu gruplarda" — not, en
     altta kaynak grup adı satırının YERİNE yazılıp mesajı kapatır. 5 ve üzeri
-    sayıda vurgu artar (🚨 ... — KAÇIRMA!). ``short=True`` (dar medya
-    açıklaması) grup adlarını yazmaz; yer yetmezse uzun biçim işe yaramaz.
+    sayıda vurgu artar (🚨 ... — KAÇIRMA!). ``compact=True`` adları korur ama
+    süsü ("· tek grup", "— KAÇIRMA!") atar: dar açıklamada adlar sığsın diye
+    ilk küçültme basamağı budur. ``short=True`` grup adlarını tümden yazmaz;
+    yalnız adı olmayan (dolayısıyla link kaybı yaratmayan) durumlarda kullanılır.
     """
     if count < 2:
         return ""
@@ -3593,17 +3689,54 @@ def dedup_badge(
     if short:
         names = ""
     head = "📌" if count < 5 else "🚨"
+    if compact:
+        head = "📌"
     line = f"{head} {count} kere paylaşıldı"
     if names:
         line += f": {names}"
-        if len(unique_names) == 1:
+        if len(unique_names) == 1 and not compact:
             # Sayaç paylaşım adedini, liste kaynak adlarını tekil tutar. Aynı
             # gruptaki ikinci paylaşımda ikinci bir grup adı uydurmak yerine
             # tek grup olduğunu açıkça belirt.
             line += " · tek grup"
-    if count >= 5:
+    if count >= 5 and not compact:
         line += " — KAÇIRMA!"
     return line
+
+
+def dedup_badge_entities(
+    badge: str, *, bot_api: bool = False, offset: int = 0,
+    links: dict[str, str] | None = None,
+) -> list[Any]:
+    """Rozeti biçimlendir: başlık kalın, HER grup adı kendi mesajına bağlı.
+
+    Kullanıcı isteği: nota yazılan her grup adı, o grubun kendi mesajına
+    gömülü olsun. Adlar virgülle ayrıldığı için bağlantılar adın tam üzerine
+    (UTF-16 aralığına) oturur; adı bilinmeyen kaynak link taşımaz.
+    ``offset`` rozetin iletideki başlangıcıdır (bildirim metninin sonunda).
+    """
+    if not badge or not DEDUP_BADGE_RE.match(badge.strip()):
+        return []
+    entities: list[Any] = []
+    headline = badge.split("\n")[0]
+    start = int(offset)
+    if bot_api:
+        entities.append({"type": "bold", "offset": start,
+                         "length": utf16_length(headline)})
+    else:
+        entities.append(types.MessageEntityBold(offset=start,
+                                                length=utf16_length(headline)))
+    for name, name_start, name_length in dedup_badge_name_spans(badge):
+        url = (links or {}).get(name)
+        if not url:
+            continue
+        if bot_api:
+            entities.append({"type": "text_link", "offset": start + name_start,
+                             "length": name_length, "url": str(url)})
+        else:
+            entities.append(types.MessageEntityTextUrl(
+                offset=start + name_start, length=name_length, url=str(url)))
+    return entities
 
 
 def _dedup_badge_match(content: str) -> re.Match[str] | None:
@@ -3620,6 +3753,92 @@ def dedup_badge_sources(content: str | None) -> list[str]:
     _, _, names = line.partition(":")
     names = names.replace("— KAÇIRMA!", " ").replace("· tek grup", " ")
     return [name.strip() for name in names.split(",") if name.strip()]
+
+
+def dedup_badge_name_spans(badge: str | None) -> list[tuple[str, int, int]]:
+    """Rozetteki her grup adının ``(ad, UTF-16 başlangıç, uzunluk)`` konumları.
+
+    Adlar virgülle ayrıldığı için sırayla aranır: aynı ad iki kez yazılmaz
+    (``dedup_badge`` tekrarları ayıklar), böylece imleç her adı doğru yerde
+    bulur. ``👉 Ürün Linki 👈`` gibi satırlarda kullanılan UTF-16 birimi
+    burada da geçerlidir (emoji rozetten önce gövdede olabilir; konumlar
+    rozetin KENDİSİNE göre döner, çağıran rozetin metindeki başlangıcını ekler).
+    """
+    text = badge or ""
+    if not DEDUP_BADGE_RE.match(text.strip()):
+        return []
+    spans: list[tuple[str, int, int]] = []
+    cursor = 0
+    for name in dedup_badge_sources(text):
+        index = text.find(name, cursor)
+        if index < 0:
+            continue  # "— KAÇIRMA!" / "· tek grup" kırpması adı bölmüş olabilir
+        start = utf16_length(text[:index])
+        spans.append((name, start, utf16_length(name)))
+        cursor = index + len(name)
+    return spans
+
+
+def _entity_url_and_span(entity: Any) -> tuple[str, int, int] | None:
+    """Entity'den ``(url, UTF-16 offset, uzunluk)``; bağlantı taşımıyorsa ``None``."""
+    if isinstance(entity, dict):
+        url = entity.get("url")
+        offset, length = entity.get("offset", 0), entity.get("length", 0)
+    else:
+        url = getattr(entity, "url", None)
+        offset, length = getattr(entity, "offset", 0), getattr(entity, "length", 0)
+    if not url:
+        return None
+    try:
+        offset, length = int(offset), int(length)
+    except (TypeError, ValueError):
+        return None
+    if offset < 0 or length <= 0:
+        return None
+    return str(url), offset, length
+
+
+def _is_telegram_link(url: str) -> bool:
+    """Adres bir Telegram mesajı mı? (yayın/grup iletisinin kendi bağlantısı)"""
+    lowered = str(url or "").strip().lower()
+    return lowered.startswith(("https://t.me/", "http://t.me/", "https://telegram.me/",
+                               "http://telegram.me/", "https://telegram.dog/",
+                               "http://telegram.dog/"))
+
+
+def dedup_source_links(text: str | None, entities: Sequence[Any] | None = None) -> dict[str, str]:
+    """Metindeki Telegram bağlantılarını kapsadıkları yazıyla eşle (ad → adres).
+
+    Hem yeni düzenin kaynak adı (adres adın İÇİNE gömülü) hem de eski biçimin
+    ``🔗 Mesajı Gör: <adres>`` satırı okunur; açılış taraması bir bildirimin
+    grup adlarını adresleriyle birlikte geri kurabilsin diye kullanılır.
+    """
+    body = text or ""
+    mapping: dict[str, str] = {}
+    for entity in entities or []:
+        info = _entity_url_and_span(entity)
+        if not info:
+            continue
+        url, offset, length = info
+        if not _is_telegram_link(url):
+            continue
+        label = utf16_slice(body, offset, length).strip()
+        if label and "t.me/" not in label.casefold():
+            mapping.setdefault(label, url)
+    # Eski biçim: adres görünür bir satırdadır, entity yoktur.
+    for line in body.splitlines():
+        stripped = line.strip()
+        if MESSAGE_LINK_LABEL in stripped and "t.me/" in stripped.casefold():
+            tail = stripped.split(MESSAGE_LINK_LABEL, 1)[1].lstrip(": ").strip()
+            candidate = clean_url(tail)
+            if _is_telegram_link(candidate):
+                mapping.setdefault(DEDUP_MESSAGE_LINK_KEY, candidate)
+    return mapping
+
+
+# Görünür ``Mesajı Gör`` satırından okunan adresin geçici anahtarı: satır bir
+# grup adı taşımaz, yalnız o bildirimin kendi adresidir.
+DEDUP_MESSAGE_LINK_KEY = "\x00mesaj-link"
 
 
 def _dedup_badge_location(text: str) -> tuple[int, int, int] | None:
@@ -3859,8 +4078,17 @@ def dedup_rebased_tl_entities(
     return shift_telethon_entities(kept, new_prefix_len - old_prefix_len)
 
 
-def note_dedup_source(entry: dict[str, Any], source_name: str | None) -> None:
-    """Tekrarı paylaşan grubun adını kayda ekle (son bloktaki nota yazılır)."""
+def note_dedup_source(
+    entry: dict[str, Any], source_name: str | None, link: str | None = None,
+) -> None:
+    """Tekrarı paylaşan grubun adını (ve varsa mesaj adresini) kayda ekle.
+
+    ``links`` sözlüğü ``{grup adı: o grubun mesajı}`` tutar. Rozette yazan HER
+    adres, o adın kendi grubunun mesajına gömülür (kullanıcı isteği): iki grup
+    paylaştığında yalnız ilk gelen mesajın linki değil, ikisinin linki de
+    bulunur. Eski kayıtlarda/önbellek taramasında link bilinmiyorsa ad yine
+    yazılır, yalnız o ad link taşımaz.
+    """
     name = (source_name or "").strip()
     if not name:
         return
@@ -3869,6 +4097,47 @@ def note_dedup_source(entry: dict[str, Any], source_name: str | None) -> None:
         names = entry["sources"] = []
     if name not in names:
         names.append(name)
+    url = str(link or "").strip()
+    if url:
+        links = entry.setdefault("links", {})
+        if not isinstance(links, dict):
+            links = entry["links"] = {}
+        # Aynı grup bir fırsatı iki kez paylaşırsa ad tek kez yazılır; adres de
+        # ilk (bildirimin kendisini taşıyan) paylaşımda kalır. Böylece rozetteki
+        # ad, bildirimde gösterilen mesajı açar.
+        links.setdefault(name, url)
+
+
+def dedup_badge_links(entry: dict[str, Any], names: Sequence[str]) -> dict[str, str]:
+    """Rozette yazılacak adların adresleri: ``{ad: t.me linki}``.
+
+    ``entry["links"]`` varsa oradan gelir. Açılış taramasıyla kurulmuş eski
+    kayıtlarda adres, metne gömülü grup adından ya da ``Mesajı Gör`` satırından
+    okunur; hiçbiri yoksa o ad link olmadan yazılır (metin bozulmaz).
+    """
+    links = entry.get("links")
+    result: dict[str, str] = {}
+    if isinstance(links, dict):
+        for name in names:
+            url = links.get(name)
+            if url:
+                result[name] = str(url)
+    if result:
+        return result
+    stored = entry.get("link_map")
+    if isinstance(stored, dict):
+        for name in names:
+            url = stored.get(name)
+            if url and url != DEDUP_MESSAGE_LINK_KEY:
+                result[name] = str(url)
+        if result:
+            return result
+        fallback = stored.get(DEDUP_MESSAGE_LINK_KEY)
+        if fallback and len(list(dict.fromkeys(names))) == 1:
+            # Yalnız tek ad ve yalnız ``Mesajı Gör`` satırı biliniyorsa o adres
+            # o adın kendisidir (eski biçim: ad + ayrı link satırı).
+            result[list(dict.fromkeys(names))[0]] = str(fallback)
+    return result
 
 
 def dedup_footer_name(text: str | None) -> str:
@@ -3876,9 +4145,10 @@ def dedup_footer_name(text: str | None) -> str:
 
     Açılış taramasında (``dedup_preload``) eski bildirimlerin tekrar kaydına
     yazılır; tekrar yakalandığında bu satır kaldırılıp yerine çoklu paylaşım
-    notu konur. Son blok yalnızca şu koşullarda grup adı sayılır: başka bir
-    blokta "Mesajı Gör" satırı vardır (ham forward'larda yoktur, yani ad
-    bloğu da yoktur), tek satırdır, makul uzunluktadır ve link/etiket taşımaz.
+    notu konur. Son blok yalnızca şu koşullarda grup adı sayılır: bildirim
+    düzenine ait bir iz vardır (yeni düzende ``👉 Ürün Linki 👈``; eski düzende
+    ``Mesajı Gör`` satırı — ham forward'larda ikisi de yoktur, yani ad bloğu da
+    yoktur), tek satırdır, makul uzunluktadır ve link/etiket taşımaz.
     """
     blocks = [block.strip() for block in (text or "").split("\n\n") if block.strip()]
     if len(blocks) < 2:
@@ -3888,7 +4158,14 @@ def dedup_footer_name(text: str | None) -> str:
         return ""
     if MESSAGE_LINK_LABEL in last or "t.me/" in last.casefold():
         return ""
-    if not any(MESSAGE_LINK_LABEL in block for block in blocks[:-1]):
+    has_layout_mark = any(
+        MESSAGE_LINK_LABEL in block
+        or PRODUCT_LINK_TEXT in block
+        or PRODUCT_LINK_LABEL in block
+        or block.startswith("👉")
+        for block in blocks[:-1]
+    )
+    if not has_layout_mark:
         return ""
     return last
 
@@ -4441,10 +4718,12 @@ def new_dedup_entry(title: str, token: Any, source_name: str | None = None,
 
     ``sources`` ilk kopyayı paylaşan grupları tutar; çoklu paylaşım notu
     ("📌 N kere paylaşıldı: <gruplar>") bu adlarla kurulur (bkz. ``dedup_badge``).
-    ``footer_name`` bildirimin en altındaki kaynak grup adı satırıdır; tekrar
-    yakalandığında bu satır kaldırılıp yerine çoklu paylaşım notu yazılır
-    (kullanıcı isteği: "hangi gruptan geldiğini kaldırıp N kere paylaşıldı
-    şu şu gruplar diye yazsın").
+    ``links`` ise ``{grup adı: o grubun mesaj adresi}`` eşlemesidir: rozette
+    yazan her ad kendi mesajına gömülür (kullanıcı isteği — şimdiye kadar yalnız
+    ilk gelen kopyanın adresi kullanılıyordu). ``footer_name`` bildirimin en
+    altındaki kaynak grup adı satırıdır; tekrar yakalandığında bu satır
+    kaldırılıp yerine çoklu paylaşım notu yazılır (kullanıcı isteği: "hangi
+    gruptan geldiğini kaldırıp N kere paylaşıldı şu şu gruplar diye yazsın").
     """
     now = time.time()
     name = (source_name or "").strip()
@@ -4452,6 +4731,9 @@ def new_dedup_entry(title: str, token: Any, source_name: str | None = None,
         "title": title,
         "preload": bool(preload),     # kayıt açılış taramasından mı geldi?
         "sources": [name] if name else [],
+        # "links" ({grup adı: t.me linki}) yalnızca bir paylaşımın adresi
+        # bilindiğinde kurulur (bkz. note_dedup_source); açılış taraması kendi
+        # eşlemesini "link_map" altında tutar.
         "footer_name": (footer_name or "").strip(),
         "count": 1,
         "first_seen": now,
@@ -6629,13 +6911,15 @@ async def main(argv: Sequence[str] | None = None) -> int:
     elif LINK_APPENDIX_MODE == "all":
         log.info("Bağlantı ekleri: tüm gizli linkler iletinin sonuna yazılacak.")
     if MESSAGE_LINK_LINE:
-        log.info("Her iletinin sonuna '🔗 %s: <t.me mesaj linki>' satırı eklenecek.", MESSAGE_LINK_LABEL)
+        log.info("Orijinal mesajın t.me adresi kaynak grup adının içine gömülecek "
+                 "(ayrı '🔗 %s' satırı yok).", MESSAGE_LINK_LABEL)
     if NOTIFY_BOT_TOKEN:
-        log.info("Bildirim biçimi (basit düzen): en üstte ürün başlığı → altında mesaj "
-                 "OLDUĞU GİBİ → '🔗 %s: <t.me linki>' → en altta kalın kaynak adı%s. "
-                 "Tekrarlı paylaşımlarda kaynak adı satırı kalkar, yerine çoklu paylaşım "
-                 "notu yazılır (📌 N kere paylaşıldı: <gruplar>).",
-                 MESSAGE_LINK_LABEL, " + medya" if NOTIFY_MEDIA else "")
+        log.info("Bildirim biçimi (basit düzen): en üstte ürün başlığı → '%s' → altında mesaj "
+                 "OLDUĞU GİBİ → en altta kalın kaynak adı%s; mesajın adresi o adın içine "
+                 "gömülüdür. Tekrarlı paylaşımlarda kaynak adı satırı kalkar, yerine çoklu "
+                 "paylaşım notu yazılır (📌 N kere paylaşıldı: <gruplar>; her ad kendi "
+                 "mesajına bağlı).",
+                 PRODUCT_LINK_TEXT, " + medya" if NOTIFY_MEDIA else "")
     if CLEAN_COMMANDS:
         log.info("Komut temizliği açık: yeni komutta önceki komut/yanıt silinir, "
                  "bildirimlere dokunulmaz.")
@@ -7669,8 +7953,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
         Gizli hyperlink'ler entity olarak korunur. Kaynaktaki ``reply_markup``
         kullanıcı hesabından gönderilemediği için (inline klavyeler yalnızca
-        botlara açıktır) buton linkleri metne yazılır; ayrıca en alta
-        ``🔗 Mesajı Gör: <t.me>`` satırı eklenir.
+        botlara açıktır) buton linkleri metne yazılır. Orijinal mesajın adresi
+        en alttaki kaynak adının içine gömülür (ad yazılamazsa
+        ``🔗 Mesajı Gör: <t.me>`` satırı geri gelir).
         """
         message = event.message
         media = getattr(message, "media", None)
@@ -7742,8 +8027,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
         )
 
     async def send_text_only(event: events.NewMessage.Event) -> Any:
-        # Gövdeye ek olarak gizli linkler (varsa) ve "Mesajı Gör" satırı eklenir;
-        # ürün linki bir şekilde kaçsa bile tek dokunuşla fırsata ulaşılır.
+        # Gövdeye ek olarak gizli linkler (varsa) ve kaynak adına gömülü mesaj
+        # adresi eklenir; ürün linki bir şekilde kaçsa bile tek dokunuşla fırsata
+        # ulaşılır (ad yazılamazsa "🔗 Mesajı Gör" satırı geri gelir).
         source_record = source_of(event)
         footer_name = (source_record or {}).get("name") if SOURCE_FOOTER else None
         composed = compose_message(
@@ -7815,6 +8101,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         footer_name: str | None = None,
         offer: tuple[float | None, str] | None = None,
         event: Any = None,
+        source_link: str | None = None,
     ) -> tuple[str, Any, str]:
         """Karar ver: ``("send", token, hedef_anahtar)`` yeni gönderim, ``("dup", None, hedef_anahtar)`` tekrar.
 
@@ -7822,7 +8109,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
         fazladan bir mesaj iyidir (fail-open). ``source_name``, tekrarlarda son
         bloğa yazılacak grup adı listesine eklenir. ``footer_name`` ilk
         bildirimin en altındaki kaynak grup adı satırıdır; tekrar yakalandığında
-        bu satır kaldırılıp yerine çoklu paylaşım notu yazılır.
+        bu satır kaldırılıp yerine çoklu paylaşım notu yazılır. ``source_link``
+        o paylaşımın t.me adresidir: nota yazılan grup adı bu adrese gömülür
+        (kullanıcı isteği — her grubun kendi mesajı).
         """
         token: Any = object()
         while True:
@@ -7847,6 +8136,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         or is_referenced_product_price_drop(entry, title, event, offer, time.time())
                     ) else None
                     entry = new_dedup_entry(title, token, source_name, footer_name)
+                    note_dedup_source(entry, source_name, source_link)
                     entry["owner"] = asyncio.current_task()
                     entry["offer"] = offer
                     entry["plain_offer"] = plain_offer_for_upgrade(event, offer) if event is not None else False
@@ -7858,7 +8148,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         entry["upgrade_previous"] = previous
                         entry["count"] = int(previous.get("count", 1)) + 1
                         entry["sources"] = list(previous.get("sources") or [])
-                        note_dedup_source(entry, source_name)
+                        old_links = previous.get("links")
+                        if isinstance(old_links, dict) and old_links:
+                            entry["links"] = dict(old_links)
+                        note_dedup_source(entry, source_name, source_link)
                     DEDUP_CACHE[target_key] = entry
                     return "send", token, target_key
                 if not entry.get("pending"):
@@ -7870,7 +8163,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                             entry.setdefault("product_link_ids", set()).update(link_ids)
                     entry["count"] += 1
                     entry["last_seen"] = time.time()
-                    note_dedup_source(entry, source_name)
+                    note_dedup_source(entry, source_name, source_link)
                     waiter_event = None
                 else:
                     waiter_event = entry["ready"]
@@ -7897,6 +8190,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         DEDUP_CACHE[active_key] = new_dedup_entry(
                             title, token, source_name, footer_name,
                         )
+                        note_dedup_source(DEDUP_CACHE[active_key], source_name, source_link)
                         DEDUP_CACHE[active_key]["owner"] = asyncio.current_task()
                         DEDUP_CACHE[active_key]["offer"] = offer
                         DEDUP_CACHE[active_key]["plain_offer"] = plain_offer_for_upgrade(event, offer) if event is not None else False
@@ -8040,10 +8334,18 @@ async def main(argv: Sequence[str] | None = None) -> int:
             if not names:
                 # Önbellek açılış taramasıyla kurulduysa adlar eski nottan okunur.
                 names = dedup_badge_sources(current_text.splitlines()[-1] if current_text else "")
+            # Kullanıcı isteği: nota yazılan HER grup adı kendi mesajına
+            # bağlanır (grup adı adresin içine gömülür).
+            name_links = dedup_badge_links(entry, names)
             badges = [
                 dedup_badge(count, sources=names),
-                dedup_badge(count, sources=names, short=True),
+                # Yer daraldığında ilk küçültme adları KORUR (süsü atar): ad
+                # giderse adın taşıdığı mesaj linki de giderdi. Adları tümden
+                # atan kısa biçim yalnız hiçbir ad link taşımıyorsa denenir.
+                dedup_badge(count, sources=names, compact=True),
             ]
+            if not name_links:
+                badges.append(dedup_badge(count, sources=names, short=True))
             tried: set[str] = set()
             for badge in badges:
                 if not badge or badge in tried:
@@ -8056,7 +8358,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 # rozet kadar kayıyor, bağlantı etiketinden kopuyordu.
                 insert_at, insert_length = (utf16_length(new_text[:insert_at]),
                                             utf16_length(new_text[insert_at:]))
-                headline = badge.split("\n")[0]
                 if editable == "bot":
                     limit = CAPTION_LIMIT if kind == "media" else MESSAGE_LIMIT
                     if len(new_text) > limit:
@@ -8066,8 +8367,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     )
                     new_entities: list[dict[str, Any]] | None = sorted([
                         *shifted,
-                        {"type": "bold", "offset": badge_offset,
-                         "length": utf16_length(headline)},
+                        *dedup_badge_entities(badge, bot_api=True, offset=badge_offset,
+                                              links=name_links),
                     ], key=lambda entity: int(entity.get("offset", 0)))
                     if DESTINATION_ID is None or not isinstance(bot_message_id, int):
                         break
@@ -8108,7 +8409,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     )
                     new_tl = sorted([
                         *shifted_tl,
-                        types.MessageEntityBold(offset=badge_offset, length=utf16_length(headline)),
+                        *dedup_badge_entities(badge, bot_api=False, offset=badge_offset,
+                                              links=name_links),
                     ], key=lambda entity: int(getattr(entity, "offset", 0) or 0))
                     try:
                         await client.edit_message(
@@ -8202,6 +8504,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 looks_like_deal = (
                     badge_count > 1
                     or MESSAGE_LINK_LABEL in text
+                    or PRODUCT_LINK_TEXT in text    # yeni düzen: 👉 Ürün Linki 👈
                     or PRODUCT_LINK_LABEL in text  # eski biçim
                     or any(is_price_line(line)      # eski sabit düzen (💰Fiyat: …)
                            for line in text.splitlines())
@@ -8281,6 +8584,11 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         record["count"] = max(1, badge_count)
                         # Tekrarda kaldırılacak kaynak grup adı satırı (varsa).
                         record["footer_name"] = dedup_footer_name(base)
+                        # Bildirimdeki her Telegram bağlantısı: grup adına gömülü
+                        # adresler (yeni düzen) ve eski ``Mesajı Gör`` satırı.
+                        link_map = dedup_source_links(text, raw_entities)
+                        if link_map:
+                            record["link_map"] = link_map
                         if badge_count > 1:
                             names = dedup_badge_sources(text.splitlines()[-1] if text else "")
                             if names:
@@ -8365,6 +8673,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             composed = compose_message(
                 event, limit=CAPTION_LIMIT - 24, link_kinds=BOT_LINK_KINDS,
                 message_link=message_link, source_name=footer_name, has_keyboard=True,
+                source_name_url=message_link,
             )
             entities = bot_api_entities(composed["message"], composed["content"]) + source_name_entity(composed)
             keyboard = build_inline_keyboard(event, body_text=composed["text"], body_entities=entities)
@@ -8416,6 +8725,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         composed = compose_message(
             event, limit=MESSAGE_LIMIT - 200, link_kinds=BOT_LINK_KINDS,
             message_link=message_link, source_name=footer_name, has_keyboard=True,
+            source_name_url=message_link,
         )
         entities = bot_api_entities(composed["message"], composed["content"]) + source_name_entity(composed)
         text = composed["text"] or f"🔔 Yeni fırsat – {source_name}"
@@ -8848,6 +9158,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
             dedup_id, dedup_title, source_name,
             footer_name=source_name if SOURCE_FOOTER else None,
             offer=terms, event=event,
+            source_link=build_message_link(
+                event, next((item for item in SOURCES if item["id"] == event.chat_id), None)),
         )
         if decision == "dup":
             STATS["deduped"] += 1

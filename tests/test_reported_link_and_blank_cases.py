@@ -114,8 +114,12 @@ class ProductLinkTest(unittest.TestCase):
     def test_reported_button_link_becomes_hidden_product_link(self):
         obj = platinum()
         composed = compose(obj)
-        self.assertEqual(composed["text"].split("\n\n")[-3:], [LABEL, f"🔗 Mesajı Gör: {MESSAGE_LINK}", "Kaynak"])
-        self.assertTrue(composed["text"].startswith(f"₺106 — {PLATINUM_TITLE}\n\n📦 {PLATINUM_TITLE}"))
+        # Sıra: fiyat-ad → ürün linki → alıntı → (mesaj adresini taşıyan) grup adı.
+        self.assertEqual(composed["text"].split("\n\n")[1], LABEL)
+        self.assertEqual(composed["text"].split("\n\n")[-1], "Kaynak")
+        self.assertTrue(composed["text"].startswith(f"₺106 — {PLATINUM_TITLE}\n\n{LABEL}\n\n📦 {PLATINUM_TITLE}"))
+        self.assertNotIn("Mesajı Gör", composed["text"], "adres grup adının içinde")
+        self.assertEqual(composed["source_name_url"], MESSAGE_LINK)
         self.assertNotIn("amazon.com.tr", composed["text"], "ürün adresi metne yazılmaz")
         self.assertNotIn("Satın Al", composed["text"], "buton etiketi link satırı olmaz")
         self.assertEqual(product_links(composed), [(LABEL, PLATINUM_URL)])
@@ -128,7 +132,8 @@ class ProductLinkTest(unittest.TestCase):
         account = compose(obj, as_bot=False)
         self.assertEqual(account["text"], composed["text"])
         self.assertEqual([entity.url for entity in account["entities"] if getattr(entity, "url", None)],
-                         [PLATINUM_GOOGLE, PLATINUM_URL])
+                         [PLATINUM_GOOGLE, PLATINUM_URL, MESSAGE_LINK],
+                         "hesap kopyası da mesaj linkini grup adına gömer")
 
     def test_every_source_layout_gets_exactly_one_product_line(self):
         cta = "🔗 FIRSATA GİT!"
@@ -243,8 +248,10 @@ class ProductLinkTest(unittest.TestCase):
         self.assertEqual(product_links(everything), [])
 
     def test_dropped_appendix_keeps_the_source_button(self):
+        # ``Mesajı Gör`` satırı kalktığı için düzen bir satır kısaldı: ürün
+        # satırının sığmadığı sınır artık 80 değil 70 birim.
         obj = platinum()
-        composed = compose(obj, limit=80)
+        composed = compose(obj, limit=70)
         self.assertEqual(composed["appendix"], "")
         self.assertEqual(product_links(composed), [])
         self.assertIn("✅ Satın Al ✅", keyboard_labels(obj, composed))
@@ -272,7 +279,8 @@ class ReportedTitleAndPriceTest(unittest.TestCase):
         composed = compose(obj)
         # Mesajda ürün adı yok: slogan başlık yapılmaz, üst satır yalnız fiyattır.
         self.assertEqual(composed["header"], "₺99")
-        self.assertEqual(composed["text"].split("\n\n")[:2], ["₺99", COUPON_LINE])
+        self.assertEqual(composed["text"].split("\n\n")[:3],
+                         ["₺99", LABEL, COUPON_LINE])
         self.assertEqual(bot.smart_dedup_title(obj), "", "slogan ürün kimliği olamaz")
         self.assertEqual(bot._search_query(bot.sanitize_message(obj)), "")
         self.assertEqual(product_links(composed), [(LABEL, COUPON_URL)])
@@ -418,12 +426,17 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
                   buttons=[("✅ Satın Al ✅", PLATINUM_URL)])
         call = self.ping_calls[0]
         blocks = call["text"].split("\n\n")
-        self.assertEqual((blocks[0], blocks[-3], blocks[-1]), (f"₺106 — {PLATINUM_TITLE}", LABEL, cc.FIRST_CHANNEL))
-        self.assertTrue(blocks[-2].startswith("🔗 Mesajı Gör: https://t.me/"), blocks[-2])
+        self.assertEqual((blocks[0], blocks[1], blocks[-1]),
+                         (f"₺106 — {PLATINUM_TITLE}", LABEL, cc.FIRST_CHANNEL))
+        self.assertNotIn("Mesajı Gör", call["text"], "adres grup adına gömülü")
         self.assertNotIn("amazon.com.tr", call["text"])
         hidden = [(bot.utf16_slice(call["text"], item["offset"], item["length"]), item["url"])
                   for item in call["entities"] if item["type"] == "text_link"]
-        self.assertEqual(hidden, [("Google", PLATINUM_GOOGLE), (LABEL, PLATINUM_URL)])
+        self.assertEqual(hidden[:2], [("Google", PLATINUM_GOOGLE), (LABEL, PLATINUM_URL)])
+        # Grup adı orijinal mesaja bağlanır (kimlik çözülmüş sohbetten kurulur).
+        self.assertEqual(hidden[2][0], cc.FIRST_CHANNEL)
+        self.assertTrue(hidden[2][1].startswith("https://t.me/"), hidden[2][1])
+        self.assertTrue(hidden[2][1].endswith("/8537"), hidden[2][1])
         self.assertEqual([button["text"] for row in call["keyboard"]["inline_keyboard"] for button in row],
                          SEARCH_ROW)
         # Aynı fırsat ikinci kanaldan gelir: not işlenirken gömülü adres yerinde kalmalı.
@@ -448,7 +461,7 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
                  for item in edit["entities"]]
         self.assertIn(("text_link", LABEL, url), spans)
         quote = next(piece for kind, piece, _ in spans if kind == "blockquote")
-        self.assertTrue(quote.endswith("🔥"), "alıntı gövdede biter; Mesajı Gör satırını yutmaz")
+        self.assertTrue(quote.endswith("🔥"), "alıntı gövdede biter; notu yutmaz")
         self.assertEqual([piece for kind, piece, _ in spans if kind == "bold"][-1],
                          edit["text"].split("\n\n")[-1])
 

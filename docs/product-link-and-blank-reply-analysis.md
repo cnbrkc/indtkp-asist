@@ -104,7 +104,7 @@ Kural (`product_links`, `is_product_link`, `is_search_link`):
 Güvenlik payları:
 
 * **Alıntı yedektir.** Gövdedeki özgün hyperlink/URL'ye dokunulmaz; ürün linki
-  yanlış seçilse bile doğru adres alıntıda ve `🔗 Mesajı Gör` altında durur.
+  yanlış seçilse bile doğru adres alıntıda ve kaynak adına gömülü mesaj linkinde durur.
 * **Bot bildiriminde buton kaybolmaz.** Kaynak butonu klavyeden yalnız adresi
   metinde (görünür ya da gömülü) taşındıysa kaldırılır. Ek satırı uzunluk sınırında
   düşerse ya da `link_appendix: "off"` ise buton klavyede kalır.
@@ -115,7 +115,7 @@ Güvenlik payları:
 * Ürün olmayan buton linki (ör. kanal daveti) eski `🔗 etiket: adres` biçimiyle
   yazılır.
 * **Satırın kendisi ürün adı değildir.** Yeniden başlatmada hedef gruptaki eski
-  bildirimler taranırken `👉 Ürün Linki 👈` satırı (`Mesajı Gör` gibi) başlık
+  bildirimler taranırken `👉 Ürün Linki 👈` satırı (eski düzende `Mesajı Gör`) başlık
   adayı sayılmaz; yalnız görsel + link satırından oluşan bildirim tekrar kaydı
   açmaz, gerçek başlıklı bildirim eskisi gibi birleşir.
 
@@ -186,8 +186,9 @@ Düzeltme (`link_appendix_lines`, `_compose_build_appendix`, `_compose_fit_appen
 * En çok 4 ürün satırı + 4 `🔗` satırı (+ etiketi silinen linkler için 4). Satır
   alamayan buton bot bildiriminde klavyede kalır; hesap kopyasında 5. ve sonraki
   ürün butonları da 4 `🔗` satırını kullanır (eskiden toplam sınır 4 satırdı).
-* Karakter sınırında ölçü **yalın düzendir** (PR öncesinin kurduğu ileti: gövde +
-  mesajın ilk 4 gizli bağlantısının `🔗` satırı + `Mesajı Gör`): o düzende
+* Karakter sınırında ölçü **ürün satırı olmayan düzendir** (gövde + mesajın ilk 4
+  gizli bağlantısının `🔗` satırı + kaynak adı; mesajın adresi artık adın içine
+  gömülü olduğu için ayrı `Mesajı Gör` satırı yoktur): o düzende
   açılabilen hiçbir bağlantı kapanmaz. Ayrıntısı aşağıda, "Karakter sınırı"
   başlığındadır.
 * `all` modu PR öncesindeki ham dökümüne döndü (gövdedeki gizli arama linki de
@@ -229,10 +230,11 @@ Bunun içinde öncelik sırası şudur:
    ya da yalın düzenin satırlarına yer bırakmayacak ürün satırı sondan başlayarak
    yazılmaz. Bot bildiriminde o ürünün butonu klavyede kalır; hesap kopyasında
    ilk dört bağlantıdan biriyse `🔗` satırı olur.
-3. **`🔗 Mesajı Gör`** ve kaynak adı ek uğruna bırakılmaz. Bu satırlar ve üst
+3. **Kaynak adı** (ve içine gömülü mesaj adresi) ek uğruna bırakılmaz. Ad ve üst
    satır kısadır (ürün adı en çok 200 karakter); en dar sınırda bile ürün
-   satırlarıyla aynı iletiye sığarlar, aralarında seçim yapmak gerekmez.
-   Ölçümde `Mesajı Gör` hiçbir iletide düşmedi.
+   satırlarıyla aynı iletiye sığarlar, aralarında seçim yapmak gerekmez. Ad hiç
+   yazılamazsa mesajın adresi `🔗 Mesajı Gör: <t.me>` satırı olarak geri gelir;
+   ölçümde bu satıra hiç düşülmedi.
 4. **Diğer `🔗` satırları** en önce bırakılanlardır (1. madde). Tek istisna, yalın
    düzenin *yazabildiği* satırlardan başka taşıyıcısı olmayanlardır: klavyesiz
    hesap kopyasında hepsi; bot bildiriminde klavyede durmayanlar (`all` modunun
@@ -256,7 +258,7 @@ python tests/link_reach_audit.py --seed 7 --show 3  # başka tohum; kayıp örne
 | Aynı üreteç, 40–400 karakterlik sorgu ekli adreslerle 1.500 mesaj (18.000 ileti) | 3.804 | 550 | **0** |
 
 Bu sürümde üç kümenin hiçbir iletisi sınırı aşmaz, bot bildiriminde hiçbir buton
-kaybolmaz, `Mesajı Gör` satırı her iletide durur. Kural geliştirilirken hiç
+kaybolmaz, mesajın adresi her iletide kaynak adının içinde durur. Kural geliştirilirken hiç
 kullanılmayan iki tohumla (`--seed 7`, `--seed 424242`; 108.204 ileti daha) sonuç
 yine 0 / 0 / 0'dır. PR öncesine göre yeniden açılabilir hâle gelen bağlantı: 15 /
 4.617 / 4.481 (açılabilen bağlantı 353 → 368, 175.366 → 179.983, 79.234 → 83.715).
@@ -397,11 +399,11 @@ ve işlenmiş sayılır (yeniden denenmez).
   bildirimi önizleme kartının adresini yalnız ürün linki seçildiğinde taşır;
   klavyesiz hesap kopyası en çok 4 ürün + 4 `🔗` satırı taşır ve `off` modunda
   buton linki taşımaz; sınırı aşan gövde kırpılırsa kırpılan kısımdaki gizli ve
-  açık bağlantılar yalnız `🔗 Mesajı Gör` üzerinden açılır.
+  açık bağlantılar yalnız kaynak adına gömülü mesaj linki üzerinden açılır.
 * Canlı Telegram'da tıklanabilirlik denenmedi (yukarıda, QA 3. başlık).
 * Çok uzun medya açıklamalarında ürün satırına yer açmak için alıntı satır
   başına 17–18 birim daha erken kesilir (alıntı zaten kesilmiştir; tamamı
-  `Mesajı Gör` altındadır). Kesilecek kısımda bir bağlantı varsa ürün satırı
+  gömülü mesaj linki altındadır). Kesilecek kısımda bir bağlantı varsa ürün satırı
   yazılmaz (bot bildiriminde butonu klavyede kalır); yalnız metin kısalır,
   bağlantı kapanmaz. Ölçümde gövde, PR öncesine göre rastgele kümenin 36.000
   iletisinin 636'sında ve uzun adresli kümenin 18.000 iletisinin 927'sinde

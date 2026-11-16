@@ -693,10 +693,13 @@ class WebdetakipFlowTest(unittest.TestCase):
 # --- Tekrar rozeti: düzenlemenin reddedildiği dallar -------------------------------
 
 OFFER = "Çaykur Rize Turist Çay 1 kg\n199 TL"
-NOTIFICATION = ("₺199 — Çaykur Rize Turist Çay 1 kg\n\nÇaykur Rize Turist Çay 1 kg\n199 TL\n\n"
-                "🔗 Mesajı Gör: https://t.me/firsatz/1\n\n")
+# Yeni düzen: fiyat-ad → (ürün linki) → alıntı → **grup adı**; orijinal mesajın
+# adresi ``Mesajı Gör`` satırı olarak değil, o adın İÇİNE gömülü olarak gider.
+NOTIFICATION = "₺199 — Çaykur Rize Turist Çay 1 kg\n\nÇaykur Rize Turist Çay 1 kg\n199 TL\n\n"
 FULL_BADGE = "📌 {} kere paylaşıldı: firsatz · tek grup"
-SHORT_BADGE = "📌 {} kere paylaşıldı"
+# Yer daraldığında ilk küçültme basamağı SÜSÜ atar, adı KORUR: ad giderse
+# adın taşıdığı mesaj linki de giderdi (adres grup adına gömülüdür).
+COMPACT_BADGE = "📌 {} kere paylaşıldı: firsatz"
 
 
 async def offer(client: ti.FakeClient, message_id: int) -> None:
@@ -762,7 +765,7 @@ class BotBadgeEditRefusedTest(unittest.TestCase):
                 self.assertEqual((seen["entry"]["count"], seen["entry"]["editable"], seen["entry"]["failed"]),
                                  (1, "bot", False))
 
-    def test_other_refusals_try_the_short_badge_and_give_up_after_two_rounds(self) -> None:
+    def test_other_refusals_try_the_compact_badge_and_give_up_after_two_rounds(self) -> None:
         wire = EditRefusingBotApi("Bad Request: can't parse entities")
         seen: dict[str, Any] = {}
 
@@ -778,8 +781,8 @@ class BotBadgeEditRefusedTest(unittest.TestCase):
         run_prod(scenario, wire=wire)
         self.assertEqual(wire.log(), [
             ("sendMessage", "firsatz"),
-            ("editMessageText", FULL_BADGE.format(2)), ("editMessageText", SHORT_BADGE.format(2)),
-            ("editMessageText", FULL_BADGE.format(3)), ("editMessageText", SHORT_BADGE.format(3)),
+            ("editMessageText", FULL_BADGE.format(2)), ("editMessageText", COMPACT_BADGE.format(2)),
+            ("editMessageText", FULL_BADGE.format(3)), ("editMessageText", COMPACT_BADGE.format(3)),
             # Dördüncü paylaşımda artık deneme yok: fırsat rozetsiz birleşir.
         ])
         self.assertEqual(seen["after_one_round"], ("bot", 1))
@@ -833,15 +836,18 @@ class AccountBadgeEditRefusedTest(unittest.TestCase):
             with self.subTest(error=error.__name__):
                 seen = self.run_offers(lambda: error(request=None), count=2)
                 self.assertEqual(seen["attempts"], [(101, FULL_BADGE.format(2))])
-                # Yeni mesaj ikinci paylaşımın kendi bildirimidir (bağlantısı /2).
-                self.assertEqual(seen["sent"], [NOTIFICATION + "firsatz",
-                                                NOTIFICATION.replace("firsatz/1", "firsatz/2") + "firsatz"])
+                # Yeni mesaj ikinci paylaşımın kendi bildirimidir. Her ikisinde de
+                # metin aynıdır (adres metne yazılmaz); farkı taşıyan şey adrese
+                # gömülü grup adıdır: bildirim kendi mesajına bağlanır.
+                self.assertEqual(seen["sent"], [NOTIFICATION + "firsatz"] * 2)
                 self.assertEqual(seen["stats"], (2, 0, 0))
                 self.assertEqual((seen["first"]["failed"], seen["first"]["editable"]), (True, None))
                 entry = seen["entry"]
                 self.assertIsNot(entry, seen["first"])
                 self.assertEqual((entry["count"], entry["editable"], entry["account_message_id"]),
                                  (1, "account", 102))
+                self.assertEqual(list(entry["links"].values()), ["https://t.me/firsatz/2"],
+                                 "yeni bildirimin rozeti onun kendi mesajına bağlanır")
 
     def test_not_modified_counts_as_applied(self) -> None:
         seen = self.run_offers(lambda: errors.MessageNotModifiedError(request=None), count=2)
@@ -851,11 +857,11 @@ class AccountBadgeEditRefusedTest(unittest.TestCase):
         self.assertEqual((entry["count"], entry["badge_count"], entry["editable"]), (2, 2, "account"))
         self.assertEqual(entry["text"], NOTIFICATION + FULL_BADGE.format(2))
 
-    def test_other_errors_try_the_short_badge_and_give_up_after_two_rounds(self) -> None:
+    def test_other_errors_try_the_compact_badge_and_give_up_after_two_rounds(self) -> None:
         seen = self.run_offers(lambda: RuntimeError("bağlantı koptu"), count=4)
         self.assertEqual(seen["attempts"], [
-            (101, FULL_BADGE.format(2)), (101, SHORT_BADGE.format(2)),
-            (101, FULL_BADGE.format(3)), (101, SHORT_BADGE.format(3)),
+            (101, FULL_BADGE.format(2)), (101, COMPACT_BADGE.format(2)),
+            (101, FULL_BADGE.format(3)), (101, COMPACT_BADGE.format(3)),
             # Dördüncü paylaşımda artık deneme yok: fırsat rozetsiz birleşir.
         ])
         self.assertEqual(seen["sent"], [NOTIFICATION + "firsatz"])
@@ -920,8 +926,14 @@ class StartupScanCountTest(unittest.TestCase):
     çalışmıyor, sayaç ilk kopyada kalıyordu.)
     """
 
-    PLAIN = NOTIFICATION + "firsatz"
-    BADGED = NOTIFICATION + FULL_BADGE.format(3)
+    # Yeni düzen: fiyat-ad → ``👉 Ürün Linki 👈`` → alıntı → grup adı. Açılış
+    # taraması bir iletinin bildirim olduğunu bu ürün satırından anlar; eski
+    # biçimin ``Mesajı Gör`` satırı artık yazılmadığı için onsuz metin "fırsat"
+    # sayılmazdı (kayıt da kurulmazdı).
+    PLAIN = ("₺199 — Çaykur Rize Turist Çay 1 kg\n\n👉 Ürün Linki 👈\n\n"
+             "Çaykur Rize Turist Çay 1 kg\n199 TL\n\nfirsatz")
+    BADGED = ("₺199 — Çaykur Rize Turist Çay 1 kg\n\n👉 Ürün Linki 👈\n\n"
+              "Çaykur Rize Turist Çay 1 kg\n199 TL\n\n" + FULL_BADGE.format(3))
 
     def setUp(self) -> None:
         now = time.time()
@@ -1012,7 +1024,10 @@ class StartupScanCountTest(unittest.TestCase):
         (edit,) = [golden.wire_request(request) for request in wire.requests]
         self.assertEqual((edit["method"], edit["fields"]["chat_id"], edit["fields"]["message_id"]),
                          ("editMessageText", SUPERGROUP, 11))
-        self.assertEqual(edit["fields"]["text"], NOTIFICATION + FULL_BADGE.format(3))
+        self.assertEqual(edit["fields"]["text"],
+                         ("₺199 — Çaykur Rize Turist Çay 1 kg\n\n👉 Ürün Linki 👈\n\n"
+                          "Çaykur Rize Turist Çay 1 kg\n199 TL\n\n"
+                          + FULL_BADGE.format(3)))
         self.assertEqual(seen["stats"], (0, 1, 1), "yeni bildirim yok; tekrar ilk kopyaya işlendi")
         self.assertEqual((seen["entry"]["count"], seen["entry"]["badge_count"]), (3, 3))
 

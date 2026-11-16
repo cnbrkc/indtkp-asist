@@ -14,8 +14,10 @@ hyperlink ya da (yalnız bot bildiriminde) inline klavye düğmesi olarak açıl
 * 3.000 rastgele çok linkli mesaj x 3 mod x bot/hesap x metin/fotoğraf sınırı (36.000 ileti),
 * aynı üreteç, adreslere 40-400 karakterlik sorgu eklenmiş 1.500 mesaj (18.000 ileti).
 
-Çıkış kodu, yeni kayıp, sınırı aşan ileti, botta kaybolan buton ya da eski sürümde olup bu
-sürümde yazılmayan ``Mesajı Gör`` satırı varsa 1'dir.
+Çıkış kodu, yeni kayıp, sınırı aşan ileti, botta kaybolan buton ya da eski sürümde taşınan
+mesaj adresi yeni sürümde hiç taşınmıyorsa 1'dir. Adres artık ayrı ``Mesajı Gör`` satırı
+değil, en alttaki kaynak adının içine gömülüdür; ölçüt "adres taşınıyor mu"dur
+(``source_line`` **ya da** ``source_name_url``).
 
 Karşılaştırmada eski sürüm ``git archive`` ile geçici bir dizine açılır; bu yüzden tam geçmişi
 olan bir depo gerekir ve CI'ın sığ kopyasında çalışmaz. Dosya adı ``test`` ile başlamadığı için
@@ -267,6 +269,9 @@ def deliveries(bot, types, spec: dict, both_limits: bool) -> list[dict]:
                     "body": bot.utf16_length(composed["body"]), "full_body": full_body,
                     "product_lines": sum(1 for text in appendix if text.startswith("👉")),
                     "source_line": bool(composed["source_line"]),
+                    # Yeni düzende mesaj adresi kaynak adına gömülüdür; eski sürümde
+                    # anahtar yoktur, o yüzden ``get``.
+                    "source_name_url": bool(composed.get("source_name_url")),
                 })
     return found
 
@@ -337,8 +342,9 @@ def compare(old_path: Path, new_path: Path, show: int = 0) -> dict:
                 "botta kayıp buton": len(buttons - set(new["reach"])) if "/bot/" in new["cell"] else 0,
                 "gövdesi kısalan": new["body"] < old["body"], "gövdesi uzayan": new["body"] > old["body"],
                 "gövdesi kırpılan": new["body"] < new["full_body"], "ürün satırlı": new["product_lines"] > 0,
-                "Mesajı Gör yok": not new["source_line"], "aynı metin uzunluğu": new["length"] == old["length"],
-                "Mesajı Gör kaybı": old["source_line"] and not new["source_line"],
+                "adres taşınmıyor": not (new["source_line"] or new["source_name_url"]),
+                "aynı metin uzunluğu": new["length"] == old["length"],
+                "adres kaybı": old["source_line"] and not (new["source_line"] or new["source_name_url"]),
                 "eski açılan": len(old["reach"]), "yeni açılan": len(new["reach"]), "kaynak bağlantı": len(new["source"]),
             }
             totals.update(row)
@@ -410,11 +416,11 @@ def main() -> int:
             result = compare(*outputs, show=arguments.show)
             totals = result["totals"]
             failed |= bool(totals["yeni kayıp"] or totals["sınırı aşan"] or totals["botta kayıp buton"]
-                           or totals["Mesajı Gör kaybı"])
+                           or totals["adres kaybı"])
             print(f"\n== {title}: {totals['ileti']} ileti")
             for name in ("yeni kayıp", "kayıplı ileti", "yeniden açılan", "sınırı aşan", "botta kayıp buton",
-                         "gövdesi kısalan", "gövdesi uzayan", "gövdesi kırpılan", "ürün satırlı", "Mesajı Gör yok",
-                         "Mesajı Gör kaybı"):
+                         "gövdesi kısalan", "gövdesi uzayan", "gövdesi kırpılan", "ürün satırlı", "adres taşınmıyor",
+                         "adres kaybı"):
                 print(f"   {name:<20} {totals[name]}")
             print(f"   açılabilen bağlantı   {totals['eski açılan']} -> {totals['yeni açılan']} "
                   f"(kaynakta {totals['kaynak bağlantı']})")
