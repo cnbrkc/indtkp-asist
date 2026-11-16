@@ -2103,6 +2103,20 @@ def _coupon_preview_message(text: str, campaign_title: str) -> bool:
     first = next((line.strip() for line in (text or "").splitlines() if line.strip()), "")
     if re.fullmatch(r"[A-Z0-9İĞÜŞÖÇ]{4,}\s*\(\s*kopyalamak\s+için\s+dokun\s*\)\s*❓?", first):
         return True
+    # Kupon kodu ÇIPLAK bir satırda durabilir ("FIRSAT1000"), kampanya cümlesi
+    # ise ilk satırdadır. Kart biçimi (kopyalamak için dokun) olmasa da tek
+    # başına duran kod satırı, iletinin kupon duyurusu olduğunu gösterir;
+    # eskiden yalnız ilk satır incelendiği için bu düzen kaçıyor ve başlığa
+    # gövdeden rastgele bir satır ("hesabınızda aktif etmek …") düşüyordu.
+    first_title_tokens = {normalize(token) for token in WORD_TOKEN_RE.findall(first)}
+    campaign_tokens_all = {normalize(token) for token in WORD_TOKEN_RE.findall(campaign_title)}
+    if campaign_title and first_title_tokens and first_title_tokens <= campaign_tokens_all:
+        for line in (text or "").splitlines():
+            token = line.strip()
+            if not re.fullmatch(r"[A-Z0-9İĞÜŞÖÇ]{4,}", token):
+                continue
+            if normalize(token) in {normalize(code) for code in _coupon_codes(text)}:
+                return True
     if "❓" not in first or not campaign_title:
         return False
     first_tokens = {normalize(token) for token in WORD_TOKEN_RE.findall(first)}
@@ -2111,6 +2125,26 @@ def _coupon_preview_message(text: str, campaign_title: str) -> bool:
     clipped_to_fragment = len(first_tokens) <= 2 and len(campaign_tokens) >= 6
     return bool((len(shared) >= 4 and len(campaign_tokens) >= len(shared) + 2)
                 or clipped_to_fragment)
+
+
+def _is_coupon_announcement(text: str) -> bool:
+    """İleti bir kupon/kampanya duyurusu mu (ürün fiyatı beklenmez)?
+
+    Ölçüt tek: tam bir kampanya cümlesi kurulabiliyor (eşik + indirim tutarı).
+    Bu durumda üst satırdaki ``❓`` bir eksiklik değil, yanlış bilgidir; kullanıcı
+    isteğiyle kaldırılır. Ürün fiyatı taşıyan iletiler bu kurala girmez.
+    """
+    campaign = _coupon_campaign_title(
+        text, MESSAGE_LIMIT, include_code=True, allow_code_only_marker=True,
+    )
+    if not campaign:
+        return False
+    # Kampanya cümlesi VARSA ve iletide kupon tutarından başka ürün fiyatı
+    # yoksa ileti duyurudur. Kampanya cümlesinin kendisi eşik + indirim tutarı
+    # taşır (``_coupon_campaign_title`` bunu zorunlu kılar); yani burada
+    # "fiyatı olan gönderiyi kupon sanma" riski yoktur: fiyatlı gönderide
+    # güvenli tutar dalı daha önce çalışır ve bu fonksiyona hiç gelinmez.
+    return True
 
 
 def _is_coupon_teaser_title(title: str) -> bool:
@@ -2899,12 +2933,14 @@ def _compose_resolve_header(
             price_text = ""  # reliable per-item titles are enough; there is no single bundle price
         elif multiple_products:
             price_text = PRICE_MISSING_MARK
-        elif product_title and _coupon_preview_message(
-            source_body, _coupon_campaign_title(
-                source_body, MESSAGE_LIMIT, include_code=True, allow_code_only_marker=True,
-            ),
-        ):
-            price_text = ""  # replaced coupon teaser is not an unknown product price
+        elif product_title and _is_coupon_announcement(source_body):
+            # Kullanıcı isteği: "indirim kuponu bildirimlerinde de [soru işareti]
+            # koymayalım". Kupon/kampanya duyurusunda ürün fiyatı YOKTUR; bu bir
+            # eksiklik değil, iletinin türüdür. `❓` yazmak bilgi vermiyordu.
+            # Fiyatı OLAN gönderi bu dala girmez (yukarıdaki güvenli tutar dalı
+            # önce çalışır), yani "kupon sanıp fiyatlı gönderiyi çöpe atma"
+            # riski yoktur.
+            price_text = ""
         else:
             price_text = PRICE_MISSING_MARK
         quote_body = bool(source_body.strip())
@@ -3620,6 +3656,9 @@ DEDUP_BADGE_LEGACY_RE = re.compile(
 # Çok daha eski sürüm rozeti ikinci satırda kaynak adlarını listelerdi
 # ("📌 Kaynaklar: ..."); açılış taramasında o satırı atlamak için korunur.
 DEDUP_SOURCES_PREFIX = "📌"
+# Rozette birden çok grup adı bu ayraçla yazılır. Virgül KULLANILMAZ: kaynak
+# grup adları virgül içerebiliyor ve o durumda adlar bölünüp linkleri kayıyordu.
+BADGE_SOURCE_SEPARATOR = " | "
 # Aynı sohbete Bot API ~1/sn sınırı uygular; not güncellemeleri bunun
 # altında kalmak için mesaj başına bu kadar aralık bırakır. Aralık içinde
 # gelen tekrarlar tek düzenlemede birleşir (düzenleme kilidi altında sayaç
@@ -3690,7 +3729,11 @@ def dedup_badge(
     unique_names = list(
         dict.fromkeys(str(name).strip() for name in (sources or []) if str(name).strip())
     )
-    names = ", ".join(unique_names)
+    # Ayraç VİRGÜL değil: grup adlarının kendisi virgül içerebiliyor ("… Kupon
+    # Haberleri, İndirimde Al") ve virgülle birleştirmek rozeti yanlış yerden
+    # bölüyor, ikinci grubun mesaj adresini kaybettiriyordu (kullanıcı bildirimi:
+    # "ilk sayfanın linkini gömmüşüz ama ikinci bildirimin linki yok").
+    names = BADGE_SOURCE_SEPARATOR.join(unique_names)
     if short:
         names = ""
     head = "📌" if count < 5 else "🚨"
@@ -3750,14 +3793,38 @@ def _dedup_badge_match(content: str) -> re.Match[str] | None:
     return DEDUP_BADGE_RE.match(stripped) or DEDUP_BADGE_LEGACY_RE.match(stripped)
 
 
+def _badge_source_parts(line: str) -> list[str]:
+    """Rozet satırından ad listesini ``", "`` sınırlarıyla böl.
+
+    Grup adlarının KENDİSİ virgül içerebilir ("İndirim Varsa Anlık Fırsat
+    Alışveriş Kampanya Kupon Haberleri, İndirimde Al"). Ham ``str.split(",")``
+    bu adları ikiye bölüyor, rozetteki link aralıkları yanlış ada oturuyor ve
+    ikinci grubun mesaj adresi kayboluyordu. Ayraç her zaman ``", "`` (virgül +
+    boşluk) olduğundan yalnız o dizge sınır kabul edilir; addaki virgülden sonra
+    boşluk gelse bile bu, iki adı ayırmakla aynı sonucu verir — bu yüzden
+    ayırıcı olarak virgül KULLANILMAZ; adlar ``|`` ile ayrılır (aşağıya bakınız).
+    """
+    payload = line.partition(":")[2]
+    payload = payload.replace("— KAÇIRMA!", " ").replace("· tek grup", " ")
+    payload = payload.replace(BADGE_SOURCE_SEPARATOR, "\x00")
+    parts = [part.strip() for part in payload.split("\x00")]
+    # Eski biçim (virgülle ayrılmış) geriye dönük okunabilsin.
+    if len(parts) == 1 and "," in parts[0]:
+        parts = [part.strip() for part in parts[0].split(",")]
+    return [part for part in parts if part]
+
+
 def dedup_badge_sources(content: str | None) -> list[str]:
-    """Rozet satırındaki grup adlarını ayıkla (güncelleme ve açılış taraması)."""
+    """Rozet satırındaki grup adlarını ayıkla (güncelleme ve açılış taraması).
+
+    Adlar ``|`` ile ayrılır; böylece ad içindeki virgül adı bölmez ve rozetteki
+    her ad kendi mesaj adresini korur. Eski (virgülle ayrılmış) rozetler de
+    okunabilir.
+    """
     line = (content or "").strip()
     if not DEDUP_BADGE_RE.match(line):
         return []
-    _, _, names = line.partition(":")
-    names = names.replace("— KAÇIRMA!", " ").replace("· tek grup", " ")
-    return [name.strip() for name in names.split(",") if name.strip()]
+    return _badge_source_parts(line)
 
 
 def dedup_badge_name_spans(badge: str | None) -> list[tuple[str, int, int]]:

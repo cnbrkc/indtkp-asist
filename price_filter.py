@@ -251,13 +251,31 @@ def _tokens(text: str) -> list[str]:
 
 def _stem_in(token: str, stems: Sequence[str]) -> bool:
     token = token.split("’")[0].split("'")[0]
+    flat = norm_stem(token)
     for stem in stems:
-        if token == stem or (len(stem) >= 4 and token.startswith(stem)):
+        flat_stem = norm_stem(stem)
+        if flat == flat_stem or (len(flat_stem) >= 4 and flat.startswith(flat_stem)):
             # "indirimli fiyat" gibi sıfatları engelleme sayma
-            if stem == "indirim" and token.startswith("indirimli"):
+            if flat_stem == "indirim" and flat.startswith("indirimli"):
                 continue
             return True
     return False
+
+
+def norm_stem(token: str) -> str:
+    """Türkçe inceltme işaretlerini düşür (``ındırım`` → ``indirim``).
+
+    ``norm`` Türkçe küçültme yapar (``I`` → ``ı``), bu yüzden büyük harfle
+    yazılmış ``INDIRIM`` tokeni ``ındırım`` olur ve ``indirim`` köküyle
+    eşleşmez. Kaynakların bir kısmı sözcükleri tamamen büyük harfle yazdığı
+    için (``400 TL'ye 100 TL Indirim``) bu fark gerçek bir kaçış üretiyordu:
+    indirim tutarı ürün fiyatı sayılıyordu. Sadeleştirme iki tarafa da
+    uygulanır; Türkçe küçültme davranışı (``norm``) değişmez.
+    """
+    return token.translate(_DOTLESS_FOLD)
+
+
+_DOTLESS_FOLD = str.maketrans({"ı": "i", "ş": "s", "ğ": "g", "ç": "c", "ö": "o", "ü": "u"})
 
 
 # Çok satırlı kampanya: "2. ürün:" / "2 al 2." / "Ek ürün" satırının HEMEN ARDINDAKİ
@@ -517,6 +535,13 @@ def _relate_handle_coupon_threshold(c: Candidate, before: str, after: str, line:
         before,
     ):
         inner = re.split(r"[/|(]", before)[-1]
+        # Kodun SAĞLADIĞI indirim miktarı ürün fiyatı değildir: "MODA200
+        # koduyla 200₺ indirim". Kod sonrası tutar "indirim" ile niteleniyorsa
+        # indirim tutarı say; yalnız tutar kendi başına duruyorsa kupon sonrası
+        # ödenecek fiyat kabul et ("MODA200 koduyla 2477 TL").
+        if re.match(r"^\s*(?:daha\s+)?indirim\b", after):
+            c.cls, c.role, c.strong = "other", "discount_amount", False
+            return True
         c.cls, c.strong = "price", True
         c.role = "product_coupon" if re.search(r"ürün alt", inner) else "basket_coupon" if "sepette" in inner else "discounted"
         return True
@@ -621,6 +646,13 @@ def _relate_handle_fallback_slash(c: Candidate, before: str, after: str) -> bool
         c.strong = bool(unit)
         return True
     if re.search(r"kupon(?:la|uyla|\s+uygulayınca|\s+uygulandığında)|kupon ile|koduyla|kodla", clause):
+        # "… koduyla 419 TL" kupon SONRASI ödenecek tutardır. Ama tutarın
+        # ARDINDAN "indirim" geliyorsa ("EFSANEKOZMO200 koduyla 200₺ indirim")
+        # bu, kodun SAĞLADIĞI indirim miktarıdır; ürün fiyatı değildir.
+        # Aksi halde kupon indirimi üst satıra fiyat olarak yazılıyordu.
+        if re.match(r"^\s*(?:daha\s+)?indirim\b", after):
+            c.cls, c.role, c.strong = "other", "discount_amount", False
+            return True
         c.role = "product_coupon" if re.search(r"ürün alt", clause) else "basket_coupon" if "sepette" in clause else "discounted"
         c.strong = True
         return True
@@ -689,6 +721,17 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
             continue
         if c.cls == "price" and re.match(r"^\s*/\s*(?:adet|tane)\s*\)", after) \
                 and "(" in before:
+            c.cls, c.role, c.strong, c.reason = "cond", "unit", True, "unit"
+            continue
+        # Parantez içi birim etiketi: "36 adet askı 274 TL (7,6 TL adet)".
+        # Parantezden ÖNCE gelen tutar toplamdır; parantez İÇİNDEKİ ve hemen
+        # "adet/tane/birim" ile biten tutar BİRİM fiyatıdır. İkisi eşit güçte
+        # olduğu için toplam "belirsiz" sayılıp üst satır "❓" kalıyordu.
+        # Yalnız bu dar kalıp ele alınır: parantezsiz "274 TL 7,6 TL" yazımı
+        # ve parantez içindeki öteki tutarlar etkilenmez.
+        if c.cls == "price" and "(" in before and re.fullmatch(
+            r"\s*(?:adet|tane|birim)\s*[).,]*\s*[*_~`]*\s*", after
+        ):
             c.cls, c.role, c.strong, c.reason = "cond", "unit", True, "unit"
             continue
         if c.cls == "price" and re.match(r"^(?:ye|ya|e|a)\s+düş\w*", after):
@@ -832,6 +875,48 @@ def _extract_handle_ambiguous_lines(text: str, strike: Sequence[tuple[int, int]]
     return info
 
 
+def _heading_price_pool(cands: Sequence[Candidate], text: str) -> list[Candidate] | None:
+    """Başlık bloğunda fiyat varsa yalnız o ürünün tutarlarını döndür.
+
+    Kaynak şablonu üstte bir ürünü, altında BAŞKA ürünleri listeleyebiliyor
+    (``⚡ Asus Vivabook …`` → ``Prime Üyelere Özel 24.999TL`` → ``🔻Rampage
+    Oyuncu Koltuğu … 6.881TL``). Havuzdaki en güçlü indirimli tutar bu durumda
+    başlıktaki ürünün fiyatı değildir; başlık ile fiyat çelişir.
+
+    Kural yalnız şu dar durumda devreye girer: ilk üç satırda BİRDEN FAZLA ürün
+    bloğu var (fiyatlı satır sayısı ≥ 2) ve bu satırlardan birinde ürün bloğunda
+    fiyat var. O zaman dönen havuz başlık bloğunun kendi tutarlarıdır. Tek ürünlü
+    gönderiler bu kurala hiç girmez; davranışları değişmez.
+    """
+    lines = (text or "").split("\n")
+    # Yalnız ``… TL`` taşıyan ÜRÜN satırları sayılır; "Fiyat: 519 TL / … 419 TL"
+    # gibi tek ürünün fiyat bloğu bu sayıma girmez (tek ürünlü gönderi).
+    product_lines = [
+        index for index, line in enumerate(lines[:6])
+        if PRICE_RE.search(line) and not re.search(r"fiyat\w*\s*[:=]", norm(line))
+    ]
+    if len(product_lines) < 2:
+        return None
+    leading = product_lines
+    # Başlık bloğunun fiyat satırı ÇIPLAK tutar olmamalı: "Pamuk Havlu\n100 TL\
+    # Cam Bardak\n200 TL" gibi eş yapılı listelerde hangi ürünün fiyatı olduğu
+    # metinden çıkmaz ve belirsiz kalmalıdır. Ayırt edici işaret, fiyatın
+    # yanında nitelik taşıyan sözcük bulunmasıdır ("Prime Üyelere Özel 24.999TL").
+    if _BARE_AMOUNT_LINE_RE.fullmatch(lines[leading[0]].strip()):
+        return None
+    local = [c for c in cands if c.line <= leading[0]]
+    if not local:
+        return None
+    # Fiyatın önündeki satırlar ürün adı taşımalı: kupon/duyuru başlığında
+    # havuz değiştirmek gerekmiyor (o durumda zaten kupon yolu var).
+    heading = " ".join(lines[: leading[0]]).strip()
+    if not heading or is_generic_title(heading) or _META_WORDS_RE.search(norm(heading)):
+        return None
+    if not any(c.cls in {"price", "cond"} for c in local):
+        return None
+    return local
+
+
 def _extract_build_pools(cands: list[Candidate]) -> tuple[list[Candidate], list[Candidate], list[Candidate], list[Candidate]]:
     """Adayları nihai/birim havuzlarına ayır; pool öncelik sırasını koru."""
     finals = [c for c in cands if c.role in {"discounted", "product_coupon", "basket_coupon", "condition_price", "member_price"}]
@@ -855,6 +940,16 @@ def _extract_select_best(pool: list[Candidate], units: list[Candidate]) -> tuple
         elif c.role == "unit" and c.value < best.value and c.line not in {p.line for p in pool}:
             best = c
     return best, ambiguous
+
+
+def _price_info_from_pool(pool: list[Candidate], units: list[Candidate]) -> PriceInfo | None:
+    """Havuzdan nihai ``PriceInfo`` üret (güven ve gerekçe dahil)."""
+    if not pool and not units:
+        return None
+    best, ambiguous = _extract_select_best(pool, units)
+    confidence = "low" if ambiguous else "medium" if best.cls == "cond" or not best.strong else "high"
+    reason = "discounted" if best.reason == "code_discounted" else best.reason
+    return PriceInfo(best.value, best.shown, confidence, reason)
 
 
 def _extract_fallback_price(cands: list[Candidate], text: str) -> PriceInfo | None:
@@ -888,12 +983,14 @@ def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInf
     cands = find_candidates(text, strike)
     if campaign_plain_ambiguous(cands):
         return PriceInfo(None, "", "none", "kampanya tutarı ile etiketsiz tutar: belirsiz")
+    heading_pool = _heading_price_pool(cands, text)
+    if heading_pool is not None:
+        info = _price_info_from_pool(heading_pool, [])
+        if info is not None:
+            return info
     finals, normal, units, pool = _extract_build_pools(cands)
     if pool or units:
-        best, ambiguous = _extract_select_best(pool, units)
-        confidence = "low" if ambiguous else "medium" if best.cls == "cond" or not best.strong else "high"
-        reason = "discounted" if best.reason == "code_discounted" else best.reason
-        return PriceInfo(best.value, best.shown, confidence, reason)
+        return _price_info_from_pool(pool, units)
     fallback = _extract_fallback_price(cands, text)
     if fallback is not None:
         return fallback
@@ -960,6 +1057,32 @@ _STORE_LOCATIVE_PREFIX_RE = re.compile(
 )
 
 
+_STORE_NAME_AT_START_RE = re.compile(rf"^(?:{_STORE_PATTERN})\b", re.IGNORECASE)
+_LOCATIVE_TAIL_RE = re.compile(r"(?:['’]\s?(?:de|da|te|ta)|\b(?:de|da|te|ta))\b\s*$", re.IGNORECASE)
+
+
+def _is_bare_store_mention(plain: str) -> bool:
+    """Satır yalnız ``<mağaza> … 'te/de`` kabuğu mu (ürün adı taşımıyor mu)?
+
+    Araya giren en çok iki sözcük mağazayı niteliyor sayılır (``Migros Sanal
+    Market'te``); ondan fazlası ya da sayı içeren satır ürün anlatımıdır ve
+    başlık olabilir.
+    """
+    # Konum eki sonda da olabilir: ``Migros Sanal Market'te``. Satırın tamamı
+    # mağaza adıyla başlar ve KONUM EKİYLE biter; arada yalnız mağazayı
+    # niteleyen en çok iki sözcük bulunur ("Sanal Market"). Ek yoksa
+    # (``Amazon Alışverişlerinizde``) satır mağaza mention'ı sayılmaz.
+    match = _STORE_NAME_AT_START_RE.match(plain)
+    if not match:
+        return False
+    rest = plain[match.end():].strip(" :,.-")
+    tail = _LOCATIVE_TAIL_RE.search(rest)
+    if not tail:
+        return False
+    middle = rest[: tail.start()].strip(" :,.-")
+    return len(middle.split()) <= 2 and not re.search(r"\d", middle)
+
+
 def strip_store_prefix(text: str) -> str:
     """Yalnız ``n11'den Ürün`` gibi kaynak önekini kaldır; ``N11’de`` korunur."""
     return _STORE_FROM_PREFIX_RE.sub("", text or "", count=1)
@@ -971,6 +1094,23 @@ _UNIT_RE = re.compile(
     re.IGNORECASE,
 )
 _PRICE_LEAD_RE = re.compile(r"^\s*[\U0001F4B0\U0001F3F7\U0001F4B8\U0001F3AF\U0001F53B\U0001F4B3\u2705]")   # 💰 🏷 💸 🎯 🔻 💳 ✅ → fiyat satırı
+# "kupon kodu KASIM150", "KASIM150 kodu ile", "KOD200 koduyla" → kupon kodu.
+# Yalnız kod/kupon sözcüğüne komşu büyük-harf kodları yakalar; ürünün model
+# kodu (RTX 5050, NH.QZ7EY.001) bu bağlamda geçmediği için etkilenmez.
+_COUPON_CODE_CONTEXT_RE = re.compile(
+    r"\b(?:[a-z0-9]{4,}\s+(?:koduyla|kodla|kodu\s+ile|kuponuyla|kuponla|kodunu\s+uygula\w*)"
+    r"|(?:kupon\s+|indirim\s+|kampanya\s+)?kod\w*\s+[a-z0-9]{4,}"
+    # "kodu ile 453 TL" → kod sözcüğünden sonraki EŞİK/discount cümlesi ürün
+    # adı değildir; bu satır gerçek ürün satırını geçmemeli.
+    r"|\bkod\w*\s+(?:ile|ile\s+gelen)\b)\b",
+    re.IGNORECASE,
+)
+# "600 TL Üzerine 150 TL İndirim", "2000 TL ve üzeri alışverişlerde 100 TL":
+# iki tutar + eşik sözcüğü + indirim → kampanya koşulu cümlesi.
+_CAMPAIGN_CONDITION_LINE_RE = re.compile(
+    r"\b(?:üzerine|uzerine|üstüne|ustune|ve\s+üzeri|ve\s+uzeri)\b.*\bindirim\w*\b",
+    re.IGNORECASE,
+)
 _PRODUCT_EMOJI_RE = re.compile(r"^\s*[\U0001F6CD\U0001F6D2\U0001F4E6\U0001F48E]")   # 🛍 🛒 📦 💎 → ürün satırı
 _MODEL_RE = re.compile(r"\b(?=[A-Za-z0-9\-/]*[A-Za-z])(?=[A-Za-z0-9\-/]*\d)[A-Za-z0-9\-/]{3,}\b")
 _CATALOG_CONNECTION_RE = re.compile(r"\bUSB-[A-Z0-9]+\b", re.IGNORECASE)
@@ -1068,6 +1208,12 @@ def _segments(line: str) -> list[str]:
 
 _GENERIC_TITLE_RE = re.compile(
     r"^(?:yoğun\s+ilgi\s+görüyor\s*$|durum\s*:|(?:yeni\s+)?depo\s+ürünü|(?:yeni\s+)?depo\s+urunu|yorum\s*:|takip\s+kuponu\b|kampanya(?:lar)?\s*(?::|\d)|(?:\d+\s*g(?:ün)?\s+)?medyan\b|"
+    # Kaynak şablonlarının sabit CTA/uyarı cümlesi ürün adı değildir:
+    # "🚀 Fiyat her an değişebilir, kaçırma!" satırı, gerçek ürün adından
+    # (uzun olduğu için uzunluk cezası alan) daha yüksek puan alıp başlık
+    # olabiliyordu. Yalnız bu kalıplar; içinde ürün/marka geçen satır değil.
+    r"(?:fiyat\s+)?her\s+an\s+değişebilir|fiyat\s+her\s+an\s+değişebilir|"
+    r"(?:fiyat\s+)?değişebilir\s*,?\s*kaçırma|kaçırma\s*!?\s*$|"
     r"(?:anlık|anlik) indirim|bildirimlerinizi|\d+\s+adet kaldı|"
     r"ürün\s+altından\s+(?:aktif|etkinleştir)\w*|"
     r"(?:sepete\s+)?\d+\s+adet(?:\s+sepete)?\s+ekle\w*|"
@@ -1079,7 +1225,7 @@ _GENERIC_TITLE_RE = re.compile(
     # açılış taraması eski bildirimleri okurken bu satırdan tekrar anahtarı kurmamalı.
     r"ürün\s+linki(?:\s+\d+)?\s*$|"
     r"(?:bu\s+)?(?:fiyat\s+)?uzun\s+sürmez|stoklar\s+tükenmeden|aşağıdaki\s+butona|"
-    r"[a-z0-9][a-z0-9_-]*\s+(?:koduyla|kodla|kuponuyla|kuponla|kodunu\s+uygula\w*)"
+    r"[a-z0-9][a-z0-9_-]*\s+(?:koduyla|kodla|kodu\s+ile|kuponuyla|kuponla|kodunu\s+uygula\w*)"
     r"(?:\s+(?:fiyat\w*\s*)?(?:\d[\d.,]*\s*(?:tl|₺|try)|₺\s*\d[\d.,]*))?\s*$|.*kodunu\s+uygula\w*\s*$)",
     re.IGNORECASE,
 )
@@ -1102,6 +1248,13 @@ def is_generic_title(text: str) -> bool:
     if _STORE_LOCATIVE_PREFIX_RE.match(plain) and re.search(r"\b\d+\s+alana\s+\d+\b", plain):
         # Mağaza + BOGO + kupon kodu satırı ürün kimliği değildir. Arama
         # temizliği ``bedava``yı kaldırsa bile kalan ``1 alana 1`` yakalanır.
+        return True
+    if _is_bare_store_mention(plain):
+        # "📢 Migros Sanal Market'te" yalnız mağaza + konum ekidir; ürün adı
+        # değildir. Bu satır kısa olduğu için başlık puanlamasında eşitlikte
+        # (en erken satır kuralıyla) gerçek ürün satırını geçiyordu.
+        # ``Migros'ta Demlik ve Bardak Siyah Çay …`` gibi satırlar ürün/sözcük
+        # taşıdığı için bu kurala girmez.
         return True
     first_word = plain.split(maxsplit=1)[0] if plain else ""
     if first_word in STORES and re.search(r"\btanıtım\b", plain):
@@ -1152,7 +1305,14 @@ def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str], le
     score = 0.0
     # "1000TL" gibi bitişik yazılmış tutar model kodu değildir; aksi halde kampanya
     # satırı ("… 1000TL seçili ürün satın aldığınızda …") ürün adını geçer.
-    if _MODEL_RE.search(PRICE_RE.sub(" ", cleaned)):
+    # KUPON KODU da model kodu değildir: "Yeni indirim kodu KASIM150 geldi" satırı
+    # KASIM150 sayesinde +3 alıp gerçek ürün adını geçiyordu. Kod, kod/kupon
+    # sözcüğüyle birlikte ya da "… koduyla/kodla" diye geçiyorsa bonus verilmez;
+    # gerçek model kodu (RTX 5050, NH.QZ7EY.001, 512GB) bu kalıba girmez.
+    model_scan = PRICE_RE.sub(" ", cleaned)
+    if _COUPON_CODE_CONTEXT_RE.search(norm(model_scan)):
+        model_scan = _COUPON_CODE_CONTEXT_RE.sub(" ", norm(model_scan))
+    if _MODEL_RE.search(model_scan):
         score += 3
     if _UNIT_RE.search(cleaned):
         score += 2
@@ -1189,6 +1349,13 @@ def _score_line(raw: str, cleaned: str, position: int, hint_tokens: set[str], le
         score -= 3                       # "💰 2 adet alımda 250₺" gibi fiyat satırı başlık olmasın
     elif count <= 4 and PRICE_RE.search(raw):
         score -= 3                       # "✅1.100TL - S/4XL Arası Bedenler" gibi kısa fiyat satırı
+    if _CAMPAIGN_CONDITION_LINE_RE.search(norm(cleaned)):
+        # "600 TL Üzerine 150 TL İndirim sağlar" bir kampanya KOŞULUDUR, ürün
+        # adı değildir. Kupon duyurusunda bu satır, aynı iletideki gerçek ürün
+        # adından daha yüksek puan alıp başlık oluyordu. Genel başlık saymak
+        # (is_generic_title) doğru değil: aynı cümle kupon kimliği (dedup
+        # anahtarı) olarak da kullanılıyor. Yalnız BAŞLIK puanı düşürülür.
+        score -= 4
     if cleaned.isupper() and count <= 3:
         score -= 2
     if sum(ch.isdigit() for ch in cleaned) > len(cleaned) * 0.5:
@@ -1227,7 +1394,13 @@ def priced_catalog_title(text: str) -> str:
         return ""
     if not re.search(r"taksit|banka|indirim|peşin|pesin", norm(financing)):
         return ""
-    if (len(rest.split()) < 4 or not re.match(r"[A-ZÇĞİÖŞÜ]{2,}\b", rest)
+    # Marka adı iki harften kısa olabilir ("Acer Nitro …" başlık harfi büyük,
+    # kalanı küçük). Eski kural en az İKİ ardışık büyük harf istiyordu; bu yüzden
+    # yalnız GIGABYTE/ASUS gibi tamamı büyük yazılmış markalar katalog yolundan
+    # geçiyor, "Acer Nitro ANV15-52 …" geçemiyor ve fiyat parantezinin içindeki
+    # taksit metni başlık olarak seçilebiliyordu. Ölçüt artık "başlık harfi büyük
+    # ve gerçek bir ürün/model izi var".
+    if (len(rest.split()) < 4 or not re.match(r"[A-ZÇĞİÖŞÜ]", rest)
             or not _MODEL_RE.search(rest)):
         return ""
     return rest

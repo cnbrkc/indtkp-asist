@@ -2934,7 +2934,9 @@ class DedupBadgeTest(unittest.TestCase):
         three = bot.dedup_badge(3, sources=["A", "B", "C"])
         four = bot.dedup_badge(4, sources=["A", "B", "C", "D"])
         five = bot.dedup_badge(5, sources=["A", "B", "C", "D", "E"])
-        self.assertEqual(two, "📌 2 kere paylaşıldı: FirsatZ, İndirimde Al")
+        # Adlar " | " ile ayrılır (virgül grup adının kendisinde olabilir; virgülle
+        # birleştirmek adları bölüp mesaj linklerini kaydırıyordu).
+        self.assertEqual(two, "📌 2 kere paylaşıldı: FirsatZ | İndirimde Al")
         self.assertTrue(three.startswith("📌 3 kere paylaşıldı:"), three)
         self.assertTrue(four.startswith("📌 4 kere paylaşıldı:"), four)
         self.assertTrue(five.startswith("🚨 5 kere paylaşıldı:"), five)
@@ -2944,13 +2946,13 @@ class DedupBadgeTest(unittest.TestCase):
         """Kullanıcı isteği: "2-3-4 kere paylaşıldı şu şu şu gruplarda" — tek satır."""
         badge = bot.dedup_badge(3, sources=["FirsatZ", "İndirimde Al", "OnuAl"])
         self.assertNotIn("\n", badge, badge)
-        self.assertEqual(badge, "📌 3 kere paylaşıldı: FirsatZ, İndirimde Al, OnuAl")
+        self.assertEqual(badge, "📌 3 kere paylaşıldı: FirsatZ | İndirimde Al | OnuAl")
         self.assertEqual(bot.dedup_badge(2), "📌 2 kere paylaşıldı",
                          "grup adı yoksa sayı yeter")
 
     def test_repeated_group_names_are_written_once(self):
         self.assertEqual(bot.dedup_badge(2, sources=["A", "A", "B"]),
-                         "📌 2 kere paylaşıldı: A, B")
+                         "📌 2 kere paylaşıldı: A | B")
 
     def test_single_group_repeat_is_explicit_without_changing_share_count(self):
         badge = bot.dedup_badge(2, sources=["Fırsatlar (Sadece Paylaşım)"])

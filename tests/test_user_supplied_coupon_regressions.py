@@ -73,7 +73,12 @@ class UserSuppliedCouponRegressions(unittest.TestCase):
         self.assertIn("KOZMO500", bot.smart_dedup_title(event(text)))
         with patch.object(bot, "SMART_HEADER", True):
             header = bot.compose_message(event(text))["text"].splitlines()[0]
-        self.assertTrue(header.endswith("❓"), header)
+        # Kupon duyurusunda ürün fiyatı YOKTUR; bu bir eksiklik değil iletinin
+        # türüdür. Kullanıcı isteği: "indirim kuponu bildirimlerinde de [soru
+        # işareti] koymayalım". Ürün fiyatı taşıyan iletilerde davranış aynı
+        # kalır (aşağıdaki testler); yalnız duyuruda `❓` yazılmaz.
+        self.assertNotIn("❓", header)
+        self.assertIn("KOZMO500", header)
         self.assertNotIn("₺2.000", header)
 
     def test_tp_link_is_preserved_in_search_title(self):
