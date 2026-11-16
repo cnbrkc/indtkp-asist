@@ -259,10 +259,24 @@ besleniyor. Katlama yalnız `_campaign_norm` içinde yapılır.
 `❓` ile bırakıyor ve o davranış korunuyor (genişletme denendi, 3 alt-testi
 kırdı, geri alındı).
 
-**Neden "fiyatlı gönderiyi çöpe atma" riski yok:** bu dal, **güvenli tutar
-dalından sonra** gelir. `high`/`medium` güvenli fiyat varsa üst satıra o yazılır
-ve bu fonksiyona hiç gelinmez. Yani istisna yalnız "fiyatı olmayan duyuru"
-durumunda devreye girer.
+**Neden "fiyatlı gönderiyi çöpe atma" riski yok:** bu kural artık **dal sırasına
+bağlı değil**. `_has_safe_price` doğrudan `price_filter.extract_price` sonucuna
+bakar (`high`/`medium` + değer var mı) ve `_is_coupon_announcement` en başta
+bunu sorar; güvenli fiyat varsa **kupon sayılmaz**. Eskiden koruma yalnız
+"güvenli tutar dalı önce çalışır" varsayımına dayanıyordu — sessiz bir
+kırılganlıktı, çünkü dal sırası değişirse fiyat kaybolabilirdi.
+
+İki yön de testlidir (simetrik):
+
+| Durum | Beklenen |
+|---|---|
+| Fiyatlı Money/kampanya gönderisi | `_is_coupon_announcement` **False**, üst satırda **fiyat** |
+| Fiyatsız Money/kampanya duyurusu | `_is_coupon_announcement` **True**, üst satırda **`❓` yok** |
+| Belirsiz çok ürünlü normal gönderi | `low` güven, `❓` mekanizması **değişmedi** |
+
+Ayrıca `❓` politikası **global değildir**: kapsam yalnız fiyatsız kupon/kampanya
+duyurularıdır. Global kaldırma denendi ve **reddedildi** (23 testi kırıyor:
+normal ürün gönderilerindeki "bilinmiyor" sinyali kayboluyor).
 
 **Altın referans etkisi.** 563 kayıtta **2 kayıt** değişti; ikisi de kupon
 duyurusu (`Hopi 200 TL ve üzeri …` ve `SNEAKER500 …`). Her iki kayıtta
@@ -299,7 +313,7 @@ Bunlar **uygulanmadı**; ileride tekrar denenmemesi için kayıtlıdır:
 
 | Kontrol | Sonuç |
 |---|---|
-| Tam test paketi | **1228 passed / 2421 subtests** (taban 1198; ilk tur +20, doğrulama turu +10) |
+| Tam test paketi | **1232 passed / 2421 subtests** (taban 1198; ilk tur +20, doğrulama turu +10, sertleştirme +4) |
 | `python bot.py --check` | Ortam secret'ları yok (değişiklik öncesi de aynı) |
 | `git diff --check` | temiz |
 | Altın referans | 563 kayıt; **yalnız 2 kupon kaydı** değişti (§14), onay kodu `0b2e49683427`. Doğrulama turundaki düzeltmeler golden'da **hiçbir** değişiklik yapmadı (sha `55658a87b0582db9`, tabanda da aynı 2 kayıt). |
@@ -317,6 +331,10 @@ Bunlar **uygulanmadı**; ileride tekrar denenmemesi için kayıtlıdır:
 | `test_dotless_capital_i_campaign_word_is_recognized` | `Indirim` (noktasız I) kampanya sözcüğü sayılır |
 | `test_price_bearing_post_is_never_treated_as_coupon` | fiyatlı gönderi kupon sayılmaz; `2477` korunur |
 | `test_product_price_wins_over_campaign_sentence_in_same_post` | kampanya cümlesi + ürün fiyatı: `₺200` **fiyat olarak yazılmaz** |
+| `test_safe_price_is_detected_independently_of_coupon_classification` | `_has_safe_price` ile `_is_coupon_announcement` aynı gerçeği söyler |
+| `test_priced_money_post_keeps_its_price_without_branch_order` | fiyatlı Money gönderisinde fiyat **daima** korunur |
+| `test_announcement_without_price_never_shows_question_mark` | fiyatsız duyuruda `❓` **yok** |
+| `test_uncertain_multi_product_keeps_question_mark` | normal ürün gönderisinde belirsizlik mekanizması **değişmedi** |
 | `test_single_group_name_with_comma_keeps_its_link` | tek gruplu, virgüllü ad → **1** `text_link`, doğru aralık |
 | `test_legacy_badge_keeps_comma_split_with_group_count_suffix` | `— KAÇIRMA!` eki eski bölmeyi **engellemez** |
 | `test_new_format_multi_group_names_survive_round_trip` | 3 gruplu, hepsi virgüllü → 3 ad, 3 link |

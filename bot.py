@@ -2151,13 +2151,33 @@ _NON_COUPON_CAMPAIGN_RE = re.compile(
 )
 
 
+def _has_safe_price(text: str) -> bool:
+    """Metinde üst satıra yazılabilecek GÜVENLİ bir ürün fiyatı var mı?
+
+    Bu ölçüm kupon sınıflandırmasından **bağımsızdır**: doğrudan
+    ``price_filter.extract_price`` sonucuna bakar. Amaç, "fiyat var mı" kararının
+    iki ayrı yerde (dal sırası ve kupon tespiti) yeniden yorumlanmasını önlemek.
+    ``_is_coupon_announcement`` bu yardımcıyı kullanır; böylece fiyatlı gönderi,
+    dalların sırası değişse bile kupon sayılmaz.
+    """
+    info = price_filter.extract_price(text)
+    return info.value is not None and info.confidence in {"high", "medium"}
+
+
 def _is_coupon_announcement(text: str) -> bool:
     """İleti bir kupon/kampanya duyurusu mu (ürün fiyatı beklenmez)?
 
-    Ölçüt tek: tam bir kampanya cümlesi kurulabiliyor (eşik + indirim tutarı).
-    Bu durumda üst satırdaki ``❓`` bir eksiklik değil, yanlış bilgidir; kullanıcı
-    isteğiyle kaldırılır. Ürün fiyatı taşıyan iletiler bu kurala girmez.
+    Üç ölçüt: (a) güvenli ürün fiyatı YOK, (b) kupon/kod sözcüğü geçmeyen
+    kampanya kalıbı (``2 Öde 1'i Money Hediye``) VAR ya da tam bir kampanya
+    cümlesi kurulabiliyor (eşik + indirim tutarı).
+
+    Fiyat koşulu burada, fonksiyonun İÇİNDE aranır — çağıranın dal sırasına
+    güvenilmez. Kullanıcı şartı: "fiyat olan bir gönderiyi kupon sanıp çöpe
+    atmamalıyız". Üst satırdaki ``❓``, fiyatı OLMAYAN duyurularda yanlış bilgi
+    olduğu için kaldırılır; fiyatı olan gönderide ise fiyat her koşulda korunur.
     """
+    if _has_safe_price(text):
+        return False
     # Kampanya sözcüğü ("kupon", "indirim kodu") hiç geçmeyen duyurular da var:
     # "Migros'ta … 2 Öde 1'i Money Hediye". Bunlar da ürün fiyatı taşımaz;
     # aksi hâlde başlıkta haksız bir ``❓`` kalıyordu.
@@ -2168,11 +2188,10 @@ def _is_coupon_announcement(text: str) -> bool:
     )
     if not campaign:
         return False
-    # Kampanya cümlesi VARSA ve iletide kupon tutarından başka ürün fiyatı
-    # yoksa ileti duyurudur. Kampanya cümlesinin kendisi eşik + indirim tutarı
-    # taşır (``_coupon_campaign_title`` bunu zorunlu kılar); yani burada
-    # "fiyatı olan gönderiyi kupon sanma" riski yoktur: fiyatlı gönderide
-    # güvenli tutar dalı daha önce çalışır ve bu fonksiyona hiç gelinmez.
+    # Kampanya cümlesi VARSA ve güvenli ürün fiyatı YOKSA ileti duyurudur.
+    # "Fiyat yok" koşulu yukarıda bir kez, bu fonksiyonun içinde ölçülür; çağıran
+    # dalın önce çalışmasına bağlı DEĞİLDİR (eskiden öyleydi ve sessiz bir
+    # kırılganlıktı: dal sırası değişirse fiyat kaybolabilirdi).
     return True
 
 
@@ -2966,9 +2985,10 @@ def _compose_resolve_header(
             # Kullanıcı isteği: "indirim kuponu bildirimlerinde de [soru işareti]
             # koymayalım". Kupon/kampanya duyurusunda ürün fiyatı YOKTUR; bu bir
             # eksiklik değil, iletinin türüdür. `❓` yazmak bilgi vermiyordu.
-            # Fiyatı OLAN gönderi bu dala girmez (yukarıdaki güvenli tutar dalı
-            # önce çalışır), yani "kupon sanıp fiyatlı gönderiyi çöpe atma"
-            # riski yoktur.
+            # "Fiyatı olan gönderiyi kupon sanıp çöpe atma" koruması artık dal
+            # sırasına bağlı değil: `_is_coupon_announcement` güvenli fiyat varsa
+            # kendi içinde False döner (bkz. `_has_safe_price`). Yani buraya
+            # yalnız gerçekten fiyatsız duyurular gelir.
             price_text = ""
         else:
             price_text = PRICE_MISSING_MARK

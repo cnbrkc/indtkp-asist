@@ -444,6 +444,58 @@ class HeaderPriceAccuracyTests(unittest.TestCase):
         self.assertEqual(pf.extract_price(couponed).value, 2477)
         self.assertIn("₺2.477", self._header(couponed)["header"])
 
+    def test_safe_price_is_detected_independently_of_coupon_classification(self):
+        """Fiyat ölçümü kupon sınıflandırmasından BAĞIMSIZ olmalı.
+
+        ``_has_safe_price`` doğrudan ``price_filter.extract_price``a bakar; bu
+        test ikisinin aynı gerçeği söylediğini kilitler. Aksi hâlde "fiyat var mı"
+        kararı iki ayrı yerde yorumlanır ve sessizce ayrışabilir.
+        """
+        priced = "Philips Ütü 1.499 TL\n2 Öde 1'i Money Hediye"
+        self.assertTrue(bot._has_safe_price(priced))
+        self.assertFalse(bot._is_coupon_announcement(priced))
+        announcement = "Migros'ta 2 Öde 1'i Money Hediye"
+        self.assertFalse(bot._has_safe_price(announcement))
+        self.assertTrue(bot._is_coupon_announcement(announcement))
+
+    def test_priced_money_post_keeps_its_price_without_branch_order(self):
+        """Fiyatlı Money gönderisinde fiyat DAİMA korunur.
+
+        Dal sırası ne olursa olsun: ``_is_coupon_announcement`` güvenli fiyat
+        gördüğünde False döner, böylece fiyatı silen kupon dalı devreye girmez.
+        """
+        variants = [
+            "Philips Ütü 1.499 TL\n2 Öde 1'i Money Hediye",
+            "Philips Ütü\n\n1.499 TL\n\n2 Öde 1'i Money Hediye",
+            "Philips Ütü\n2 alana 1 TL kampanyası\n💰 3.250 TL",
+            "Dyson Süpürge 12.499 TL\nMoney hesabına iade",
+        ]
+        for text in variants:
+            self.assertFalse(bot._is_coupon_announcement(text), text)
+            header = self._header(text)["header"]
+            self.assertIn("₺", header, text)
+            self.assertNotIn("❓", header, text)
+
+    def test_announcement_without_price_never_shows_question_mark(self):
+        """Fiyatsız Money/kampanya duyurusunda ❓ GÖSTERİLMEZ (dal sırasından bağımsız)."""
+        variants = [
+            "Migros'ta Demlik ve Bardak Siyah Çay Ürünlerinde 2 Öde 1'i Money Hediye",
+            "Migros Sanal Market'te\n2 Öde 1'i Money Hediye",
+            "Aynı Üründen 2 Tane alana biri tutarında Money hesabına iade",
+            "Hopi 200 TL ve üzeri alışverişlerde 50 TL indirim kuponu",
+            "SNEAKER500 koduyla n11'de Sneaker Ürünlerinde 3000 TL ve üzeri 500 TL indirim",
+        ]
+        for text in variants:
+            self.assertTrue(bot._is_coupon_announcement(text), text)
+            self.assertNotIn("❓", self._header(text)["header"], text)
+
+    def test_uncertain_multi_product_keeps_question_mark(self):
+        """Normal ürün gönderisindeki belirsizlik mekanizması DEĞİŞMEZ."""
+        text = "Pamuk Havlu\n100 TL\nCam Bardak\n200 TL"
+        self.assertEqual(pf.extract_price(text).confidence, "low")
+        self.assertFalse(bot._is_coupon_announcement(text))
+        self.assertFalse(bot._has_safe_price(text))
+
     def test_product_price_wins_over_campaign_sentence_in_same_post(self):
         """Kampanya cümlesi + ürün fiyatı bir arada: fiyat korunur (örnek 13)."""
         text = (
