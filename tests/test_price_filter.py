@@ -255,7 +255,8 @@ class SmartHeaderLayoutTests(unittest.TestCase):
         self.assertEqual(text.splitlines()[0], composed["header"])
         self.assertNotIn("\n\n₺41.999", text, "ayrı fiyat bloğu kalmadı")
         self.assertLess(text.index("₺41.999"), text.index("Eski:"))
-        self.assertLess(text.index("500 TL kupon"), text.index("🔗 Mesajı Gör"))
+        self.assertLess(text.index("500 TL kupon"), len(text) - len("FırsatZ"),
+                        "kupon satırı gövdede; mesaj en altta kaynak adıyla kapanır")
         self.assertTrue(text.endswith("Grup"))
         kinds = [type(e).__name__ for e in composed["entities"]]
         self.assertIn("MessageEntityBlockquote", kinds)

@@ -2107,14 +2107,22 @@ class BlankLineNormalizationTest(unittest.TestCase):
         )
         self.assertEqual(composed["text"], (
             "A101 Çamaşır Deterjanı 4 Lt"
+            "\n\n👉 Ürün Linki 👈"
             "\n\n🔥 A101 Çamaşır Deterjanı 4 Lt"
             "\n\n129,90 TL"
             "\n\nStoklarla sınırlı"
-            "\n\n👉 Ürün Linki 👈"
-            "\n\n🔗 Mesajı Gör: https://t.me/firsatz/123"
             "\n\nFırsatZ"
         ))
         self.assertEqual(product_link_urls(composed), ["https://example.com/urun"])
+        # Orijinal mesajın adresi ayrı satır olarak YAZILMAZ; grup adına gömülür.
+        self.assertNotIn("Mesajı Gör", composed["text"])
+        self.assertEqual(composed["source_name_url"], "https://t.me/firsatz/123")
+        self.assertEqual(
+            [(item["type"], item["url"]) for item in bot.source_name_entity(composed)
+             if item["type"] == "text_link"],
+            [("text_link", "https://t.me/firsatz/123")],
+            "mesaj linki en alttaki grup adının içine gömülür",
+        )
 
     def test_product_link_is_hidden_under_one_label_on_both_paths(self):
         """Ürün linki ham URL satırı olmaz; ``👉 Ürün Linki 👈`` yazısına gömülür.
@@ -2135,10 +2143,9 @@ class BlankLineNormalizationTest(unittest.TestCase):
         )
         self.assertEqual(composed["text"], (
             "A101 Çamaşır Deterjanı 4 Lt"
+            "\n\n👉 Ürün Linki 👈"
             "\n\n🔥 A101 Çamaşır Deterjanı 4 Lt"
             "\n\n129,90 TL"
-            "\n\n👉 Ürün Linki 👈"
-            "\n\n🔗 Mesajı Gör: https://t.me/firsatz/123"
             "\n\nFırsatZ"
         ))
         self.assertNotIn("https://example.com/urun", composed["text"])
@@ -2162,7 +2169,8 @@ class BlankLineNormalizationTest(unittest.TestCase):
         )
         self.assertIn(text, composed["text"], "alıntı aynen korunur")
         self.assertEqual(composed["text"].count("https://amzn.to/urun"), 1)
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/123", composed["text"])
+        self.assertNotIn("🔗 Mesajı Gör", composed["text"])
+        self.assertEqual(composed["source_name_url"], "https://t.me/firsatz/123")
         self.assertTrue(composed["text"].endswith("FırsatZ"))
 
     def test_bot_notification_without_link_or_body_has_no_stray_lines(self):
@@ -2174,9 +2182,8 @@ class BlankLineNormalizationTest(unittest.TestCase):
             link_kinds=bot.link_kinds_for("smart", bot=True),
         )
         self.assertNotIn("\n\n\n", composed["text"])
-        self.assertNotIn("🔗 https://", composed["text"].replace(
-            "🔗 Mesajı Gör: https://", ""))
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/123", composed["text"])
+        self.assertNotIn("🔗 https://", composed["text"])
+        self.assertEqual(composed["source_name_url"], "https://t.me/firsatz/123")
         self.assertTrue(composed["text"].endswith("FırsatZ"))
 
     def test_changed_flag_is_set_when_only_blank_lines_differ(self):
@@ -2418,7 +2425,6 @@ class ComposeMessageTest(unittest.TestCase):
         self.assertEqual(composed["text"], (
             "Philips Airfryer XXL 6.2L"
             "\n\n1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nFırsata Git"
-            "\n\n🔗 Mesajı Gör: https://t.me/firsatz/9"
             "\n\nFırsatZ"
         ))
         self.assertEqual(
@@ -2451,10 +2457,9 @@ class ComposeMessageTest(unittest.TestCase):
         self.assertEqual(composed["text"], (
             "Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici "
             "Banyo ve Duş Jeli 500ml x 4 Adet"
+            "\n\n👉 Ürün Linki 👈"
             "\n\n" + text
-            + "\n\n👉 Ürün Linki 👈"
-            "\n\n🔗 Mesajı Gör: https://t.me/indirimdeal/50953"
-            "\n\nİndirimde Al"
+            + "\n\nİndirimde Al"
         ))
         self.assertEqual(product_link_urls(composed), ["https://link.amazon/B02W5SjPe"])
         self.assertEqual(composed["text"].count("https://link.amazon/B02W5SjPe"), 1,
@@ -2463,8 +2468,13 @@ class ComposeMessageTest(unittest.TestCase):
                          "fiyat satırı gövdede aynen durur, ayıklanmaz")
         self.assertIn("🗓️ 365 Günün En Düşük Fiyatı", composed["text"])
 
-    def test_message_link_line_sits_after_the_message(self):
-        """Mesajı Gör satırı mesajın altında, kaynak adından hemen önce."""
+    def test_source_name_absent_falls_back_to_the_message_link_line(self):
+        """Kaynak adı yoksa adres kaybolmaz: eski ``Mesajı Gör`` satırı yazılır.
+
+        Kullanıcı isteği: adres normalde en alttaki GRUP ADININ İÇİNE gömülür
+        ve ``Mesajı Gör`` satırı kalkar. Ad yazılmıyorsa (``source_footer: false``
+        ya da ad hiç gelmediyse) adresin tek taşıyıcısı bu satırdır.
+        """
         button = SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)
         original = "çay 5 TL"
         composed = bot.compose_message(
@@ -2473,13 +2483,35 @@ class ComposeMessageTest(unittest.TestCase):
         )
         self.assertEqual(composed["text"], (
             "çay"
-            "\n\nçay 5 TL"
             "\n\n👉 Ürün Linki 👈"
+            "\n\nçay 5 TL"
             "\n\n🔗 Mesajı Gör: https://t.me/FirsatZ/31543"
         ))
         self.assertEqual(product_link_urls(composed), ["https://amzn.to/btn"])
         self.assertEqual(composed["body"], original)
         self.assertEqual(composed["source_url"], "https://t.me/FirsatZ/31543")
+
+    def test_product_line_sits_between_the_header_and_the_quote(self):
+        """Kullanıcı isteği: fiyat-ad → ürün linki → alıntı → grup adı (adres adın içinde)."""
+        button = SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)
+        composed = bot.compose_message(
+            make_message("çay 5 TL", buttons=[button], media=False),
+            message_link="https://t.me/FirsatZ/31543",
+            source_name="FirsatZ",
+        )
+        self.assertEqual(composed["text"], (
+            "çay"
+            "\n\n👉 Ürün Linki 👈"
+            "\n\nçay 5 TL"
+            "\n\nFirsatZ"
+        ))
+        self.assertEqual(product_link_urls(composed), ["https://amzn.to/btn"])
+        self.assertEqual(bot.source_name_entity(composed)[-1], {
+            "type": "text_link",
+            "offset": composed["source_name_offset"],
+            "length": bot.utf16_length("FirsatZ"),
+            "url": "https://t.me/FirsatZ/31543",
+        })
 
     def test_coupon_message_is_delivered_as_is_under_its_title(self):
         """Kupon/duyuru: gövdeye dokunulmaz; başlık bulunabiliyorsa üste çıkar."""
@@ -2502,6 +2534,7 @@ class ComposeMessageTest(unittest.TestCase):
         )
         self.assertEqual(composed["body"], text)
         self.assertTrue(composed["text"].startswith(text), repr(composed["text"]))
+        # Kaynak adı yok: adres ``Mesajı Gör`` satırında durur.
         self.assertIn("🔗 Mesajı Gör: https://t.me/FirsatZ/31543", composed["text"])
 
     def test_entities_are_shifted_below_the_title(self):
@@ -2546,19 +2579,23 @@ class ComposeMessageTest(unittest.TestCase):
         )
         self.assertEqual(composed["text"], (
             "çay"
-            "\n\nçay 5 TL"
             "\n\n👉 Ürün Linki 👈"
+            "\n\nçay 5 TL"
             "\n\n🔗 Mesajı Gör: https://t.me/FirsatZ/9"
         ))
         self.assertEqual(product_link_urls(composed), ["https://amzn.to/btn"])
         self.assertLess(
             composed["text"].index("👉 Ürün Linki 👈"),
-            composed["text"].index("🔗 Mesajı Gör"),
-            "ürün linki Mesajı Gör'ün üstünde durur",
+            composed["text"].index("çay 5 TL"),
+            "ürün linki alıntının üstünde durur",
         )
 
-    def test_source_name_is_bold_at_the_bottom_without_label_or_link(self):
-        """Kullanıcı isteği: en altta yalnızca grup adı, kalın; etiket ve link yok."""
+    def test_source_name_is_bold_at_the_bottom_and_carries_the_link(self):
+        """Kullanıcı isteği: en altta grup adı kalın; mesaj linki ADIN İÇİNDE.
+
+        ``Mesajı Gör`` satırı kaldırıldı: orijinal mesajın adresi artık en
+        alttaki grup adına gömülüdür (URL metinde görünmez, ad tıklanabilir).
+        """
         composed = bot.compose_message(
             make_message("ÇAY 5 TL"),
             message_link="https://t.me/firsatz/9",
@@ -2568,10 +2605,16 @@ class ComposeMessageTest(unittest.TestCase):
         self.assertNotIn("Fırsatı Gönderen", composed["text"])
         self.assertNotIn("🔗 FırsatZ", composed["text"])
         self.assertEqual(composed["source_name"], "FırsatZ")
+        self.assertNotIn("Mesajı Gör", composed["text"])
         self.assertEqual(bot.source_name_entity(composed), [{
             "type": "bold",
             "offset": composed["source_name_offset"],
             "length": bot.utf16_length("FırsatZ"),
+        }, {
+            "type": "text_link",
+            "offset": composed["source_name_offset"],
+            "length": bot.utf16_length("FırsatZ"),
+            "url": "https://t.me/firsatz/9",
         }])
         self.assertEqual(
             bot.utf16_slice(composed["text"], composed["source_name_offset"],
@@ -2593,7 +2636,8 @@ class ComposeMessageTest(unittest.TestCase):
         self.assertLessEqual(len(composed["text"]), 120)
         self.assertTrue(composed["text"].endswith("FırsatZ"))
         self.assertEqual(bot.source_name_entity(composed)[0]["type"], "bold")
-        self.assertIn("Mesajı Gör", composed["text"], "Mesajı Gör satırı korunur")
+        self.assertNotIn("Mesajı Gör", composed["text"], "adres grup adına gömülü")
+        self.assertEqual(composed["source_name_url"], "https://t.me/firsatz/1")
         self.assertTrue(composed["text"].startswith("Çay Makinesi"), "başlık en üstte kalır")
 
     def test_empty_source_name_is_ignored(self):

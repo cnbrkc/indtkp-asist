@@ -1199,10 +1199,12 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
 
 
 class NotificationTest(unittest.TestCase):
-    """Bildirim: fırsatın kopyası + gizli linkler + "🔗 Mesajı Gör" + kalın kaynak adı.
+    """Bildirim: fiyat-ad → ``👉 Ürün Linki 👈`` → alıntı → kalın kaynak adı.
 
-    Kullanıcı isteği: "Fırsatı Gönderen" gibi bir etiket yazılmaz ve ad hiçbir
-    linke bağlanmaz; en altta yalnızca hangi gruptan geldiği KALIN olarak yazılır.
+    Kullanıcı isteği: "Fırsatı Gönderen" gibi bir etiket yazılmaz; en altta
+    yalnızca hangi gruptan geldiği KALIN olarak yazılır. Orijinal mesajın
+    adresi (eski ``🔗 Mesajı Gör`` satırı) artık **bu adın içine** gömülüdür:
+    ad tıklanınca mesaj açılır, mesaj bir satır kısalır.
     """
 
     def setUp(self):
@@ -1282,7 +1284,7 @@ class NotificationTest(unittest.TestCase):
     # --- yeni biçim ---------------------------------------------------------
 
     def test_notification_is_the_message_itself_plus_message_link(self):
-        """Basit düzen: başlık → mesaj OLDUĞU GİBİ → Mesajı Gör → en altta kaynak adı."""
+        """Basit düzen: başlık → mesaj OLDUĞU GİBİ → kalın ad (adres adın içinde)."""
         client = self._run({"notify_bot_token": "123:ABC"})
         text = "Sıcak ÇAY 5 TL\nKaçırılmayacak fırsat!"
         self._send(client, text)
@@ -1293,8 +1295,12 @@ class NotificationTest(unittest.TestCase):
         blocks = call["caption"].split("\n\n")
         self.assertEqual(blocks[:2], ["Sıcak ÇAY", text],
                          "başlık en üstte, mesaj aynen altında")
-        self.assertEqual(blocks[-2], "🔗 Mesajı Gör: https://t.me/firsatz/1")
-        self.assertEqual(blocks[-1], "firsatz")
+        self.assertEqual(blocks[-1], "firsatz", "en altta grup adı")
+        self.assertNotIn("Mesajı Gör", call["caption"],
+                         "adres artık grup adının içinde; ayrı satır yok")
+        self.assertEqual([item["url"] for item in self._links(call["entities"])],
+                         ["https://t.me/firsatz/1"],
+                         "orijinal mesajın adresi grup adına gömülü")
         self.assertTrue(call["caption"].endswith("firsatz"), call["caption"])
         self.assertNotIn("Fırsatı Gönderen", call["caption"], "etiket yazılmaz")
         self.assertEqual(call["caption"].count("5 TL"), 1, "mesaj tek kez yazılır")
@@ -1317,17 +1323,17 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(self.calls[0]["text"], (
             "Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici "
             "Banyo ve Duş Jeli 500ml x 4 Adet"
+            "\n\n👉 Ürün Linki 👈"
             "\n\n" + text
-            + "\n\n👉 Ürün Linki 👈"
-            "\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"
-            "\n\nfirsatz"
+            + "\n\nfirsatz"
         ))
         delivered = self.calls[0]["text"]
         self.assertEqual(delivered.count("225 TL"), 1, "fiyat satırı aynen korunur")
         self.assertEqual(delivered.count("https://link.amazon/B02W5SjPe"), 1,
                          "görünür adres yalnız alıntıda (yedek) kalır")
         self.assertEqual([item["url"] for item in self._links(self.calls[0]["entities"])],
-                         ["https://link.amazon/B02W5SjPe"], "ürün linki yazının içine gömülür")
+                         ["https://link.amazon/B02W5SjPe", "https://t.me/firsatz/1"],
+                         "ürün linki yazının içine gömülür; grup adı da mesaja bağlı")
         self.assertNotIn("Ürün fırsat linki", delivered, "ataç + link yeter")
         self.assertIn("🛍️ Palmolive", delivered, "mesaj hiçbir satırı silinmeden iletilir")
 
@@ -1348,13 +1354,12 @@ class NotificationTest(unittest.TestCase):
         delivered = self.calls[0]["text"]
         self.assertEqual(delivered, (
             "Abc Deterjan Çamaşır Sodası Soda Matik 500 Gr"
+            "\n\n👉 Ürün Linki 👈"
             "\n\n" + text
-            + "\n\n👉 Ürün Linki 👈"
-            "\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"
-            "\n\nfirsatz"
+            + "\n\nfirsatz"
         ))
         self.assertEqual([item["url"] for item in self._links(self.calls[0]["entities"])],
-                         ["https://onu.al/feMF"])
+                         ["https://onu.al/feMF", "https://t.me/firsatz/1"])
         self.assertIn("🏷️", delivered, "fiyat etiketi aynen korunur")
         self.assertEqual(delivered.count("33 TL"), 1)
         self.assertEqual(delivered.count("22 TL"), 1, "3'lü alım fiyatı korunur")
@@ -1375,8 +1380,8 @@ class NotificationTest(unittest.TestCase):
         self.assertIn("Kod: HOPI50", delivered)
         self.assertNotIn(bot.PRICE_LINE_LABEL, delivered, "kupon mesajına fiyat satırı eklenmez")
 
-    def test_source_name_is_bold_and_has_no_link(self):
-        """En alttaki kaynak adı: etiketsiz, linksiz, yalnızca KALIN."""
+    def test_source_name_is_bold_and_carries_the_message_link(self):
+        """En alttaki kaynak adı: etiketsiz, KALIN; mesaj adresi adın içinde."""
         client = self._run({"notify_bot_token": "123:ABC"})
         self._send(client, "ÇAY fırsatı")
         caption = self.media_calls[0]["caption"]
@@ -1384,8 +1389,13 @@ class NotificationTest(unittest.TestCase):
         self.assertTrue(caption.endswith("\n\nfirsatz"), repr(caption))
         self.assertNotIn("Fırsatı Gönderen", caption)
 
-        # Kaynak adı bir text_link DEĞİL; kalın entity tam adı kapsar.
-        self.assertEqual(self._links(entities), [], entities)
+        # Adres adın KENDİSİNE gömülür: text_link aralığı tam grup adıdır.
+        links = self._links(entities)
+        self.assertEqual([item["url"] for item in links], ["https://t.me/firsatz/1"])
+        self.assertEqual(
+            [bot.utf16_slice(caption, item["offset"], item["length"]) for item in links],
+            ["firsatz"],
+        )
         bold = [item for item in entities if item["type"] == "bold"]
         name_bold = [item for item in bold
                      if bot.utf16_slice(caption, item["offset"], item["length"]) == "firsatz"]
@@ -1412,13 +1422,13 @@ class NotificationTest(unittest.TestCase):
         )
         self._send(client, text, entities=[entity])
         caption = self.media_calls[0]["caption"]
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", caption)
+        self.assertNotIn("Mesajı Gör", caption)
         self.assertIn(text, caption, "mesaj aynen iletilir")
         self.assertNotIn("https://amzn.to/3xyz", caption,
                          "gövdede tıklanabilir kalan link metne ayrıca yazılmaz")
         urls = {item["url"] for item in self._links(self.media_calls[0]["entities"])}
         self.assertIn("https://amzn.to/3xyz", urls, "gizli link entity olarak korunur")
-        self.assertNotIn("https://t.me/firsatz/1", urls, "altbilgi linki eklenmez")
+        self.assertIn("https://t.me/firsatz/1", urls, "mesaj linki grup adında")
 
     def test_link_appendix_all_lists_raw_urls_in_notification(self):
         """link_appendix: all → eski davranış: gizli linkler metne de yazılır."""
@@ -1430,7 +1440,9 @@ class NotificationTest(unittest.TestCase):
         self.assertIn("https://amzn.to/hepsi", text)
         self.assertEqual(text.count("https://amzn.to/hepsi"), 1,
                          "gizli link ek listede bir kez yazılır")
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", text)
+        self.assertNotIn("Mesajı Gör", text)
+        self.assertEqual([item["url"] for item in self._links(self.calls[0]["entities"])],
+                         ["https://amzn.to/hepsi", "https://t.me/firsatz/1"])
 
     def test_bot_notification_keeps_quote_product_link_without_separate_line(self):
         """Bot bildirimi: alıntıdaki ürün linki bir kez kalır, ayrı link satırı çıkmaz."""
@@ -1443,7 +1455,7 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(delivered.count("https://amzn.to/urun"), 1,
                          "ürün linki yalnızca alıntının içinde kalır")
         self.assertNotIn("\n\n🔗 https://amzn.to/urun", delivered)
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", delivered)
+        self.assertNotIn("Mesajı Gör", delivered)
         self.assertTrue(delivered.endswith("firsatz"), delivered)
 
     def test_button_links_become_inline_keyboard(self):
@@ -1453,10 +1465,11 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(self.media_calls, [])
         self.assertEqual(len(self.calls), 1)
         call = self.calls[0]
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", call["text"])
+        self.assertNotIn("Mesajı Gör", call["text"])
         self.assertIn("\n\n👉 Ürün Linki 👈\n\n", call["text"])
         self.assertNotIn("https://amzn.to/btn", call["text"], "adres yazının içine gömülür")
-        self.assertEqual([item["url"] for item in self._links(call["entities"])], ["https://amzn.to/btn"])
+        self.assertEqual([item["url"] for item in self._links(call["entities"])],
+                         ["https://amzn.to/btn", "https://t.me/firsatz/1"])
         keyboard = call["keyboard"]["inline_keyboard"]
         self.assertEqual([button["text"] for button in keyboard[0]], [
             "Google Alışveriş", "Akakçe'de ara", "Cimri'de ara",
@@ -1468,7 +1481,7 @@ class NotificationTest(unittest.TestCase):
         markup = FakeMarkup([FakeRow([FakeButton("Fırsat", url="https://amzn.to/eski")])])
         self._send(client, "çay", reply_markup=markup)
         self.assertEqual([item["url"] for item in self._links(self.calls[0]["entities"])],
-                         ["https://amzn.to/eski"])
+                         ["https://amzn.to/eski", "https://t.me/firsatz/1"])
         self.assertNotIn("https://amzn.to/eski", str(self.calls[0]["keyboard"]))
 
     def test_text_only_message_notification(self):
@@ -1477,8 +1490,10 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(self.media_calls, [])
         self.assertEqual(len(self.calls), 1)
         text = self.calls[0]["text"]
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", text)
+        self.assertNotIn("Mesajı Gör", text)
         self.assertTrue(text.endswith("firsatz"), repr(text))
+        self.assertEqual([item["url"] for item in self._links(self.calls[0]["entities"])],
+                         ["https://t.me/firsatz/1"])
 
     def test_amazon_preview_is_disabled_but_product_link_stays_clickable(self):
         client = self._run({"notify_bot_token": "123:ABC", "notify_media": False,
@@ -1494,10 +1509,10 @@ class NotificationTest(unittest.TestCase):
         call = self.calls[0]
         self.assertIs(call["link_preview"], False)
         self.assertIn(label, call["text"])
-        # Alıntıdaki özgün bağlantı (yedek) + ``👉 Ürün Linki 👈`` satırı.
+        # Alıntıdaki özgün bağlantı (yedek) + ``👉 Ürün Linki 👈`` satırı + grup adı.
         self.assertEqual(
             [item["url"] for item in self._links(call["entities"])],
-            ["https://www.amazon.com.tr/dp/B123"] * 2,
+            ["https://www.amazon.com.tr/dp/B123"] * 2 + ["https://t.me/firsatz/1"],
         )
 
     def test_account_text_fallback_also_disables_link_preview(self):
@@ -1512,7 +1527,7 @@ class NotificationTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 1, "medya gönderilemezse metin bildirimi gitmeli")
         text = self.calls[0]["text"]
         self.assertEqual(text.split("\n\n")[:2], ["ÇAY", "ÇAY 5 TL"])
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", text)
+        self.assertNotIn("Mesajı Gör", text)
         self.assertTrue(text.endswith("firsatz"))
         self.assertNotIn("Fırsatı Gönderen", text)
 
@@ -1863,8 +1878,9 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         )
         self._send(text, entities=[entity])
         delivered = self._texts(self.client)
-        self.assertIn("https://t.me/firsatz/1", delivered, "Mesajı Gör satırı eklenmeli")
         self.assertIn(text, delivered, "mesaj aynen iletilir")
+        self.assertEqual(self._hidden_urls(self.client)[-1], "https://t.me/firsatz/1",
+                         "mesaj linki grup adına gömülür")
         self.assertNotIn("https://amzn.to/gizli", delivered,
                          "gövdede tıklanabilir kalan link tekrar yazılmaz")
         self.assertEqual(bot.STATS["modes"].get("text"), 1)
@@ -1878,8 +1894,9 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         self.assertEqual(len(self.client.files), 1)
         caption = self.client.files[0][2]
         self.assertEqual(caption.split("\n\n")[:4], [
-            "çay", "çay 5 TL", "👉 Ürün Linki 👈", "🔗 Mesajı Gör: https://t.me/firsatz/1",
+            "çay", "👉 Ürün Linki 👈", "çay 5 TL", "firsatz",
         ])
+        self.assertEqual(self._hidden_urls(self.client)[-1], "https://t.me/firsatz/1")
         self.assertNotIn("https://amzn.to/kapak", caption,
                          "gövdede tıklanabilir kalan link tekrar yazılmaz")
 
@@ -1896,7 +1913,7 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         delivered = self._texts(self.client)
         self.assertIn("https://amzn.to/hepsi", delivered)
         self.assertEqual(delivered.count("https://amzn.to/hepsi"), 1)
-        self.assertIn("https://t.me/firsatz/1", delivered)
+        self.assertEqual(self._hidden_urls(self.client)[-1], "https://t.me/firsatz/1")
 
     def test_button_link_is_written_into_copy(self):
         """Kullanıcı hesabı inline klavye gönderemez; buton linki alta yazılmalı."""
@@ -1906,7 +1923,9 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         ]))
         delivered = self._texts(self.client)
         self.assertIn("\n\n👉 Ürün Linki 👈\n\n", delivered)
-        self.assertEqual(self._hidden_urls(self.client), ["https://amzn.to/buton"])
+        self.assertEqual(self._hidden_urls(self.client),
+                         ["https://amzn.to/buton", "https://t.me/firsatz/1"],
+                         "buton linki + grup adına gömülü mesaj adresi")
         self.assertNotIn("https://amzn.to/buton", delivered, "adres yazının içine gömülür")
 
     def test_text_fallback_lists_hidden_links_and_source(self):
@@ -1916,8 +1935,10 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
             FakeRow([FakeButton("Fırsata Git", url="https://amzn.to/kart")]),
         ]))
         delivered = self._texts(self.client)
-        self.assertEqual(self._hidden_urls(self.client), ["https://amzn.to/kart"])
-        self.assertIn("https://t.me/firsatz/1", delivered, "kaynak mesaj linki de olmalı")
+        self.assertEqual(self._hidden_urls(self.client),
+                         ["https://amzn.to/kart", "https://t.me/firsatz/1"])
+        self.assertNotIn("https://t.me/firsatz/1", delivered,
+                         "mesaj linki metne yazılmaz; grup adına gömülür")
         self.assertEqual(bot.STATS["modes"].get("text"), 1)
 
     def test_sensitive_terms_and_whatsapp_links_force_clean_copy_not_forward(self):
@@ -1970,7 +1991,8 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         delivered = self._texts(self.client)
         self.assertEqual(self.client.forwarded, [], "WhatsApp düğmesi için forward atlanmalı")
         self.assertNotIn("wa.me", delivered)
-        self.assertEqual(self._hidden_urls(self.client), ["https://amzn.to/firsat"])
+        self.assertEqual(self._hidden_urls(self.client),
+                         ["https://amzn.to/firsat", "https://t.me/firsatz/1"])
 
     def test_channel_promo_and_hashtag_lines_are_cleaned_from_the_copy(self):
         """Kullanıcı isteği: "💚Whatsapp Önemli Fırsatlar" ve hashtag satırı gitmesin."""
@@ -1990,10 +2012,11 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         delivered = self._texts(self.client)
         self.assertEqual(self.client.forwarded, [], "temizleme gereken ileti forward edilmemeli")
         blocks = delivered.split("\n\n")
-        self.assertEqual(blocks[:2], [
+        self.assertEqual(blocks[:3], [
             "Urban Care Duş Jeli 500 Ml",
+            "👉 Ürün Linki 👈",
             "🛍️ Urban Care Duş Jeli 500 Ml",
-        ], "başlık en üstte, mesaj olduğu gibi altında")
+        ], "başlık en üstte, ürün linki, sonra mesaj olduğu gibi")
         self.assertIn("💰 Fiyat : 107 TL / 3 adet alımda 64 TL", delivered,
                       "fiyat satırı ayıklanmaz, mesaj aynen iletilir")
         self.assertIn("https://www.amazon.com.tr/dp/B0CB49N31Z", delivered)
@@ -2008,16 +2031,19 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         self._send("ç" * 8 + " " + ("çay " * 400), entities=[entity])
         caption = self.client.files[0][2]
         self.assertLessEqual(len(caption), bot.CAPTION_LIMIT)
-        self.assertIn("https://t.me/firsatz/1", caption, "Mesajı Gör satırı kırpılmamalı")
+        self.assertEqual(self._hidden_urls(self.client)[-1], "https://t.me/firsatz/1",
+                         "mesaj linki grup adına gömülü kalmalı")
+        self.assertTrue(caption.endswith("firsatz"), caption[-40:])
 
-    def test_long_message_keeps_source_line_but_not_appendix(self):
-        """Sığmazsa önce link listesi düşer; Mesajı Gör ve altbilgi korunur."""
+    def test_long_message_keeps_the_source_name_and_its_link(self):
+        """Sığmazsa önce link listesi düşer; grup adı (ve gömülü adres) korunur."""
         self.client.fail_modes.add("forward")
         button = FakeRow([FakeButton("Fırsata Git", url="https://amzn.to/buton")])
         self._send("çay " * 900, media=False, reply_markup=FakeMarkup([button]))
         message = self._texts(self.client)
-        self.assertIn("https://t.me/firsatz/1", message)
         self.assertLessEqual(len(message), bot.MESSAGE_LIMIT)
+        self.assertTrue(message.endswith("firsatz"), message[-40:])
+        self.assertEqual(self._hidden_urls(self.client)[-1], "https://t.me/firsatz/1")
 
 
 class SingleMessageTest(unittest.TestCase):
@@ -2131,7 +2157,11 @@ class SingleMessageTest(unittest.TestCase):
         self.assertEqual(len(client.files), 1, "medya kopyası gruba gitmeli")
         caption = client.files[0][2]
         self.assertEqual(caption.split("\n\n")[:2], ["Sıcak ÇAY", "Sıcak ÇAY 5 TL"])
-        self.assertIn("https://t.me/firsatz/7", caption)
+        # Mesaj adresi metne yazılmaz; en alttaki grup adına gömülür.
+        self.assertNotIn("https://t.me/firsatz/7", caption)
+        self.assertIn("https://t.me/firsatz/7", [
+            getattr(entity, "url", None) for entity in client.file_kwargs[0]["formatting_entities"]
+        ])
         self.assertEqual(client.deleted[0][1], [101], "hesap kopyasının ID'si")
         self.assertEqual(len(self.calls) + len(self.media_calls), 1,
                          "bildirim ayrıca gitmiş olmalı")
@@ -2501,6 +2531,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(bot.STATS["deduped"], 1)
         text = client.edited[0][2]
         self.assertTrue(text.endswith("📌 2 kere paylaşıldı: firsatz · tek grup"), text)
+        # Kaynak adı kapalı: adresin tek taşıyıcısı ``Mesajı Gör`` satırıdır.
         self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", text)
 
     def test_different_titles_send_separately(self):
@@ -2811,8 +2842,17 @@ class DedupBotBadgeTest(unittest.TestCase):
         edited = self.edit_text_calls[0]["text"]
         self.assertEqual(edited.count("https://amzn.to/urun"), 1,
                          "ayrı ürün linki satırı rozette de belirmez")
-        self.assertIn("🔗 Mesajı Gör: https://t.me/firsatz/1", edited)
+        # Kaynak adı satırı yerini nota bırakır; o adın taşıdığı mesaj linki de
+        # metinden kalkar (notta her grup adı kendi mesajına bağlanır).
+        self.assertNotIn("Mesajı Gör", edited)
         self.assertTrue(edited.endswith("📌 2 kere paylaşıldı: firsatz · tek grup"), edited)
+        badge_line = edited.splitlines()[-1]
+        badge_names = [item for item in self.edit_text_calls[0]["entities"]
+                       if item.get("type") == "text_link"
+                       and bot.utf16_slice(edited, item["offset"], item["length"]) == "firsatz"]
+        self.assertEqual([item["url"] for item in badge_names],
+                         ["https://t.me/firsatz/1"],
+                         f"notta yazan grup adı kendi mesajına bağlanır: {badge_line}")
 
     def test_third_copy_updates_bot_badge(self):
         client = self._run()

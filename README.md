@@ -361,8 +361,8 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `delivery_modes` | liste | Korumalı kanallarda sırayla denenecek iletim yolları: `forward → copy → media → text → link` ([7. bölüm](#7-iletim-zinciri-korumalı-kanallar)). |
 | `max_media_mb` | sayı | `media` yolunda indirilecek en büyük medya (varsayılan 25, `0` = sınırsız). |
 | `link_appendix` | `smart` / `all` / `off` | Gizli linklerin eklenme biçimi ([8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri)). |
-| `message_link` | `true` / `false` | Her iletinin sonuna `🔗 Mesajı Gör: <t.me linki>` ekler (nihai güvence; kapatman önerilmez). |
-| `source_footer` | `true` / `false` | Bildirimin **en altına kaynak grup adını kalın** yazar. "Fırsatı Gönderen" gibi bir etiket yazılmaz, ad bir linke bağlanmaz; yalnızca hangi gruptan geldiği görünür. Varsayılan `true`. |
+| `message_link` | `true` / `false` | Orijinal mesajın `t.me` adresini bildirime katar (nihai güvence; kapatman önerilmez). Adres **kaynak grup adının içine gömülür** (ayrı `🔗 Mesajı Gör` satırı yoktur); ad yazılamayan durumda `🔗 Mesajı Gör: <t.me linki>` satırı olarak geri döner. |
+| `source_footer` | `true` / `false` | Bildirimin **en altına kaynak grup adını kalın** yazar. "Fırsatı Gönderen" gibi bir etiket yazılmaz; ad, orijinal mesajın adresine **gizli link** olarak bağlanır (ada dokunmak mesajı açar). Varsayılan `true`. |
 | `notify_media` | `true` / `false` | Bildirim botu fotoğraf/videoyu da göndersin. |
 | `clean_commands` | `true` / `false` | **Komut temizliği.** `control_chat`'te yeni bir komut yazıldığında bir önceki komut ve bot yanıtı silinir; ekranda yalnızca son mesaj kalır. İndirim bildirimleri bu temizliğin **dışındadır, asla silinmez.** Varsayılan `true`. |
 | `single_message` | `true` / `false` | **Tek mesaj modu.** Bildirim botu mesajı gruba attıysa, hesabın attığı kopya gruptan silinir; böylece her fırsat tek mesaj olarak kalır. Bildirim gidemezse kopya **silinmez**. Varsayılan `true`. |
@@ -673,13 +673,15 @@ ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığ
    üst satırda yalnızca ürün başlığı yazılır (eski hâli). Fiyatın başta durması,
    telefonun bildiriminde kesilen metinde **fiyat + ürün adının ilk kelimelerinin**
    birlikte görünmesini sağlar.
-2. Altına **orijinal mesaj** — satırları, fiyatı, linkleri ve emojileriyle aynen.
-3. Altına **`👉 Ürün Linki 👈`** — ürün adresi bu yazının içine gömülüdür (dokununca
+2. Altına **`👉 Ürün Linki 👈`** — ürün adresi bu yazının içine gömülüdür (dokununca
    açılır, URL metinde görünmez). Kaynak adresi butona, yazının altına ya da açık
    URL olarak koysa da satır her grupta aynıdır; alıntıdaki özgün bağlantı yedek
    olarak yerinde kalır ([8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri)).
-4. Altına `🔗 Mesajı Gör: <t.me linki>` — orijinal mesajın adresi.
-5. En alta **kaynak grup adı** (kalın; etiket ve link yok).
+3. Altına **orijinal mesaj** — satırları, fiyatı, linkleri ve emojileriyle aynen,
+   ürün linki satırının altında.
+4. En alta **kaynak grup adı** (kalın). Orijinal mesajın adresi (`t.me/…`) bu adın
+   içine gömülüdür: ada dokunmak mesajı açar. Ayrı `🔗 Mesajı Gör` satırı **yoktur**
+   (kullanıcı isteği: satır kaldırıldı, adres ada gömüldü).
 
 ```text
 ₺225 — Palmolive Moments Lavanta Yağları ve Böğürtlen ile Nemlendirici Banyo ve Duş Jeli 500ml x 4 Adet
@@ -694,13 +696,23 @@ ikinci bir gönderici olarak küçük bir bot eklemek — bildirimi onun attığ
 
 👉 Ürün Linki 👈         ← ürün adresi bu yazıya gömülü (tıklanabilir)
 
-🔗 Mesajı Gör: https://t.me/indirimdeal/50953
+🛍️ Palmolive Moments …  ← kaynak mesaj aynen, ürün satırının altında
+…
 
-İndirimde Al            ← kalın, etiketsiz, linksiz (hangi gruptan geldiği)
+İndirimde Al            ← kalın; MESAJIN ADRESİ bu ada gömülü (tıklanabilir)
 ```
+
+Satır sırası sabittir: **üst satır → boşluk → `👉 Ürün Linki 👈` → boşluk → alıntı
+mesaj → boşluk → alt not (kaynak grup adı ya da çoklu paylaşım notu).**
 
 Tekrarlı paylaşımda (bkz. 9. bölüm) **hangi gruptan geldiği satırı kaldırılır** ve
 yerine çoklu paylaşım notu yazılır: `📌 3 kere paylaşıldı: FırsatZ, İndirimde Al, OnuAl`.
+Nottaki **her grup adı kendi mesajına** bağlıdır (virgülle ayrılmış adların her biri
+ayrı bir gizli link taşır); böylece fırsatı paylaşan bütün grupların mesajı ada
+dokunularak açılır. Yer daraldığında rozet önce süsü atar (`· tek grup`, `— KAÇIRMA!`)
+ama **adları korur** — ad giderse adın taşıdığı link de giderdi. Kaynak adı hiç
+yazılamıyorsa (yer yetmezse) adres `🔗 Mesajı Gör: <url>` satırı olarak geri gelir:
+link hiçbir durumda kaybolmaz.
 
 - **İçeriksiz yanıtlar bildirilmez.** Kaynaklar kendi fırsatına açıklamasız bir
   görsel ya da çıkartmayla yanıt verir; böyle bir ileti yalnızca `Mesajı Gör` satırı
@@ -860,10 +872,16 @@ içine gömülür**; URL metinde görünmez, yazıya dokununca açılır:
   Satır alamayan buton bot bildiriminde klavyede kalır (5. ve sonraki ürün butonu da).
   Klavyesiz hesap kopyasında 5. ve sonraki ürün butonları da bu 4 `🔗` satırını
   kullanır; daha fazlası taşınamaz (eskiden toplam sınır 4 satırdı).
-- **Karakter sınırı** (fotoğraf açıklaması 1024, metin 4096). Ölçü, bu özellikten
-  önceki yalın düzendir (gövde + mesajın ilk 4 gizli bağlantısının `🔗` satırı +
-  `Mesajı Gör`): **o düzende açılabilen hiçbir bağlantı kapanmaz.** Bunun içinde
-  öncelik sırası:
+- **Karakter sınırı** (fotoğraf açıklaması 1024, metin 4096). Ölçü, **ürün satırı
+  olmayan** düzendir (üst satır + gövde + mesajın ilk 4 gizli bağlantısının `🔗`
+  satırı + grup adı): **o düzende açılabilen hiçbir bağlantı kapanmaz.** Mesaj
+  adresi artık ada gömülü olduğu için `🔗 Mesajı Gör` satırı metinden kalktı, ama
+  **bütçesi sabit tutulur**: boşalan yer fazladan `🔗` satırlarına verilseydi o
+  satırlar gövdenin sonundan yer alıp gövdedeki bağlantıyı kapatırdı (istek:
+  bildirim yalnız **kısalsın**, gerisi değişmesin). Bu yüzden kırpma noktası ve
+  satır seçimi eskisiyle aynıdır; ileti bir satır kısalır, gövde hiçbir zaman
+  eskisinden kısa olmaz. Yalnız ileti **her şeyiyle sığıyorsa** hiçbir satır
+  bırakılmaz (ayrılmış yer sığan iletiyi kısaltmaz). Bunun içinde öncelik sırası:
   1. Kaynak mesajın metni ve içindeki bağlantılar. Gövdenin tamamı sığmıyorsa fazladan
      `🔗` satırları sondan başlayarak yazılmaz; gövdeyi hiç kırpmazlar. Fazladan satır:
      ilk 4 bağlantıdan sonrakiler, bot bildiriminde klavyede de duran buton satırları
@@ -872,23 +890,29 @@ içine gömülür**; URL metinde görünmez, yazıya dokununca açılır:
      yazılmasalardı gövdeden açılacak bir bağlantıyı kesecekse ya da yalın düzenin
      satırlarına yer bırakmayacaksa sondan başlayarak yazılmazlar (bot bildiriminde
      butonları klavyede kalır).
-  3. `🔗 Mesajı Gör` satırı; ek uğruna bırakılmaz.
+  3. Grup adı (ve ona gömülü mesaj adresi); ek uğruna bırakılmaz. Ad yazılamazsa
+     adres `🔗 Mesajı Gör: <url>` satırı olarak geri gelir — link kaybolmaz.
   4. Diğer `🔗` satırları ilk bırakılanlardır. Tek istisna, yalın düzenin yazabildiği
      ilk 4 bağlantıdan başka taşıyıcısı olmayanların satırıdır (klavyesiz hesap
      kopyasında hepsi; bot bildiriminde klavyede durmayanlar): eskisi gibi gövdeden
      önce gelirler, yoksa önceki düzende açılan bağlantı kapanırdı.
 
   Bot bildiriminde satırı yazılmayan her buton klavyede kalır. Ölçüm ve yöntemi:
-  [analiz belgesi](docs/product-link-and-blank-reply-analysis.md), `python tests/link_reach_audit.py`.
+  [analiz belgesi](docs/product-link-and-blank-reply-analysis.md),
+  `python tests/link_reach_audit.py --base 370b5be` (54.102 ileti: 3 kümede de
+  `yeni kayıp 0`, `sınırı aşan 0`, `botta kayıp buton 0`, `adres kaybı 0`,
+  `gövdesi kısalan 0`; açılabilen bağlantı 179.983 → 180.280 ve 83.715 → 83.951).
+  Değişiklik commit edildikten sonra `--base HEAD` **kullanılmaz**: yeni sürümün
+  kendisiyle karşılaştırır ve zorunlu olarak 0 verir.
 - **Alıntı yedektir.** Gövdedeki özgün hyperlink/URL değişmez. Ürün linki yanlış
-  seçilse bile doğru adres alıntıda ve `🔗 Mesajı Gör` altında durur.
+  seçilse bile doğru adres alıntıda ve grup adına gömülü mesaj linkinde durur.
 - **Bot bildiriminde hiçbir buton kaybolmaz** (üç modda da): adresi metinde görünür ya
   da gömülü taşınmayan her kaynak butonu klavyede kalır — ek satırı sınıra sığmayıp
   düşse ya da `link_appendix: "off"` olsa bile. Bilinen sınırlar: `smart` modunda bot
   bildirimi önizleme kartının adresini yalnız ürün linki seçildiğinde taşır (hesap
   kopyası onu `🔗 başlık: adres` satırı olarak yazar); hesap kopyası `off` modunda
   buton linki taşımaz; sınırı aşan gövde kırpılırsa kırpılan kısımdaki bağlantılar
-  `🔗 Mesajı Gör` üzerinden açılır.
+  grup adına gömülü mesaj linki üzerinden açılır.
 - Yazıya gömülü adres bot bildiriminde, hesap kopyasında, tekrar (📌) notu işlenirken
   ve özel (DM) kopyada aynı konumda korunur. Yalnız biçimsiz giden son çare iletisinde
   (`link` yolu) adres açıkça yazılır: `👉 Ürün Linki 👈: https://…`.
@@ -951,8 +975,9 @@ kopyalama/yedek zinciri temizlenmiş metin ve entity offset'leriyle çalışır.
 reklam/işbirliği etiketleri, doğrudan WhatsApp URL'leri ve WhatsApp URL butonları
 forward ile geri eklenmez.
 
-Orijinal mesajın altına `👉 Ürün Linki 👈`, `🔗 Mesajı Gör: <t.me linki>` ve en alta
-kaynak grup adı eklenir. `link_appendix: "smart"` (varsayılan) ürün adresini bu yazıya
+Üst satırın hemen altına `👉 Ürün Linki 👈` satırı, onun altına orijinal mesaj, en alta
+da kaynak grup adı eklenir; orijinal mesajın `t.me` adresi grup adının içine gömülüdür
+(ayrı `🔗 Mesajı Gör` satırı yoktur). `link_appendix: "smart"` (varsayılan) ürün adresini bu yazıya
 gömer; ham URL ikinci kez yazılmaz, gövdedeki hyperlink/URL yedek olarak aynen kalır.
 Ürün düğmesi yalnız adres metinde (görünür ya da gömülü) korunmuşsa kaldırılır; kesilme
 veya `off` gibi durumlarda düğme yedekte kalır. `"all"` ürün satırı üretmez, eskisi gibi
@@ -993,15 +1018,19 @@ Sıcak ÇAY
 Sıcak ÇAY 5 TL
 Kaçırılmayacak fırsat!
 
-🔗 Mesajı Gör: https://t.me/firsatz/1
-
 📌 3 kere paylaşıldı: firsatz, İndirimde Al, OnuAl   ← grup adının yerinde, son blok
 ```
+
+Nottaki **her ad kendi mesajına gizli link taşır** (`firsatz` → o grubun mesajı,
+`İndirimde Al` → o grubun mesajı …). Eski düzende fırsatın linki ayrı bir
+`🔗 Mesajı Gör` satırındaydı; o satır kaldırıldı, adres adlara paylaştırıldı.
 
 - Sayı 5'i geçince vurgu artar: `📌 N kere paylaşıldı: …` → `🚨 N kere paylaşıldı: … —
   KAÇIRMA!`. Telegram'da mesaj rengine müdahale edilemez; kalın + emoji,
   platformun sunduğu en güçlü vurgu kombinasyonudur. Çok dar medya açıklamalarında
-  grup adları sığmazsa yalnızca sayı yazılır.
+  önce süs atılır (`· tek grup`, `— KAÇIRMA!`), **adlar korunur**; adlar hiç
+  sığmıyorsa ve hiçbir ad link taşımıyorsa yalnızca sayı yazılır (adresi bilinen bir
+  ad asla düşürülmez — düşerse o grubun mesaj linki kaybolurdu).
 - Grup adları kaynaklardan toplanır (ilk kopyayı gönderen grup + sonraki kopyaları
   yakalayan gruplar); aynı grup birden fazla kez paylaşırsa adı bir kez yazılır. Sayaç
   paylaşım adedini göstermeye devam eder; listede yalnız bir grup varsa rozet
@@ -1027,7 +1056,8 @@ Kaçırılmayacak fırsat!
   (c) gövdede `💰Fiyat: 56 TL` (en eski sabit düzen) — üçü de aynı fırsata bağlanır.
   Üst satırı `…` ile kırpılmış, yalnız `❓` ya da yalnız fiyat taşıyan (ürün adı
   içermeyen) iletiler **kimlik sayılmaz ve önbelleğe alınmaz** — gövdeden toplanan
-  artık satırlar (ör. `Mesajı Gör`) yanlış anahtar olurdu; canlı yol da başlıksız
+  artık satırlar (ör. `👉 Ürün Linki 👈`, eski düzende `Mesajı Gör`) yanlış anahtar olurdu;
+  canlı yol da başlıksız
   ileti için anahtar kurmaz. Restart sonrası tekrarlar yine tek mesajda birleşir.
 
 **Hız ve limitler:** eşleşme bellekte yapılır; her iletide geçmiş taranmaz.
@@ -1250,6 +1280,27 @@ Bu repodaki güncel davranış değişiklikleri:
     [docs/product-link-and-blank-reply-analysis.md](docs/product-link-and-blank-reply-analysis.md).
     Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin) ve
     [8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri).
+15. **Satır sırası değişti, `🔗 Mesajı Gör` satırı kaldırıldı (kullanıcı isteği).**
+    Eski sıra: fiyat — ürün adı → alıntı mesaj → `👉 Ürün Linki 👈` →
+    `🔗 Mesajı Gör: <t.me>` → kaynak grup adı. Yeni sıra: **fiyat — ürün adı →
+    boşluk → `👉 Ürün Linki 👈` → boşluk → alıntı mesaj → boşluk → alt blok
+    (kaynak grup adı ya da `📌 N kere paylaşıldı:` notu).** `🔗 Mesajı Gör` satırı
+    tamamen kalktı; o adres **kaynak grup adının içine** gömüldü (ada dokunmak
+    orijinal mesajı açar). Tekrar notunda **her grup adı kendi mesajına** bağlanır
+    (`firsatz` → o grubun mesajı, `İndirimde Al` → o grubun mesajı …); eskiden
+    yalnız ilk gelen kopyanın adresi taşınıyordu. Yer daraldığında rozet önce
+    süsü atar ama **adları ve linklerini korur**; ad hiç yazılamıyorsa link
+    `🔗 Mesajı Gör: <url>` satırı olarak geri gelir — hiçbir durumda adres kaybolmaz.
+    Karakter/limit ölçümünde **bütçe bilerek sabit tutuldu**: kalkan satırın yeri
+    ek bütçesinde ayrılmış kalır, böylece kırpma noktası ve `🔗` satırı seçimi
+    değişmez; ileti yalnız bir satır kısalır, gövde hiçbir zaman eskisinden kısa
+    olmaz (istek: yalnız kısalsın). Ürün satırı eskiden olduğu gibi **ürün satırı
+    olmayan** çıktının açtığı hiçbir bağlantıyı kapatmaz. Altın referans
+    (`tests/fixtures/golden/expected.json`)
+    `--review` → `--regenerate` akışıyla yenilendi; farkın tamamı düzen
+    değişikliğidir (kaybolan adres yok, kaybolan ürün satırı yok).
+    Ayrıntı: [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin) ve
+    [9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj).
 
 ### 1. PR'ı `main`'e merge et
 
@@ -1313,9 +1364,10 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
       harici listeye ekleyebiliyor musun?
 - [ ] `/analiz 1000 tcl 65` → satırlar `ürün adı (tam) - fiyat` mı? Model kodu (ör.
       `65C7K`) görünüyor mu; eski/taksitli fiyat yerine indirimli fiyat mı yazıyor?
-- [ ] Bildirim düzeni: başlık en üstte → altında mesaj OLDUĞU GİBİ → `🔗 Mesajı Gör`
-      → en altta kaynak grup adı. Tekrarlı paylaşım gelince grup adı satırı kalkıp
-      `📌 N kere paylaşıldı: <gruplar>` yazılıyor mu? Cimri düğmesi tam başlıkla arıyor mu?
+- [ ] Bildirim düzeni: başlık en üstte → `👉 Ürün Linki 👈` → mesaj OLDUĞU GİBİ →
+      en altta kaynak grup adı (adres **ada gömülü**, ayrı `Mesajı Gör` satırı yok).
+      Tekrarlı paylaşım gelince grup adı satırı kalkıp `📌 N kere paylaşıldı: <gruplar>`
+      yazılıyor mu; nottaki **her ad kendi mesajını** açıyor mu? Cimri düğmesi tam başlıkla arıyor mu?
 - [ ] Tek mesaj modu: gruba tek mesaj düşüyor mu (bot bildirimi), kopya siliniyor mu?
 - [ ] Komut temizliği: `/durum` yaz → eski komut/yanıt silindi mi? Bildirimler duruyor mu?
 - [ ] `/iptal` taslağı değiştirmeden siliyor mu?
@@ -1339,8 +1391,7 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 
 > orijinal mesaj (alıntı bloğu)
 
-🔗 Mesajı Gör: …
-Grup adı / 📌 N kere paylaşıldı: …
+Grup adı / 📌 N kere paylaşıldı: …   ← ad(lar) mesajın adresine gömülü
 ```
 
 - Fiyat yazısı **yalnızca görüntüleme için** `header_price_text` ile üretilir:
