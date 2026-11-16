@@ -3022,12 +3022,17 @@ def _compose_fit_appendix(
        de yoklardı). Bu satırlar gövdeyi hiç kırpmaz. Yalın düzenin yazdığı vazgeçilmez
        satırlar yerinde kalır: klavyesiz kopyada bağlantının tek taşıyıcısıdır.
     2. ``👉 Ürün Linki 👈`` satırları. Yer yoksa gövde metninin sonundan yer alırlar; ama
-       gövdedeki bir bağlantıyı kesemezler: ürün satırı hiç yazılmasaydı gövdeden açılacak
-       her bağlantı açık kalır (adresini ekin kendisi taşımıyorsa). O düzen yalın düzenden
-       dar olmadığı için yalın düzenin açtığı bağlantı da kapanmaz. Ek ayrıca gövdesiz de
-       sığmalıdır (yalın düzenin satırları dışarıda kalmaz). Buna uymayan ürün satırı
-       sondan başlayarak yazılmaz; bağlantısı botta klavye düğmesi olarak kalır, hesap
-       kopyasında ilk gizli bağlantılardansa ``🔗`` satırı olur.
+       **yalın düzende (PR öncesi düzen) açılabilen hiçbir bağlantıyı kapatmazlar.** Güvence
+       bu kadardır, daha güçlü bir iddia değildir: ölçü bütçesi sabit tutulduğu için kırpma
+       noktası eski düzenle aynı yerde kalır, dolayısıyla yalın düzenin açtığı her bağlantı
+       açık kalır. Buna karşılık "ürün satırı hiç yazılmasaydı gövdeden açılacak **her**
+       bağlantı açık kalır" iddiası geçerli DEĞİLDİR: ürün satırı, ürün satırsız varyanta
+       göre gövdenin sonundaki bir bağlantıyı kesebilir — o bağlantı eski düzende de
+       kesiliyordu (ölçüm: 1430 ürün satırlı hücrenin 10'unda, %0,70; kapanan adreslerin
+       tamamı yalın düzende de kapalı, dolayısıyla kullanıcıya dönük erişim kaybı yoktur).
+       Ek ayrıca gövdesiz de sığmalıdır (yalın düzenin satırları dışarıda kalmaz). Buna
+       uymayan ürün satırı sondan başlayarak yazılmaz; bağlantısı botta klavye düğmesi
+       olarak kalır, hesap kopyasında ilk gizli bağlantılardansa ``🔗`` satırı olur.
     3. Kaynak adı (ve içine gömülü mesaj adresi) ek uğruna bırakılmaz; ad hiç
        yazılamıyorsa adres ``🔗 Mesajı Gör: <t.me>`` satırı olarak geri gelir.
 

@@ -898,7 +898,12 @@ içine gömülür**; URL metinde görünmez, yazıya dokununca açılır:
      önce gelirler, yoksa önceki düzende açılan bağlantı kapanırdı.
 
   Bot bildiriminde satırı yazılmayan her buton klavyede kalır. Ölçüm ve yöntemi:
-  [analiz belgesi](docs/product-link-and-blank-reply-analysis.md), `python tests/link_reach_audit.py`.
+  [analiz belgesi](docs/product-link-and-blank-reply-analysis.md),
+  `python tests/link_reach_audit.py --base 370b5be` (54.102 ileti: 3 kümede de
+  `yeni kayıp 0`, `sınırı aşan 0`, `botta kayıp buton 0`, `adres kaybı 0`,
+  `gövdesi kısalan 0`; açılabilen bağlantı 179.983 → 180.280 ve 83.715 → 83.951).
+  Değişiklik commit edildikten sonra `--base HEAD` **kullanılmaz**: yeni sürümün
+  kendisiyle karşılaştırır ve zorunlu olarak 0 verir.
 - **Alıntı yedektir.** Gövdedeki özgün hyperlink/URL değişmez. Ürün linki yanlış
   seçilse bile doğru adres alıntıda ve grup adına gömülü mesaj linkinde durur.
 - **Bot bildiriminde hiçbir buton kaybolmaz** (üç modda da): adresi metinde görünür ya

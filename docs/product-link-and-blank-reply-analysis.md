@@ -251,11 +251,48 @@ python tests/link_reach_audit.py --base cd33f46     # başka bir sürümle karş
 python tests/link_reach_audit.py --seed 7 --show 3  # başka tohum; kayıp örneklerini yazdır
 ```
 
+Değişiklik **commit edildikten sonra `--base HEAD` kullanılmaz**: `HEAD` artık yeni
+sürümün kendisidir, karşılaştırma kendisiyle yapılır ve bütün sayaçlar zorunlu olarak
+0 çıkar (boş bir test — "0 kayıp" görüntüsü hiçbir şey kanıtlamaz). Doğru taban,
+değişikliğin çıktığı commit'tir: `--base 370b5be`.
+
 | Küme | PR'ın ilk hâli `94de953` | İkinci commit `cd33f46` | Bu sürüm |
 |---|---|---|---|
 | 17 elle kurulmuş çok linkli senaryo × 3 mod × bot/hesap (102 ileti) | 28 | 0 | **0** |
 | 3.000 rastgele çok linkli mesaj × 3 mod × bot/hesap × metin/fotoğraf sınırı (36.000 ileti) | 8.284 | 5 | **0** |
 | Aynı üreteç, 40–400 karakterlik sorgu ekli adreslerle 1.500 mesaj (18.000 ileti) | 3.804 | 550 | **0** |
+
+#### Tam ölçek denetim: `--base 370b5be` (54.102 ileti)
+
+Satır sırası değişikliği (`🔗 Mesajı Gör` satırı kalktı, adres kaynak adına gömüldü)
+sonrasında **varsayılan** ölçekte çalıştırılan denetim. Taban, değişikliğin çıktığı
+commit'tir (`370b5be`); `--base HEAD` **kullanılmaz** (kendisiyle karşılaştırır ve
+zorunlu olarak 0 verir).
+
+| Sayaç | 17 senaryo (102 ileti) | 3.000 rastgele mesaj (36.000 ileti) | 1.500 uzun adresli mesaj (18.000 ileti) |
+|---|---|---|---|
+| yeni kayıp | 0 | **0** | **0** |
+| kayıplı ileti | 0 | 0 | 0 |
+| yeniden açılan | 0 | 297 | 236 |
+| sınırı aşan | 0 | **0** | **0** |
+| botta kayıp buton | 0 | **0** | **0** |
+| gövdesi kısalan | 0 | **0** | **0** |
+| gövdesi uzayan | 0 | 9.164 | 5.859 |
+| gövdesi kırpılan | 0 | 8.876 | 5.692 |
+| ürün satırlı ileti | 32 | 10.727 | 5.409 |
+| adres taşınmıyor | 0 | **0** | **0** |
+| adres kaybı | 0 | **0** | **0** |
+| açılabilen bağlantı | 368 → 368 | 179.983 → **180.280** | 83.715 → **83.951** |
+
+Okunuşu: hiçbir iletide bağlantı **kapanmıyor** (`yeni kayıp` 0), sınır aşılmıyor,
+botta buton kaybolmuyor, gövde **hiçbir zaman kısalmıyor** ve mesajın kendi adresi
+(`t.me/…`) her iletide yerinde (`adres kaybı` 0). Buna karşılık bazı iletiler
+eskisinden **uzun** (`gövdesi uzayan`): kalkan satırın bütçesi ölçüde tutulduğu için
+ürün satırı eskisi gibi yazılmaya devam ediyor, satır kalkınca da metin kısalıyor —
+uzayan iletiler, ürün satırsız düzende gövdeleri de uzayıp daha çok bağlantının
+açılabildiği iletilerdir; hiçbiri sınırı aşmaz ve hiçbiri bağlantı kapatmaz. Aynı
+komut iki kez çalıştırıldığında çıktı bayt bayt aynıdır (üreteç tohumludur:
+`SEED = 20261114`).
 
 Bu sürümde üç kümenin hiçbir iletisi sınırı aşmaz, bot bildiriminde hiçbir buton
 kaybolmaz, mesajın adresi her iletide kaynak adının içinde durur. Kural geliştirilirken hiç

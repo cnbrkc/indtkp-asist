@@ -8,6 +8,12 @@ hyperlink ya da (yalnız bot bildiriminde) inline klavye düğmesi olarak açıl
     python tests/link_reach_audit.py --base 94de953     # başka bir sürümle karşılaştır
     python tests/link_reach_audit.py --show 5           # yeni kayıp örneklerini de yazdır
 
+Değişiklik **commit edildikten sonra** ``--base HEAD`` kullanılmaz: ``HEAD`` artık yeni
+sürümün kendisidir, karşılaştırma kendisiyle yapılır ve her sayaç zorunlu olarak 0 çıkar
+(boş bir test). Doğru taban, değişikliğin çıktığı commit'tir::
+
+    python tests/link_reach_audit.py --base 370b5be      # bu düzen değişikliğinin tabanı
+
 Üç küme çalışır (hepsi çevrimdışı ve tohumlu; aynı tohum aynı mesajları üretir):
 
 * elle kurulmuş 17 çok linkli senaryo x 3 mod x bot/hesap,
