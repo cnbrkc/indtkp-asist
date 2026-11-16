@@ -2016,7 +2016,7 @@ def _coupon_campaign_title(
     campaign_marker = r"\b(?:kupon\w*|indirim\s*kodu|kampanya\s*kodu)\b"
     if allow_code_only_marker:
         campaign_marker = r"\b(?:kupon\w*|kod\w*|indirim\s*kodu|kampanya\s*kodu)\b"
-    if not re.search(campaign_marker, normalize(text)):
+    if not re.search(campaign_marker, _campaign_norm(text)):
         return ""
     product_line = False
     for line in lines:
@@ -2050,7 +2050,7 @@ def _coupon_campaign_title(
         candidate = re.sub(r"\s+", " ", candidate).strip(" \t,;:.|/-")
         plain = normalize(candidate)
         has_amount = bool(re.search(r"(?:\d[\d.,]*\s*(?:tl|₺|try)|%\s*\d)", normalize(line)))
-        has_campaign_word = bool(re.search(r"\b(?:indirim|ındırım)\w*\b", plain))
+        has_campaign_word = bool(re.search(r"\b(?:indirim|ındırım)\w*\b", _campaign_norm(candidate)))
         category_coupon_line = bool(
             re.search(r"\b(?:kupon|coupon)\w*\b", plain)
             and index > 0
@@ -2103,6 +2103,20 @@ def _coupon_preview_message(text: str, campaign_title: str) -> bool:
     first = next((line.strip() for line in (text or "").splitlines() if line.strip()), "")
     if re.fullmatch(r"[A-Z0-9İĞÜŞÖÇ]{4,}\s*\(\s*kopyalamak\s+için\s+dokun\s*\)\s*❓?", first):
         return True
+    # Kupon kodu ÇIPLAK bir satırda durabilir ("FIRSAT1000"), kampanya cümlesi
+    # ise ilk satırdadır. Kart biçimi (kopyalamak için dokun) olmasa da tek
+    # başına duran kod satırı, iletinin kupon duyurusu olduğunu gösterir;
+    # eskiden yalnız ilk satır incelendiği için bu düzen kaçıyor ve başlığa
+    # gövdeden rastgele bir satır ("hesabınızda aktif etmek …") düşüyordu.
+    first_title_tokens = {normalize(token) for token in WORD_TOKEN_RE.findall(first)}
+    campaign_tokens_all = {normalize(token) for token in WORD_TOKEN_RE.findall(campaign_title)}
+    if campaign_title and first_title_tokens and first_title_tokens <= campaign_tokens_all:
+        for line in (text or "").splitlines():
+            token = line.strip()
+            if not re.fullmatch(r"[A-Z0-9İĞÜŞÖÇ]{4,}", token):
+                continue
+            if normalize(token) in {normalize(code) for code in _coupon_codes(text)}:
+                return True
     if "❓" not in first or not campaign_title:
         return False
     first_tokens = {normalize(token) for token in WORD_TOKEN_RE.findall(first)}
@@ -2111,6 +2125,74 @@ def _coupon_preview_message(text: str, campaign_title: str) -> bool:
     clipped_to_fragment = len(first_tokens) <= 2 and len(campaign_tokens) >= 6
     return bool((len(shared) >= 4 and len(campaign_tokens) >= len(shared) + 2)
                 or clipped_to_fragment)
+
+
+# Noktasız büyük ``I`` Türkçe küçültmede ``ı`` olur (``Indirim`` → ``ındirim``)
+# ve ``indirim`` deseni kaçar. ``normalize`` davranışı BİLEREK değiştirilmiyor
+# (arama sorgusu, eşleştirme, dedup ondan besleniyor); yalnız kampanya
+# sözcüklerini tanıyan bu yardımcıda katlama yapılıyor.
+_DOTLESS_I_FOLD = str.maketrans({"ı": "i"})
+
+
+def _campaign_norm(text: str) -> str:
+    """``normalize`` + noktasız ``ı`` katlaması (yalnız kampanya sözcükleri)."""
+    return normalize(text).translate(_DOTLESS_I_FOLD)
+
+
+# Kupon/kod olmadan da yayınlanan kampanya kalıpları: "2 Öde 1'i Money
+# Hediye", "Aynı üründen 2 alana biri tutarında Money iade". Kullanıcı
+# bildirimi: bu iletiler kupon duyurusudur, ürün fiyatı beklenmez.
+# Not: "2 alana 1 TL" gibi kalıplar BİLEREK dışarıda — mevcut davranış o
+# iletilerde başlığı `❓` ile bırakıyor ve o davranış korunuyor.
+_NON_COUPON_CAMPAIGN_RE = re.compile(
+    r"\b\d+\s*öde\s*\d+['’]?[iı]?\b|\bmoney\b|"
+    r"\b(?:biri|bir)\s*tutar[ıi]nda\b",
+    re.UNICODE,
+)
+
+
+def _has_safe_price(text: str) -> bool:
+    """Metinde üst satıra yazılabilecek GÜVENLİ bir ürün fiyatı var mı?
+
+    Bu ölçüm kupon sınıflandırmasından **bağımsızdır**: doğrudan
+    ``price_filter.extract_price`` sonucuna bakar. Amaç, "fiyat var mı" kararının
+    iki ayrı yerde (dal sırası ve kupon tespiti) yeniden yorumlanmasını önlemek.
+    ``_is_coupon_announcement`` bu yardımcıyı kullanır; böylece fiyatlı gönderi,
+    dalların sırası değişse bile kupon sayılmaz.
+    """
+    info = price_filter.extract_price(text)
+    return info.value is not None and info.confidence in {"high", "medium"}
+
+
+def _is_coupon_announcement(text: str) -> bool:
+    """İleti bir kupon/kampanya duyurusu mu (ürün fiyatı beklenmez)?
+
+    Üç ölçüt: (a) güvenli ürün fiyatı YOK, (b) kupon/kod sözcüğü geçmeyen
+    kampanya kalıbı (``2 Öde 1'i Money Hediye``) VAR ya da tam bir kampanya
+    cümlesi kurulabiliyor (eşik + indirim tutarı).
+
+    Fiyat koşulu burada, fonksiyonun İÇİNDE aranır — çağıranın dal sırasına
+    güvenilmez. Kullanıcı şartı: "fiyat olan bir gönderiyi kupon sanıp çöpe
+    atmamalıyız". Üst satırdaki ``❓``, fiyatı OLMAYAN duyurularda yanlış bilgi
+    olduğu için kaldırılır; fiyatı olan gönderide ise fiyat her koşulda korunur.
+    """
+    if _has_safe_price(text):
+        return False
+    # Kampanya sözcüğü ("kupon", "indirim kodu") hiç geçmeyen duyurular da var:
+    # "Migros'ta … 2 Öde 1'i Money Hediye". Bunlar da ürün fiyatı taşımaz;
+    # aksi hâlde başlıkta haksız bir ``❓`` kalıyordu.
+    if _NON_COUPON_CAMPAIGN_RE.search(_campaign_norm(text)):
+        return True
+    campaign = _coupon_campaign_title(
+        text, MESSAGE_LIMIT, include_code=True, allow_code_only_marker=True,
+    )
+    if not campaign:
+        return False
+    # Kampanya cümlesi VARSA ve güvenli ürün fiyatı YOKSA ileti duyurudur.
+    # "Fiyat yok" koşulu yukarıda bir kez, bu fonksiyonun içinde ölçülür; çağıran
+    # dalın önce çalışmasına bağlı DEĞİLDİR (eskiden öyleydi ve sessiz bir
+    # kırılganlıktı: dal sırası değişirse fiyat kaybolabilirdi).
+    return True
 
 
 def _is_coupon_teaser_title(title: str) -> bool:
@@ -2899,12 +2981,15 @@ def _compose_resolve_header(
             price_text = ""  # reliable per-item titles are enough; there is no single bundle price
         elif multiple_products:
             price_text = PRICE_MISSING_MARK
-        elif product_title and _coupon_preview_message(
-            source_body, _coupon_campaign_title(
-                source_body, MESSAGE_LIMIT, include_code=True, allow_code_only_marker=True,
-            ),
-        ):
-            price_text = ""  # replaced coupon teaser is not an unknown product price
+        elif product_title and _is_coupon_announcement(source_body):
+            # Kullanıcı isteği: "indirim kuponu bildirimlerinde de [soru işareti]
+            # koymayalım". Kupon/kampanya duyurusunda ürün fiyatı YOKTUR; bu bir
+            # eksiklik değil, iletinin türüdür. `❓` yazmak bilgi vermiyordu.
+            # "Fiyatı olan gönderiyi kupon sanıp çöpe atma" koruması artık dal
+            # sırasına bağlı değil: `_is_coupon_announcement` güvenli fiyat varsa
+            # kendi içinde False döner (bkz. `_has_safe_price`). Yani buraya
+            # yalnız gerçekten fiyatsız duyurular gelir.
+            price_text = ""
         else:
             price_text = PRICE_MISSING_MARK
         quote_body = bool(source_body.strip())
@@ -3620,6 +3705,19 @@ DEDUP_BADGE_LEGACY_RE = re.compile(
 # Çok daha eski sürüm rozeti ikinci satırda kaynak adlarını listelerdi
 # ("📌 Kaynaklar: ..."); açılış taramasında o satırı atlamak için korunur.
 DEDUP_SOURCES_PREFIX = "📌"
+# Rozette birden çok grup adı bu ayraçla yazılır. Virgül KULLANILMAZ: kaynak
+# grup adları virgül içerebiliyor ve o durumda adlar bölünüp linkleri kayıyordu.
+BADGE_SOURCE_SEPARATOR = " | "
+# YENİ biçimin TEK GRUPLU rozete eklediği sabit süs. Yalnız bu ek, rozetin yeni
+# biçimde yazıldığını ve ad içindeki virgülün AYRAÇ OLMADIĞINI kanıtlar.
+# ``— KAÇIRMA!`` buraya GİREMEZ: aynı ek yeni biçimde de (5+ paylaşımda) çıkıyor,
+# dolayısıyla eski/yeni ayrımında hiçbir şey kanıtlamaz. Nitekim onu "eski biçim"
+# sanmak, ``🚨 5 kere paylaşıldı: A, B, C — KAÇIRMA!`` rozetindeki adları
+# bölünmez hâle getiriyordu.
+_BADGE_NEW_SINGLE_SUFFIX_RE = re.compile(r"·\s*tek\s+grup")
+# Rozetin sonuna eklenen süsler. Yalnız AD'dan temizlenirler (ad sayılmazlar);
+# eski/yeni biçim KARARINDA kullanılmazlar — ``— KAÇIRMA!`` yeni biçimde de var.
+_BADGE_TRAILING_DECOR_RE = re.compile(r"\s*(?:—\s*KAÇIRMA!|·\s*tek\s+grup)\s*$")
 # Aynı sohbete Bot API ~1/sn sınırı uygular; not güncellemeleri bunun
 # altında kalmak için mesaj başına bu kadar aralık bırakır. Aralık içinde
 # gelen tekrarlar tek düzenlemede birleşir (düzenleme kilidi altında sayaç
@@ -3690,7 +3788,11 @@ def dedup_badge(
     unique_names = list(
         dict.fromkeys(str(name).strip() for name in (sources or []) if str(name).strip())
     )
-    names = ", ".join(unique_names)
+    # Ayraç VİRGÜL değil: grup adlarının kendisi virgül içerebiliyor ("… Kupon
+    # Haberleri, İndirimde Al") ve virgülle birleştirmek rozeti yanlış yerden
+    # bölüyor, ikinci grubun mesaj adresini kaybettiriyordu (kullanıcı bildirimi:
+    # "ilk sayfanın linkini gömmüşüz ama ikinci bildirimin linki yok").
+    names = BADGE_SOURCE_SEPARATOR.join(unique_names)
     if short:
         names = ""
     head = "📌" if count < 5 else "🚨"
@@ -3750,14 +3852,49 @@ def _dedup_badge_match(content: str) -> re.Match[str] | None:
     return DEDUP_BADGE_RE.match(stripped) or DEDUP_BADGE_LEGACY_RE.match(stripped)
 
 
+def _badge_source_parts(line: str) -> list[str]:
+    """Rozet satırındaki ad listesini ``|`` sınırlarıyla böl.
+
+    Grup adlarının KENDİSİ virgül içerebilir ("İndirim Varsa Anlık Fırsat
+    Alışveriş Kampanya Kupon Haberleri, İndirimde Al"). Virgülle birleştirme
+    adları ikiye bölüyor, rozetteki link aralıkları yanlış ada oturuyor ve
+    grubun/b grupların mesaj adresi kayboluyordu. Bu yüzden ayraç ``|``'dir.
+
+    Yeni biçimde TEK ad yazıldığında rozet "· tek grup" eki alır ve o adın
+    kendisi virgül içerebilir ("… Sıcak Fırsatlar, Alışveriş & Kupon"). Bu eki
+    yok sayıp virgülden bölmek, tek grupta bile adı ikiye bölüp mesaj linkini
+    kaybettiriyordu. Bu yüzden "· tek grup" eki varsa virgülden BÖLÜNMEZ; eki
+    olmayan ayraçsız rozet eski (virgülle ayrılmış) biçim sayılıp bölünür.
+    """
+    payload = line.partition(":")[2]
+    new_single = bool(_BADGE_NEW_SINGLE_SUFFIX_RE.search(payload))
+    payload = _BADGE_TRAILING_DECOR_RE.sub("", payload)
+    payload = payload.replace(BADGE_SOURCE_SEPARATOR, "\x00")
+    parts = [part.strip() for part in payload.split("\x00")]
+    if new_single:
+        # "· tek grup": ad tektir ve virgül içerebilir; BÖLÜNMEZ.
+        return [part for part in parts if part]
+    # Ayraç yok: virgülle ayrılmış ESKİ biçim rozeti. ``— KAÇIRMA!`` eki burada
+    # karar vermez (yeni biçim 5+ paylaşımda da yazar); tek gruplu yeni rozet ise
+    # yukarıdaki ekle zaten yakalandı. Kalan belirsizlik yalnız "compact" (süssüz)
+    # yeni rozette virgüllü tek addır; orada eski biçim lehine bölmek korunuyor,
+    # çünkü eski rozetler geçmişte yazılmış ve hâlâ okunmak zorunda.
+    if len(parts) == 1 and "," in parts[0]:
+        parts = [part.strip() for part in parts[0].split(",")]
+    return [part for part in parts if part]
+
+
 def dedup_badge_sources(content: str | None) -> list[str]:
-    """Rozet satırındaki grup adlarını ayıkla (güncelleme ve açılış taraması)."""
+    """Rozet satırındaki grup adlarını ayıkla (güncelleme ve açılış taraması).
+
+    Adlar ``|`` ile ayrılır; böylece ad içindeki virgül adı bölmez ve rozetteki
+    her ad kendi mesaj adresini korur. Eski (virgülle ayrılmış) rozetler de
+    okunabilir.
+    """
     line = (content or "").strip()
     if not DEDUP_BADGE_RE.match(line):
         return []
-    _, _, names = line.partition(":")
-    names = names.replace("— KAÇIRMA!", " ").replace("· tek grup", " ")
-    return [name.strip() for name in names.split(",") if name.strip()]
+    return _badge_source_parts(line)
 
 
 def dedup_badge_name_spans(badge: str | None) -> list[tuple[str, int, int]]:

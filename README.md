@@ -1255,7 +1255,12 @@ Bu repodaki güncel davranış değişiklikleri:
     karakter ama iki birimdir; karakterle sayan kırpma sınırı aşırıyordu).
     Sıfır bir hata değildir: `Fiyat: 0 TL` yüksek, `ücretsiz/bedava` orta
     güvenlidir ve üst satırda `0₺` olur; `kargo bedava`/`deneme` fiyat sayılmaz
-    (`❓`). Boş/bozuk tutarlar (`₺`, `1.2.99 TL`, kupon, `%50`) da `❓` bırakır.
+    (`❓`). Boş/bozuk tutarlar (`₺`, `1.2.99 TL`, `%50`) da `❓` bırakır.
+    **İstisna — kupon/kampanya duyurusu:** ileti tam bir kampanya cümlesi
+    kuruyorsa (eşik + indirim tutarı) ürün fiyatı **yoktur**; bu bir eksiklik
+    değil iletinin türüdür, üst satıra `❓` yazılmaz. Fiyatı olan gönderi bu
+    istisnaya girmez: güvenli tutar dalı önce çalışır, yani "kupon sanıp fiyatlı
+    gönderiyi eleme" olmaz.
     `smart_header`
     kapalıysa düzen değişmeden kalır (yalnız başlık). Ayrıntı:
     [6. bölüm](#6-bildirim-kurulumu-telefona-uyarı-gelsin),
@@ -1398,7 +1403,8 @@ Grup adı / 📌 N kere paylaşıldı: …   ← ad(lar) mesajın adresine göm�
   tutarın kuruşu yuvarlanmadan atılır ve `₺` tutarın önüne yazılır. Gövde, DM eşiği,
   `offer_terms` ve fiyat karşılaştırmaları gerçek (kuruşlu) değerle ve "TL"
   yazımıyla çalışmaya devam eder (`price_filter.format_price` değişmedi).
-  Low/none güvenli tutar üst satıra **taşınmaz**; o durumda satır `❓` ile açılır.
+  Low/none güvenli tutar üst satıra **taşınmaz**; o durumda satır `❓` ile açılır
+  (kupon/kampanya duyurusunda hiç açılmaz — bkz. 13. madde).
 - Fiyatı üst satıra taşımak aramaları **bozmaz**: `₺56 — ` / `❓ — ` ön eki yalnızca
   görüntüdür. Google Alışveriş / Akakçe / Cimri sorguları ve tekrar (dedup) anahtarı,
   kaynak mesajdan ayıklanan fiyatsız adla kurulur; gönderilmiş bildirim okunurken de
