@@ -2016,7 +2016,7 @@ def _coupon_campaign_title(
     campaign_marker = r"\b(?:kupon\w*|indirim\s*kodu|kampanya\s*kodu)\b"
     if allow_code_only_marker:
         campaign_marker = r"\b(?:kupon\w*|kod\w*|indirim\s*kodu|kampanya\s*kodu)\b"
-    if not re.search(campaign_marker, normalize(text)):
+    if not re.search(campaign_marker, _campaign_norm(text)):
         return ""
     product_line = False
     for line in lines:
@@ -2050,7 +2050,7 @@ def _coupon_campaign_title(
         candidate = re.sub(r"\s+", " ", candidate).strip(" \t,;:.|/-")
         plain = normalize(candidate)
         has_amount = bool(re.search(r"(?:\d[\d.,]*\s*(?:tl|₺|try)|%\s*\d)", normalize(line)))
-        has_campaign_word = bool(re.search(r"\b(?:indirim|ındırım)\w*\b", plain))
+        has_campaign_word = bool(re.search(r"\b(?:indirim|ındırım)\w*\b", _campaign_norm(candidate)))
         category_coupon_line = bool(
             re.search(r"\b(?:kupon|coupon)\w*\b", plain)
             and index > 0
@@ -2127,6 +2127,30 @@ def _coupon_preview_message(text: str, campaign_title: str) -> bool:
                 or clipped_to_fragment)
 
 
+# Noktasız büyük ``I`` Türkçe küçültmede ``ı`` olur (``Indirim`` → ``ındirim``)
+# ve ``indirim`` deseni kaçar. ``normalize`` davranışı BİLEREK değiştirilmiyor
+# (arama sorgusu, eşleştirme, dedup ondan besleniyor); yalnız kampanya
+# sözcüklerini tanıyan bu yardımcıda katlama yapılıyor.
+_DOTLESS_I_FOLD = str.maketrans({"ı": "i"})
+
+
+def _campaign_norm(text: str) -> str:
+    """``normalize`` + noktasız ``ı`` katlaması (yalnız kampanya sözcükleri)."""
+    return normalize(text).translate(_DOTLESS_I_FOLD)
+
+
+# Kupon/kod olmadan da yayınlanan kampanya kalıpları: "2 Öde 1'i Money
+# Hediye", "Aynı üründen 2 alana biri tutarında Money iade". Kullanıcı
+# bildirimi: bu iletiler kupon duyurusudur, ürün fiyatı beklenmez.
+# Not: "2 alana 1 TL" gibi kalıplar BİLEREK dışarıda — mevcut davranış o
+# iletilerde başlığı `❓` ile bırakıyor ve o davranış korunuyor.
+_NON_COUPON_CAMPAIGN_RE = re.compile(
+    r"\b\d+\s*öde\s*\d+['’]?[iı]?\b|\bmoney\b|"
+    r"\b(?:biri|bir)\s*tutar[ıi]nda\b",
+    re.UNICODE,
+)
+
+
 def _is_coupon_announcement(text: str) -> bool:
     """İleti bir kupon/kampanya duyurusu mu (ürün fiyatı beklenmez)?
 
@@ -2134,6 +2158,11 @@ def _is_coupon_announcement(text: str) -> bool:
     Bu durumda üst satırdaki ``❓`` bir eksiklik değil, yanlış bilgidir; kullanıcı
     isteğiyle kaldırılır. Ürün fiyatı taşıyan iletiler bu kurala girmez.
     """
+    # Kampanya sözcüğü ("kupon", "indirim kodu") hiç geçmeyen duyurular da var:
+    # "Migros'ta … 2 Öde 1'i Money Hediye". Bunlar da ürün fiyatı taşımaz;
+    # aksi hâlde başlıkta haksız bir ``❓`` kalıyordu.
+    if _NON_COUPON_CAMPAIGN_RE.search(_campaign_norm(text)):
+        return True
     campaign = _coupon_campaign_title(
         text, MESSAGE_LIMIT, include_code=True, allow_code_only_marker=True,
     )
@@ -3659,6 +3688,16 @@ DEDUP_SOURCES_PREFIX = "📌"
 # Rozette birden çok grup adı bu ayraçla yazılır. Virgül KULLANILMAZ: kaynak
 # grup adları virgül içerebiliyor ve o durumda adlar bölünüp linkleri kayıyordu.
 BADGE_SOURCE_SEPARATOR = " | "
+# YENİ biçimin TEK GRUPLU rozete eklediği sabit süs. Yalnız bu ek, rozetin yeni
+# biçimde yazıldığını ve ad içindeki virgülün AYRAÇ OLMADIĞINI kanıtlar.
+# ``— KAÇIRMA!`` buraya GİREMEZ: aynı ek yeni biçimde de (5+ paylaşımda) çıkıyor,
+# dolayısıyla eski/yeni ayrımında hiçbir şey kanıtlamaz. Nitekim onu "eski biçim"
+# sanmak, ``🚨 5 kere paylaşıldı: A, B, C — KAÇIRMA!`` rozetindeki adları
+# bölünmez hâle getiriyordu.
+_BADGE_NEW_SINGLE_SUFFIX_RE = re.compile(r"·\s*tek\s+grup")
+# Rozetin sonuna eklenen süsler. Yalnız AD'dan temizlenirler (ad sayılmazlar);
+# eski/yeni biçim KARARINDA kullanılmazlar — ``— KAÇIRMA!`` yeni biçimde de var.
+_BADGE_TRAILING_DECOR_RE = re.compile(r"\s*(?:—\s*KAÇIRMA!|·\s*tek\s+grup)\s*$")
 # Aynı sohbete Bot API ~1/sn sınırı uygular; not güncellemeleri bunun
 # altında kalmak için mesaj başına bu kadar aralık bırakır. Aralık içinde
 # gelen tekrarlar tek düzenlemede birleşir (düzenleme kilidi altında sayaç
@@ -3794,21 +3833,32 @@ def _dedup_badge_match(content: str) -> re.Match[str] | None:
 
 
 def _badge_source_parts(line: str) -> list[str]:
-    """Rozet satırından ad listesini ``", "`` sınırlarıyla böl.
+    """Rozet satırındaki ad listesini ``|`` sınırlarıyla böl.
 
     Grup adlarının KENDİSİ virgül içerebilir ("İndirim Varsa Anlık Fırsat
-    Alışveriş Kampanya Kupon Haberleri, İndirimde Al"). Ham ``str.split(",")``
-    bu adları ikiye bölüyor, rozetteki link aralıkları yanlış ada oturuyor ve
-    ikinci grubun mesaj adresi kayboluyordu. Ayraç her zaman ``", "`` (virgül +
-    boşluk) olduğundan yalnız o dizge sınır kabul edilir; addaki virgülden sonra
-    boşluk gelse bile bu, iki adı ayırmakla aynı sonucu verir — bu yüzden
-    ayırıcı olarak virgül KULLANILMAZ; adlar ``|`` ile ayrılır (aşağıya bakınız).
+    Alışveriş Kampanya Kupon Haberleri, İndirimde Al"). Virgülle birleştirme
+    adları ikiye bölüyor, rozetteki link aralıkları yanlış ada oturuyor ve
+    grubun/b grupların mesaj adresi kayboluyordu. Bu yüzden ayraç ``|``'dir.
+
+    Yeni biçimde TEK ad yazıldığında rozet "· tek grup" eki alır ve o adın
+    kendisi virgül içerebilir ("… Sıcak Fırsatlar, Alışveriş & Kupon"). Bu eki
+    yok sayıp virgülden bölmek, tek grupta bile adı ikiye bölüp mesaj linkini
+    kaybettiriyordu. Bu yüzden "· tek grup" eki varsa virgülden BÖLÜNMEZ; eki
+    olmayan ayraçsız rozet eski (virgülle ayrılmış) biçim sayılıp bölünür.
     """
     payload = line.partition(":")[2]
-    payload = payload.replace("— KAÇIRMA!", " ").replace("· tek grup", " ")
+    new_single = bool(_BADGE_NEW_SINGLE_SUFFIX_RE.search(payload))
+    payload = _BADGE_TRAILING_DECOR_RE.sub("", payload)
     payload = payload.replace(BADGE_SOURCE_SEPARATOR, "\x00")
     parts = [part.strip() for part in payload.split("\x00")]
-    # Eski biçim (virgülle ayrılmış) geriye dönük okunabilsin.
+    if new_single:
+        # "· tek grup": ad tektir ve virgül içerebilir; BÖLÜNMEZ.
+        return [part for part in parts if part]
+    # Ayraç yok: virgülle ayrılmış ESKİ biçim rozeti. ``— KAÇIRMA!`` eki burada
+    # karar vermez (yeni biçim 5+ paylaşımda da yazar); tek gruplu yeni rozet ise
+    # yukarıdaki ekle zaten yakalandı. Kalan belirsizlik yalnız "compact" (süssüz)
+    # yeni rozette virgüllü tek addır; orada eski biçim lehine bölmek korunuyor,
+    # çünkü eski rozetler geçmişte yazılmış ve hâlâ okunmak zorunda.
     if len(parts) == 1 and "," in parts[0]:
         parts = [part.strip() for part in parts[0].split(",")]
     return [part for part in parts if part]

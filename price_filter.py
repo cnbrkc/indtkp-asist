@@ -904,15 +904,17 @@ def _heading_price_pool(cands: Sequence[Candidate], text: str) -> list[Candidate
     # yanında nitelik taşıyan sözcük bulunmasıdır ("Prime Üyelere Özel 24.999TL").
     if _BARE_AMOUNT_LINE_RE.fullmatch(lines[leading[0]].strip()):
         return None
-    local = [c for c in cands if c.line <= leading[0]]
+    # Yalnız FİYAT sınıfındaki tutarlar. Eski/geçmiş fiyat ("Piyasası 27.897TL")
+    # da aynı satırda durur; havuza girerse iki farklı değer görülüp sonuç
+    # "belirsiz" sayılır ve doğru fiyat (24.999) `low` güvene düşüp üst satıra
+    # hiç taşınmazdı. Eski fiyat zaten fiyat değildir; dışarıda bırakılır.
+    local = [c for c in cands if c.line <= leading[0] and c.cls == "price"]
     if not local:
         return None
     # Fiyatın önündeki satırlar ürün adı taşımalı: kupon/duyuru başlığında
     # havuz değiştirmek gerekmiyor (o durumda zaten kupon yolu var).
     heading = " ".join(lines[: leading[0]]).strip()
     if not heading or is_generic_title(heading) or _META_WORDS_RE.search(norm(heading)):
-        return None
-    if not any(c.cls in {"price", "cond"} for c in local):
         return None
     return local
 

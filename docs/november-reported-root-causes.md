@@ -50,6 +50,15 @@ fiyatlı ürün satırı** taşıyorsa (ve bunlar `Fiyat:` etiketli değilse) ya
 
 **Sonuç.** `24.999 TL` (medium). Oyuncu koltuğunun fiyatı artık başlığa sızmıyor.
 
+**Ek kök neden (bağımsız doğrulamada bulundu).** Üstteki düzeltmeden sonra bile
+başlık `❓` kalıyordu: `✅Prime Üyelere Özel 24.999TL - Piyasası 27.897TL+`
+satırında **eski/geçmiş fiyat** (`27.897TL`, `cls="old"`) da başlık havuzuna
+giriyordu. Havuz iki farklı değer görünce `_extract_select_best` sonucu yine
+`ambiguous` sayıp güveni `low`a düşürüyor, doğru fiyat (24.999) üst satıra
+taşınmıyordu. `_heading_price_pool` artık **yalnız `cls == "price"`** adaylarını
+toplar; eski fiyat havuz dışında kalır. "Piyasası" bilgisi üst satırda
+istenmiyor, ürünün fiyatı isteniyor.
+
 ---
 
 ## 3. `SPORTİF150 kodu ile … 600/150TL` → başlık kupon kodu gibi
@@ -209,6 +218,19 @@ söküldüğü için tek gruplu rozet değişmedi.
 
 **Sonuç.** İki ad, iki ayrı `text_link`, **doğru aralıklarda**.
 
+**Ek kök neden (bağımsız doğrulamada bulundu).** İlk düzeltme **tek gruplu**
+rozeti kapsamıyordu. Tek gruplu yeni biçim rozeti (`… · tek grup`) yalnız bir
+parça üretir; virgül içeren adda "tek parça kaldı → eski biçim" varsayımı
+devreye girip adı ikiye bölüyor ve `text_link` **hiç üretilmiyordu**. Yani
+kullanıcının "ikinci bildirimin linki yok" şikâyeti tek gruplu rozetlerde
+sürüyordu. Ayırt edici ölçüt yalnız `· tek grup` ekidir.
+
+`— KAÇIRMA!` eki bu iş için **kullanılamaz**: aynı ek yeni biçimde 5+ paylaşımda
+da eklenir (`🚨 5 kere paylaşıldı: A, B, C — KAÇIRMA!`). Onu "eski biçim"
+saymak, yeni biçim 5+ paylaşımlı rozetlerde adları bölünmez hâle getiriyordu.
+Bu yüzden ekin **karar** rolü kaldırıldı, yalnız adlardan **temizlenme** rolü
+kaldı (`_BADGE_TRAILING_DECOR_RE`).
+
 ---
 
 ## 14. `❓` kararı: kupon duyurusunda soru işareti yok
@@ -220,6 +242,22 @@ bulamadık diye fiyat olan bi gönderiyi çöpe atmamalıyız."*
 **Düzeltme.** `_is_coupon_announcement`: ileti **tam bir kampanya cümlesi**
 kuruyorsa (eşik + indirim tutarı — `_coupon_campaign_title` bunu zorunlu
 kılar) üst satıra `❓` yazılmaz.
+
+**Ek kök nedenler (bağımsız doğrulamada bulundu).** `_coupon_campaign_title`
+iki dar kalıbı kaçırıyordu ve bu iletilerde `❓` haksız yere kalıyordu:
+
+| Örnek | Kaçan kalıp | Düzeltme |
+|---|---|---|
+| 4 | `2 Öde 1'i Money Hediye` — ileti **kupon/kod sözcüğü hiç içermiyor**; `campaign_marker` boş dönüyordu | `_NON_COUPON_CAMPAIGN_RE`: `N öde M`, `money`, `biri tutarında` |
+| 5 | gövdede yalnız `Money hesabına iade` var | aynı kalıp |
+| 7 | `400 TL'ye 100 TL **I**ndirim` — noktasız büyük `I`, `normalize` ile `ındirim` olur, `indirim` deseni kaçar | `_campaign_norm`: **yalnız** kampanya sözcüğü tanımada `ı → i`; `normalize` davranışı değişmedi |
+
+`normalize` bilerek değiştirilmedi: arama sorgusu, eşleştirme ve dedup ondan
+besleniyor. Katlama yalnız `_campaign_norm` içinde yapılır.
+
+`2 alana 1 TL` kalıbı **bilerek dışarıda**: o iletilerde mevcut davranış başlığı
+`❓` ile bırakıyor ve o davranış korunuyor (genişletme denendi, 3 alt-testi
+kırdı, geri alındı).
 
 **Neden "fiyatlı gönderiyi çöpe atma" riski yok:** bu dal, **güvenli tutar
 dalından sonra** gelir. `high`/`medium` güvenli fiyat varsa üst satıra o yazılır
@@ -248,8 +286,8 @@ Bunlar **uygulanmadı**; ileride tekrar denenmemesi için kayıtlıdır:
 
 ## Korunan davranışlar (regresyon)
 
-`tests/test_user_reported_november_batch.py` 20 testle yukarıdaki 13 örneği ve
-şu değişmezleri kilitler:
+`tests/test_user_reported_november_batch.py` 30 testle yukarıdaki 13 örneği ve
+şu değişmezleri kilitler (10'u bağımsız doğrulama turunda eklenen ek kök nedenler):
 
 - eş yapılı çok ürün listesi (`100 TL` / `200 TL`) **belirsiz** kalır (`low`);
 - `413 TL (137 TL/Adet)` → `413` (mevcut `pack_total` kuralı);
@@ -261,8 +299,24 @@ Bunlar **uygulanmadı**; ileride tekrar denenmemesi için kayıtlıdır:
 
 | Kontrol | Sonuç |
 |---|---|
-| Tam test paketi | **1218 passed / 2421 subtests** (önceki 1198 + 20 yeni) |
+| Tam test paketi | **1228 passed / 2421 subtests** (taban 1198; ilk tur +20, doğrulama turu +10) |
 | `python bot.py --check` | Ortam secret'ları yok (değişiklik öncesi de aynı) |
 | `git diff --check` | temiz |
-| Altın referans | 563 kayıt; **yalnız 2 kupon kaydı** değişti (§14), onay kodu `0b2e49683427` |
+| Altın referans | 563 kayıt; **yalnız 2 kupon kaydı** değişti (§14), onay kodu `0b2e49683427`. Doğrulama turundaki düzeltmeler golden'da **hiçbir** değişiklik yapmadı (sha `55658a87b0582db9`, tabanda da aynı 2 kayıt). |
+| 563 kayıt uçtan uca tarama | `❓` üreten başlık **98 → 96**; değişen başlık **yalnız 2** (ikisi de istenen kupon `❓` kaldırması) — gizli davranış değişikliği yok |
 | `price` / `classic` / `preload` katmanları | **değişmedi** |
+
+### Doğrulama turunda eklenen testler
+
+| Test | Kilitlediği davranış |
+|---|---|
+| `test_old_price_beside_the_real_price_does_not_make_it_unknown` | `Piyasası 27.897TL` eski fiyatı başlık havuzuna girmez; başlık `₺24.999 — Asus …` |
+| `test_prime_line_alone_yields_its_price` | 2. örnek Asus'tan **bağımsız** ölçülür |
+| `test_non_coupon_campaign_announcement_gets_no_question_mark` | `2 Öde 1'i Money Hediye` → `❓` yok |
+| `test_money_refund_wording_gets_no_question_mark` | `Money hesabına iade` → `❓` yok |
+| `test_dotless_capital_i_campaign_word_is_recognized` | `Indirim` (noktasız I) kampanya sözcüğü sayılır |
+| `test_price_bearing_post_is_never_treated_as_coupon` | fiyatlı gönderi kupon sayılmaz; `2477` korunur |
+| `test_product_price_wins_over_campaign_sentence_in_same_post` | kampanya cümlesi + ürün fiyatı: `₺200` **fiyat olarak yazılmaz** |
+| `test_single_group_name_with_comma_keeps_its_link` | tek gruplu, virgüllü ad → **1** `text_link`, doğru aralık |
+| `test_legacy_badge_keeps_comma_split_with_group_count_suffix` | `— KAÇIRMA!` eki eski bölmeyi **engellemez** |
+| `test_new_format_multi_group_names_survive_round_trip` | 3 gruplu, hepsi virgüllü → 3 ad, 3 link |

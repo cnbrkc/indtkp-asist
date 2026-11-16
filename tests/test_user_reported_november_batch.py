@@ -299,6 +299,45 @@ class BadgeNameTests(unittest.TestCase):
         legacy = "📌 2 kere paylaşıldı: FirsatZ, İndirimde Al"
         self.assertEqual(bot.dedup_badge_sources(legacy), ["FirsatZ", "İndirimde Al"])
 
+    def test_single_group_name_with_comma_keeps_its_link(self):
+        """TEK gruplu rozet: ad virgül içeriyorsa eski-format sanılıp BÖLÜNMEMELİ.
+
+        Virgülden bölme "tek parça kaldıysa eski biçimdir" varsayımına dayanıyordu;
+        yeni biçimde de tek parça olur. Sonuç: ad ikiye bölünüyor ve mesaj linki
+        (``text_link``) hiç üretilmiyordu — kullanıcının "link yok" şikâyeti.
+        Ayırt edici tek ölçüt eski biçimin son eki (``· tek grup`` / ``— KAÇIRMA!``).
+        """
+        name = "İNDİRİM & FIRSAT TR 🛒 Sıcak Fırsatlar, Alışveriş & Kupon"
+        entry = bot.new_dedup_entry("t", object(), name, name)
+        bot.note_dedup_source(entry, name, "https://t.me/g1/100")
+        badge = bot.dedup_badge(2, sources=entry["sources"])
+        self.assertEqual(bot.dedup_badge_sources(badge), [name])
+        links = bot.dedup_badge_links(entry, entry["sources"])
+        entities = bot.dedup_badge_entities(badge, bot_api=True, offset=0, links=links)
+        links_found = [e for e in entities if e["type"] == "text_link"]
+        self.assertEqual(len(links_found), 1, badge)
+        self.assertEqual(links_found[0]["url"], "https://t.me/g1/100")
+        self.assertEqual(_utf16_slice(badge, links_found[0]["offset"], links_found[0]["length"]), name)
+
+    def test_legacy_badge_keeps_comma_split_with_group_count_suffix(self):
+        """Eski biçim son eki (``— KAÇIRMA!``) varsa virgülden bölme SÜRMELİ."""
+        legacy = "🚨 3 kere paylaşıldı: FirsatZ, İndirimde Al, Fırsat Kupon — KAÇIRMA!"
+        self.assertEqual(
+            bot.dedup_badge_sources(legacy), ["FirsatZ", "İndirimde Al", "Fırsat Kupon"],
+        )
+
+    def test_new_format_multi_group_names_survive_round_trip(self):
+        names = [
+            "İndirim & Fırsat, Alışveriş",
+            "Kupon, Kampanya TR",
+            "Sıcak Fırsatlar, İndirimde Al",
+        ]
+        entry = bot.new_dedup_entry("t", object(), names[0], names[0])
+        for index, name in enumerate(names):
+            bot.note_dedup_source(entry, name, f"https://t.me/g{index}/1")
+        badge = bot.dedup_badge(3, sources=entry["sources"])
+        self.assertEqual(bot.dedup_badge_sources(badge), names)
+
 
 class UnchangedBehaviourTests(unittest.TestCase):
     """Doğru tespitler korunuyor: bu örnekler değişmedi."""
@@ -320,6 +359,101 @@ class UnchangedBehaviourTests(unittest.TestCase):
         """Kod sonrası ÖDENECEK tutar hâlâ fiyattır (indirim tutarı değil)."""
         text = "Filtre Kahve 1 kg\n2727 TL / KASIM250 koduyla 2477 TL"
         self.assertEqual(pf.extract_price(text).value, 2477)
+
+
+class HeaderPriceAccuracyTests(unittest.TestCase):
+    """Doğrulama sırasında bulunan iki ek kök neden (PR incelemesi)."""
+
+    def setUp(self):
+        self._smart = bot.SMART_HEADER
+        bot.SMART_HEADER = True
+
+    def tearDown(self):
+        bot.SMART_HEADER = self._smart
+
+    def _header(self, text, **kwargs):
+        obj = SimpleNamespace(
+            message=text, raw_text=text, entities=[], media=None, reply_markup=None,
+        )
+        return bot.compose_message(obj, source_name="Test Grubu", has_keyboard=False, **kwargs)
+
+    def test_old_price_beside_the_real_price_does_not_make_it_unknown(self):
+        """"Piyasası 27.897TL" eski fiyat, başlık havuzuna girmemeli.
+
+        Havuz hem ``price`` hem ``old`` sınıfını topladığı için 24.999 ile 27.897
+        "belirsiz" sayılıyor, güven ``low``a düşüyor ve üst satır ``❓`` kalıyordu.
+        Doğru fiyat bulunduğu hâlde gösterilmiyordu (kullanıcı örneği 2).
+        """
+        text = (
+            "⚡ Asus Vivabook Go AMD Ryzen 5 8GB RAM 512GB SSD Laptop\n\n"
+            "✅Prime Üyelere Özel 24.999TL - Piyasası 27.897TL+\n"
+            "🔻Rampage Oyuncu Koltuğu Sepette 6.881TL\n\n"
+            "🚀 Fiyat her an değişebilir, kaçırma!"
+        )
+        info = pf.extract_price(text)
+        self.assertEqual(info.value, 24999)
+        self.assertIn(info.confidence, {"high", "medium"})
+        self.assertEqual(
+            self._header(text)["header"],
+            "₺24.999 — Asus Vivabook Go AMD Ryzen 5 8GB RAM 512GB SSD Laptop",
+        )
+
+    def test_prime_line_alone_yields_its_price(self):
+        """2. örnek Asus'tan BAĞIMSIZ da doğru olmalı (tek satırlık ölçüm)."""
+        self.assertEqual(
+            pf.extract_price("✅Prime Üyelere Özel 24.999TL - Piyasası 27.897TL+").value,
+            24999,
+        )
+
+    def test_non_coupon_campaign_announcement_gets_no_question_mark(self):
+        """Kupon sözcüğü geçmeyen kampanya duyurusu da ❓ almamalı (örnek 4)."""
+        text = (
+            "🛒 Migros'ta Demlik ve Bardak Siyah Çay Ürünlerinde 2 Öde 1'i Money Hediye\n"
+            "📅 16 – 18 Kasım 2026"
+        )
+        result = self._header(text)
+        self.assertNotIn("❓", result["header"])
+        self.assertIn("Money Hediye", result["header"])
+
+    def test_money_refund_wording_gets_no_question_mark(self):
+        """Örnek 5'in gövdesi: "Money iade" kalıbı da duyurudur."""
+        text = (
+            "🛒 Demlik ve Bardak Siyah Çaylarda geçerli\n"
+            "Aynı Üründen 2 Tane alana\nbiri tutarında Money hesabına iade"
+        )
+        self.assertNotIn("❓", self._header(text)["header"])
+
+    def test_dotless_capital_i_campaign_word_is_recognized(self):
+        """``Indirim`` (noktasız I) kampanya sözcüğü sayılmalı — örnek 7.
+
+        ``normalize`` Türkçe küçültme yaptığı için ``Indirim`` → ``ındirim`` olur
+        ve ``indirim`` deseni kaçar; ``normalize`` davranışı değiştirilmeden yalnız
+        kampanya sözcüğü tanımasında katlanır.
+        """
+        self.assertTrue(bot._is_coupon_announcement("EVTEKSTİLİ100 Kodu ile\nDekorasyonda 400 TL'ye 100 TL Indirim!"))
+        self.assertNotIn(
+            "❓",
+            self._header("EVTEKSTİLİ100 Kodu ile Ev Tekstili\nDekorasyonda 400 TL'ye 100 TL Indirim!")["header"],
+        )
+
+    def test_price_bearing_post_is_never_treated_as_coupon(self):
+        """Kullanıcı şartı: "fiyat olan gönderiyi kupon sanıp çöpe atma"."""
+        priced = "⚡ Bosch Home and Garden X/Line 40 Parça Aksesuar Seti\n\n✅ 647,90 ₺"
+        self.assertFalse(bot._is_coupon_announcement(priced))
+        couponed = "Filtre Kahve 1 kg\n2727 TL / KASIM250 koduyla 2477 TL"
+        self.assertEqual(pf.extract_price(couponed).value, 2477)
+        self.assertIn("₺2.477", self._header(couponed)["header"])
+
+    def test_product_price_wins_over_campaign_sentence_in_same_post(self):
+        """Kampanya cümlesi + ürün fiyatı bir arada: fiyat korunur (örnek 13)."""
+        text = (
+            "Calvin Klein parfümlerde %30 indirim + EFSANEKOZMO200 koduyla 200₺ indirim birleşiyor\n\n"
+            "Satıcı Calvin Klein"
+        )
+        result = self._header(text)
+        self.assertNotIn("❓", result["header"])
+        # 200₺ indirim tutarıdır; ürün fiyatı değildir.
+        self.assertNotIn("₺200 —", result["header"])
 
 
 if __name__ == "__main__":
