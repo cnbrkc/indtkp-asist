@@ -112,14 +112,16 @@
   "notify_on_start": false,
   "clean_commands": true,
   "private_control": true,
-  "dm_enabled": false,
+  "dm_enabled": true,
   "dm_exclude_keywords": [
     "nextstar",
     "grundig",
     "pensan",
     "iffalcon"
   ],
-  "dm_keywords": [],
+  "dm_keywords": [
+    "soundbar"
+  ],
   "dm_price_max": [
     "10"
   ],
