@@ -490,16 +490,6 @@ def shift_telethon_entities(entities: Sequence[Any] | None, delta: int) -> list[
     return shifted
 
 
-def dedup_current_prefix(text: str | None) -> str:
-    """Yalnızca geriye dönük uyumluluk için eski üst-rozet önekini döndür."""
-    full = text or ""
-    location = _dedup_badge_location(full)
-    if location is None or location[1] != 0:
-        return ""
-    _, base, _ = _strip_dedup_badge_details(full)
-    return full[:len(full) - len(base)] if base and full.endswith(base) else full
-
-
 def dedup_badge_insertion(text: str, badge: str) -> tuple[str, int, int, int]:
     """Notu mesajın en sonuna KENDİ BLOĞU olarak ekle ve bildirimi orada kapat.
 
@@ -573,38 +563,6 @@ def _rebase_entities_for_dedup_badge(
                 continue
         result.append(clone)
     return result
-
-
-def dedup_rebased_bot_entities(
-    entities: Sequence[dict[str, Any]] | None, old_prefix_len: int, new_prefix_len: int,
-) -> list[dict[str, Any]]:
-    """Rozet değişiminde Bot API entity'lerini taşı: eski rozet içindekiler atılır."""
-    kept: list[dict[str, Any]] = []
-    for entity in entities or []:
-        if not isinstance(entity, dict):
-            continue
-        try:
-            offset = int(entity.get("offset", 0))
-        except (TypeError, ValueError):
-            continue
-        if offset >= old_prefix_len:
-            kept.append(entity)
-    return shift_bot_entities(kept, new_prefix_len - old_prefix_len)
-
-
-def dedup_rebased_tl_entities(
-    entities: Sequence[Any] | None, old_prefix_len: int, new_prefix_len: int,
-) -> list[Any]:
-    """Rozet değişiminde Telethon entity'lerini taşı: eski rozet içindekiler atılır."""
-    kept: list[Any] = []
-    for entity in entities or []:
-        try:
-            offset = int(getattr(entity, "offset", 0) or 0)
-        except (TypeError, ValueError):
-            continue
-        if offset >= old_prefix_len:
-            kept.append(entity)
-    return shift_telethon_entities(kept, new_prefix_len - old_prefix_len)
 
 
 def note_dedup_source(

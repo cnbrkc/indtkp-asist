@@ -154,7 +154,7 @@ from textutil import (  # noqa: F401 - bot.X uyumluluğu için yeniden dışa ak
     display_name,
     humanize,
 )
-from titletokens import (  # noqa: F401 - bot.X uyumluluğu için yeniden dışa aktarım
+from analysis import (  # noqa: F401 - bot.X uyumluluğu için yeniden dışa aktarım
     ANALYSIS_STOP_WORDS,
     ANALYSIS_TOKEN_RE,
     DEAL_FILLER_WORDS,
@@ -281,11 +281,8 @@ from dedupbadge import (  # noqa: F401 - bot.X uyumluluğu için yeniden dışa 
     dedup_badge_name_spans,
     dedup_badge_names,
     dedup_badge_sources,
-    dedup_current_prefix,
     dedup_footer_name,
     dedup_key,
-    dedup_rebased_bot_entities,
-    dedup_rebased_tl_entities,
     dedup_source_links,
     note_dedup_source,
     shift_bot_entities,
@@ -437,7 +434,6 @@ from analysis import (  # noqa: F401 - bot.X uyumluluğu için yeniden dışa ak
     ANALYSIS_SCAN_START,
     ANALYSIS_TITLE_LIMIT,
     ANALYSIS_TOP,
-    ANALYSIS_USAGE,
     _ANALYSIS_PRICE_LINE_SKIP_RE,
     _price_line_extra_words,
     analysis_query_pattern,

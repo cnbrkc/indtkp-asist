@@ -1077,11 +1077,6 @@ class WordAnalysisTest(unittest.TestCase):
         self.assertIn("Okunamayan kaynak", report)
         self.assertIn("(kelime bulunamadı)", report)
 
-    def test_usage_text_documents_options(self):
-        for text in ("/analiz", "/analiz tümü", "Harici kelimeler"):
-            self.assertIn(text, bot.ANALYSIS_USAGE)
-
-
 class ConfigStoreTest(unittest.TestCase):
     """ConfigStore yalnızca config yolu ve rollback anlık görüntüsü tutar."""
 
@@ -3100,42 +3095,6 @@ class DedupPrefixAndRebaseTest(unittest.TestCase):
         self.assertEqual(updated, f"{base}\n\n{badge}")
         self.assertEqual(bot.utf16_slice(updated, badge_at, bot.utf16_length(badge)), badge)
         self.assertEqual(bot.strip_dedup_badge(updated), (3, base))
-
-    def test_prefix_is_empty_without_badge(self):
-        self.assertEqual(bot.dedup_current_prefix("Sıcak ÇAY"), "")
-        self.assertEqual(bot.dedup_current_prefix(""), "")
-        self.assertEqual(bot.dedup_current_prefix(None), "")
-
-    def test_prefix_covers_badge_block(self):
-        # `dedup_current_prefix` yalnızca ESKİ üst-rozet biçimini tanır.
-        badge = "🔥 3 kaynakta paylaşıldı! · teyitli fırsat"
-        full = f"{badge}\n\nGövde"
-        self.assertEqual(bot.dedup_current_prefix(full), f"{badge}\n\n")
-
-    def test_bot_entities_inside_old_badge_are_dropped_and_rest_shifted(self):
-        badge_bold = {"type": "bold", "offset": 0, "length": 10}
-        link = {"type": "text_link", "offset": 40, "length": 5, "url": "https://x"}
-        result = bot.dedup_rebased_bot_entities([badge_bold, link], 30, 50)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["offset"], 60)
-        self.assertEqual(result[0]["url"], "https://x")
-        # Orijinal sözlük değişmemeli.
-        self.assertEqual(link["offset"], 40)
-
-    def test_telethon_entities_are_rebased_without_mutating(self):
-        from telethon.tl import types as tl
-
-        badge_bold = tl.MessageEntityBold(offset=0, length=10)
-        bold = tl.MessageEntityBold(offset=40, length=5)
-        result = bot.dedup_rebased_tl_entities([badge_bold, bold], 30, 50)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].offset, 60)
-        self.assertEqual(result[0].length, 5)
-        self.assertEqual(bold.offset, 40)
-
-    def test_boundary_spanning_entities_are_dropped(self):
-        spanning = {"type": "bold", "offset": 25, "length": 10}
-        self.assertEqual(bot.dedup_rebased_bot_entities([spanning], 30, 50), [])
 
 
 class PruneDedupCacheTest(unittest.TestCase):
