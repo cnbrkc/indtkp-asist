@@ -111,6 +111,7 @@
   "auto_restart": true,
   "notify_on_start": false,
   "clean_commands": true,
+  "clean_quote_duplicates": true,
   "private_control": true,
   "dm_enabled": true,
   "dm_exclude_keywords": [

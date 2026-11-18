@@ -117,6 +117,10 @@ SINGLE_MESSAGE = True
 # alışverişi (senin komutun + botun yanıtı) silinir; ekranda yalnızca son mesaj
 # kalır. İndirim bildirimleri bu kayda girmediği için ASLA silinmez.
 CLEAN_COMMANDS = True
+# Alıntı temizliği (kullanıcı isteği, "ilk adım"): üst satırda GÜVENLE tespit
+# edilen ürün adı satırı ile tespit edilen tek başına kupon kodu satırı alıntıdan
+# silinir. Emin olunmayan satır ASLA silinmez. config: clean_quote_duplicates.
+CLEAN_QUOTE_DUPLICATES = False
 # chat_id -> son komut alışverişinin mesaj ID'leri (yalnızca komut diyaloğu).
 COMMAND_MESSAGES: dict[int, list[int]] = {}
 # Tekrar birleştirme (dedup): aynı normalize ürün sorgulu fırsat tek mesaja toplanır.
@@ -644,7 +648,8 @@ def print_report(config: dict, problems: list[str]) -> None:
           f"| bildirim medyası: {'açık' if config_flag(config.get('notify_media')) else 'kapalı'} "
           f"| tek mesaj: {'açık' if config_flag(config.get('single_message')) else 'kapalı'} "
           f"| kaynak adı (kalın, mesaja bağlı): {'açık' if config_flag(config.get('source_footer')) else 'kapalı'} "
-          f"| komut temizliği: {'açık' if config_flag(config.get('clean_commands')) else 'kapalı'}", flush=True)
+          f"| komut temizliği: {'açık' if config_flag(config.get('clean_commands')) else 'kapalı'} "
+          f"| alıntı temizliği: {'açık' if config_flag(config.get('clean_quote_duplicates'), False) else 'kapalı'}", flush=True)
     try:
         window_hours = int(config.get("dedup_window_hours", 12))
     except (TypeError, ValueError):
@@ -1033,6 +1038,14 @@ def build_message_link(event: Any, source: dict | None = None) -> str | None:
     if not message_id:
         return None
     username = (source or {}).get("username") or getattr(getattr(event, "chat", None), "username", None)
+    if not username and source:
+        # ID ile çözülen özel süpergruplarda entity.username boş olabilir; ama
+        # config'de istenen değer hâlâ herkese açık @kullanıcıadı'dır. Link
+        # üretilemezse note_dedup_source adı linksiz yazar ve rozette o kaynak
+        # tıklanamaz (kullanıcı bildirimi: "orijinal link gömülmemiş").
+        requested = str(source.get("requested") or "").strip()
+        if requested.startswith("@"):
+            username = requested.lstrip("@")
     if username:
         return f"https://t.me/{str(username).lstrip('@')}/{message_id}"
     chat_id = getattr(event, "chat_id", None)
@@ -1446,9 +1459,14 @@ def _remap_entities(
         if end <= start:
             continue
         try:
-            cloned = copy.copy(entity)
-            cloned.offset = utf16_length(new_text[:start])
-            cloned.length = utf16_length(new_text[start:end])
+            if isinstance(entity, dict):
+                cloned = dict(entity)
+                cloned["offset"] = utf16_length(new_text[:start])
+                cloned["length"] = utf16_length(new_text[start:end])
+            else:
+                cloned = copy.copy(entity)
+                cloned.offset = utf16_length(new_text[:start])
+                cloned.length = utf16_length(new_text[start:end])
         except Exception:  # noqa: BLE001 - entity bilinmiyorsa içeriği koruyup atla
             log.debug("Mesaj entity'si temizlenen metne taşınamadı: %s", type(entity).__name__)
             continue
@@ -2999,6 +3017,109 @@ def _compose_resolve_header(
     return header_text, price_text, product_title, quote_body
 
 
+# --- Alıntıda TESPİT EDİLEN satırların silinmesi ----------------------------
+# Kullanıcı isteği ("ilk adım"): üst satırda zaten yazan ürün adı ile tespit
+# edilen tek başına kupon kodu satırı alıntıda tekrar durmasın. "Garanti"
+# şartı: yalnızca emin olunan satır silinir; kuşkulu satır AYNEN kalır.
+_QUOTE_CODE_LINE_RE = re.compile(r"[A-Z0-9İĞÜŞÖÇ]{4,}")
+_QUOTE_LINK_ENTITY_KINDS = frozenset({
+    "MessageEntityUrl", "MessageEntityMention", "MessageEntityMentionName",
+    "MessageEntityTextMention", "MessageEntityHashtag", "MessageEntityCashtag",
+    "MessageEntityEmail", "MessageEntityPhone", "MessageEntityBotCommand",
+    "MessageEntityBankCard",
+})
+
+
+def quoted_code_lines(text: str) -> set[str]:
+    """Tek başına duran ve ``_coupon_codes`` ile DOĞRULANMIŞ kod satırları.
+
+    ``TERTEMİZ75`` gibi bağlamı olmayan tek satırlar ``_coupon_codes`` tarafından
+    tanınmıyorsa "tespit edemedik" sayılır ve SİLİNMEZ (kullanıcı şartı).
+    """
+    codes = {normalize(code) for code in _coupon_codes(text or "")}
+    if not codes:
+        return set()
+    return {
+        line for line in (text or "").splitlines()
+        if _QUOTE_CODE_LINE_RE.fullmatch(line.strip())
+        and normalize(line.strip()) in codes
+    }
+
+
+def _line_has_link(text: str, start: int, end: int, entities: Sequence[Any]) -> bool:
+    """Satır tıklanabilir bir bağlantı/etiket taşıyor mu? Öyleyse silinmez."""
+    raw = text[start:end]
+    if URL_RE.search(raw) or "@" in raw or "#" in raw:
+        return True
+    for entity in entities:
+        if isinstance(entity, dict):
+            url = entity.get("url")
+            kind = entity.get("type")
+            offset, length = entity.get("offset", 0), entity.get("length", 0)
+        else:
+            url = getattr(entity, "url", None)
+            kind = type(entity).__name__
+            offset, length = getattr(entity, "offset", 0), getattr(entity, "length", 0)
+        if not (url or kind in _QUOTE_LINK_ENTITY_KINDS):
+            continue
+        try:
+            e_start = _utf16_to_index(text, int(offset or 0))
+            e_end = _utf16_to_index(text, int(offset or 0) + int(length or 0))
+        except (TypeError, ValueError):
+            continue
+        if e_start < end and e_end > start:
+            return True
+    return False
+
+
+def quoted_detected_line_spans(
+    text: str, entities: Sequence[Any], product_title: str, hints: Sequence[str] = (),
+) -> list[tuple[int, int]]:
+    """Alıntıdan silinecek satırların karakter aralıkları (satır sonu hariç)."""
+    if not (text or "").strip() or not (product_title or "").strip():
+        return []
+    wanted: set[str] = set()
+    picked = price_filter.title_source_line(text, hints)
+    # Yalnızca ÜST SATIRDA yazan adın kaynak satırı silinir: kampanya başlığı,
+    # linkten gelen ad ya da farklı bir başlık söz konusuysa dokunulmaz.
+    if picked and normalize(picked[2]) == normalize(product_title):
+        wanted.add(picked[1])
+    wanted.update(quoted_code_lines(text))
+    if not wanted:
+        return []
+    spans = [
+        (match.start(), match.end())
+        for match in re.finditer(r"[^\n]+", text)
+        if match.group(0) in wanted and not _line_has_link(text, match.start(), match.end(), entities)
+    ]
+    if not spans or not any(char.isalnum() for char in _remove_spans(text, spans)):
+        return []  # alıntı boşalacaksa hiçbir satır silinmez
+    return spans
+
+
+def strip_quoted_detected_lines(
+    text: str, entities: Sequence[Any], product_title: str, hints: Sequence[str] = (),
+) -> tuple[str, list[Any]]:
+    """Tespit edilen ad/kod satırlarını alıntıdan çıkar; entity'leri UTF-16 ile taşı.
+
+    Silme aralıkları karakter indeksidir; ``_remap_entities`` ve
+    ``_blank_line_spans`` temizlikte kullanılan güvenli yolu yeniden kullanır:
+    gizli hyperlink'ler kendi etiketlerinde kalır, artan boş satırlar sıkışır.
+    """
+    spans = quoted_detected_line_spans(text, entities, product_title, hints)
+    if not spans:
+        return text, list(entities)
+    merged = _merge_spans(spans)
+    cleaned = _remove_spans(text, merged)
+    remapped = _remap_entities(text, cleaned, entities, merged)
+    blank = _blank_line_spans(cleaned)
+    if blank:
+        compact = _remove_spans(cleaned, blank)
+        remapped = _remap_entities(cleaned, compact, remapped, blank)
+        cleaned = compact
+    return cleaned, remapped
+
+
 def _compose_build_appendix(
     cleaned_obj: Any, source_body: str, link_kinds: Sequence[str] | None, hidden_links: bool = True,
     has_keyboard: bool = False, product_limit: int = LINK_APPENDIX_LIMIT,
@@ -3375,6 +3496,20 @@ def compose_message(
 
     body = source_body
     body_entities = entities_for_text(cleaned_obj, source_body)
+    body_obj = cleaned_obj
+    if CLEAN_QUOTE_DUPLICATES and SMART_HEADER and quote_body:
+        # Yalnızca GÖRÜNEN alıntı temizlenir. Başlık, fiyat, tekrar kimliği,
+        # arama sorgusu ve ürün linkleri ORİJİNAL (kırpılmamış) mesajdan
+        # hesaplanmaya devam eder; doğru tespitler değişmez.
+        new_body, new_body_entities = strip_quoted_detected_lines(
+            source_body, body_entities, product_title, _webpage_hints(obj),
+        )
+        if new_body != source_body:
+            body, body_entities = new_body, new_body_entities
+            body_obj = copy.copy(cleaned_obj)
+            body_obj.message = body
+            body_obj.raw_text = body
+            body_obj.entities = body_entities
 
     name = (source_name or "").strip() or None
     # Kaynak adı varsa orijinal mesajın adresi ADIN İÇİNE gömülür; ayrı satır
@@ -3402,7 +3537,7 @@ def compose_message(
     appendix_text, appendix_links = _compose_fit_appendix(
         lambda product_limit: _compose_build_appendix(
             cleaned_obj, source_body, link_kinds, hidden_links, has_keyboard, product_limit),
-        cleaned_obj, header_text, body, measure_tail, limit, sep,
+        body_obj, header_text, body, measure_tail, limit, sep,
         real_tail=(source_line, name or ""),
     )
 
@@ -3469,8 +3604,12 @@ def entities_for_text(obj: Any, body: str) -> list[Any]:
     limit = utf16_length(body)
     kept: list[Any] = []
     for entity in message_entities(obj):
-        offset = int(getattr(entity, "offset", 0) or 0)
-        length = int(getattr(entity, "length", 0) or 0)
+        if isinstance(entity, dict):
+            offset = int(entity.get("offset", 0) or 0)
+            length = int(entity.get("length", 0) or 0)
+        else:
+            offset = int(getattr(entity, "offset", 0) or 0)
+            length = int(getattr(entity, "length", 0) or 0)
         if length <= 0 or offset < 0 or offset + length > limit:
             continue
         kept.append(entity)
@@ -3813,14 +3952,16 @@ def dedup_badge(
 
 def dedup_badge_entities(
     badge: str, *, bot_api: bool = False, offset: int = 0,
-    links: dict[str, str] | None = None,
+    links: dict[str, str] | None = None, names: Sequence[str] | None = None,
 ) -> list[Any]:
     """Rozeti biçimlendir: başlık kalın, HER grup adı kendi mesajına bağlı.
 
     Kullanıcı isteği: nota yazılan her grup adı, o grubun kendi mesajına
-    gömülü olsun. Adlar virgülle ayrıldığı için bağlantılar adın tam üzerine
-    (UTF-16 aralığına) oturur; adı bilinmeyen kaynak link taşımaz.
-    ``offset`` rozetin iletideki başlangıcıdır (bildirim metninin sonunda).
+    gömülü olsun. ``names`` verilirse (canlı rozet, ``entry["sources"]``)
+    adlar METİNDEN yeniden ayrıştırılmaz: grup adının içinde ``" | "`` ayraç
+    geçse bile tam adın üzerine tek link oturur. Verilmezse geriye dönük
+    ayrıştırma (``dedup_badge_sources``) sürer. ``offset`` rozetin iletideki
+    başlangıcıdır (bildirim metninin sonunda).
     """
     if not badge or not DEDUP_BADGE_RE.match(badge.strip()):
         return []
@@ -3833,7 +3974,7 @@ def dedup_badge_entities(
     else:
         entities.append(types.MessageEntityBold(offset=start,
                                                 length=utf16_length(headline)))
-    for name, name_start, name_length in dedup_badge_name_spans(badge):
+    for name, name_start, name_length in dedup_badge_name_spans(badge, names):
         url = (links or {}).get(name)
         if not url:
             continue
@@ -3897,21 +4038,59 @@ def dedup_badge_sources(content: str | None) -> list[str]:
     return _badge_source_parts(line)
 
 
-def dedup_badge_name_spans(badge: str | None) -> list[tuple[str, int, int]]:
+def dedup_badge_names(content: str | None, links: dict[str, str] | None = None) -> list[str]:
+    """Rozetteki grup adlarını, link ETİKETLERİNİ yetkili sayarak çöz.
+
+    Grup adının kendisi ``" | "`` taşıyorsa (``Yarı Fiyatına Ürünler | Amazon
+    Depo``, ``🎯indirimalarmi | Önemli Fırsatlar 💥``) ``dedup_badge_sources``
+    adı ikiye böler ve link sözlüğünde tam ad bulunamadığı için o grup LINKsİZ
+    kalıyordu. Gönderilmiş rozette o adın ``text_link`` etiketi TAM adı taşır;
+    ``dedup_source_links`` bunu anahtar olarak verir. Ardışık parçalar tam
+    etiketle birleştirilir; linki olmayan adlarda eski ayrıştırma sürer.
+    Açılış taraması (preload) ve kaydı boşalmış canlı rozet için kullanılır.
+    """
+    line = (content or "").strip()
+    parts = dedup_badge_sources(line)
+    labels = {
+        name for name in (links or {})
+        if name and name != DEDUP_MESSAGE_LINK_KEY and name in line
+    }
+    if not parts or not labels:
+        return parts
+    merged: list[str] = []
+    index = 0
+    while index < len(parts):
+        longest: tuple[int, str] | None = None
+        for end in range(index + 2, len(parts) + 1):
+            candidate = BADGE_SOURCE_SEPARATOR.join(parts[index:end])
+            if candidate in labels:
+                longest = (end, candidate)
+        if longest:
+            merged.append(longest[1])
+            index = longest[0]
+        else:
+            merged.append(parts[index])
+            index += 1
+    return merged
+
+
+def dedup_badge_name_spans(
+    badge: str | None, names: Sequence[str] | None = None,
+) -> list[tuple[str, int, int]]:
     """Rozetteki her grup adının ``(ad, UTF-16 başlangıç, uzunluk)`` konumları.
 
-    Adlar virgülle ayrıldığı için sırayla aranır: aynı ad iki kez yazılmaz
-    (``dedup_badge`` tekrarları ayıklar), böylece imleç her adı doğru yerde
-    bulur. ``👉 Ürün Linki 👈`` gibi satırlarda kullanılan UTF-16 birimi
-    burada da geçerlidir (emoji rozetten önce gövdede olabilir; konumlar
-    rozetin KENDİSİNE göre döner, çağıran rozetin metindeki başlangıcını ekler).
+    ``names`` (canlı kayıttaki ``sources``) verilirse adlar METİNDEN yeniden
+    bölünmez; tam adlar sırayla aranır. Bu, adın içindeki ``" | "`` ayracını
+    korur ve linkin adın TAMAMINA oturmasını sağlar. Verilmezse eski
+    ayrıştırma (``dedup_badge_sources``) kullanılır. Konumlar rozetin
+    KENDİSİNE göredir; çağıran rozetin metindeki başlangıcını ekler.
     """
     text = badge or ""
     if not DEDUP_BADGE_RE.match(text.strip()):
         return []
     spans: list[tuple[str, int, int]] = []
     cursor = 0
-    for name in dedup_badge_sources(text):
+    for name in (list(names) if names is not None else dedup_badge_sources(text)):
         index = text.find(name, cursor)
         if index < 0:
             continue  # "— KAÇIRMA!" / "· tek grup" kırpması adı bölmüş olabilir
@@ -4253,32 +4432,34 @@ def note_dedup_source(
 def dedup_badge_links(entry: dict[str, Any], names: Sequence[str]) -> dict[str, str]:
     """Rozette yazılacak adların adresleri: ``{ad: t.me linki}``.
 
-    ``entry["links"]`` varsa oradan gelir. Açılış taramasıyla kurulmuş eski
-    kayıtlarda adres, metne gömülü grup adından ya da ``Mesajı Gör`` satırından
-    okunur; hiçbiri yoksa o ad link olmadan yazılır (metin bozulmaz).
+    ``entry["links"]`` canlı paylaşımların adreslerini, ``entry["link_map"]``
+    açılış taramasının gönderilmiş iletiden okuduğu adresleri tutar. İkisi
+    AD BAZINDA birleştirilir: eski kod ``links`` içinde tek bir ad bile bulsa
+    hemen dönüp kalan adların ``link_map`` adreslerini yok sayıyordu; rozette
+    bazı adlar linkli, bazıları linksiz kalıyordu (kullanıcı bildirimi). Hiçbir
+    adres yoksa ad yine yazılır, yalnız o ad link taşımaz.
     """
-    links = entry.get("links")
     result: dict[str, str] = {}
+    links = entry.get("links")
     if isinstance(links, dict):
         for name in names:
             url = links.get(name)
             if url:
                 result[name] = str(url)
-    if result:
-        return result
     stored = entry.get("link_map")
     if isinstance(stored, dict):
         for name in names:
+            if name in result:
+                continue
             url = stored.get(name)
             if url and url != DEDUP_MESSAGE_LINK_KEY:
                 result[name] = str(url)
-        if result:
-            return result
         fallback = stored.get(DEDUP_MESSAGE_LINK_KEY)
-        if fallback and len(list(dict.fromkeys(names))) == 1:
+        unique = list(dict.fromkeys(names))
+        if fallback and len(unique) == 1 and unique[0] not in result:
             # Yalnız tek ad ve yalnız ``Mesajı Gör`` satırı biliniyorsa o adres
             # o adın kendisidir (eski biçim: ad + ayrı link satırı).
-            result[list(dict.fromkeys(names))[0]] = str(fallback)
+            result[unique[0]] = str(fallback)
     return result
 
 
@@ -6091,7 +6272,7 @@ def apply_runtime_config(config: dict) -> list[str]:
     global DELIVERY_CHAIN, MAX_MEDIA_MB
     global LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
     global MESSAGE_LINK_LINE, SOURCE_FOOTER, NOTIFY_MEDIA, NOTIFY_BOT_TOKEN
-    global SINGLE_MESSAGE, CLEAN_COMMANDS
+    global SINGLE_MESSAGE, CLEAN_COMMANDS, CLEAN_QUOTE_DUPLICATES
     global DEDUP_ENABLED, DEDUP_WINDOW_SECONDS, DEDUP_SCAN_LIMIT
 
     notes: list[str] = []
@@ -6116,6 +6297,9 @@ def apply_runtime_config(config: dict) -> list[str]:
     NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
     SINGLE_MESSAGE = config_flag(config.get("single_message"), True)
     CLEAN_COMMANDS = config_flag(config.get("clean_commands"), True)
+    # Varsayılan kapalı: davranış değişikliği yalnız config.json açtığında
+    # üretimde görülür; mevcut testler/altın referans eski düzeni sınamaya devam eder.
+    CLEAN_QUOTE_DUPLICATES = config_flag(config.get("clean_quote_duplicates"), False)
     SMART_HEADER = config_flag(config.get("smart_header"), False)
     FAST_NOTIFY = config_flag(config.get("fast_notify"), False)
     FAST_POLL = config_flag(config.get("fast_poll"), True)
@@ -8474,8 +8658,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 return
             names = list(entry.get("sources") or [])
             if not names:
-                # Önbellek açılış taramasıyla kurulduysa adlar eski nottan okunur.
-                names = dedup_badge_sources(current_text.splitlines()[-1] if current_text else "")
+                # Önbellek açılış taramasıyla kurulduysa adlar eski nottan,
+                # link etiketleri de varsa TAM adlarla okunur (içinde " | "
+                # geçen grup adları bölünmez).
+                names = dedup_badge_names(
+                    current_text.splitlines()[-1] if current_text else "",
+                    entry.get("link_map") or entry.get("links") or {},
+                )
             # Kullanıcı isteği: nota yazılan HER grup adı kendi mesajına
             # bağlanır (grup adı adresin içine gömülür).
             name_links = dedup_badge_links(entry, names)
@@ -8510,7 +8699,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     new_entities: list[dict[str, Any]] | None = sorted([
                         *shifted,
                         *dedup_badge_entities(badge, bot_api=True, offset=badge_offset,
-                                              links=name_links),
+                                              links=name_links, names=names),
                     ], key=lambda entity: int(entity.get("offset", 0)))
                     if DESTINATION_ID is None or not isinstance(bot_message_id, int):
                         break
@@ -8552,7 +8741,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     new_tl = sorted([
                         *shifted_tl,
                         *dedup_badge_entities(badge, bot_api=False, offset=badge_offset,
-                                              links=name_links),
+                                              links=name_links, names=names),
                     ], key=lambda entity: int(getattr(entity, "offset", 0) or 0))
                     try:
                         await client.edit_message(
@@ -8732,7 +8921,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
                         if link_map:
                             record["link_map"] = link_map
                         if badge_count > 1:
-                            names = dedup_badge_sources(text.splitlines()[-1] if text else "")
+                            names = dedup_badge_names(
+                                text.splitlines()[-1] if text else "", link_map,
+                            )
                             if names:
                                 record["sources"] = names
                         record["first_seen"] = seen_at

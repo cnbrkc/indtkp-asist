@@ -714,6 +714,22 @@ def _relate_candidates(text: str, candidates: list[Candidate]) -> None:
             c.reason = c.role
             continue
         clause = re.split(r"[/|(—–]", before)[-1]
+        # Kompakt set dökümü: "✅199TL - 2'li Alımda TERTEMİZ75 Kodu İle Set
+        # Fiyatı 162TL / Adet: 54TL". Üç tutar da ``normal`` kalınca havuz üç
+        # farklı değer görüp güveni low'a düşürüyor, üst satır ❓ oluyordu.
+        # Yalnız bu iki dar kalıp: kupon bağlamında "Set Fiyatı" ile nitelenen
+        # tutar nihai fiyattır; "/ Adet: X" ise birim dökümüdür. Parantezli
+        # birim kuralı ve "adet başı/tanesi" kuralları aynen korunur.
+        if c.cls in {"price", "cond"} and re.search(
+            r"\b(?:kod|kupon)\w*\b.*\bset\s+fiyat[ıi]\s*[:=]?\s*$", clause,
+        ):
+            c.cls, c.role, c.strong, c.reason = "price", "discounted", True, "discounted"
+            continue
+        if c.cls == "price" and re.search(r"\badet\s*[:=]\s*$", clause) and any(
+            other.line == c.line and other.end <= c.start for other in candidates
+        ):
+            c.cls, c.role, c.strong, c.reason = "cond", "unit", True, "unit"
+            continue
         if c.cls in {"price", "cond"} and re.search(
             r"\b\d+\s*adet\s*al[ıi]mda\s+(?:adet|tanesi|birim)\s*$", clause
         ):
@@ -1550,6 +1566,88 @@ def extract_title(text: str, hints: Sequence[str] = (), limit: int = 160) -> str
     index, title = picked
     title = _title_extend_with_neighbors(title, index, lines)
     return _title_finalize(title, limit)
+
+def _line_is_strict_product(raw: str, title: str) -> bool:
+    """Satır TEK bir ürün adı mı (fiyat/etiket/kupon/metadata yok, kırpılmamış)?
+
+    Alıntıdan satır silme kararı için: ham satırdaki KELİMELER başlığın
+    kelimeleriyle birebir aynı olmalı (yalnız emoji/noktalama düşmüş); "Fırsat",
+    mağaza adı, "Ürün:" etiketi gibi kırpılan sözler varsa satırın tamamını
+    silmek güvenli değildir.
+    """
+    if not title or len(title.split()) < 2 or is_generic_title(raw) or _is_noise(title):
+        return False
+    plain = norm(raw)
+    # Eski/çoklu paylaşım rozetleri ("🔥 3 kaynakta paylaşıldı!",
+    # "📌 Kaynaklar: A, B") ürün adı DEĞİLDİR; üst başlıkla aynı sözleri
+    # taşısalar bile alıntıdan silinmezler.
+    if re.search(r"\b(?:kaynakta|kaynaklar|paylaşıldı)\b", plain):
+        return False
+    # Kanal tanıtımı / açıklama / çıplak alan adı satırları da ürün adı değil:
+    # "Açıklama satırı", "📣 Diğer kanallarımız için TAZEFIRSAT.com". Bunlar
+    # başlık seçicisine girebilir; alıntı temizliği için fazla risklidir.
+    if re.search(
+        r"\b(?:açıklama|aciklama|satır|satir|kanalımız|kanallarımız|kanalim|kanallar|"
+        r"katılın|katilin|takip|tanıtım|tanitim)\b", plain,
+    ) or re.search(r"\b[\w-]+\.(?:com|net|org|biz|co|tr|io)\b", plain):
+        return False
+    # Koşul/placeholder satırları da ürün adı sayılmaz: "Prime üyelerine özel",
+    # "İkinci El", "Ürün X", "Ürün Adı Pro", "Kalem Set 2. ürün", test notları.
+    if re.search(
+        r"\b(?:ürün|ikinci\s+el|sıfır|negatif|boş|bozuk|girdiler|politika|korunur)\b", plain,
+    ) or re.search(r"\bprime\s+üyelerine\s+özel\b", plain):
+        return False
+    if PRICE_RE.search(raw) or _URL_RE.search(raw) or _MENTION_RE.search(raw) \
+            or _PERCENT_RE.search(raw) or _META_WORDS_RE.search(norm(raw)) \
+            or _COUPON_CODE_CONTEXT_RE.search(norm(raw)):
+        return False
+    raw_words = [norm(word) for word in _TOKEN_RE.findall(_SYMBOL_RE.sub(" ", raw))]
+    title_words = [norm(word) for word in _TOKEN_RE.findall(title)]
+    return bool(raw_words) and raw_words == title_words
+
+
+def title_source_line(
+    text: str, hints: Sequence[str] = (), limit: int = 160,
+) -> tuple[int, str, str] | None:
+    """``extract_title`` başlığı TEK bir satırdan güvenle çıkardıysa o satırı ver.
+
+    Alıntıdaki ürün adı satırını silmek için kullanılır (bk. bot.py
+    ``strip_quoted_detected_lines``). "Garanti" koşulu: yalnızca karar kesinse
+    ``(satır no, ham satır, başlık)`` döner; aksi halde ``None``. Kesin saymak
+    için:
+
+    * özel yol (katalog fiyatı / numaralı ürün bloğu) devreye girmemeli,
+    * en yüksek puan ``>= 1.0`` olmalı ve ikinci adayla eşit olmamalı
+      (``_title_pick_best`` düşük puanda en erken satıra düşer),
+    * seçilen satır `` | ``/`` — `` ile parçalara bölünmemeli, başlık komşu
+      satırlarla genişletilmemeli ve kırpılmamalı,
+    * ileti içinde BAŞKA bir katı ürün adı satırı olmamalı (``Pamuk Havlu /\n
+      100 TL / Cam Bardak / 200 TL`` gibi çok ürünlü listeler korunur),
+    * satırda fiyat/URL/etiket/yüzde/kupon kodu/metadata olmamalı.
+
+    Böylece emin olunmayan satır alıntıda kalır; hiçbir ürün bilgisi
+    tespit edilmeden silinmez.
+    """
+    if _title_handle_special(text, hints, limit) is not None:
+        return None
+    lines = (text or "").split("\n")
+    entries = _title_collect_entries(lines, _title_hint_tokens(hints))
+    if not entries:
+        return None
+    strict = [item for item in entries if item[0] >= 1.0 and _line_is_strict_product(item[3], item[2])]
+    if len(strict) != 1:
+        return None
+    entries.sort(key=lambda item: (-item[0], item[1]))
+    score, index, title, raw = entries[0]
+    if score < 1.0 or (len(entries) > 1 and entries[1][0] >= score) \
+            or (index, title) != (strict[0][1], strict[0][2]):
+        return None
+    if _title_extend_with_neighbors(title, index, lines) != title:
+        return None
+    if _title_finalize(title, limit) != title or len(_segments(raw)) != 1:
+        return None
+    return index, raw, title
+
 
 def analyze(text: str, strike: Sequence[tuple[int, int]] = (),
             hints: Sequence[str] = ()) -> tuple[str, PriceInfo]:

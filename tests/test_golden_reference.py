@@ -102,6 +102,7 @@ BASE_CONFIG: dict[str, Any] = {
     "max_media_mb": 25, "link_appendix": "smart",
     "message_link": True, "source_footer": True,
     "notify_media": True, "single_message": True, "clean_commands": True,
+    "clean_quote_duplicates": True,
     "dedup_enabled": True, "dedup_window_hours": 12, "dedup_scan_limit": 100,
     "dm_enabled": True, "dm_keywords": ["airfryer", "kahve"],
     "dm_exclude_keywords": ["kupon"], "dm_price_max": ["10"],

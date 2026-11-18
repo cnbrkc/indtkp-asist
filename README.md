@@ -278,6 +278,7 @@ Deponun kökündeki [`config.json`](config.json) dosyasını GitHub'dan düzenle
   "source_footer": true,
   "notify_media": true,
   "clean_commands": true,
+  "clean_quote_duplicates": true,
   "single_message": true,
   "dedup_enabled": true,
   "dedup_window_hours": 12,
@@ -365,6 +366,7 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `source_footer` | `true` / `false` | Bildirimin **en altına kaynak grup adını kalın** yazar. "Fırsatı Gönderen" gibi bir etiket yazılmaz; ad, orijinal mesajın adresine **gizli link** olarak bağlanır (ada dokunmak mesajı açar). Varsayılan `true`. |
 | `notify_media` | `true` / `false` | Bildirim botu fotoğraf/videoyu da göndersin. |
 | `clean_commands` | `true` / `false` | **Komut temizliği.** `control_chat`'te yeni bir komut yazıldığında bir önceki komut ve bot yanıtı silinir; ekranda yalnızca son mesaj kalır. İndirim bildirimleri bu temizliğin **dışındadır, asla silinmez.** Varsayılan `true`. |
+| `clean_quote_duplicates` | `true` / `false` | **Alıntı temizliği (ilk adım).** `smart_header` açıkken üst satırda güvenle tespit edilen ürün adı satırı ile `_coupon_codes` tarafından doğrulanan tek başına kupon kodu satırı alıntıdan çıkarılır. Tespit düşük/şüpheliyse, satır link/etiket taşıyorsa veya satır silinince alıntı boşalacaksa **hiçbir satır silinmez** ([8. bölüm](#8-gizli-bağlantılar-ve-fiyat-arama-düğmeleri)). Başlık, fiyat, tekrar kimliği ve ürün linkleri daima ORİJİNAL mesajdan hesaplanır. Bu depoda `true`; alan yoksa kapalı. |
 | `single_message` | `true` / `false` | **Tek mesaj modu.** Bildirim botu mesajı gruba attıysa, hesabın attığı kopya gruptan silinir; böylece her fırsat tek mesaj olarak kalır. Bildirim gidemezse kopya **silinmez**. Varsayılan `true`. |
 | `dedup_enabled` | `true` / `false` | **Tekrar birleştirme.** Normalize ürün sorgusu aynı olan fırsatlar tek mesajda toplanır; tekrarlar gruba atılmaz, ilk mesajın son bloğuna `📌 2 kere paylaşıldı: <gruplar>` gibi **tek satırlık** not işlenir ([9. bölüm](#9-tekrar-birleştirme-aynı-fırsat-tek-mesaj)). Varsayılan `true`. |
 | `dedup_window_hours` | sayı | Normalize ürün sorgusu kaç saat boyunca "aynı fırsat" sayılsın (1–72, varsayılan 12). |
@@ -985,6 +987,17 @@ gizli hyperlink/buton/önizleme adreslerini `🔗 etiket: adres` biçiminde ham 
 döker; `"off"` ek bağlantı satırı yazmaz. Kaynağın arama butonları bot bildiriminde üç
 modda da satır olmaz (klavyede durur); klavyesiz hesap kopyasında `smart` ve `all`
 modlarında satır olarak yazılır.
+
+`clean_quote_duplicates: true` (bu depoda açık) alıntıdaki tekrarın yalnızca **ilk
+adımını** temizler: üst satırda yazan ürün adı, kaynak mesajda TEK ve kesin bir
+ürün adı satırı olarak tespit edildiyse o satır alıntıdan çıkarılır; ayrıca
+`_coupon_codes` ile doğrulanmış, tek başına duran kupon kodu satırı da çıkarılır.
+"Kesin" değilse hiç dokunulmaz: birden çok ürün adayı, satır içinde fiyat/URL/
+kod/metadata, kırpılmış başlık, linkli satır, tespit edilemeyen kod ya da alıntıyı
+boşaltacak silme durumlarının hiçbirinde satır silinmez. Üst başlık, fiyat, tekrar
+(dedup) anahtarı, arama sorgusu ve ürün linkleri daima **orijinal** mesajdan
+hesaplanır; temizlik yalnızca görünen alıntı metnine ve onun entity offset'lerine
+uygulanır.
 
 ---
 
