@@ -203,9 +203,13 @@ class DmPriceRuleTests(unittest.TestCase):
         cfg = {"dm_enabled": False, "dm_keywords": []}
         self.assertFalse(bot.dm_should_send(cfg, "Ampul 0 TL"))
 
-    def test_keyword_exclude_does_not_block_price_rule(self):
+    def test_shared_dm_exclusion_blocks_both_legacy_rules(self):
         cfg = {"dm_enabled": True, "dm_keywords": ["tv"], "dm_exclude_keywords": ["tv"], "dm_price_max": ["100"]}
-        self.assertTrue(bot.dm_should_send(cfg, "TV kablosu 49 TL"))
+        decision = bot.dm_decision(cfg, "TV kablosu 49 TL")
+        self.assertFalse(bot.dm_should_send(cfg, "TV kablosu 49 TL"))
+        self.assertFalse(decision.should_send)
+        self.assertTrue(next(result for result in decision.results if result.group == "dmharic").matched)
+        self.assertTrue(bot.dm_should_send({"dm_enabled": False, "dm_price_max": ["100"]}, "Ampul 49 TL"))
 
     def test_staging(self):
         ok, cand, values, msg = bot.stage_telegram_list_change({}, "dm_price_max", "add", "10.000 ₺")
@@ -218,6 +222,9 @@ class DmPriceRuleTests(unittest.TestCase):
         self.assertEqual(cand3["dm_price_max"], [])
         self.assertFalse(bot.stage_telegram_list_change({}, "dm_price_max", "add", "abc")[0])
         self.assertFalse(bot.stage_telegram_list_change({}, "dm_price_max", "add", "10, 20")[0])
+        ok, decimal, _, _ = bot.stage_telegram_list_change({}, "dm_price_max", "add", "10.000,50 TL")
+        self.assertTrue(ok)
+        self.assertEqual(bot.dm_price_threshold(decimal), 10000.5)
         self.assertFalse(bot.stage_telegram_list_change({}, "dm_price_max", "remove", "1")[0])
 
     def test_alias(self):

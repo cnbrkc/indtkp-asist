@@ -47,11 +47,12 @@ from telethon.sessions import StringSession
 from telethon.tl import functions, types
 
 import price_filter
+import dm_filters
 import timefmt
 from telegram_retry import gate_stats, request_with_retry
 from private_bot import (
     BotAPI, BotAPIError, PrivateControlEvent, PrivateOfferQueue,
-    dm_matches, edit_dm_keywords, normalize_keyword, poll_health, poll_private_commands,
+    edit_dm_keywords, normalize_keyword, poll_health, poll_private_commands,
     private_copy_request,
 )
 
@@ -527,6 +528,25 @@ def _check_config_flags_and_dm(config: dict, problems: list[str]) -> None:
         price_filter.parse_threshold(item) is None for item in price_items
     ):
         problems.append("config.json → dm_price_max en fazla 1 sayı içermeli (örn. [\"10000\"]).")
+    product_price_items = config.get(dm_filters.DM_PRODUCT_PRICE_FIELD, [])
+    invalid_product_price_items = not isinstance(product_price_items, list) or len(product_price_items) > 100
+    seen_product_price_rules: set[tuple[str, float]] = set()
+    if isinstance(product_price_items, list):
+        for item in product_price_items:
+            try:
+                rule = dm_filters.parse_product_price_rule(item)
+            except (TypeError, ValueError):
+                invalid_product_price_items = True
+                break
+            if rule.identity in seen_product_price_rules:
+                invalid_product_price_items = True
+                break
+            seen_product_price_rules.add(rule.identity)
+    if invalid_product_price_items:
+        problems.append(
+            "config.json → dm_product_price_rules en fazla 100 geçerli, yinelenmeyen "
+            "'ürün adı < fiyat' kuralı içermeli."
+        )
     for flag in ("smart_header", "fast_notify", "fast_poll"):
         if not isinstance(config.get(flag, False), bool):
             problems.append(f"config.json → {flag} true/false olmalı.")
@@ -5172,17 +5192,17 @@ COMMAND_DESCRIPTIONS = (
     (COMMAND_STATUS, "Takipçinin dinleme durumunu, hedefini, sayaçlarını ve filtre durumunu gösterir."),
     (COMMAND_SETTINGS_MENU, "Bot yönetim merkezi: liste, TG filtre, DM filtre ve web ürün takibi bölümlerini gösterir."),
     # --- 2) Liste yönetimi ---
-    (COMMAND_SETTINGS_ADD, "Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat/web ürün takibi)."),
-    (COMMAND_SETTINGS_REMOVE, "Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat/web ürün takibi)."),
+    (COMMAND_SETTINGS_ADD, "Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/DM filtreleri/ürün adı < fiyat/web ürün takibi)."),
+    (COMMAND_SETTINGS_REMOVE, "Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/DM filtreleri/ürün adı < fiyat/web ürün takibi)."),
     (COMMAND_SETTINGS_SAVE, "Bekleyen liste taslağını kaydeder (DM listeleri dahil)."),
     (COMMAND_SETTINGS_REVERT, "Bekleyen ekleme veya çıkarma işlemini iptal eder."),
     # --- 3) Telegram indirim filtreleri ---
     (COMMAND_TG_FILTER_OPEN, "Telegram indirim akışında dahili, harici veya iki filtreyi açar."),
     (COMMAND_TG_FILTER_CLOSE, "Telegram indirim akışında dahili, harici veya iki filtreyi kapatır."),
     # --- 4) Kişisel bildirim filtreleri (DM) ---
-    (COMMAND_DM_STATUS, "Kişisel bildirim filtresinin durumunu, dahil/hariç listesini ve fiyat sınırını gösterir."),
-    (COMMAND_DM_FILTER_OPEN, "Kişisel bildirim filtresini açar."),
-    (COMMAND_DM_FILTER_CLOSE, "Kişisel bildirim filtresini kapatır; kelime listeleri korunur."),
+    (COMMAND_DM_STATUS, "Dört kişisel DM filtresinin durumunu, listelerini ve fiyat eşiklerini gösterir."),
+    (COMMAND_DM_FILTER_OPEN, "dmdahil grubunu açar; dmfiyat ve ürün adı/fiyat kuralları bağımsızdır."),
+    (COMMAND_DM_FILTER_CLOSE, "dmdahil grubunu kapatır; diğer DM filtre grupları bağımsız çalışır."),
     # --- 5) Web ürün takibi (Akakçe ProductTracker) ---
     (COMMAND_WEB_TRACK, "Akakçe ürün takip menüsünü açar; Akakçe linkini gönderip hedef fiyatı belirlersin."),
     ("/webtakipac", "Web ürün fiyat takibini etkinleştirir."),
@@ -5326,7 +5346,7 @@ def build_source_text() -> str:
 # Telegram liste düzenleme akışı
 # ---------------------------------------------------------------------------
 #
-# Telegram'da beş liste taslak akışıyla düzenlenir; iki filtre ise
+# DM ve grup listeleri ortak taslak/kaydet akışını kullanır; iki Telegram grup filtresi
 # /tgfiltreac ve /tgfiltrekapat ile bağımsız açılıp kapatılır. Diğer ayarlar config/kod üzerinden.
 
 def build_main_menu_text() -> str:
@@ -5348,10 +5368,10 @@ def build_main_menu_text() -> str:
         "",
         "📩  KİŞİSEL BİLDİRİM FİLTRELERİ (DM)",
         "ℹ️  /dmfiltre    · DM filtrelerinin durumunu ve listelerini gösterir",
-        "🟢  /dmfiltreac  · Kişisel bildirim filtresini açar",
-        "🔴  /dmfiltrekapat · Kişisel bildirim filtresini kapatır",
-        "   DM dahil/hariç kelimeler ve fiyat sınırı korunur;",
-        "   sadece hesap sahibinin özel sohbetinden düzenlenir.",
+        "🟢  /dmfiltreac  · dmdahil grubunu açar",
+        "🔴  /dmfiltrekapat · dmdahil grubunu kapatır",
+        "   dmdahil/dmfiyat için dmharic ortak engeldir; ürün adı < fiyat grubu bağımsızdır.",
+        "   DM ayarları yalnızca hesap sahibinin özel sohbetinden düzenlenir.",
         "",
         "🌐  WEB ÜRÜN TAKİBİ (Akakçe)",
         "🛒  /webtakip    · Ürün takip menüsünü açar",
@@ -5370,12 +5390,16 @@ def build_main_menu_text() -> str:
 
 # Telegram'dan değiştirilebilen tek ayarlar; her yeni alan buraya bilinçli eklenmeli.
 DM_LIST_FIELDS = ("dm_keywords", "dm_exclude_keywords")
-DM_PRICE_FIELD = "dm_price_max"   # tek değerli; kelime listelerinden ayrı işlenir
-TELEGRAM_LIST_FIELDS = ("include_keywords", "exclude_keywords", "source_chats", *DM_LIST_FIELDS, DM_PRICE_FIELD)
-# /ekle ve /cikar menüsünün 7. seçeneği: Akakçe ürün fiyat takibi.
-# Bu config listesi değildir; seçilince product_tracker (link → hedef fiyat →
-# product_watches.json) akışına yönlendirilir.
+DM_PRICE_FIELD = dm_filters.DM_PRICE_FIELD   # tek değerli; kelime listelerinden ayrı işlenir
+DM_PRODUCT_PRICE_FIELD = dm_filters.DM_PRODUCT_PRICE_FIELD
+TELEGRAM_LIST_FIELDS = (
+    "include_keywords", "exclude_keywords", "source_chats", *DM_LIST_FIELDS,
+    DM_PRICE_FIELD, DM_PRODUCT_PRICE_FIELD,
+)
+# Sayısal seçimleri geriye uyumlu tut: web takip 7 olmaya devam eder; yeni
+# bağımsız ürün-adı/fiyat listesi 8'dir.
 WEBTAKIP_FIELD = "__webtakip__"
+TELEGRAM_LIST_MENU = (*TELEGRAM_LIST_FIELDS[:-1], WEBTAKIP_FIELD, DM_PRODUCT_PRICE_FIELD)
 WEBTAKIP_CHOICES = {"7", "webdetakip", "web_takip", "akakcetakip", "akakce_takip"}
 TELEGRAM_LIST_META: dict[str, dict[str, str]] = {
     "dm_keywords": {
@@ -5392,6 +5416,11 @@ TELEGRAM_LIST_META: dict[str, dict[str, str]] = {
         "title": "dmfiyat — DM maksimum fiyat",
         "icon": "💰",
         "description": "Bu tutar ve altındaki fiyatlar özel kopya gönderir (kelimelerden bağımsız)",
+    },
+    DM_PRODUCT_PRICE_FIELD: {
+        "title": "ürün adı < fiyat — DM ürün/fiyat kuralları",
+        "icon": "🏷️",
+        "description": "Ürün başlığındaki ifade ve gerçek ürün fiyatı birlikte eşleşmeli",
     },
     "include_keywords": {
         "title": "Dahili kelimeler",
@@ -5413,6 +5442,10 @@ TELEGRAM_LIST_ALIASES = {
     "dm_keywords": {"dmdahil", "dmdahili", "dm_dahil", "dm_dahili"},
     "dm_exclude_keywords": {"dmharic", "dmhariç", "dm_haric", "dm_hariç"},
     "dm_price_max": {"dmfiyat", "dm_fiyat", "dmmaxfiyat", "dm_max_fiyat", "dm_price_max", "dmucret", "fiyatfiltresi"},
+    DM_PRODUCT_PRICE_FIELD: {
+        "ürün_adı_<_fiyat", "urun_adi_<_fiyat", "dm_urun_fiyat", "dm_ürün_fiyat",
+        "dm_product_price_rules", "urun_fiyat", "ürün_fiyat", "urunadifiyat",
+    },
     "include_keywords": {"dahil", "dahili", "dahili_kelimeler", "kelime", "kelimeler", "include_keywords"},
     "exclude_keywords": {"harici", "harici_kelimeler", "hariç", "haric", "exclude_keywords"},
     "source_chats": {"grup", "gruplar", "grup_isimleri", "kanal", "kanallar", "kaynak", "kaynaklar", "source_chats"},
@@ -5434,36 +5467,45 @@ def telegram_list_items(config: dict, field: str) -> list[Any]:
 
 def dm_price_threshold(config: dict) -> float | None:
     """DM maksimum fiyat eşiği (yoksa/okunamazsa None → kural kapalı)."""
-    items = telegram_list_items(config, "dm_price_max")
-    if not items:
-        return None
-    return price_filter.parse_threshold(items[0])
+    return dm_filters.dm_price_threshold(config)
+
+
+def dm_decision(
+    config: dict,
+    text: str,
+    strike: Sequence[tuple[int, int]] = (),
+    *,
+    facts: dm_filters.OfferFacts | None = None,
+) -> dm_filters.DMDecision:
+    """DM'in saf ve açıklanabilir kararını üret; gönderim/queue yan etkisi yoktur."""
+    return dm_filters.evaluate_dm_offer(config, text, strike, facts=facts)
+
+
+def _log_dm_decision(decision: dm_filters.DMDecision) -> None:
+    for result in decision.results:
+        log.debug(
+            "DM filtresi %s: %s (%s)%s",
+            result.group, "eşleşti" if result.matched else "reddedildi", result.reason,
+            f" [kural: {result.rule}]" if result.rule else "",
+        )
+    if decision.should_send:
+        log.info("DM gönderim kararı: %s", ", ".join(decision.matched_groups))
 
 
 def dm_should_send(config: dict, text: str, strike: Sequence[tuple[int, int]] = ()) -> bool:
-    """Özel kopya kararı: kelime kuralı VEYA fiyat kuralı. İkisi birbirinden bağımsızdır."""
-    if config_flag(config.get("dm_enabled"), False) and dm_matches(
-        text, config.get("dm_keywords", []), config.get("dm_exclude_keywords", []),
-    ):
-        return True
-    threshold = dm_price_threshold(config)
-    if threshold is None:
-        return False
-    hit, info = price_filter.price_matches(text, threshold, strike)
-    if hit:
-        log.info("DM fiyat kuralı eşleşti: %s ≤ %s (%s).", info.text, price_filter.format_price(threshold), info.reason)
-    return hit
+    """Geriye uyumlu bool API; kararın tüm grup nedenleri ``dm_decision`` ile alınır."""
+    decision = dm_decision(config, text, strike)
+    _log_dm_decision(decision)
+    return decision.should_send
 
 
 def resolve_telegram_list(text: Any) -> str | None:
-    """Menüdeki 1–6 seçimini, Türkçe liste adını veya webdetakip'i kurallı alana çevir."""
+    """Menü seçimini, Türkçe liste adını veya webdetakip'i kurallı alana çevir."""
     raw = normalize(str(text or "")).strip().lstrip("/")
     if raw.isdigit():
         index = int(raw)
-        if 1 <= index <= len(TELEGRAM_LIST_FIELDS):
-            return TELEGRAM_LIST_FIELDS[index - 1]
-        if index == 7:
-            return WEBTAKIP_FIELD
+        if 1 <= index <= len(TELEGRAM_LIST_MENU):
+            return TELEGRAM_LIST_MENU[index - 1]
     key = re.sub(r"[\s-]+", "_", raw)
     if key in WEBTAKIP_CHOICES:
         return WEBTAKIP_FIELD
@@ -5492,27 +5534,36 @@ def build_list_category_prompt(
     title = "➕  LİSTEYE EKLE" if is_add else "➖  LİSTEDEN ÇIKAR"
     instruction = "Hangi listeye ekleyelim?" if is_add else "Hangi listeden kayıt çıkaralım?"
     lines = [title, "━━━━━━━━━━━━━━━━━━━━", instruction, ""]
-    for index, field in enumerate(TELEGRAM_LIST_FIELDS, start=1):
+    for index, field in enumerate(TELEGRAM_LIST_MENU, start=1):
+        if field == WEBTAKIP_FIELD:
+            count_text = "–" if webtakip_count is None else str(webtakip_count)
+            lines += [
+                f"{index}. 🌐  webdetakip  ·  Akakçe ürün fiyat takibi  ·  {count_text} kayıt",
+                "   Akakçe ürün linkiyle fiyat/hedef takibi: link → hedef fiyat → kalıcı kayıt",
+            ]
+            continue
         meta = TELEGRAM_LIST_META[field]
         count = len(telegram_list_items(config, field))
         lines.append(f"{index}. {meta['icon']}  {meta['title']}  ·  {count} kayıt")
         lines.append(f"   {meta['description']}")
-    count_text = "–" if webtakip_count is None else str(webtakip_count)
     lines += [
-        f"7. 🌐  webdetakip  ·  Akakçe ürün fiyat takibi  ·  {count_text} kayıt",
-        "   Akakçe ürün linkiyle fiyat/hedef takibi: link → hedef fiyat → kalıcı kayıt",
         "",
-        "Seçmek için 1, 2, 3, 4, 5, 6 ya da 7 (webdetakip) yazabilir; listedeki adı da geçer.",
+        "Seçmek için 1–8 yazabilir; listedeki adı da geçer. 7 (webdetakip) eski seçimi korur.",
         "Vazgeçmek için /iptal.",
     ]
     return "\n".join(lines)
 
 
 def telegram_list_item_key(field: str, value: Any) -> str:
-    """Kayıt karşılaştırması: Türkçe kelimeler ve ASCII Telegram kullanıcı adları."""
+    """Kayıt karşılaştırması: DM kuralları Türkçe uyumlu, kaynak adları ASCII uyumlu."""
     text = str(value)
     if field in DM_LIST_FIELDS:
         return normalize_keyword(text)
+    if field == DM_PRODUCT_PRICE_FIELD:
+        try:
+            return dm_filters.parse_product_price_rule(text).canonical
+        except (TypeError, ValueError):
+            return normalize_keyword(text)
     # Telegram kullanıcı adları ASCII ve büyük/küçük harfe duyarsızdır; burada
     # Türkçe I/İ eşlemesi uygulanmamalı (I ile i farklı dönüşür).
     return text.casefold() if field == "source_chats" else normalize(text)
@@ -5539,6 +5590,18 @@ def build_list_value_prompt(action: str, field: str, config: dict) -> str:
                       "Örnek: 10000 · 50 · 0   (yeni değer eskisinin yerine geçer)"]
         else:
             lines += ["Fiyat eşiğini kaldırmak için 1 yaz."]
+        lines += ["", "Bu adımda ayar henüz kaydedilmez.", "İptal etmek için /iptal."]
+        return "\n".join(lines)
+    if field == DM_PRODUCT_PRICE_FIELD:
+        if action == "add":
+            lines += [
+                "Ürün başlığında aranacak ifade ile en yüksek gerçek ürün fiyatını '<' ile yaz.",
+                "Örnek: telefon < 100 · TCL < 30000 · LG 75 < 45000",
+                "Birden çok kuralı yeni satır veya noktalı virgülle ayır; aynı kural tekrar eklenmez.",
+                "Kupon, eski fiyat, taksit ve kargo tutarları ürün fiyatı sayılmaz.",
+            ]
+        else:
+            lines += ["Tek bir kuralı listedeki kayıt numarası veya tam 'ürün adı < fiyat' ifadesiyle çıkar."]
         lines += ["", "Bu adımda ayar henüz kaydedilmez.", "İptal etmek için /iptal."]
         return "\n".join(lines)
     if action == "add":
@@ -5580,7 +5643,12 @@ def stage_price_threshold_change(
             f"{title} kaldırılacak (şu an: {price_filter.format_price(price_filter.parse_threshold(current[0]) or 0)}). "
             "Fiyat kuralı kapanır."
         )
-    values = split_values(raw_value)
+    raw_text = str(raw_value or "").strip()
+    values = (
+        split_values(raw_text)
+        if not raw_text or ";" in raw_text or "\n" in raw_text or re.search(r",\s+", raw_text)
+        else [raw_text]
+    )
     if len(values) != 1:
         return False, copy.deepcopy(config), [], "ℹ️ Tek bir tutar gönder. Örnek: 10000"
     amount = price_filter.parse_threshold(values[0])
@@ -5691,6 +5759,100 @@ def _stage_list_remove(
     return True, candidate, removed, message
 
 
+def split_product_price_rule_values(raw: Any) -> list[str]:
+    """Split rule batches without mistaking a decimal comma for a separator.
+
+    Newlines and semicolons are unambiguous. Commas may separate multiple
+    complete rules, but a comma is accepted as a rule boundary only after the
+    preceding threshold parses and before a following ``name < price`` pair.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    values: list[str] = []
+    for line in re.split(r"[\r\n;]+", text):
+        line = line.strip()
+        if not line:
+            continue
+        if "<" not in line:
+            values.extend(split_values(line))
+            continue
+        if line.count("<") < 2:
+            values.append(line)
+            continue
+        start = 0
+        for match in re.finditer(",", line):
+            prefix = line[start:match.start()].strip()
+            suffix = line[match.end():]
+            if prefix.count("<") != 1 or price_filter.parse_threshold(prefix.split("<", 1)[1]) is None:
+                continue
+            next_less_than = suffix.find("<")
+            if next_less_than < 0:
+                continue
+            next_name = suffix[:next_less_than].strip()
+            if not next_name or "," in next_name or not any(char.isalpha() for char in next_name):
+                continue
+            values.append(prefix)
+            start = match.end()
+        remainder = line[start:].strip()
+        if remainder:
+            values.append(remainder)
+    return values
+
+
+def stage_product_price_rule_change(
+    config: dict, action: str, raw_value: Any,
+) -> tuple[bool, dict, list[Any], str]:
+    """Stage one or more independent title-and-price rules."""
+    field = DM_PRODUCT_PRICE_FIELD
+    title = TELEGRAM_LIST_META[field]["title"]
+    current = telegram_list_items(config, field)
+    values = split_product_price_rule_values(raw_value)
+    if not values:
+        return False, copy.deepcopy(config), [], "Boş ürün adı/fiyat kuralı eklenemez veya çıkarılamaz."
+    if len(values) > LIST_BATCH_MAX:
+        return False, copy.deepcopy(config), [], f"Tek mesajda en fazla {LIST_BATCH_MAX} kural gönderebilirsin."
+    if action == "remove":
+        return _stage_list_remove(config, field, current, values, title)
+
+    added: list[str] = []
+    duplicates: list[str] = []
+    invalid: list[str] = []
+    keys = [telegram_list_item_key(field, item) for item in current]
+    for raw_rule in values:
+        try:
+            rule = dm_filters.parse_product_price_rule(raw_rule)
+        except (TypeError, ValueError) as exc:
+            invalid.append(f"{raw_rule[:32]}… ({exc})" if len(raw_rule) > 32 else f"{raw_rule} ({exc})")
+            continue
+        if rule.canonical in keys:
+            duplicates.append(rule.canonical)
+            continue
+        keys.append(rule.canonical)
+        added.append(rule.canonical)
+    if not added:
+        lines = ["ℹ️ Eklenecek yeni kural yok."]
+        if duplicates:
+            lines.append(f"zaten listede: {format_value_preview(duplicates)}")
+        if invalid:
+            lines.append(f"Geçersiz kural: {format_value_preview(invalid)}")
+        return False, copy.deepcopy(config), [], "\n".join(lines)
+    if len(current) + len(added) > 100:
+        return False, copy.deepcopy(config), [], "Ürün adı/fiyat listesinde en fazla 100 kural olabilir; hiçbir kural eklenmedi."
+
+    message = (
+        f"{title} listesine eklenecek: {added[0]}" if len(added) == 1 else
+        f"{title} listesine eklenecek {len(added)} kural: {format_value_preview(added)}"
+    )
+    if duplicates:
+        message += f"\n⚠️ {len(duplicates)} kural zaten listede, atlandı: {format_value_preview(duplicates)}"
+    if invalid:
+        message += f"\n⚠️ {len(invalid)} kural geçersiz, atlandı: {format_value_preview(invalid)}"
+    candidate = copy.deepcopy(config)
+    candidate[field] = [*current, *added]
+    return True, candidate, added, message
+
+
 def stage_telegram_list_change(
     config: dict, field: str, action: str, raw_value: Any,
 ) -> tuple[bool, dict, list[Any], str]:
@@ -5706,6 +5868,8 @@ def stage_telegram_list_change(
         return False, copy.deepcopy(config), [], "Geçersiz liste işlemi."
     if field == "dm_price_max":
         return stage_price_threshold_change(config, action, raw_value)
+    if field == DM_PRODUCT_PRICE_FIELD:
+        return stage_product_price_rule_change(config, action, raw_value)
     current = telegram_list_items(config, field)
     values = split_values(raw_value)
     if not values:
@@ -7432,7 +7596,12 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
     async def prepare_private_offer(item):
         # Turning off/changing the filter also cancels queued, unsent copies.
-        if not dm_should_send(store.config, item["match_text"], item.get("strike") or ()):
+        decision = dm_decision(
+            store.config, item["match_text"], item.get("strike") or (),
+            facts=item.get("dm_facts"),
+        )
+        _log_dm_decision(decision)
+        if not decision.should_send:
             return None
         info = item.get("bot")
         if not info:
@@ -7461,37 +7630,49 @@ async def main(argv: Sequence[str] | None = None) -> int:
     private_offers = PrivateOfferQueue(private_api, prepare_private_offer)
 
     def enqueue_private_offer(event, info):
-        if not private_api:
-            return
-        if not config_flag(store.config.get("dm_enabled"), False) and dm_price_threshold(store.config) is None:
+        if not private_api or not dm_filters.has_active_rules(store.config):
             return
         sanitized = sanitize_message(event)
         text = message_text(sanitized)
         strike = price_filter.strike_spans_from_entities(text, entities_for_text(sanitized, text))
-        if dm_should_send(store.config, text, strike):
+        decision = dm_decision(store.config, text, strike)
+        _log_dm_decision(decision)
+        if decision.should_send:
             private_offers.submit({
                 "destination": DESTINATION_ID, "match_text": text, "strike": strike,
+                "dm_facts": decision.facts,
                 "bot": info.get("bot"), "account_ids": info.get("account_ids"),
                 "keyboard": build_inline_keyboard(event),
             })
 
     def dm_status():
-        words = store.config.get("dm_keywords", [])
+        words = [str(value) for value in telegram_list_items(store.config, "dm_keywords")]
+        excluded = [str(value) for value in telegram_list_items(store.config, "dm_exclude_keywords")]
         enabled = config_flag(store.config.get("dm_enabled"), False)
+        threshold = dm_price_threshold(store.config)
+        product_rules = dm_filters.product_price_rules(store.config)
+        dm_sending_enabled = (enabled and bool(words)) or threshold is not None or bool(product_rules)
+        show_values = lambda values: format_value_preview(values, limit=12) if values else "(boş)"
+        rule_status = lambda is_open, count: f"{'AÇIK' if is_open else 'KAPALI'} · {count} kural"
         return (
-            f"🎯 Kişisel bildirim: {'AÇIK' if enabled else 'KAPALI'}\n"
-            f"DM dahil · Kelimeler: {', '.join(words) or '(boş)'}\n"
-            f"DM hariç: {', '.join(store.config.get('dm_exclude_keywords', [])) or '(boş)'}\n"
-            f"DM fiyat: {(price_filter.format_price(dm_price_threshold(store.config)) + ' ve altı') if dm_price_threshold(store.config) is not None else 'KAPALI'}"
-            " (kelimelerden bağımsız)\n"
-            "Dahil ifadelerden biri blok halinde geçerse özel kopya gelir; hariç eşleşmesi engeller.\n"
-            "Grup filtreleri ve tekrar birleştirmesi geçerlidir. Tekrarlı alarm yok.\n"
+            "📩 KİŞİSEL DM FİLTRELERİ\n"
+            f"🎯 DM gönderimi: {'AÇIK' if dm_sending_enabled else 'KAPALI'}\n"
+            f"🎯 dmdahil: {rule_status(enabled, len(words))}\n"
+            f"DM dahil · Kelimeler: {show_values(words)}\n"
+            f"🔕 dmharic: {rule_status(bool(excluded), len(excluded))} · dmdahil/dmfiyat için ortak engel\n"
+            f"DM hariç: {show_values(excluded)}\n"
+            f"💰 dmfiyat: {rule_status(threshold is not None, 1 if threshold is not None else 0)} · "
+            f"Eşik: {price_filter.format_price(threshold) if threshold is not None else '(kapalı)'}\n"
+            f"🏷️ Ürün adı < fiyat: {rule_status(bool(product_rules), len(product_rules))}\n"
+            f"   Kayıtlar: {show_values([rule.canonical for rule in product_rules])}\n"
+            "Ürün adı/fiyat kuralları diğer DM listelerinden bağımsızdır; başlık ve gerçek ürün fiyatı birlikte eşleşir.\n"
+            "dmharic, yalnız dmdahil ve dmfiyat'ı engeller. Grup gönderimi ve tekrar birleştirmesi değişmez.\n"
             f"Bu oturum: gönderilen {private_offers.sent}, hata {private_offers.failed}, "
             f"kuyrukta {private_offers.queue.qsize()}, taşma {private_offers.dropped}\n"
-            "/ekle → dmdahil / dmharic / dmfiyat → değer → /kaydet\n"
-            "/cikar → dmdahil / dmharic / dmfiyat → numara veya değer → /kaydet\n"
-            "/dmfiltreac - Aç\n"
-            "/dmfiltrekapat - Kapat"
+            "/ekle → dmdahil / dmharic / dmfiyat / ürün adı < fiyat → değer → /kaydet\n"
+            "/cikar → filtre → kayıt numarası veya tam kural → /kaydet\n"
+            "/dmfiltreac - dmdahil grubunu aç\n"
+            "/dmfiltrekapat - dmdahil grubunu kapat"
         )
 
     async def private_channel_health() -> str:
@@ -7572,8 +7753,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
             return
         if command == COMMAND_DM_STATUS:
             await control_reply(event, dm_status() + (
-                "\n\nBu komut yalnızca bilgi gösterir. Kelime eklemek / çıkarmak için /ekle veya "
-                "/cikar → dmdahil/dmharic seçip /kaydet kullanın." if rest else ""
+                "\n\nBu komut yalnızca bilgi gösterir. Kural eklemek / çıkarmak için /ekle veya "
+                "/cikar → dmdahil / dmharic / dmfiyat / ürün adı < fiyat seçip /kaydet kullanın."
+                if rest else ""
             ))
         elif command == COMMAND_DM_FILTER_OPEN:
             enabled = True
@@ -7587,7 +7769,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             await control_reply(event, f"Bilinmeyen komut: {command}\n\n{HELP_TEXT}")
 
     async def can_edit_list(event, field):
-        if (field in DM_LIST_FIELDS or field == DM_PRICE_FIELD) and (
+        if (field in DM_LIST_FIELDS or field in {DM_PRICE_FIELD, DM_PRODUCT_PRICE_FIELD}) and (
             not isinstance(event, PrivateControlEvent) or event.sender_id != SELF_ID
         ):
             await control_reply(event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
@@ -8128,7 +8310,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
             field = resolve_telegram_list(text)
             if field is None:
                 set_pending(key, **item)
-                await control_reply(event, "❌ Seçimi anlayamadım. 1, 2, 3, 4, 5, 6 ya da 7 (webdetakip) yazabilir; listedeki adı da geçer.\n\n"
+                await control_reply(event, "❌ Seçimi anlayamadım. 1–8 yazabilir; 7 (webdetakip) eski seçimi korur. Listedeki adı da geçer.\n\n"
                                     + build_list_category_prompt(str(item.get("action")), store.config, _webtakip_count(store)))
                 return True
 
@@ -9293,14 +9475,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
         if command == COMMAND_START:
             await control_reply(event, "👋 Komutlarını artık burada verebilirsin. Fırsatlar aynı hedef gruba gider.\n"
                                 "Grup ayarları: /ayar · Durum: /durum · Tüm komutlar: /komutlar\n"
-                                "Kişisel fırsatlar: /dmfiltre · /ekle /cikar → dmdahil / dmharic\n"
+                                "Kişisel fırsatlar: /dmfiltre · /ekle /cikar → dmdahil / dmharic / dmfiyat / ürün adı < fiyat\n"
                                 "Özel sohbet geçmişi silinmez. Kayıtlı Mesajlar yedek kontrol olarak açık.")
         elif command in CMD_DM_COMMANDS:
             await handle_dm_command(event, command, rest)
         elif command == COMMAND_STATUS:
             text = build_status_text(store.config, connected=client.is_connected())
-            dm_on = config_flag(store.config.get("dm_enabled"), False)
-            text += f"\n• 📩 Kişisel bildirim filtresi: {'AÇIK' if dm_on else 'KAPALI'}"
+            dm_on = dm_filters.has_active_rules(store.config)
+            text += f"\n• 📩 Kişisel DM fırsat motoru: {'ETKİN' if dm_on else 'KAPALI'}"
             if tracker is not None:
                 wt_on = bool(tracker.state.get("enabled", False))
                 text += f"\n• 🌐 Web ürün takibi: {'AÇIK' if wt_on else 'KAPALI'}"

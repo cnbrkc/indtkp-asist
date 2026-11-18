@@ -1014,13 +1014,23 @@ def extract_price(text: str, strike: Sequence[tuple[int, int]] = ()) -> PriceInf
         return fallback
     return PriceInfo(None, "", "none", "fiyat yok")
 
+def price_info_matches(info: PriceInfo, threshold: float | None) -> bool:
+    """Return whether an already extracted real price meets an inclusive limit.
+
+    Keeping the comparison separate lets several independent thresholds share
+    one ``extract_price`` pass while guaranteeing the same confidence and
+    boundary semantics as ``price_matches``.
+    """
+    if threshold is None or info.value is None or info.confidence not in {"high", "medium"}:
+        return False
+    return info.value <= threshold + 1e-9
+
+
 def price_matches(text: str, threshold: float | None,
                   strike: Sequence[tuple[int, int]] = ()) -> tuple[bool, PriceInfo]:
     """Fiyat ≤ eşik ise (güvenilir tespitle) True."""
     info = extract_price(text, strike)
-    if threshold is None or info.value is None or info.confidence not in {"high", "medium"}:
-        return False, info
-    return info.value <= threshold + 1e-9, info
+    return price_info_matches(info, threshold), info
 
 
 # --------------------------------------------------------------------------

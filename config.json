@@ -126,6 +126,7 @@
   "dm_price_max": [
     "10"
   ],
+  "dm_product_price_rules": [],
   "source_chat_ids": {
     "@firsatz": -1001557850564,
     "@TAZEFIRSATmini": -1001854168975,

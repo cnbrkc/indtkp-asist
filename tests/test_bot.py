@@ -482,10 +482,11 @@ class TelegramListWorkflowTest(unittest.TestCase):
             "match_mode": "any",
         }
 
-    def test_exactly_six_fields_are_telegram_editable(self):
+    def test_seven_config_fields_are_telegram_editable(self):
         self.assertEqual(bot.TELEGRAM_LIST_FIELDS,
                          ("include_keywords", "exclude_keywords", "source_chats",
-                          "dm_keywords", "dm_exclude_keywords", "dm_price_max"))
+                          "dm_keywords", "dm_exclude_keywords", "dm_price_max",
+                          "dm_product_price_rules"))
 
     def test_category_selection_supports_numbers_and_turkish_labels(self):
         expected = ["include_keywords", "exclude_keywords", "source_chats",
@@ -501,7 +502,10 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertEqual(bot.resolve_telegram_list("dmharic"), "dm_exclude_keywords")
         self.assertEqual(bot.resolve_telegram_list("dmhariç"), "dm_exclude_keywords")
         self.assertEqual(bot.resolve_telegram_list("dmfiyat"), "dm_price_max")
+        self.assertEqual(bot.resolve_telegram_list("ürün adı < fiyat"), "dm_product_price_rules")
+        self.assertEqual(bot.resolve_telegram_list("DM Ürün Fiyat"), "dm_product_price_rules")
         self.assertEqual(bot.resolve_telegram_list("7"), bot.WEBTAKIP_FIELD)
+        self.assertEqual(bot.resolve_telegram_list("8"), "dm_product_price_rules")
         self.assertEqual(bot.resolve_telegram_list("webdetakip"), bot.WEBTAKIP_FIELD)
         self.assertEqual(bot.resolve_telegram_list("akakcetakip"), bot.WEBTAKIP_FIELD)
         self.assertIsNone(bot.resolve_telegram_list("hedef"))
@@ -512,7 +516,8 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertIn("2. 🚫  Harici kelimeler  ·  1 kayıt", text)
         self.assertIn("3. 📣  Grup isimleri  ·  2 kayıt", text)
         self.assertIn("7. 🌐  webdetakip  ·  Akakçe ürün fiyat takibi", text)
-        self.assertIn("1, 2, 3, 4, 5, 6 ya da 7 (webdetakip)", text)
+        self.assertIn("8. 🏷️  ürün adı < fiyat", text)
+        self.assertIn("1–8", text)
 
     def test_selected_category_shows_list_before_asking_for_value(self):
         add_prompt = bot.build_list_value_prompt("add", "include_keywords", self.config)
