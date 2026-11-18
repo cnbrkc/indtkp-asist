@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bot
+import price_filter
 import private_bot as private
 from test_integration import (
     MainHarness, FakeClient, FakeEvent, FakeMessage, BASE_ENV,
@@ -758,7 +759,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             before = Path(self.path).read_text()
             await self.command("/dmfiltre")
             self.assertIn("Kelimeler: tcl, lg", self.replies())
-            self.assertIn("Kişisel bildirim: KAPALI", self.replies())
+            self.assertIn("DM gönderimi: KAPALI", self.replies())
             self.assertFalse(bot.PENDING)
             self.assertEqual(Path(self.path).read_text(), before)
             await self.command("/dmfiltre iphone")
@@ -886,6 +887,118 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             await self.command("/dmfiltre")
             self.assertIn("DM hariç: tcl 65t6d, yenilenmiş", self.replies())
         await self.run_scenario(scenario, dm_keywords=["iphone"])
+
+    async def test_product_price_rules_share_staged_save_rollback_and_remove_flow(self):
+        async def scenario():
+            original = json.loads(Path(self.path).read_text())
+            await self.edit_list(
+                "add", "8", "telefon < 100, TCL < 30.000 TL", save=False,
+            )
+            self.assertEqual(json.loads(Path(self.path).read_text()), original)
+            self.assertIn("DEĞİŞİKLİK TASLAĞI", self.replies())
+
+            # Failed persistence rolls back runtime, but retains the draft for retry.
+            self.persist_ok = False
+            await self.command("/kaydet")
+            self.assertEqual(json.loads(Path(self.path).read_text()), original)
+            self.assertTrue(bot.PENDING)
+            await self.offer("Telefon model X\n90 TL", media=False)
+            self.assertFalse(self.api.offers)
+
+            self.persist_ok = True
+            await self.command("/kaydet")
+            saved = json.loads(Path(self.path).read_text())
+            self.assertEqual(saved["dm_product_price_rules"], ["telefon < 100", "tcl < 30000"])
+            self.assertFalse(saved["dm_enabled"])
+            self.assertEqual(saved["dm_exclude_keywords"], ["telefon"])
+
+            # The new group ignores dmharic and is independent of the dmdahil toggle.
+            await self.offer("Telefon model X\n90 TL", media=False)
+            self.assertEqual(len(self.api.offers), 1)
+
+            await self.edit_list("add", "8", "TELEFON < 100", save=False)
+            self.assertIn("zaten listede", self.replies())
+            await self.command("/iptal")
+            await self.edit_list("remove", "8", "2")
+            saved = json.loads(Path(self.path).read_text())
+            self.assertEqual(saved["dm_product_price_rules"], ["telefon < 100"])
+
+            await self.command("/dmfiltre")
+            status = self.replies()
+            self.assertIn("DM gönderimi: AÇIK", status)
+            self.assertIn("dmdahil: KAPALI · 0 kural", status)
+            self.assertIn("DM dahil · Kelimeler: (boş)", status)
+            self.assertIn("dmharic: AÇIK · 1 kural", status)
+            self.assertIn("DM hariç: telefon", status)
+            self.assertIn("dmfiyat: AÇIK · 1 kural · Eşik: 10 TL", status)
+            self.assertIn("Ürün adı < fiyat: AÇIK · 1 kural", status)
+            self.assertIn("telefon < 100", status)
+            await self.offer("TCL 65C7K TV\n25.000 TL", media=False)
+            self.assertEqual(len(self.api.offers), 1)  # the removed TCL rule no longer matches
+
+        await self.run_scenario(
+            scenario, dm_enabled=False, dm_keywords=[], dm_exclude_keywords=["telefon"],
+            dm_price_max=["10"],
+        )
+
+    async def test_product_price_rule_cancel_discards_staged_add(self):
+        async def scenario():
+            original = Path(self.path).read_text()
+            await self.edit_list("add", "8", "TCL < 30000", save=False)
+            self.assertTrue(bot.PENDING)
+            self.assertEqual(Path(self.path).read_text(), original)
+            await self.command("/iptal")
+            self.assertFalse(bot.PENDING)
+            self.assertEqual(Path(self.path).read_text(), original)
+            await self.offer("TCL 65C7K TV\n25.000 TL", media=False)
+            self.assertFalse(self.api.offers)
+        await self.run_scenario(scenario)
+
+    async def test_product_price_rule_stale_draft_conflict_does_not_overwrite(self):
+        async def scenario():
+            await self.edit_list("add", "8", "TCL < 30000", save=False)
+            pending = next(iter(bot.PENDING.values()))
+            pending["base_config"]["dm_product_price_rules"] = ["externally changed < 10"]
+            await self.command("/kaydet")
+            self.assertIn("başka bir değişiklik", self.replies())
+            self.assertEqual(json.loads(Path(self.path).read_text()).get("dm_product_price_rules", []), [])
+            self.assertFalse(bot.PENDING)
+        await self.run_scenario(scenario)
+
+    async def test_queue_prepare_reuses_and_invalidates_product_offer_facts(self):
+        async def scenario():
+            text = "TCL 65C7K TV\n25.000 TL"
+            facts = bot.dm_decision(
+                {"dm_product_price_rules": ["TCL < 30000"]}, text,
+            ).facts
+            item = {
+                "destination": GROUP_ID, "match_text": text, "strike": (), "dm_facts": facts,
+                "bot": {"message_id": 700, "kind": "text", "text": text, "entities": []},
+            }
+            with mock.patch.object(price_filter, "extract_price", side_effect=AssertionError("reparsed")):
+                with mock.patch.object(price_filter, "extract_title", side_effect=AssertionError("retitled")):
+                    self.assertIsNotNone(await self.queues[0].prepare(item))
+
+            # The queued fact key includes source text; a different offer must be parsed afresh.
+            changed_text = "LG TV\n400 TL"
+            item["match_text"] = changed_text
+            item["bot"]["text"] = changed_text
+            with mock.patch.object(price_filter, "extract_price", wraps=price_filter.extract_price) as extract_price:
+                with mock.patch.object(price_filter, "extract_title", wraps=price_filter.extract_title) as extract_title:
+                    self.assertIsNotNone(await self.queues[0].prepare(item))
+            extract_price.assert_called_once()
+            extract_title.assert_called_once()
+        await self.run_scenario(
+            scenario, dm_product_price_rules=["TCL < 30000", "LG < 500"],
+        )
+
+    async def test_dmharic_also_blocks_price_only_offers(self):
+        async def scenario():
+            await self.offer("Telefon X\n90 TL", media=False)
+            self.assertFalse(self.api.offers)
+            self.assertEqual(bot.STATS["forwarded"], 1)
+        await self.run_scenario(scenario, dm_enabled=False, dm_price_max=["100"],
+                                dm_exclude_keywords=["telefon"])
 
     async def test_model_prefix_matches_as_one_block_for_text_and_media(self):
         async def scenario():

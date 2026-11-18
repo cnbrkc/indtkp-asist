@@ -36,65 +36,73 @@ cevap gelmediyse bot hazır olduktan sonra tekrar `/start` gönder.
 
 ### 2. aşama — kişisel fırsatları istediğin zaman aç
 
-Yeni kurulumlarda varsayılan `dm_enabled: false`, `dm_keywords: []` ve
-`dm_exclude_keywords: []` olur. **Mevcut kayıtlı DM kelimeleri korunur.** Hesap sahibi
-botun özel sohbetinde, diğer listelerle aynı ekle/cikar akışını kullanır:
+Yeni kurulumlarda varsayılan `dm_enabled: false`, `dm_keywords: []`,
+`dm_exclude_keywords: []` ve `dm_product_price_rules: []` olur. **Mevcut DM ayarları
+korunur; yeni alanı olmayan eski config dosyaları da çalışmaya devam eder.** Hesap sahibi
+botun özel sohbetinde, diğer listelerle aynı taslak/kaydet akışını kullanır:
 
 ```text
 Sen: /ekle
-Bot: 1. Dahili · 2. Harici · 3. Grup · 4. dmdahil · 5. dmharic · 6. dmfiyat · 7. webdetakip
+Bot: 1. Dahili · 2. Harici · 3. Grup · 4. dmdahil · 5. dmharic · 6. dmfiyat · 7. webdetakip · 8. ürün adı < fiyat
+Sen: 8
+Bot: Ürün başlığındaki ifade < maksimum gerçek ürün fiyatı biçiminde kural gönder.
+Sen: telefon < 100; TCL < 30000; LG 75 < 45000
+Bot: Değişiklik taslağı... /kaydet veya /iptal
+Sen: /kaydet
+Bot: Kaydedildi ve çalışan ayarlara uygulandı.
+
+Sen: /ekle
 Sen: webdetakip
 Bot: Akakçe ürün detay linkini gönder (…akakce.com/…-fiyati,ID.html).
 Sen: https://www.akakce.com/…-fiyati,123456789.html
 Bot: …Hangi fiyatın altına düşerse haber vereyim? Örnek: 6500…
 Sen: 6500
 Bot: ✅ Kalıcı kaydedildi. (product_watches.json; ayrı /kaydet adımı yok)
-Sen: /ekle
-Sen: dmharic
-Sen: tcl 65t6d
-Sen: /kaydet
-```
-Bot: Mevcut liste... Eklenecek kelimeleri gönder.
-Sen: tcl 65, lg 75
-Bot: Değişiklik taslağı... /kaydet veya /iptal
-Sen: /kaydet
-Bot: Kaydedildi ve çalışan ayarlara uygulandı.
-Sen: /ekle
-Sen: dmharic
-Sen: tcl 65t6d
-Sen: /kaydet
 ```
 
-Çıkarmak için `/cikar` → `dmdahil` veya `dmharic` → listedeki numara/tam ifade →
-`/kaydet`. Menüde `4`, `5`, `6` ve `7` de kullanılabilir; `7` (webdetakip) seçimi
-`/webtakip` ile aynı akışı başlatır (ekle: link → hedef fiyat; çıkar: /webtakipler numarasıyla silme).
-Birden çok kaydı virgül, noktalı virgül veya yeni satırla ayır; ifadenin içindeki boşluklar kelimeleri ayrı filtrelere bölmez.
-Ekleme mevcut listeyi korur, tekrarları atlar; çıkarma numara veya listedeki tam değerle
-yapılır. Diğer listelerdeki gibi geçersiz/bulunamayan kayıtlar uyarıda gösterilir,
-geçerli kayıtlar taslağa alınır. Her iki DM listesi en fazla 100 ifade içerir.
+Kural silmek için `/cikar` → `ürün adı < fiyat` → kayıt numarası veya tam kural →
+`/kaydet`. Mevcut menü numaraları korunmuştur: `4` dmdahil, `5` dmharic, `6` dmfiyat,
+`7` webdetakip; yeni ürün adı/fiyat grubu `8`'dir. `7` (webdetakip) seçimi `/webtakip`
+ile aynı akışı başlatır (ekle: link → hedef fiyat; çıkar: /webtakipler numarasıyla silme).
+Ürün adı/fiyat grubunda birden çok kuralı satır veya noktalı virgülle ayırabilirsin;
+ondalık virgüllü eşikler (örn. `telefon < 1.299,90 TL`) korunur. Kurallar Türkçe/büyük-küçük
+harf ve boşluk normalizasyonuyla tekilleştirilir; aynı ürün ifadesi ve aynı eşik ikinci kez
+eklenmez. Her kural numarasıyla veya tam ifadeyle ayrı silinir. Bu grupta en fazla 100 kural vardır.
 
 Değişiklik **`/kaydet` öncesinde aktif değildir**; `/iptal` taslağı siler. Yeni bir
-`dmdahil` kaydı kaydedilince DM açılır; son dahil kaydı çıkarılırsa kapanır. Çıkarma,
-kapalı filtreyi açmaz. `dmharic` düzenlemek DM'in açık/kapalı durumunu değiştirmez.
-`/dmfiltre` dahil/hariç listelerini, açık/kapalı durumunu ve sayaçları salt okunur gösterir.
+`dmdahil` kaydı kaydedilince dmdahil açılır; son dahil kaydı çıkarılırsa kapanır.
+`/dmfiltreac` ve `/dmfiltrekapat` yalnız dmdahil grubunu açıp kapatır; `dmfiyat` ve
+ürün adı/fiyat grubu bağımsızdır. `dmharic` listesi boş değilse dmdahil ile dmfiyat
+fırsatlarını ortak biçimde engeller; yeni ürün adı/fiyat kurallarını etkilemez.
+`/dmfiltre` dört grubu ayrı ayrı açık/kapalı durum, kayıt sayısı, kayıtlar ve fiyat
+eşikleriyle gösterir; sayaçlar bu oturum içindir.
 
-DM listesini `/ekle` → `dmdahil` / `dmharic` ve `/cikar` → `dmdahil` / `dmharic` ile yönetin;
-`/kaydet` ile taslağı uygulayın. Eski `/dmfiltreekle` ve `/dmfiltrecikar` isimleri
-alias kalmadan tamamen kaldırıldı; yalnızca `/komutlar` katalogunda yeni karşılıkları
-görünür.
+- **dmdahil:** `dm_enabled` açıksa, dahil ifadelerinden biri mesajda bitişik blok olarak
+  bulununca DM gönderir; fiyat eşiği aranmaz. Mevcut geriye uyumlu davranış gereği eşleşme
+  ürün başlığıyla sınırlı değil, tüm temizlenmiş mesaj metnindedir. Bu nedenle kısa ifadeler
+  veya kupon/açıklama satırları geniş eşleşebilir; başlık VE fiyat koşulu istiyorsan aşağıdaki
+  bağımsız grubu kullan.
+- **dmfiyat:** Ürün adından bağımsız tek maksimum gerçek ürün fiyatıdır; eşik ve altı eşleşir.
+  Fiyatı `price_filter` belirler; kupon/indirim, eski veya üstü çizili tutar, taksit, kargo ve
+  alışveriş koşulu fiyat sayılmaz. `dmharic` bu grubu da engeller.
+- **dmharic:** Doluysa dmdahil VE dmfiyat için ortak engeldir; sadece özel kopyayı etkiler.
+- **ürün adı < fiyat:** Her kuralda ürün başlığındaki ifade VE gerçek ürün fiyatı birlikte
+  eşleşmelidir. Örn. `telefon < 100`, `TCL < 30000`, `LG 75 < 45000`. Herhangi bir kayıt
+  eşleşince DM gönderir; dmdahil, dmfiyat ve dmharic ayarlarından bağımsızdır.
 
 Ayarlar `config.json`'a ve mevcut GitHub kayıt yöntemiyle depoya yazılır; gönderilen
-kayıt raporunu kontrol et. Yerel dosyaya yazma başarısızsa eski ayar geri yüklenir.
-GitHub'a gönderim başarısızsa yereldeki ayar geçerlidir ama yeni Actions runner'ına
-aktarılmayabilir. **Özel kelimeler gizli değildir; config ve Git geçmişinde görünür.**
+kayıt raporunu kontrol et. Yerel dosyaya yazma başarısızsa eski ayar geri yüklenir ve taslak
+tekrar denenmek üzere korunur. Çakışan taslak güncel config'i ezmez. GitHub'a gönderim
+başarısızsa yereldeki ayar geçerlidir ama yeni Actions runner'ına aktarılmayabilir.
+**Özel kelimeler ve ürün/fiyat kuralları gizli değildir; config ve Git geçmişinde görünür.**
 
 | Komut | Etki |
 |---|---|
-| `/dmfiltre` | Mevcut kelimeler, açık/kapalı durumu, bu oturumun gönderim/hata/kuyruk sayaçları; salt okunur |
-| `/ekle` → `dmdahil` / `dmharic` | Listeye ekleme taslağı; `/kaydet` ile uygulanır |
-| `/cikar` → `dmdahil` / `dmharic` | Listeden çıkarma taslağı; `/kaydet` ile uygulanır |
-| `/dmfiltrekapat` | Listeyi koruyarak özel fırsatları kapatır; henüz gönderilmeyen kuyruk kayıtları da atlanır |
-| `/dmfiltreac` | Kayıtlı listeyle tekrar açar; boş listeyi açmaz |
+| `/dmfiltre` | Dört grubun açık/kapalı durumu, listeleri/eşikleri ve bu oturumun gönderim/hata/kuyruk sayaçları; salt okunur |
+| `/ekle` → `dmdahil` / `dmharic` / `dmfiyat` / `ürün adı < fiyat` | Ekleme taslağı; `/kaydet` ile uygulanır |
+| `/cikar` → aynı filtreler | Numara/tam kural ile çıkarma taslağı; `/kaydet` ile uygulanır |
+| `/dmfiltrekapat` | Yalnız dmdahil'i kapatır; bağımsız dmfiyat ve ürün adı/fiyat kuralları sürer |
+| `/dmfiltreac` | Kayıtlı dmdahil listesini tekrar açar; boş listeyi açmaz |
 | `/komutlar` | Her desteklenen komutu ve açıklamasını tek kez listeler |
 
 `/start` yanıtında `/komutlar` hatırlatılır. `/komutlar` yedi başlıkla kategorik
@@ -110,10 +118,13 @@ kişisel alıcıyı kendisine çeviremez. Çok kullanıcılı abonelik sistemi d
   geniş eşleşebilir (`lg`, `bilgi` içinde de geçer); gerekirse `lg 65` gibi ifade kullan.
   Büyük/küçük harf, Unicode genişlik ve fazla boşluk farkları yok sayılır;
   `IPHONE`/`İPHONE` eşleşir. Her ifade en fazla 100 karakterdir.
-- **DM hariç** listesindeki bir ifade aynı blok eşleşmesiyle geçerse özel kopya
-  gönderilmez; dahil eşleşmesine göre önceliklidir. Grup mesajı bundan etkilenmez.
-  Hariç listesi boşsa ek engelleme yapılmaz; dahil listesi boşsa DM gönderilmez.
-  Kuyrukta bekleyen kopyalar gönderilmeden önce güncel dahil/hariç listeleriyle tekrar kontrol edilir.
+- **DM hariç (`dmharic`)** listesindeki bir ifade aynı blok eşleşmesiyle geçerse
+  `dmdahil` ve `dmfiyat` sonuçlarını engeller; grup mesajı bundan etkilenmez. Yeni
+  ürün adı/fiyat kuralları bu engelden bağımsızdır. Hariç listesi boşsa ek engel yoktur.
+  Kuyrukta bekleyen kopyalar gönderilmeden önce güncel ayarlarla tekrar kontrol edilir.
+- **DM maksimum fiyat (`dmfiyat`)** ürün adından bağımsızdır; `dmharic` ile engellenebilir.
+  **Ürün adı < fiyat** kayıtlarında ise ürün başlığı ve gerçek fiyat ikisi birden eşleşir;
+  bu grup dmdahil/dmfiyat/dmharic ayarlarından bağımsızdır.
 - Önce mevcut grup filtresi uygulanır. Hariç tutulan, gruba gönderilemeyen veya
   mevcut tekrar birleştirmesiyle yeni grup mesajı oluşturulmayan fırsata özel kopya
   gönderilmez. Bu aşama **gruba yeni gönderilen fırsatların aynasıdır**; geçmiş tarama,
@@ -373,9 +384,11 @@ Alanların hepsi [3. bölümde](#3-ayarlar-configjson) tek tek anlatılıyor. ID
 | `dedup_scan_limit` | sayı | Açılışta önbelleğe alınacak son ileti sayısı (0–100, varsayılan 100; `0` = tarama yapma). |
 | `control_chat` | sayı / `"me"` | Eski kontrol sohbeti; `private_control: true` iken yalnızca Kayıtlı Mesajlar yedeği aktiftir. |
 | `private_control` | `true` / `false` | Komutları bildirim botunun özel sohbetinden al; grup komutlarını kapat. Bu depoda `true`; alan yoksa eski davranış. `NOTIFY_BOT_TOKEN` gerekir. |
-| `dm_enabled` | `true` / `false` | Hesap sahibine kişisel fırsat kopyaları. Başlangıçta `false`. |
-| `dm_keywords` | metin listesi | DM dahil ifadeleri; boş liste eşleşmez. `/ekle` / `/cikar` → `dmdahil` → `/kaydet` ile düzenlenir; grup listesinden bağımsızdır. |
-| `dm_exclude_keywords` | metin listesi | DM hariç ifadeleri; varsayılan boş liste. `/ekle` / `/cikar` → `dmharic` → `/kaydet`; yalnızca özel kopyayı engeller. |
+| `dm_enabled` | `true` / `false` | Yalnızca dmdahil grubunu açıp kapatır; başlangıçta `false`. |
+| `dm_keywords` | metin listesi | Dmdahil ifadeleri; mevcut uyumluluk için temizlenmiş mesajın tamamında blok eşleşmesi aranır. `/ekle` / `/cikar` → `dmdahil` → `/kaydet`. |
+| `dm_exclude_keywords` | metin listesi | Ortak engel listesi: dmdahil ve dmfiyat'ı durdurur, yeni ürün adı/fiyat grubunu etkilemez. `/ekle` / `/cikar` → `dmharic` → `/kaydet`. |
+| `dm_price_max` | sayı listesi (en çok 1) | `dmfiyat` maksimum gerçek ürün fiyatı; eşik ve altı gönderilir, dmdahil'den bağımsız fakat dmharic'e tabidir. |
+| `dm_product_price_rules` | `ürün adı < fiyat` listesi | Yeni bağımsız grup. Ürün başlığı eşleşmesi ve güvenilir gerçek fiyat koşulu birlikte gerekir; varsayılan/eksik eski config alanı `[]` kabul edilir. `/ekle` / `/cikar` → menü 8 → `/kaydet`. |
 | `admin_user_id` | sayı / liste | `control_chat` bir grupsa **zorunlu**: komutları yalnızca bu ID'ler çalıştırabilir. |
 | `auto_restart` | `true` / `false` | `GH_PAT` varsa yenileme zincirini açar (bir sonraki açılışta geçerli). |
 | `notify_on_start` | `true` / `false` | Eski uyumluluk alanı; artık dikkate alınmaz. Açılış/otomatik yenileme sessizdir; `/durum` ile kontrol et. |
@@ -439,15 +452,15 @@ dahil) `/kaydet` seçilene kadar taslakta kalır. `/restart` için
 | `/start` | Özel sohbet kullanımını açıklar; fırsat hedefini değiştirmez. |
 | `/durum` | Takipçinin dinleme durumunu, hedefini, sayaçlarını ve filtre durumunu gösterir. |
 | `/ayar` | Bot yönetim merkezi: liste, TG filtre, DM filtre ve web ürün takibi bölümlerini gösterir. |
-| `/ekle` | Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat/web ürün takibi). |
-| `/cikar` | Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/dmdahil/dmharic/dmfiyat/web ürün takibi). |
+| `/ekle` | Liste seçip kayıt ekleme taslağı başlatır (dahil/hariç/grup/DM filtreleri/ürün adı < fiyat/web ürün takibi). |
+| `/cikar` | Liste seçip kayıt çıkarma taslağı başlatır (dahil/hariç/grup/DM filtreleri/ürün adı < fiyat/web ürün takibi). |
 | `/kaydet` | Bekleyen liste taslağını kaydeder (DM listeleri dahil). |
 | `/iptal` | Bekleyen ekleme veya çıkarma işlemini iptal eder. |
 | `/tgfiltreac` | Telegram indirim akışında dahili, harici veya iki filtreyi açar. |
 | `/tgfiltrekapat` | Telegram indirim akışında dahili, harici veya iki filtreyi kapatır. |
-| `/dmfiltre` | Kişisel bildirim filtresinin durumunu, dahil/hariç listesini ve fiyat sınırını gösterir. |
-| `/dmfiltreac` | Kişisel bildirim filtresini açar. |
-| `/dmfiltrekapat` | Kişisel bildirim filtresini kapatır; kelime listeleri korunur. |
+| `/dmfiltre` | Dört DM grubunun durumunu, kayıtlarını, eşiklerini ve oturum sayaçlarını gösterir. |
+| `/dmfiltreac` | dmdahil grubunu açar; diğer gruplar bağımsızdır. |
+| `/dmfiltrekapat` | dmdahil grubunu kapatır; dmfiyat ve ürün adı/fiyat kuralları bağımsız kalır. |
 | `/webtakip` | Akakçe ürün takip menüsünü açar; Akakçe linkini gönderip hedef fiyatı belirlersin. |
 | `/webtakipac` | Web ürün fiyat takibini etkinleştirir. |
 | `/webtakipkapat` | Web ürün fiyat takibini durdurur; ana Telegram indirim akışını durdurmaz. |
@@ -489,19 +502,23 @@ grubun komut menüsüne doğrudan yapıştırabilirsin):
 
 ## 5. Ayarları Telegram'dan düzenleme
 
-Telegram akışını bilerek sade tuttuk: sohbetten şu beş liste düzenlenebilir, iki grup filtresi de
-`/tgfiltreac` ve `/tgfiltrekapat` ile bağımsız açılıp kapatılır; diğer teknik ayarlar config/kod üzerinden yönetilir.
+Telegram akışını bilerek sade tuttuk: mevcut listeler ile dört DM grubu `/ekle` ve
+`/cikar` taslak akışından düzenlenir; iki grup filtresi de `/tgfiltreac` ve
+`/tgfiltrekapat` ile bağımsız açılıp kapatılır. Diğer teknik ayarlar config/kod üzerinden yönetilir.
 
 | Menüde görünen ad | `config.json` alanı | Ne işe yarar |
 |---|---|---|
 | 🔎 Dahili kelimeler | `include_keywords` | Mesajda aranacak kelimeler |
 | 🚫 Harici kelimeler | `exclude_keywords` | Bunlardan biri geçerse mesajı engeller |
 | 📣 Grup isimleri | `source_chats` | Takip edilecek kanal/grup kullanıcı adı veya ID'si |
-| 🎯 dmdahil | `dm_keywords` | Özel kopyada blok halinde aranan ifadeler |
-| 🔕 dmharic | `dm_exclude_keywords` | Özel kopyayı engelleyen ifadeler |
+| 🎯 dmdahil | `dm_keywords` | Özel kopyada blok halinde aranan ifadeler; dmdahil etkinliği `dm_enabled` ile yönetilir |
+| 🔕 dmharic | `dm_exclude_keywords` | dmdahil ve dmfiyat için ortak engel listesi |
+| 💰 dmfiyat | `dm_price_max` | Ürün adından bağımsız tek maksimum gerçek ürün fiyatı |
+| 🏷️ ürün adı < fiyat | `dm_product_price_rules` | Başlık ifadesi + gerçek ürün fiyatı; çoklu bağımsız kurallar |
 
 DM listeleri yalnızca hesap sahibinin botla özel sohbetinden düzenlenir. `/tgfiltreac` ve
-`/tgfiltrekapat` grup filtrelerine aittir; DM gönderimi `/dmfiltreac` / `/dmfiltrekapat` ile yönetilir.
+`/tgfiltrekapat` grup filtrelerine aittir. `/dmfiltreac` / `/dmfiltrekapat` yalnızca dmdahil'i
+yönetir; dmfiyat ve ürün adı/fiyat kuralları kayıtlı olduklarında bağımsız çalışır.
 
 #### Filtreler: `/tgfiltreac` ve `/tgfiltrekapat`
 
@@ -1391,14 +1408,34 @@ yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâl�
 - [ ] `/iptal` taslağı değiştirmeden siliyor mu?
 - [ ] `GH_PAT`: süresi dolmadıysa dokunma; dolmuşsa *Actions: Read and write* ile yenile
 
-## Fiyat filtresi ve yeni bildirim düzeni (dmfiyat · smart_header)
+## DM fırsat filtreleri ve yeni bildirim düzeni
 
-**DM maksimum fiyat (`dmfiyat`)** — kelime filtrelerinden tamamen bağımsız ayrı bir kuraldır.
-- Telegram'da `/ekle` → `dmfiyat` → tutar (örn. `10000`) → `/kaydet`. Bu tutar ve altındaki fiyatlar özel kopya olarak DM'e düşer. `0` yazarsan yalnızca 0 TL / ücretsiz / bedava olanlar düşer.
-- Kapatmak için `/cikar` → `dmfiyat` → `1` → `/kaydet`.
-- Karar: `kelime kuralı VEYA fiyat kuralı`. Fiyat kuralı DM hariç listesine bakmaz; kelime kuralı fiyata bakmaz. Kelime + fiyat birlikte (VE) kuralı sonraki aşamadır.
-- Fiyat bulunamazsa ya da yalnızca kupon/indirim/taksit/eski fiyat bulunursa DM gönderilmez (yanlış alarm yok).
-- Config anahtarı: `dm_price_max` (`["10000"]`; anahtar yoksa kural kapalı).
+Kişisel DM kararı dört ayrı grup olarak değerlendirilir:
+
+| Grup | Eşleşme koşulu | dmharic etkisi |
+|---|---|---|
+| `dmdahil` | `dm_enabled` açık + dahil ifadelerinden biri mesajın herhangi bir yerinde bitişik blok olarak geçer; fiyat sınırı yoktur | Engeller |
+| `dmfiyat` | `dm_price_max` içindeki tek eşik ve altındaki gerçek ürün fiyatı; ürün adı aranmaz | Engeller |
+| `dmharic` | Dolu liste, iki eski grupta ortak engel olur | Yalnız dmdahil/dmfiyat'ı durdurur |
+| `ürün adı < fiyat` | Her kural için ürün başlığında ifade VE güvenilir gerçek fiyat ≤ eşik | Etkilemez |
+
+- `dmdahil` mevcut davranışla geriye uyum için bütün temizlenmiş mesaj metnini tarar; bu nedenle
+  çok kısa ifadeler (`lg` gibi) açıklama/kupon satırında da eşleşebilir. Ürün başlığıyla sınırlı
+  bir koşul için yeni grubu kullanın.
+- `dmfiyat` için `/ekle` → `dmfiyat` → tutar (örn. `10000`) → `/kaydet`; eşik ve altı gönderilir.
+  Kapatmak için `/cikar` → `dmfiyat` → `1` → `/kaydet`. Bu kural dmdahil'in açık/kapalı
+  durumundan bağımsızdır, ancak `dmharic` tarafından engellenir.
+- Yeni grup için `/ekle` → `ürün adı < fiyat` (veya menü `8`) → `telefon < 100` → `/kaydet`.
+  Örnekler: `TCL < 30000`, `LG 75 < 45000`. Birden çok kural eklenebilir; tekrar ekleme
+  normalizasyonla tekilleştirilir, `/cikar` ile kayıt numarası/tam kural üzerinden ayrı silinir.
+- Bu iki fiyat grubunda fiyat `price_filter` ile bir kez ayrıştırılır. Kupon/indirim tutarı,
+  eski ya da üstü çizili fiyat, taksit, kargo ve alışveriş koşulu gerçek ürün fiyatı sayılmaz.
+  Güvenilir ürün fiyatı veya başlık yoksa yeni kural eşleşmez.
+- Yeni config anahtarı `dm_product_price_rules` (string listesi); eksik eski config alanı veya `[]`
+  boş liste kabul edilir. Bozuk ya da yinelenen kurallar başlangıç doğrulamasında reddedilir;
+  `/ekle` akışı yinelenen girdileri ikinci kez kaydetmez. `dm_price_max` en çok bir değerli eski biçimini korur.
+
+**Yeni bildirim düzeni (`smart_header`)** — `config.json` içine `"smart_header": true` eklenince açılır; anahtar yoksa eski düzen aynen sürer.
 
 **Yeni bildirim düzeni (`smart_header`)** — `config.json` içine `"smart_header": true` eklenince açılır; anahtar yoksa eski düzen aynen sürer.
 
