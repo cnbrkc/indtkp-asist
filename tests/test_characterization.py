@@ -404,6 +404,12 @@ def run_private(scenario: Callable[[PrivateChat], Awaitable[None]], *,
         assert not network.calls, f"beklenmeyen HTTP isteği: {network.sent()}"
 
 
+# Bu dosyadaki rozet/açılış senaryoları alıntı temizliğinden bağımsızdır: onlar
+# üretim metninin ESKİ hâlini sabitler. Altın referansın prod profili ise canlı
+# config.json ile birlikte ``clean_quote_duplicates`` açık koşar (yeni davranış).
+PROD_WITHOUT_QUOTE_CLEANUP = {**golden.PROFILES["prod"], "clean_quote_duplicates": False}
+
+
 def run_prod(scenario: Callable[[ti.FakeClient], Awaitable[None]], **options: Any) -> None:
     """Canlı düzendeki (smart_header + fast_notify) botu başlat; ``scenario`` bot ayaktayken koşar."""
     finished: list[bool] = []
@@ -412,7 +418,7 @@ def run_prod(scenario: Callable[[ti.FakeClient], Awaitable[None]], **options: An
         await scenario(client)
         finished.append(True)
 
-    golden.run_bot(golden.PROFILES["prod"], alive, **options)
+    golden.run_bot(PROD_WITHOUT_QUOTE_CLEANUP, alive, **options)
     assert finished, "senaryo sonuna kadar koşmadı"
 
 
@@ -1018,7 +1024,7 @@ class StartupScanCountTest(unittest.TestCase):
             await offer(client, 3)
             seen.update(entry=cached(), stats=stats("forwarded", "deduped", "dedup_edits"))
 
-        golden.run_bot({**golden.PROFILES["prod"], "destination": SUPERGROUP, "control_chat": SUPERGROUP},
+        golden.run_bot({**PROD_WITHOUT_QUOTE_CLEANUP, "destination": SUPERGROUP, "control_chat": SUPERGROUP},
                        alive, wire=wire, history=self.history(self.PLAIN, self.PLAIN, chat=SUPERGROUP))
         self.assertEqual(seen["startup"], 2)
         (edit,) = [golden.wire_request(request) for request in wire.requests]
