@@ -308,7 +308,7 @@ class StatusTextTest(unittest.TestCase):
                 self.assertNotIn(removed, commands)
 
     def test_readme_command_table_and_botfather_list_match_help_catalog(self):
-        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        readme = (Path(__file__).resolve().parents[1] / "docs" / "komutlar.md").read_text()
         commands = tuple(command for command, _ in commandtext.COMMAND_DESCRIPTIONS)
         table = readme.split("### Tüm desteklenen komutlar\n", 1)[1].split(
             "**Tamamı virgülle ayrılmış hâli**", 1,
