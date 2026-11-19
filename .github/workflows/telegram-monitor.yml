@@ -3,8 +3,11 @@ name: Telegram indirim takipçisi
 on:
   workflow_dispatch:
   schedule:
-    # GitHub cron kesin dakik değildir; ücretsiz runner'ı yaklaşık 5 saat 45 dk çalıştır.
-    - cron: "7 */6 * * *"
+    # Bekçi (watchdog): çalışan bir iş varken tetiklenen cron SIRAYA girer (concurrency,
+    # cancel-in-progress=false) ve çalışanı kesmez; yalnızca bekleyen tek bir yedek tutulur.
+    # Runner beklenmedik biçimde ölürse ("runner lost communication") bekleyen yedek hemen
+    # devralır. GitHub cron'ları sık düşürdüğü için yarım saatte bir tetiklenir.
+    - cron: "7,37 * * * *"
 
 concurrency:
   group: telegram-monitor

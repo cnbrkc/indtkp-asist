@@ -49,3 +49,17 @@ Yanıtta **`✅ repo'ya işlendi`** yazıyorsa kalıcılık çalışıyor demekt
 `⚠️ ... yalnızca bu oturumda geçerli` uyarısı alırsan önce **PR'ın merge edildiğinden ve
 yeni bir run başlattığından** emin ol (eski kodda bu özellik yoktur); hâlâ uyarı varsa
 [11. bölümdeki](sorun-giderme-ve-guvenlik.md#11-sorun-giderme) ilgili satıra bak.
+
+## Runner beklenmedik şekilde ölürse ("The hosted runner lost communication with the server")
+
+Bu, Python hatası değil, GitHub'ın çalıştırıcı makinesinin (VM) bağlantıyı kaybetmesidir. İş kırmızı
+biter ve bot durur; 330 dakikalık otomatik yenileme zinciri kopar (zinciri çalışan süreç kurar).
+
+- **Eski log silinmez.** Çalıştırmayı yeniden başlatınca (Re-run) önceki deneme "Attempt #1" olarak
+  saklanır: çalıştırma sayfasının sağ üstündeki **Attempt** açılır listesinden seçilir. Loglar ~90 gün durur.
+- **Nedene bakmak için:** Attempt #1 → `monitor` → "Mesajları dinle" adımının son satırlarına bak. Python
+  hatası/Traceback yoksa ve log aniden kesildiyse VM düşmüştür (bot kaynaklı değildir).
+- **Otomatik toparlanma:** `telegram-monitor.yml` içindeki cron her 30 dakikada tetiklenir ve çalışanı
+  kesmeden **sırada bekler**; çalışan süreç ölürse bekleyen yedek hemen başlar. Yine de bir iş kırmızıysa
+  ve yenisi başlamadıysa Actions → Run workflow ile elle başlat.
+
