@@ -50,6 +50,10 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bot  # noqa: E402
+import analysis  # noqa: E402
+import dedupmatch  # noqa: E402
+import keywords  # noqa: E402
+import sanitize  # noqa: E402
 import price_filter  # noqa: E402
 import private_bot as private  # noqa: E402
 import product_tracker  # noqa: E402
@@ -889,7 +893,7 @@ class ReservationTakeoverTest(unittest.TestCase):
             await offer(client, 1)
             (key,) = bot.DEDUP_CACHE
             # İlk gönderimi yarıda kalmış gibi göster: kayıt "pending", sahibi yok ya da bitmiş.
-            stale = bot.new_dedup_entry(cached()["title"], object(), "firsatz", "firsatz")
+            stale = dedupmatch.new_dedup_entry(cached()["title"], object(), "firsatz", "firsatz")
             stale["offer"] = cached()["offer"]
             if owner_state == "finished":
                 stale["owner"] = asyncio.ensure_future(asyncio.sleep(0))
@@ -1047,14 +1051,14 @@ class LookAlikeHelpersTest(unittest.TestCase):
     satır aynı girdinin iki işlevdeki bugünkü sonucudur; sütunlardan biri oynarsa bir
     işlev ötekine benzetilmiş demektir.
 
-    Üçüncü bir çift (bot._utf16_to_index / price_filter.utf16_to_char_index) yalnızca 0
+    Üçüncü bir çift (sanitize._utf16_to_index / price_filter.utf16_to_char_index) yalnızca 0
     ofsetinde ayrışıyordu; o fark 1 numaralı kusurdu ve düzeltildi. İkisi artık her
     tamsayı ofsette aynı sonucu verdiği için burada satırı yoktur.
     """
 
     def test_normalize_keeps_whitespace_and_casefolds_while_norm_collapses_and_lowers(self) -> None:
         cases = [
-            # girdi                  bot.normalize            price_filter.norm
+            # girdi                  keywords.normalize            price_filter.norm
             ("ÇAY  Bardağı",         "çay  bardağı",          "çay bardağı"),
             ("çay\u00a0bardağı",     "çay\u00a0bardağı",      "çay bardağı"),
             (" kahve \n makinesi\t", " kahve \n makinesi\t", "kahve makinesi"),
@@ -1063,12 +1067,12 @@ class LookAlikeHelpersTest(unittest.TestCase):
         ]
         for text, in_bot, in_price_filter in cases:
             with self.subTest(text=text):
-                self.assertEqual(bot.normalize(text), in_bot)
+                self.assertEqual(keywords.normalize(text), in_bot)
                 self.assertEqual(price_filter.norm(text), in_price_filter)
 
     def test_parse_price_value_reads_loose_text_while_parse_amount_is_strict(self) -> None:
         cases = [
-            # girdi        bot.parse_price_value   price_filter.parse_amount
+            # girdi        analysis.parse_price_value   price_filter.parse_amount
             ("31.866 TL",  31866.0,                None),
             ("₺ 45",       45.0,                   None),
             ("0,999",      999.0,                  0.999),
@@ -1079,7 +1083,7 @@ class LookAlikeHelpersTest(unittest.TestCase):
         ]
         for raw, in_bot, in_price_filter in cases:
             with self.subTest(raw=raw):
-                self.assertEqual(bot.parse_price_value(raw), in_bot)
+                self.assertEqual(analysis.parse_price_value(raw), in_bot)
                 self.assertEqual(price_filter.parse_amount(raw), in_price_filter)
 
 

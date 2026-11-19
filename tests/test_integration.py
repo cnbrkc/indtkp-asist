@@ -22,6 +22,13 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import analysis  # noqa: E402
+import commandtext  # noqa: E402
+import constants  # noqa: E402
+import dedupbadge  # noqa: E402
+import producttitle  # noqa: E402
+import sanitize  # noqa: E402
+import searchbuttons  # noqa: E402
 from telethon.tl import types  # noqa: E402
 
 ADMIN_ID = 1143378073
@@ -294,7 +301,7 @@ def reset_state():
     bot.SOURCE_IDS.clear()
     bot.CONTROL_IDS.clear()
     bot.DESTINATION_ID = None
-    bot.PENDING.clear()
+    commandtext.PENDING.clear()
     bot.COMMAND_MESSAGES.clear()
     bot.DEDUP_CACHE.clear()
     bot.CURSOR_RAM.clear()
@@ -632,7 +639,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(self._config(), original, "kaydetmeden config dosyası değişmemeli")
         self.assertEqual(bot.FILTER_INCLUDE, ["çay"], "kaydetmeden canlı filtre değişmemeli")
         self.assertEqual(self.command_log, [], "GitHub'a henüz gönderilmemeli")
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "confirm")
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "confirm")
 
     def test_save_applies_runtime_config_writes_file_and_attempts_github(self):
         self._reply("/ekle")
@@ -644,7 +651,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(self._config()["include_keywords"], ["çay", "kahve"])
         self.assertEqual(bot.FILTER_INCLUDE, ["çay", "kahve"])
         self.assertEqual(len(self.command_log), 1)
-        self.assertFalse(bot.PENDING)
+        self.assertFalse(commandtext.PENDING)
 
     def test_multiple_keywords_can_be_added_and_removed_in_one_message(self):
         """Asıl istek: a, b, c, d... şeklinde çoklu ekleme/çıkarma."""
@@ -694,7 +701,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertIn("çalışan ayarlar geri yüklendi", reply)
         self.assertEqual(self._config(), original)
         self.assertEqual(bot.FILTER_INCLUDE, ["çay"])
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "confirm")
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "confirm")
         self.assertEqual(self.command_log, [])
 
     def test_cancel_discards_draft_without_file_runtime_or_github_changes(self):
@@ -707,7 +714,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(self._config(), original)
         self.assertEqual(bot.FILTER_INCLUDE, ["çay"])
         self.assertEqual(self.command_log, [])
-        self.assertFalse(bot.PENDING)
+        self.assertFalse(commandtext.PENDING)
 
     def test_plain_save_choice_also_commits_the_draft(self):
         self._reply("/ekle")
@@ -779,7 +786,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
             draft = self._say("https://t.me/+PrivateSecret")
             self.assertIn("-12345", draft)
             self.assertNotIn("PrivateSecret", draft)
-            self.assertNotIn("PrivateSecret", str(bot.PENDING))
+            self.assertNotIn("PrivateSecret", str(commandtext.PENDING))
             self.assertNotIn(-12345, self._config()["source_chats"])
             self._reply("/kaydet")
         self.assertIn(-12345, self._config()["source_chats"])
@@ -798,9 +805,9 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
             reply = self._say("@yenikanal, https://t.me/+PrivateSecret")
         self.assertIn("önce katıl", reply)
         self.assertNotIn("PrivateSecret", reply)
-        self.assertNotIn("PrivateSecret", str(bot.PENDING))
+        self.assertNotIn("PrivateSecret", str(commandtext.PENDING))
         self.assertEqual(self._config()["source_chats"], ["@firsatz", "@olmayan"])
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "value")
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "value")
 
     def test_unresolvable_source_is_not_staged(self):
         self._reply("/ekle")
@@ -808,14 +815,14 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         reply = self._say("not_a_source")
         self.assertIn("çözülemedi", reply)
         self.assertEqual(self._config()["source_chats"], ["@firsatz", "@olmayan"])
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "value")
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "value")
         self.assertEqual(self.command_log, [])
 
     def test_invalid_category_keeps_the_menu_open(self):
         self._reply("/ekle")
         reply = self._say("9")
         self.assertIn("Seçimi anlayamadım", reply)
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "category")
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "category")
         self.assertIn("include_keywords", self._config())
 
     def test_duplicate_value_keeps_value_prompt_open(self):
@@ -823,7 +830,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self._say("1")
         reply = self._say("çay")
         self.assertIn("zaten bu listede", reply)
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "value")
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "value")
         self.assertEqual(self._config()["include_keywords"], ["çay"])
 
     def test_tgfiltrekapat_include_asks_then_lets_everything_through(self):
@@ -894,16 +901,16 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertIn("Hangi filtreyi açalım?", reply)
         self.assertEqual(self._config(), original)
         self.assertEqual(self.command_log, [])
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "filter",
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "filter",
                          "soru açık kalmalı: 1/2/3 ya da /iptal")
         self._reply("/iptal")
-        self.assertFalse(bot.PENDING)
+        self.assertFalse(commandtext.PENDING)
 
     def test_invalid_answer_keeps_the_filter_question_open(self):
         self._reply("/tgfiltreac")
         reply = self._say("kahve")
         self.assertIn("Seçimi anlayamadım", reply)
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "filter")
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "filter")
         self.assertEqual(self.command_log, [])
 
     def test_filter_change_can_be_cancelled(self):
@@ -912,7 +919,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         reply = self._reply("/iptal")
         self.assertIn("Taslak silindi", reply)
         self.assertEqual(self._config(), original)
-        self.assertFalse(bot.PENDING)
+        self.assertFalse(commandtext.PENDING)
         self.assertEqual(self.command_log, [])
 
     def test_no_change_reports_without_writing(self):
@@ -936,7 +943,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self._say("kahve")
         reply = self._reply("/tgfiltrekapat dahili")
         self.assertIn("Önce bekleyen liste taslağını sonuçlandır", reply)
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "confirm")
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "confirm")
         self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
 
     def test_removed_filter_commands_are_unknown_now(self):
@@ -970,7 +977,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self._reply("/ekle")
         reply = self._reply("/kaydet")
         self.assertIn("henüz tamamlanmadı", reply)
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "category")
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "category")
         self.assertEqual(self.command_log, [])
 
     def test_a_new_edit_cannot_overwrite_an_unconfirmed_draft(self):
@@ -979,33 +986,33 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self._say("kahve")
         reply = self._reply("/cikar")
         self.assertIn("Önce bekleyen taslağı sonuçlandır", reply)
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "confirm")
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "confirm")
         self.assertEqual(self._config()["include_keywords"], ["çay"])
 
     def test_status_does_not_silently_drop_pending_flow(self):
         self._reply("/ekle")
         self._reply("/durum")
-        self.assertTrue(bot.PENDING)
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "category")
+        self.assertTrue(commandtext.PENDING)
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "category")
 
     def test_cancel_without_pending_work_is_informative(self):
         self.assertIn("İptal edilecek", self._reply("/iptal"))
-        self.assertFalse(bot.PENDING)
+        self.assertFalse(commandtext.PENDING)
 
     def test_pending_flow_expires(self):
         self._reply("/ekle")
-        key = next(iter(bot.PENDING))
-        bot.PENDING[key]["at"] -= bot.PENDING_TTL_SECONDS + 1
+        key = next(iter(commandtext.PENDING))
+        commandtext.PENDING[key]["at"] -= commandtext.PENDING_TTL_SECONDS + 1
         self.assertEqual(self._say("1"), "")
-        self.assertFalse(bot.PENDING)
+        self.assertFalse(commandtext.PENDING)
 
     def test_pending_flow_is_per_user_and_strangers_cannot_start_one(self):
         reply = self._reply("/ekle", sender=424242)
         self.assertIn("yetkin yok", reply)
-        self.assertFalse(bot.PENDING)
+        self.assertFalse(commandtext.PENDING)
         self._reply("/ekle")
         self._say("1", sender=424242)
-        self.assertEqual(next(iter(bot.PENDING.values()))["stage"], "category")
+        self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "category")
 
     def test_legacy_cancel_alias_is_not_active(self):
         original = self._config()
@@ -1378,7 +1385,7 @@ class NotificationTest(unittest.TestCase):
         delivered = self.calls[0]["text"]
         self.assertIn(text, delivered, "kupon mesajı aynen iletilir")
         self.assertIn("Kod: HOPI50", delivered)
-        self.assertNotIn(bot.PRICE_LINE_LABEL, delivered, "kupon mesajına fiyat satırı eklenmez")
+        self.assertNotIn(searchbuttons.PRICE_LINE_LABEL, delivered, "kupon mesajına fiyat satırı eklenmez")
 
     def test_source_name_is_bold_and_carries_the_message_link(self):
         """En alttaki kaynak adı: etiketsiz, KALIN; mesaj adresi adın içinde."""
@@ -1393,12 +1400,12 @@ class NotificationTest(unittest.TestCase):
         links = self._links(entities)
         self.assertEqual([item["url"] for item in links], ["https://t.me/firsatz/1"])
         self.assertEqual(
-            [bot.utf16_slice(caption, item["offset"], item["length"]) for item in links],
+            [sanitize.utf16_slice(caption, item["offset"], item["length"]) for item in links],
             ["firsatz"],
         )
         bold = [item for item in entities if item["type"] == "bold"]
         name_bold = [item for item in bold
-                     if bot.utf16_slice(caption, item["offset"], item["length"]) == "firsatz"]
+                     if sanitize.utf16_slice(caption, item["offset"], item["length"]) == "firsatz"]
         self.assertEqual(len(name_bold), 1, entities)
         self.assertEqual(name_bold[0]["length"], len("firsatz"))
 
@@ -1409,7 +1416,7 @@ class NotificationTest(unittest.TestCase):
         self.assertFalse(caption.rstrip().endswith("firsatz"), caption)
         bold = [item for item in self.media_calls[0]["entities"] if item["type"] == "bold"]
         self.assertEqual(
-            [bot.utf16_slice(caption, item["offset"], item["length"]) for item in bold],
+            [sanitize.utf16_slice(caption, item["offset"], item["length"]) for item in bold],
             ["ÇAY"], "yalnızca başlık kalın kalır; kaynak adı hiç yazılmaz",
         )
 
@@ -1501,8 +1508,8 @@ class NotificationTest(unittest.TestCase):
         label = "🔗 Amazon'da gör"
         text = f"Adidas ESS BTU BP Sırt Çantası\n💸 İndirimli Fiyat: 1.577 TL\n{label}"
         entity = types.MessageEntityTextUrl(
-            offset=bot.utf16_length(text[:text.index(label)]),
-            length=bot.utf16_length(label),
+            offset=sanitize.utf16_length(text[:text.index(label)]),
+            length=sanitize.utf16_length(label),
             url="https://www.amazon.com.tr/dp/B123",
         )
         self._send(client, text, media=False, entities=[entity])
@@ -1951,13 +1958,13 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         kept_word = "burada"
         entities = [
             types.MessageEntityTextUrl(
-                offset=bot.utf16_length(text[:text.index(label)]),
-                length=bot.utf16_length(label),
+                offset=sanitize.utf16_length(text[:text.index(label)]),
+                length=sanitize.utf16_length(label),
                 url="https://chat.whatsapp.com/invite",
             ),
             types.MessageEntityBold(
-                offset=bot.utf16_length(text[:text.index(kept_word)]),
-                length=bot.utf16_length(kept_word),
+                offset=sanitize.utf16_length(text[:text.index(kept_word)]),
+                length=sanitize.utf16_length(kept_word),
             ),
         ]
         self._send(text, media=False, entities=entities)
@@ -1975,9 +1982,9 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         bold = next(
             entity for entity in formatting
             if type(entity).__name__ == "MessageEntityBold"
-            and bot.utf16_slice(delivered, entity.offset, entity.length) == kept_word
+            and sanitize.utf16_slice(delivered, entity.offset, entity.length) == kept_word
         )
-        self.assertEqual(bot.utf16_slice(delivered, bold.offset, bold.length), kept_word,
+        self.assertEqual(sanitize.utf16_slice(delivered, bold.offset, bold.length), kept_word,
                          "emoji ve silinen parçalardan sonra biçim kaymamalı")
 
     def test_whatsapp_button_is_removed_but_other_button_link_survives(self):
@@ -2030,7 +2037,7 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/uzun")
         self._send("ç" * 8 + " " + ("çay " * 400), entities=[entity])
         caption = self.client.files[0][2]
-        self.assertLessEqual(len(caption), bot.CAPTION_LIMIT)
+        self.assertLessEqual(len(caption), constants.CAPTION_LIMIT)
         self.assertEqual(self._hidden_urls(self.client)[-1], "https://t.me/firsatz/1",
                          "mesaj linki grup adına gömülü kalmalı")
         self.assertTrue(caption.endswith("firsatz"), caption[-40:])
@@ -2041,7 +2048,7 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         button = FakeRow([FakeButton("Fırsata Git", url="https://amzn.to/buton")])
         self._send("çay " * 900, media=False, reply_markup=FakeMarkup([button]))
         message = self._texts(self.client)
-        self.assertLessEqual(len(message), bot.MESSAGE_LIMIT)
+        self.assertLessEqual(len(message), constants.MESSAGE_LIMIT)
         self.assertTrue(message.endswith("firsatz"), message[-40:])
         self.assertEqual(self._hidden_urls(self.client)[-1], "https://t.me/firsatz/1")
 
@@ -2144,7 +2151,7 @@ class SingleMessageTest(unittest.TestCase):
         self._send(client, text, reply_markup=buttons)
         keyboard = self.calls[0]["keyboard"]["inline_keyboard"]
         services = [
-            bot._price_search_service(button["url"], button["text"])
+            sanitize._price_search_service(button["url"], button["text"])
             for row in keyboard for button in row
         ]
         self.assertEqual(services, ["google_shopping", "cimri"],
@@ -2323,7 +2330,7 @@ class AnalyzeCommandTest(unittest.TestCase):
 
     def test_tiny_limit_is_clamped_to_the_minimum(self):
         reply = self._command("/analiz 2")
-        self.assertIn(f"son {bot.ANALYSIS_MIN_LIMIT} mesaj", reply)
+        self.assertIn(f"son {analysis.ANALYSIS_MIN_LIMIT} mesaj", reply)
 
     def test_all_tokens_argument_disables_filtering(self):
         reply = self._command("/analiz tümü")
@@ -2387,8 +2394,8 @@ class AnalyzeCommandTest(unittest.TestCase):
         self.assertIn("başlık", event.sent_replies[0].edits[-1])
 
     def test_help_and_menu_mention_analysis(self):
-        self.assertIn("/analiz", bot.HELP_TEXT)
-        self.assertIn("/analiz", bot.build_main_menu_text())
+        self.assertIn("/analiz", commandtext.HELP_TEXT)
+        self.assertIn("/analiz", commandtext.build_main_menu_text())
 
 
 if __name__ == "__main__":
@@ -2453,7 +2460,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         formatting = kwargs["formatting_entities"]
         badge_entity = next(
             entity for entity in formatting
-            if bot.utf16_slice(text, entity.offset, entity.length) == badge_head
+            if sanitize.utf16_slice(text, entity.offset, entity.length) == badge_head
         )
         self.assertIsInstance(badge_entity, types.MessageEntityBold)
         self.assertGreater(badge_entity.offset, 0)
@@ -2652,7 +2659,7 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
         self.assertNotIn("\n\nfirsatz", client.edited[0][2],
                          "tekrarda grup adı satırı kaldırılır")
         self.assertEqual(
-            bot.strip_dedup_badge(client.edited[0][2])[1],
+            dedupbadge.strip_dedup_badge(client.edited[0][2])[1],
             "Çay\n\n💰Fiyat: 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9",
             "not geri sökülebilmeli (açılış taraması)",
         )
@@ -2687,7 +2694,7 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
         badged = (GROUP_ID, "🔥 3 kaynakta paylaşıldı!\n📌 Kaynaklar: A\n\nÇay 5 TL",
                   ADMIN_ID, None, None, [], 71)
         client = self._run_with_history([badged])
-        key = bot.dedup_key(bot._search_query("Çay 5 TL"))
+        key = dedupbadge.dedup_key(producttitle._search_query("Çay 5 TL"))
         self.assertEqual(bot.DEDUP_CACHE[key]["count"], 3)
         self._send_and_settle(client, "Çay 5 TL")
         self.assertEqual(client.delivered, [])
@@ -2809,7 +2816,7 @@ class DedupBotBadgeTest(unittest.TestCase):
                          "çoklu paylaşım notu grup adının yerine geçer")
         self.assertNotIn("\n\nfirsatz", call["caption"], "grup adı satırı kaldırılır")
         bold = next(entity for entity in call["entities"]
-                    if bot.utf16_slice(call["caption"], entity["offset"], entity["length"]) == badge)
+                    if sanitize.utf16_slice(call["caption"], entity["offset"], entity["length"]) == badge)
         self.assertEqual(bold["type"], "bold")
         self.assertGreater(bold["offset"], 0)
         self.assertEqual(call["keyboard"], self.media_calls[0]["keyboard"],
@@ -2849,7 +2856,7 @@ class DedupBotBadgeTest(unittest.TestCase):
         badge_line = edited.splitlines()[-1]
         badge_names = [item for item in self.edit_text_calls[0]["entities"]
                        if item.get("type") == "text_link"
-                       and bot.utf16_slice(edited, item["offset"], item["length"]) == "firsatz"]
+                       and sanitize.utf16_slice(edited, item["offset"], item["length"]) == "firsatz"]
         self.assertEqual([item["url"] for item in badge_names],
                          ["https://t.me/firsatz/1"],
                          f"notta yazan grup adı kendi mesajına bağlanır: {badge_line}")

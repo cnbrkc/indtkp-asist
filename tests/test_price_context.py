@@ -3,6 +3,12 @@ import unittest
 from types import SimpleNamespace
 
 import bot
+import botentities
+import commandtext
+import dedupmatch
+import header as header_mod
+import sanitize
+import smarttitle
 import price_filter as pf
 
 
@@ -48,11 +54,11 @@ class OfferContextTests(unittest.TestCase):
         text = 'Ürün: Chakra Waved Pamuk El Havlusu 30x40 Cm Bej\n\n🎯 99 TL 🚚 Kargo Bedava'
         message = SimpleNamespace(message=text, entities=[], media=None)
         event = SimpleNamespace(message=message, raw_text=text)
-        self.assertEqual(bot.message_text(event), text)
-        cleaned = bot.sanitize_message(event)
-        body = bot.message_text(cleaned)
+        self.assertEqual(sanitize.message_text(event), text)
+        cleaned = sanitize.sanitize_message(event)
+        body = sanitize.message_text(cleaned)
         self.assertIn('99 TL', body)
-        title, info = bot.smart_header_info(event, cleaned, body)
+        title, info = smarttitle.smart_header_info(event, cleaned, body)
         self.assertIn('Chakra', title)
         self.assertEqual(info.value, 99)
 
@@ -86,7 +92,7 @@ class OfferContextTests(unittest.TestCase):
                 self.assertEqual(pf.find_candidates(text)[0].role, role)
                 self.assertEqual(pf.price_matches(text, 200)[0], confidence == 'medium')
                 cfg = {'dm_enabled': False, 'dm_keywords': [], 'dm_price_max': ['200']}
-                self.assertEqual(bot.dm_should_send(cfg, text), confidence == 'medium')
+                self.assertEqual(commandtext.dm_should_send(cfg, text), confidence == 'medium')
                 self.assertFalse(pf.price_matches(text, 199)[0])
 
     def test_mixed_roles_not_numeric_minimum(self):
@@ -113,7 +119,7 @@ class OfferContextTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(pf.extract_price(text).value)
                 self.assertFalse(pf.price_matches(text, 1000)[0])
-                self.assertFalse(bot.dm_should_send(cfg, text))
+                self.assertFalse(commandtext.dm_should_send(cfg, text))
 
     def test_chakra_final_notification(self):
         from unittest.mock import patch
@@ -155,10 +161,10 @@ class OfferContextTests(unittest.TestCase):
             text = '🛍 Deneme Pamuk Havlu 30x40 Cm\n\n🎯 ' + offer
             with self.subTest(offer=offer):
                 event = SimpleNamespace(message=SimpleNamespace(message=text, entities=[], media=None), raw_text=text)
-                cleaned = bot.sanitize_message(event)
-                body = bot.message_text(cleaned)
-                strike = pf.strike_spans_from_entities(body, bot.entities_for_text(cleaned, body))
-                _, info = bot.smart_header_info(event, cleaned, body)
+                cleaned = sanitize.sanitize_message(event)
+                body = sanitize.message_text(cleaned)
+                strike = pf.strike_spans_from_entities(body, botentities.entities_for_text(cleaned, body))
+                _, info = smarttitle.smart_header_info(event, cleaned, body)
                 self.assertEqual((info.confidence, info.value), (confidence, value))
                 reliable = confidence in {'high', 'medium'}
                 with patch.object(bot, 'SMART_HEADER', True):
@@ -167,37 +173,37 @@ class OfferContextTests(unittest.TestCase):
                 header = composed['header']
                 if reliable:
                     # Güvenilir fiyat üst satırın EN BAŞINA yazılır ("1.299₺ - Ad").
-                    self.assertEqual(header, bot.build_header_line(bot.header_price_text(value), composed['title']))
+                    self.assertEqual(header, header_mod.build_header_line(header_mod.header_price_text(value), composed['title']))
                     self.assertNotIn('❓', header)
                 else:
                     # Güven yok: üst satırda yalnızca ❓, uzun uyarı yok.
-                    price, _ = bot.split_header_line(header)
+                    price, _ = header_mod.split_header_line(header)
                     self.assertEqual(price, '❓')
                     self.assertNotIn('Fiyat tespit', output)
                     # Kaynak gövdedeki tutarlar silinmez; üretilmiş fiyat başlığı olmamalı.
-                    self.assertNotIn(bot.header_price_text(value or 0) + bot.HEADER_SEPARATOR, output)
-                self.assertEqual(bot.offer_terms(event)[0], value if reliable else None)
+                    self.assertNotIn(header_mod.header_price_text(value or 0) + header_mod.HEADER_SEPARATOR, output)
+                self.assertEqual(dedupmatch.offer_terms(event)[0], value if reliable else None)
                 for threshold in [1000, (value - 1) if value else 0]:
                     cfg = {'dm_enabled': False, 'dm_keywords': [], 'dm_price_max': [str(threshold)]}
-                    self.assertEqual(bot.dm_should_send(cfg, body, strike),
+                    self.assertEqual(commandtext.dm_should_send(cfg, body, strike),
                                      reliable and value <= threshold)
                 if not reliable:
                     # Bağımsız kelime kuralı yine DM gönderebilir; fiyat tetikleyicisi değildir.
                     cfg = {'dm_enabled': True, 'dm_keywords': ['havlu'], 'dm_price_max': ['0']}
-                    self.assertTrue(bot.dm_should_send(cfg, body, strike))
+                    self.assertTrue(commandtext.dm_should_send(cfg, body, strike))
 
         text = '🛍 Deneme Havlu\n🎯 200 TL'
         start = len(text[:text.index('200')].encode('utf-16-le')) // 2
         event = SimpleNamespace(message=text, raw_text=text, entities=[types.MessageEntityStrike(offset=start, length=6)], media=None)
         with patch.object(bot, 'SMART_HEADER', True):
             struck_header = bot.compose_message(event)['header']
-        price, _ = bot.split_header_line(struck_header)
+        price, _ = header_mod.split_header_line(struck_header)
         self.assertEqual(price, '❓')
-        cleaned = bot.sanitize_message(event)
-        body = bot.message_text(cleaned)
-        strike = pf.strike_spans_from_entities(body, bot.entities_for_text(cleaned, body))
-        self.assertFalse(bot.dm_should_send({'dm_price_max': ['1000']}, body, strike))
-        self.assertIsNone(bot.offer_terms(event)[0])
+        cleaned = sanitize.sanitize_message(event)
+        body = sanitize.message_text(cleaned)
+        strike = pf.strike_spans_from_entities(body, botentities.entities_for_text(cleaned, body))
+        self.assertFalse(commandtext.dm_should_send({'dm_price_max': ['1000']}, body, strike))
+        self.assertIsNone(dedupmatch.offer_terms(event)[0])
 
     def test_original_full_context_and_total_counterexamples(self):
         # Aynı tam gerçek mesajlar: URL, paket boyutu, başlık ve emoji korunur.
@@ -207,7 +213,7 @@ class OfferContextTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertEqual(pf.extract_price(text).value, expected)
                 self.assertEqual(pf.extract_price(text).confidence, 'medium')
-                self.assertEqual(bot.offer_terms(text)[0], expected)
+                self.assertEqual(dedupmatch.offer_terms(text)[0], expected)
                 # Açık toplam değişikliği birim fiyat diye seçilmemeli.
                 import re
                 total_text = re.sub(r'(adet alımda)\s+(\d+ TL)', r'\1 toplam \2', text, flags=re.IGNORECASE)
@@ -227,12 +233,12 @@ class OfferContextTests(unittest.TestCase):
                 # Üst satır: "fiyat - ürün adı" (tek satır, fiyat en başta).
                 self.assertEqual(
                     composed['header'],
-                    bot.build_header_line(bot.header_price_text(expected), composed['title']),
+                    header_mod.build_header_line(header_mod.header_price_text(expected), composed['title']),
                 )
                 self.assertTrue(output.startswith(composed['header'] + '\n\n'), output)
                 self.assertNotIn('❓', composed['header'])
-                self.assertEqual(bot.offer_terms(event)[0], expected)
-                cleaned = bot.sanitize_message(event)
-                body = bot.message_text(cleaned)
+                self.assertEqual(dedupmatch.offer_terms(event)[0], expected)
+                cleaned = sanitize.sanitize_message(event)
+                body = sanitize.message_text(cleaned)
                 for threshold, hit in [(expected, True), (expected - 1, False)]:
-                    self.assertEqual(bot.dm_should_send({'dm_price_max': [str(threshold)]}, body), hit)
+                    self.assertEqual(commandtext.dm_should_send({'dm_price_max': [str(threshold)]}, body), hit)

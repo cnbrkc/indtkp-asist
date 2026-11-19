@@ -10,6 +10,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import commandtext  # noqa: E402
+import header as header_mod  # noqa: E402
 import price_filter as pf  # noqa: E402
 from telethon.tl import types  # noqa: E402
 
@@ -190,46 +192,46 @@ class ExtractionTests(unittest.TestCase):
 class DmPriceRuleTests(unittest.TestCase):
     def test_independent_from_keywords(self):
         cfg = {"dm_enabled": True, "dm_keywords": ["tcl 65"], "dm_exclude_keywords": [], "dm_price_max": ["50"]}
-        self.assertTrue(bot.dm_should_send(cfg, "TCL 65C7K TV 29.999 TL"))      # kelime kuralı
-        self.assertTrue(bot.dm_should_send(cfg, "Ampul 0 TL"))                  # fiyat kuralı
-        self.assertFalse(bot.dm_should_send(cfg, "Ampul 150 TL"))               # ikisi de değil
+        self.assertTrue(commandtext.dm_should_send(cfg, "TCL 65C7K TV 29.999 TL"))      # kelime kuralı
+        self.assertTrue(commandtext.dm_should_send(cfg, "Ampul 0 TL"))                  # fiyat kuralı
+        self.assertFalse(commandtext.dm_should_send(cfg, "Ampul 150 TL"))               # ikisi de değil
 
     def test_price_rule_works_when_keyword_dm_is_off(self):
         cfg = {"dm_enabled": False, "dm_keywords": [], "dm_price_max": ["10000"]}
-        self.assertTrue(bot.dm_should_send(cfg, "Telefon\n9.999 TL"))
-        self.assertFalse(bot.dm_should_send(cfg, "Telefon\n10.001 TL"))
+        self.assertTrue(commandtext.dm_should_send(cfg, "Telefon\n9.999 TL"))
+        self.assertFalse(commandtext.dm_should_send(cfg, "Telefon\n10.001 TL"))
 
     def test_rule_off_without_threshold(self):
         cfg = {"dm_enabled": False, "dm_keywords": []}
-        self.assertFalse(bot.dm_should_send(cfg, "Ampul 0 TL"))
+        self.assertFalse(commandtext.dm_should_send(cfg, "Ampul 0 TL"))
 
     def test_shared_dm_exclusion_blocks_both_legacy_rules(self):
         cfg = {"dm_enabled": True, "dm_keywords": ["tv"], "dm_exclude_keywords": ["tv"], "dm_price_max": ["100"]}
-        decision = bot.dm_decision(cfg, "TV kablosu 49 TL")
-        self.assertFalse(bot.dm_should_send(cfg, "TV kablosu 49 TL"))
+        decision = commandtext.dm_decision(cfg, "TV kablosu 49 TL")
+        self.assertFalse(commandtext.dm_should_send(cfg, "TV kablosu 49 TL"))
         self.assertFalse(decision.should_send)
         self.assertTrue(next(result for result in decision.results if result.group == "dmharic").matched)
-        self.assertTrue(bot.dm_should_send({"dm_enabled": False, "dm_price_max": ["100"]}, "Ampul 49 TL"))
+        self.assertTrue(commandtext.dm_should_send({"dm_enabled": False, "dm_price_max": ["100"]}, "Ampul 49 TL"))
 
     def test_staging(self):
-        ok, cand, values, msg = bot.stage_telegram_list_change({}, "dm_price_max", "add", "10.000 ₺")
+        ok, cand, values, msg = commandtext.stage_telegram_list_change({}, "dm_price_max", "add", "10.000 ₺")
         self.assertTrue(ok)
         self.assertEqual(cand["dm_price_max"], ["10000"])
-        ok, cand2, _, _ = bot.stage_telegram_list_change(cand, "dm_price_max", "add", "50")
+        ok, cand2, _, _ = commandtext.stage_telegram_list_change(cand, "dm_price_max", "add", "50")
         self.assertEqual(cand2["dm_price_max"], ["50"])         # yeni değer eskinin yerine geçer
-        ok, cand3, _, _ = bot.stage_telegram_list_change(cand2, "dm_price_max", "remove", "1")
+        ok, cand3, _, _ = commandtext.stage_telegram_list_change(cand2, "dm_price_max", "remove", "1")
         self.assertTrue(ok)
         self.assertEqual(cand3["dm_price_max"], [])
-        self.assertFalse(bot.stage_telegram_list_change({}, "dm_price_max", "add", "abc")[0])
-        self.assertFalse(bot.stage_telegram_list_change({}, "dm_price_max", "add", "10, 20")[0])
-        ok, decimal, _, _ = bot.stage_telegram_list_change({}, "dm_price_max", "add", "10.000,50 TL")
+        self.assertFalse(commandtext.stage_telegram_list_change({}, "dm_price_max", "add", "abc")[0])
+        self.assertFalse(commandtext.stage_telegram_list_change({}, "dm_price_max", "add", "10, 20")[0])
+        ok, decimal, _, _ = commandtext.stage_telegram_list_change({}, "dm_price_max", "add", "10.000,50 TL")
         self.assertTrue(ok)
-        self.assertEqual(bot.dm_price_threshold(decimal), 10000.5)
-        self.assertFalse(bot.stage_telegram_list_change({}, "dm_price_max", "remove", "1")[0])
+        self.assertEqual(commandtext.dm_price_threshold(decimal), 10000.5)
+        self.assertFalse(commandtext.stage_telegram_list_change({}, "dm_price_max", "remove", "1")[0])
 
     def test_alias(self):
         for name in ("dmfiyat", "dm_fiyat", "6"):
-            self.assertEqual(bot.resolve_telegram_list(name), "dm_price_max")
+            self.assertEqual(commandtext.resolve_telegram_list(name), "dm_price_max")
 
 
 class SmartHeaderLayoutTests(unittest.TestCase):
@@ -297,8 +299,8 @@ class SmartHeaderLayoutTests(unittest.TestCase):
         self.assertLessEqual(len(header), 45)
         self.assertTrue(header.endswith("…"), header)
         self.assertIn(title[:10], header, "adın başı (görülebilecek kısmı) korunur")
-        self.assertEqual(bot.fit_header_line("₺41.999", "", 90), "₺41.999")
-        self.assertEqual(bot.fit_header_line("₺41.999", "Ad", 6), "", "fiyat da sığmıyor")
+        self.assertEqual(header_mod.fit_header_line("₺41.999", "", 90), "₺41.999")
+        self.assertEqual(header_mod.fit_header_line("₺41.999", "Ad", 6), "", "fiyat da sığmıyor")
 
 
 class SlowReportTests(unittest.IsolatedAsyncioTestCase):

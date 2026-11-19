@@ -4,6 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from telethon.tl import types
 import bot
+import dedupmatch
+import producttitle
+import sanitize
+import searchbuttons
+import smarttitle
 import price_filter as pf
 
 FROPIE = ('✅ Fropie Yer Fıstığı Ezmesi 630 gr - %100 Yer Fıstığı Glutensiz ve Vegan Uyumlu Sağlıklı Atıştırmalık\n\n'
@@ -38,12 +43,12 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(pf.extract_price('Ürün\n🏷 413 TL\ntanesi 137 TL').value, 137)
 
     def test_linked_name_utf16_and_no_entity_fallback(self):
-        entity = types.MessageEntityTextUrl(offset=bot.utf16_length(GIGABYTE_PREFIX),
-                                           length=bot.utf16_length(GIGABYTE_NAME), url='https://example.com/urun')
+        entity = types.MessageEntityTextUrl(offset=sanitize.utf16_length(GIGABYTE_PREFIX),
+                                           length=sanitize.utf16_length(GIGABYTE_NAME), url='https://example.com/urun')
         obj = msg(GIGABYTE, [entity])
-        self.assertTrue(bot.linked_product_title(obj).startswith('GIGABYTE GAMING A18'))
-        self.assertTrue(bot._search_query(obj).startswith('GIGABYTE GAMING A18'))
-        self.assertTrue(bot.smart_dedup_title(obj).startswith('GIGABYTE GAMING A18'))
+        self.assertTrue(producttitle.linked_product_title(obj).startswith('GIGABYTE GAMING A18'))
+        self.assertTrue(producttitle._search_query(obj).startswith('GIGABYTE GAMING A18'))
+        self.assertTrue(smarttitle.smart_dedup_title(obj).startswith('GIGABYTE GAMING A18'))
         with patch.object(bot, 'SMART_HEADER', True):
             out = bot.compose_message(obj)
         self.assertTrue(out['header'].startswith('₺87.500 — GIGABYTE GAMING A18'), out['header'])
@@ -51,29 +56,29 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(pf.extract_price(GIGABYTE).value, 87500)
         # A generic CTA with a model number is not a product hyperlink.
         cta = 'FIRSATA GİT'
-        self.assertFalse(bot.linked_product_title(msg(cta, [types.MessageEntityTextUrl(
-            offset=0, length=bot.utf16_length(cta), url='https://example.com/urun')])))
+        self.assertFalse(producttitle.linked_product_title(msg(cta, [types.MessageEntityTextUrl(
+            offset=0, length=sanitize.utf16_length(cta), url='https://example.com/urun')])))
 
     def test_only_remove_button_when_its_url_is_visible(self):
         button = SimpleNamespace(text='Fırsata Git', url='https://example.com/urun')
         obj = msg('NIVEA Kadın Roll On 50ml\n268 TL', buttons=[button])
-        keyboard = bot.build_inline_keyboard(obj, body_text='🔗 https://example.com/urun')
+        keyboard = searchbuttons.build_inline_keyboard(obj, body_text='🔗 https://example.com/urun')
         self.assertNotIn('example.com/urun', str(keyboard))
         self.assertIn('Google Alışveriş', str(keyboard))
-        keyboard = bot.build_inline_keyboard(obj, body_text='NIVEA')
+        keyboard = searchbuttons.build_inline_keyboard(obj, body_text='NIVEA')
         self.assertIn('example.com/urun', str(keyboard))
 
     def test_upgrade_refuses_used_and_conflicting_asin(self):
         from time import time
         title = 'Hayat Doğal Mineralli Su 6x1,5 L'
         previous = msg(title + '\n🏷 79 TL')
-        offer = bot.offer_terms(previous)
-        self.assertFalse(bot.plain_offer_for_upgrade(msg(title + '\n🏷 79 TL\nİkinci El'), offer))
+        offer = dedupmatch.offer_terms(previous)
+        self.assertFalse(dedupmatch.plain_offer_for_upgrade(msg(title + '\n🏷 79 TL\nİkinci El'), offer))
         entry = {'offer': offer, 'plain_offer': True, 'first_seen': time(), 'title': title,
                  'editable': 'bot', 'bot_message_id': 123, 'product_asins': {'B09RMSLVS8'}}
         used = msg(title + '\nFiyat: 79 TL / 13 adet alımda 71 TL\nİkinci El')
-        self.assertFalse(bot.is_referenced_multibuy_upgrade(entry, title, used, bot.offer_terms(used), time()))
+        self.assertFalse(dedupmatch.is_referenced_multibuy_upgrade(entry, title, used, dedupmatch.offer_terms(used), time()))
         strike_text = title + '\nFiyat: 79 TL / 13 adet alımda 71 TL'
-        strike = types.MessageEntityStrike(offset=bot.utf16_length(strike_text[:strike_text.index('79')]), length=5)
+        strike = types.MessageEntityStrike(offset=sanitize.utf16_length(strike_text[:strike_text.index('79')]), length=5)
         struck = msg(strike_text, [strike])
-        self.assertFalse(bot.is_referenced_multibuy_upgrade(entry, title, struck, bot.offer_terms(struck), time()))
+        self.assertFalse(dedupmatch.is_referenced_multibuy_upgrade(entry, title, struck, dedupmatch.offer_terms(struck), time()))

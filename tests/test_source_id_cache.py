@@ -29,6 +29,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import commandtext  # noqa: E402
 from telethon import errors, types, utils  # noqa: E402
 
 ADMIN_ID = 1143378073
@@ -42,7 +43,7 @@ def _reset():
     bot.CONTROL_IDS.clear()
     bot.CONTROL_NAMES.clear()
     bot.DESTINATION_ID = None
-    bot.PENDING.clear()
+    commandtext.PENDING.clear()
     bot.COMMAND_MESSAGES.clear()
     bot.DEDUP_CACHE.clear()
     bot.CURSOR_RAM.clear()

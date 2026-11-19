@@ -23,96 +23,106 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import analysis as analysis_mod  # noqa: E402
+import botentities  # noqa: E402
+import commandtext  # noqa: E402
+import confutil  # noqa: E402
+import dedupbadge  # noqa: E402
+import dedupmatch  # noqa: E402
+import keywords  # noqa: E402
+import producttitle  # noqa: E402
+import sanitize  # noqa: E402
+import searchbuttons  # noqa: E402
 from product_tracker import ProductTracker as Tracker  # noqa: E402
 
 
 class ParseChatValueTest(unittest.TestCase):
     def test_string_id_becomes_int(self):
         """JSON'da tırnak içindeki negatif ID int olmalı, yoksa Telethon kullanıcı adı sanır."""
-        self.assertEqual(bot.parse_chat_value("-5092968106"), -5092968106)
-        self.assertEqual(bot.parse_chat_value("-1001234567890"), -1001234567890)
-        self.assertIsInstance(bot.parse_chat_value("-5092968106"), int)
+        self.assertEqual(confutil.parse_chat_value("-5092968106"), -5092968106)
+        self.assertEqual(confutil.parse_chat_value("-1001234567890"), -1001234567890)
+        self.assertIsInstance(confutil.parse_chat_value("-5092968106"), int)
 
     def test_int_passthrough(self):
-        self.assertEqual(bot.parse_chat_value(-5092968106), -5092968106)
+        self.assertEqual(confutil.parse_chat_value(-5092968106), -5092968106)
 
     def test_me_and_username_stay_strings(self):
-        self.assertEqual(bot.parse_chat_value("me"), "me")
-        self.assertEqual(bot.parse_chat_value("ME"), "me")
-        self.assertEqual(bot.parse_chat_value("@firsatz"), "@firsatz")
+        self.assertEqual(confutil.parse_chat_value("me"), "me")
+        self.assertEqual(confutil.parse_chat_value("ME"), "me")
+        self.assertEqual(confutil.parse_chat_value("@firsatz"), "@firsatz")
 
     def test_whitespace_is_tolerated(self):
-        self.assertEqual(bot.parse_chat_value("  -1001234567890  "), -1001234567890)
+        self.assertEqual(confutil.parse_chat_value("  -1001234567890  "), -1001234567890)
 
     def test_bool_and_empty_rejected(self):
         with self.assertRaises(ValueError):
-            bot.parse_chat_value(True)
+            confutil.parse_chat_value(True)
         with self.assertRaises(ValueError):
-            bot.parse_chat_value("   ")
+            confutil.parse_chat_value("   ")
 
     def test_chat_values_skips_bad_entries(self):
         with self.assertLogs("telegram-filter", level="WARNING"):
-            result = bot.chat_values(["@firsatz", "", "-5092968106", True])
+            result = confutil.chat_values(["@firsatz", "", "-5092968106", True])
         self.assertEqual(result, ["@firsatz", -5092968106])
 
 
 class ParseAdminIdsTest(unittest.TestCase):
     def test_accepts_every_documented_shape(self):
         for value in (1143378073, "1143378073", " 1143378073 ", [1143378073]):
-            self.assertEqual(bot.parse_admin_ids(value), {1143378073}, value)
+            self.assertEqual(confutil.parse_admin_ids(value), {1143378073}, value)
 
     def test_multiple_ids(self):
-        self.assertEqual(bot.parse_admin_ids("111,222;333"), {111, 222, 333})
+        self.assertEqual(confutil.parse_admin_ids("111,222;333"), {111, 222, 333})
 
     def test_null_like_values_are_empty(self):
         for value in (None, "", "none", "null", "yok"):
-            self.assertEqual(bot.parse_admin_ids(value), set(), repr(value))
+            self.assertEqual(confutil.parse_admin_ids(value), set(), repr(value))
 
     def test_garbage_does_not_crash(self):
         """Eski sürüm int('none') ile çöküyordu; artık yalnızca uyarı vermeli."""
         with self.assertLogs("telegram-filter", level="WARNING"):
-            self.assertEqual(bot.parse_admin_ids("none,abc"), set())
+            self.assertEqual(confutil.parse_admin_ids("none,abc"), set())
 
 
 class NormalizeTest(unittest.TestCase):
     def test_turkish_capital_i_matches_lowercase_keyword(self):
         """"İNDİRİM".casefold() birleşik nokta üretir; normalize() bunu düzeltmeli."""
         self.assertNotIn("indirim", "İNDİRİM".casefold())  # eski davranışın kanıtı
-        self.assertIn("indirim", bot.normalize("İNDİRİM"))
+        self.assertIn("indirim", keywords.normalize("İNDİRİM"))
 
     def test_dotless_i_is_preserved(self):
-        self.assertIn("ıspanak", bot.normalize("ISPANAK"))
+        self.assertIn("ıspanak", keywords.normalize("ISPANAK"))
 
     def test_plain_text_unchanged(self):
-        self.assertEqual(bot.normalize("Çay 5 TL"), "çay 5 tl")
+        self.assertEqual(keywords.normalize("Çay 5 TL"), "çay 5 tl")
 
     def test_none_is_safe(self):
-        self.assertEqual(bot.normalize(None), "")
+        self.assertEqual(keywords.normalize(None), "")
 
 
 class MatchesTest(unittest.TestCase):
-    include = [bot.normalize(x) for x in ("çay", "kahve", "şeker")]
-    exclude = [bot.normalize(x) for x in ("çekiliş", "hediye")]
+    include = [keywords.normalize(x) for x in ("çay", "kahve", "şeker")]
+    exclude = [keywords.normalize(x) for x in ("çekiliş", "hediye")]
 
     def test_any_mode(self):
-        self.assertTrue(bot.matches("Sıcak KAHVE 250 TL", self.include, self.exclude, "any"))
-        self.assertFalse(bot.matches("iPhone 17 satışta", self.include, self.exclude, "any"))
+        self.assertTrue(keywords.matches("Sıcak KAHVE 250 TL", self.include, self.exclude, "any"))
+        self.assertFalse(keywords.matches("iPhone 17 satışta", self.include, self.exclude, "any"))
 
     def test_all_mode(self):
-        self.assertFalse(bot.matches("çay ve şeker", self.include, self.exclude, "all"))
-        self.assertTrue(bot.matches("çay kahve şeker", self.include, self.exclude, "all"))
+        self.assertFalse(keywords.matches("çay ve şeker", self.include, self.exclude, "all"))
+        self.assertTrue(keywords.matches("çay kahve şeker", self.include, self.exclude, "all"))
 
     def test_exclude_wins(self):
-        self.assertFalse(bot.matches("Kahve çekilişi", self.include, self.exclude, "any"))
+        self.assertFalse(keywords.matches("Kahve çekilişi", self.include, self.exclude, "any"))
 
     def test_capital_turkish_text_matches(self):
-        self.assertTrue(bot.matches("ÇAY VE ŞEKER KAMPANYASI", self.include, self.exclude, "any"))
+        self.assertTrue(keywords.matches("ÇAY VE ŞEKER KAMPANYASI", self.include, self.exclude, "any"))
 
     def test_empty_include_accepts_everything(self):
-        self.assertTrue(bot.matches("her şey", [], self.exclude, "any"))
+        self.assertTrue(keywords.matches("her şey", [], self.exclude, "any"))
 
     def test_empty_text_rejected_when_keywords_present(self):
-        self.assertFalse(bot.matches("", self.include, self.exclude, "any"))
+        self.assertFalse(keywords.matches("", self.include, self.exclude, "any"))
 
 
 class CheckEnvironmentTest(unittest.TestCase):
@@ -247,15 +257,15 @@ class StatusTextTest(unittest.TestCase):
         self.assertIn("çözülemedi", sources)
 
     def test_help_text_is_the_complete_unique_canonical_command_catalog(self):
-        commands = tuple(command for command, _ in bot.COMMAND_DESCRIPTIONS)
-        help_lines = [line for line in bot.HELP_TEXT.splitlines() if " - " in line]
+        commands = tuple(command for command, _ in commandtext.COMMAND_DESCRIPTIONS)
+        help_lines = [line for line in commandtext.HELP_TEXT.splitlines() if " - " in line]
         self.assertEqual(
             tuple(line.split(" - ", 1)[0] for line in help_lines),
             commands,
             "her canonical komut açıklamasıyla tek kez listelenmeli",
         )
         self.assertEqual(len(commands), len(set(commands)))
-        self.assertTrue(all(description.strip() for _, description in bot.COMMAND_DESCRIPTIONS))
+        self.assertTrue(all(description.strip() for _, description in commandtext.COMMAND_DESCRIPTIONS))
         self.assertEqual(commands, (
             "/komutlar", "/start", "/durum", "/ayar",
             "/ekle", "/cikar", "/kaydet", "/iptal",
@@ -269,21 +279,21 @@ class StatusTextTest(unittest.TestCase):
 
     def test_dispatch_paths_and_help_catalog_share_the_same_commands(self):
         routed = {
-            bot.COMMAND_HELP, bot.COMMAND_START, bot.COMMAND_STATUS,
-            bot.COMMAND_TEST, bot.COMMAND_ID, bot.COMMAND_RESTART, bot.COMMAND_SOURCES, bot.COMMAND_WEB_TRACK,
+            commandtext.COMMAND_HELP, commandtext.COMMAND_START, commandtext.COMMAND_STATUS,
+            commandtext.COMMAND_TEST, commandtext.COMMAND_ID, commandtext.COMMAND_RESTART, commandtext.COMMAND_SOURCES, commandtext.COMMAND_WEB_TRACK,
         }
-        routed.update(bot.CMD_DM_COMMANDS)
-        routed.update(bot.SETTINGS_COMMANDS)
-        routed.update(bot.CMD_TG_FILTER_OPEN)
-        routed.update(bot.CMD_TG_FILTER_CLOSE)
-        routed.update(bot.CMD_ANALYZE)
-        routed.update(bot.CMD_SOURCE_TEST)
-        routed.update(bot.CMD_WEB_TRACK_MENU)
-        documented = {command for command, _ in bot.COMMAND_DESCRIPTIONS}
+        routed.update(commandtext.CMD_DM_COMMANDS)
+        routed.update(commandtext.SETTINGS_COMMANDS)
+        routed.update(commandtext.CMD_TG_FILTER_OPEN)
+        routed.update(commandtext.CMD_TG_FILTER_CLOSE)
+        routed.update(commandtext.CMD_ANALYZE)
+        routed.update(commandtext.CMD_SOURCE_TEST)
+        routed.update(commandtext.CMD_WEB_TRACK_MENU)
+        documented = {command for command, _ in commandtext.COMMAND_DESCRIPTIONS}
         self.assertEqual(routed, documented)
 
     def test_redundant_command_variants_are_not_in_help_catalog(self):
-        commands = {command for command, _ in bot.COMMAND_DESCRIPTIONS}
+        commands = {command for command, _ in commandtext.COMMAND_DESCRIPTIONS}
         for removed in (
             "/status", "/dmaç", "/ayarlar", "/kaynak", "/source",
             "/sources", "/testkaynak", "/testkaynaklar", "/kelimeanalizi",
@@ -299,7 +309,7 @@ class StatusTextTest(unittest.TestCase):
 
     def test_readme_command_table_and_botfather_list_match_help_catalog(self):
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
-        commands = tuple(command for command, _ in bot.COMMAND_DESCRIPTIONS)
+        commands = tuple(command for command, _ in commandtext.COMMAND_DESCRIPTIONS)
         table = readme.split("### Tüm desteklenen komutlar\n", 1)[1].split(
             "**Tamamı virgülle ayrılmış hâli**", 1,
         )[0]
@@ -350,53 +360,53 @@ class MatchModeTest(unittest.TestCase):
     """include_keywords + match_mode(any/all) + 'tüm mesajları ilet' modu."""
 
     def test_aliases_resolve_to_canonical_mode(self):
-        self.assertEqual(bot.canonical_match_mode("any"), "any")
-        self.assertEqual(bot.canonical_match_mode("ALL"), "all")
-        self.assertEqual(bot.canonical_match_mode("hepsi"), "all")
-        self.assertEqual(bot.canonical_match_mode("forward_all"), "forward_all")
-        self.assertEqual(bot.canonical_match_mode("TÜM MESAJLAR"), "forward_all")
-        self.assertEqual(bot.canonical_match_mode("hepsini_gonder"), "forward_all")
-        self.assertEqual(bot.canonical_match_mode("filtresiz"), "forward_all")
-        self.assertIsNone(bot.canonical_match_mode("uzay"))
+        self.assertEqual(keywords.canonical_match_mode("any"), "any")
+        self.assertEqual(keywords.canonical_match_mode("ALL"), "all")
+        self.assertEqual(keywords.canonical_match_mode("hepsi"), "all")
+        self.assertEqual(keywords.canonical_match_mode("forward_all"), "forward_all")
+        self.assertEqual(keywords.canonical_match_mode("TÜM MESAJLAR"), "forward_all")
+        self.assertEqual(keywords.canonical_match_mode("hepsini_gonder"), "forward_all")
+        self.assertEqual(keywords.canonical_match_mode("filtresiz"), "forward_all")
+        self.assertIsNone(keywords.canonical_match_mode("uzay"))
 
     def test_match_mode_of_defaults_to_any(self):
-        self.assertEqual(bot.match_mode_of({}), "any")
-        self.assertEqual(bot.match_mode_of({"match_mode": None}), "any")
-        self.assertEqual(bot.match_mode_of({"match_mode": "forward_all"}), "forward_all")
+        self.assertEqual(keywords.match_mode_of({}), "any")
+        self.assertEqual(keywords.match_mode_of({"match_mode": None}), "any")
+        self.assertEqual(keywords.match_mode_of({"match_mode": "forward_all"}), "forward_all")
 
     def test_forward_all_ignores_include(self):
-        self.assertTrue(bot.matches("iPhone 17 kampanya", ["çay"], [], "forward_all"))
-        self.assertTrue(bot.matches("", ["çay"], [], "forward_all"))
+        self.assertTrue(keywords.matches("iPhone 17 kampanya", ["çay"], [], "forward_all"))
+        self.assertTrue(keywords.matches("", ["çay"], [], "forward_all"))
 
     def test_forward_all_still_honours_exclude(self):
         """Hariç kelimeler her modda engeller: istenmeyen içerik asla geçmez."""
-        self.assertFalse(bot.matches("çay çekilişi", [], ["çekiliş"], "forward_all"))
-        self.assertTrue(bot.matches("çay kampanya", [], ["çekiliş"], "forward_all"))
+        self.assertFalse(keywords.matches("çay çekilişi", [], ["çekiliş"], "forward_all"))
+        self.assertTrue(keywords.matches("çay kampanya", [], ["çekiliş"], "forward_all"))
 
     def test_classic_modes_are_unchanged(self):
-        self.assertTrue(bot.matches("çay kahve", ["çay", "şeker"], [], "any"))
-        self.assertFalse(bot.matches("çay kahve", ["çay", "şeker"], [], "all"))
-        self.assertTrue(bot.matches("çay şeker", ["çay", "şeker"], [], "all"))
+        self.assertTrue(keywords.matches("çay kahve", ["çay", "şeker"], [], "any"))
+        self.assertFalse(keywords.matches("çay kahve", ["çay", "şeker"], [], "all"))
+        self.assertTrue(keywords.matches("çay şeker", ["çay", "şeker"], [], "all"))
 
     def test_include_filter_can_be_disabled_independently(self):
         """İki filtre bağımsız: dahili kapalıyken harici engelleme sürer."""
         include, exclude = ["çay"], ["çekiliş"]
-        self.assertFalse(bot.matches("iPhone çekiliş", include, exclude, "any",
+        self.assertFalse(keywords.matches("iPhone çekiliş", include, exclude, "any",
                                      include_enabled=False, exclude_enabled=True))
-        self.assertTrue(bot.matches("iPhone kampanya", include, exclude, "any",
+        self.assertTrue(keywords.matches("iPhone kampanya", include, exclude, "any",
                                     include_enabled=False, exclude_enabled=True))
 
     def test_exclude_filter_can_be_disabled_independently(self):
         include, exclude = ["çay"], ["çekiliş"]
-        self.assertTrue(bot.matches("çay çekilişi", include, exclude, "any",
+        self.assertTrue(keywords.matches("çay çekilişi", include, exclude, "any",
                                     include_enabled=True, exclude_enabled=False))
-        self.assertFalse(bot.matches("iPhone kampanya", include, exclude, "any",
+        self.assertFalse(keywords.matches("iPhone kampanya", include, exclude, "any",
                                      include_enabled=True, exclude_enabled=False))
 
     def test_both_filters_disabled_lets_everything_through(self):
-        self.assertTrue(bot.matches("iPhone çekilişi", ["çay"], ["çekiliş"], "any",
+        self.assertTrue(keywords.matches("iPhone çekilişi", ["çay"], ["çekiliş"], "any",
                                     include_enabled=False, exclude_enabled=False))
-        self.assertTrue(bot.matches("", [], [], "any",
+        self.assertTrue(keywords.matches("", [], [], "any",
                                     include_enabled=False, exclude_enabled=False))
 
     def test_check_environment_accepts_forward_all(self):
@@ -405,21 +415,21 @@ class MatchModeTest(unittest.TestCase):
             self.assertEqual(bot.check_environment(config), [])
 
     def test_filter_state_defaults_to_both_enabled(self):
-        self.assertEqual(bot.filter_state_of({}), {"include": True, "exclude": True})
-        self.assertEqual(bot.filter_state_of({"match_mode": "all"}),
+        self.assertEqual(keywords.filter_state_of({}), {"include": True, "exclude": True})
+        self.assertEqual(keywords.filter_state_of({"match_mode": "all"}),
                          {"include": True, "exclude": True})
 
     def test_filter_state_reads_flags_and_legacy_forward_all(self):
-        self.assertEqual(bot.filter_state_of({"include_enabled": False}),
+        self.assertEqual(keywords.filter_state_of({"include_enabled": False}),
                          {"include": False, "exclude": True})
-        self.assertEqual(bot.filter_state_of({"exclude_enabled": False}),
+        self.assertEqual(keywords.filter_state_of({"exclude_enabled": False}),
                          {"include": True, "exclude": False})
-        self.assertEqual(bot.filter_state_of({"include_enabled": "hayır"}),
+        self.assertEqual(keywords.filter_state_of({"include_enabled": "hayır"}),
                          {"include": False, "exclude": True})
-        self.assertEqual(bot.filter_state_of({"match_mode": "forward_all"}),
+        self.assertEqual(keywords.filter_state_of({"match_mode": "forward_all"}),
                          {"include": False, "exclude": True},
                          "eski 'tümünü al' modu dahili filtreyi kapatmalı")
-        self.assertEqual(bot.filter_state_of({"match_mode": "forward_all", "exclude_enabled": False}),
+        self.assertEqual(keywords.filter_state_of({"match_mode": "forward_all", "exclude_enabled": False}),
                          {"include": False, "exclude": False})
 
     def test_check_environment_rejects_unknown_mode(self):
@@ -434,33 +444,33 @@ class TelegramCommandTest(unittest.TestCase):
     """Yalnızca belgelenen Telegram komutları tanınır."""
 
     def test_filter_toggle_commands_are_active(self):
-        self.assertIn("/tgfiltreac", bot.CMD_TG_FILTER_OPEN)
-        self.assertIn("/tgfiltrekapat", bot.CMD_TG_FILTER_CLOSE)
-        self.assertEqual(bot.CMD_TG_FILTER_OPEN | bot.CMD_TG_FILTER_CLOSE,
+        self.assertIn("/tgfiltreac", commandtext.CMD_TG_FILTER_OPEN)
+        self.assertIn("/tgfiltrekapat", commandtext.CMD_TG_FILTER_CLOSE)
+        self.assertEqual(commandtext.CMD_TG_FILTER_OPEN | commandtext.CMD_TG_FILTER_CLOSE,
                          {"/tgfiltreac", "/tgfiltrekapat"})
-        self.assertIn("/ekle", bot.SETTINGS_COMMANDS)
-        self.assertIn("/cikar", bot.SETTINGS_COMMANDS)
-        self.assertIn("/kaydet", bot.SETTINGS_COMMANDS)
-        self.assertIn("/iptal", bot.SETTINGS_COMMANDS)
+        self.assertIn("/ekle", commandtext.SETTINGS_COMMANDS)
+        self.assertIn("/cikar", commandtext.SETTINGS_COMMANDS)
+        self.assertIn("/kaydet", commandtext.SETTINGS_COMMANDS)
+        self.assertIn("/iptal", commandtext.SETTINGS_COMMANDS)
 
     def test_removed_filter_commands_are_gone(self):
         """Eski komut isimleri alias kalmadan tamamen kaldırıldı."""
         for command in ("/hepsinial", "/filtrelial", "/open", "/close",
                         "/dmac", "/dmkapat", "/takip", "/çıkar"):
             with self.subTest(command=command):
-                self.assertNotIn(command, bot.CMD_TG_FILTER_OPEN | bot.CMD_TG_FILTER_CLOSE)
-                self.assertNotIn(command, bot.SETTINGS_COMMANDS)
-                self.assertNotIn(command, bot.HELP_TEXT)
-                self.assertNotIn(command, bot.build_main_menu_text())
+                self.assertNotIn(command, commandtext.CMD_TG_FILTER_OPEN | commandtext.CMD_TG_FILTER_CLOSE)
+                self.assertNotIn(command, commandtext.SETTINGS_COMMANDS)
+                self.assertNotIn(command, commandtext.HELP_TEXT)
+                self.assertNotIn(command, commandtext.build_main_menu_text())
 
     def test_removed_general_settings_commands_are_not_active(self):
         for command in ("/mod", "/token", "/kelime_ekle", "/filtre", "/ayar_set"):
             with self.subTest(command=command):
-                self.assertNotIn(command, bot.SETTINGS_COMMANDS)
+                self.assertNotIn(command, commandtext.SETTINGS_COMMANDS)
 
     def test_main_menu_and_help_show_only_active_settings(self):
-        menu = bot.build_main_menu_text()
-        help_text = bot.HELP_TEXT
+        menu = commandtext.build_main_menu_text()
+        help_text = commandtext.HELP_TEXT
         for text in (menu, help_text):
             for command in ("/tgfiltreac", "/tgfiltrekapat", "/ekle", "/cikar",
                             "/kaydet", "/iptal", "/webtakip"):
@@ -483,7 +493,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
         }
 
     def test_seven_config_fields_are_telegram_editable(self):
-        self.assertEqual(bot.TELEGRAM_LIST_FIELDS,
+        self.assertEqual(commandtext.TELEGRAM_LIST_FIELDS,
                          ("include_keywords", "exclude_keywords", "source_chats",
                           "dm_keywords", "dm_exclude_keywords", "dm_price_max",
                           "dm_product_price_rules"))
@@ -492,26 +502,26 @@ class TelegramListWorkflowTest(unittest.TestCase):
         expected = ["include_keywords", "exclude_keywords", "source_chats",
                     "dm_keywords", "dm_exclude_keywords", "dm_price_max"]
         for index, field in enumerate(expected, start=1):
-            self.assertEqual(bot.resolve_telegram_list(str(index)), field)
-        self.assertEqual(bot.resolve_telegram_list("Dahili kelimeler"), "include_keywords")
-        self.assertEqual(bot.resolve_telegram_list("harici kelimeler"), "exclude_keywords")
-        self.assertEqual(bot.resolve_telegram_list("grup isimleri"), "source_chats")
-        self.assertEqual(bot.resolve_telegram_list("kaynaklar"), "source_chats")
-        self.assertEqual(bot.resolve_telegram_list("dahil"), "include_keywords")
-        self.assertEqual(bot.resolve_telegram_list("dmdahil"), "dm_keywords")
-        self.assertEqual(bot.resolve_telegram_list("dmharic"), "dm_exclude_keywords")
-        self.assertEqual(bot.resolve_telegram_list("dmhariç"), "dm_exclude_keywords")
-        self.assertEqual(bot.resolve_telegram_list("dmfiyat"), "dm_price_max")
-        self.assertEqual(bot.resolve_telegram_list("ürün adı < fiyat"), "dm_product_price_rules")
-        self.assertEqual(bot.resolve_telegram_list("DM Ürün Fiyat"), "dm_product_price_rules")
-        self.assertEqual(bot.resolve_telegram_list("7"), bot.WEBTAKIP_FIELD)
-        self.assertEqual(bot.resolve_telegram_list("8"), "dm_product_price_rules")
-        self.assertEqual(bot.resolve_telegram_list("webdetakip"), bot.WEBTAKIP_FIELD)
-        self.assertEqual(bot.resolve_telegram_list("akakcetakip"), bot.WEBTAKIP_FIELD)
-        self.assertIsNone(bot.resolve_telegram_list("hedef"))
+            self.assertEqual(commandtext.resolve_telegram_list(str(index)), field)
+        self.assertEqual(commandtext.resolve_telegram_list("Dahili kelimeler"), "include_keywords")
+        self.assertEqual(commandtext.resolve_telegram_list("harici kelimeler"), "exclude_keywords")
+        self.assertEqual(commandtext.resolve_telegram_list("grup isimleri"), "source_chats")
+        self.assertEqual(commandtext.resolve_telegram_list("kaynaklar"), "source_chats")
+        self.assertEqual(commandtext.resolve_telegram_list("dahil"), "include_keywords")
+        self.assertEqual(commandtext.resolve_telegram_list("dmdahil"), "dm_keywords")
+        self.assertEqual(commandtext.resolve_telegram_list("dmharic"), "dm_exclude_keywords")
+        self.assertEqual(commandtext.resolve_telegram_list("dmhariç"), "dm_exclude_keywords")
+        self.assertEqual(commandtext.resolve_telegram_list("dmfiyat"), "dm_price_max")
+        self.assertEqual(commandtext.resolve_telegram_list("ürün adı < fiyat"), "dm_product_price_rules")
+        self.assertEqual(commandtext.resolve_telegram_list("DM Ürün Fiyat"), "dm_product_price_rules")
+        self.assertEqual(commandtext.resolve_telegram_list("7"), commandtext.WEBTAKIP_FIELD)
+        self.assertEqual(commandtext.resolve_telegram_list("8"), "dm_product_price_rules")
+        self.assertEqual(commandtext.resolve_telegram_list("webdetakip"), commandtext.WEBTAKIP_FIELD)
+        self.assertEqual(commandtext.resolve_telegram_list("akakcetakip"), commandtext.WEBTAKIP_FIELD)
+        self.assertIsNone(commandtext.resolve_telegram_list("hedef"))
 
     def test_category_menu_is_compact_and_shows_current_counts(self):
-        text = bot.build_list_category_prompt("add", self.config)
+        text = commandtext.build_list_category_prompt("add", self.config)
         self.assertIn("1. 🔎  Dahili kelimeler  ·  2 kayıt", text)
         self.assertIn("2. 🚫  Harici kelimeler  ·  1 kayıt", text)
         self.assertIn("3. 📣  Grup isimleri  ·  2 kayıt", text)
@@ -520,18 +530,18 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertIn("1–8", text)
 
     def test_selected_category_shows_list_before_asking_for_value(self):
-        add_prompt = bot.build_list_value_prompt("add", "include_keywords", self.config)
+        add_prompt = commandtext.build_list_value_prompt("add", "include_keywords", self.config)
         self.assertIn("01. çay", add_prompt)
         self.assertIn("02. kahve", add_prompt)
         self.assertIn("Eklenecek kelimeleri gönder", add_prompt)
         self.assertIn("virgül", add_prompt, "çoklu kayıt desteği yazmalı")
-        remove_prompt = bot.build_list_value_prompt("remove", "source_chats", self.config)
+        remove_prompt = commandtext.build_list_value_prompt("remove", "source_chats", self.config)
         self.assertIn("01. @firsat", remove_prompt)
         self.assertIn("02. -1001234567890", remove_prompt)
         self.assertIn("numarasını", remove_prompt)
 
     def test_add_is_staged_without_changing_the_original_config(self):
-        ok, candidate, value, note = bot.stage_telegram_list_change(
+        ok, candidate, value, note = commandtext.stage_telegram_list_change(
             self.config, "include_keywords", "add", "KAHVE ŞEKER",
         )
         self.assertTrue(ok, note)
@@ -541,7 +551,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
 
     def test_multiple_keywords_are_added_in_one_message(self):
         """Asıl istek: a, b, c, d... şeklinde çoklu ekleme."""
-        ok, candidate, added, note = bot.stage_telegram_list_change(
+        ok, candidate, added, note = commandtext.stage_telegram_list_change(
             self.config, "include_keywords", "add", "Şeker, süt; bisküvi\nkahve dünyası",
         )
         self.assertTrue(ok, note)
@@ -553,7 +563,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertEqual(self.config["include_keywords"], ["çay", "kahve"], "asıl config değişmemeli")
 
     def test_duplicate_items_in_a_batch_are_skipped_but_others_are_added(self):
-        ok, candidate, added, note = bot.stage_telegram_list_change(
+        ok, candidate, added, note = commandtext.stage_telegram_list_change(
             self.config, "include_keywords", "add", "kahve, şeker, KAHVE",
         )
         self.assertTrue(ok, note)
@@ -563,7 +573,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertIn("zaten listede", note)
 
     def test_batch_with_only_duplicates_reports_and_changes_nothing(self):
-        ok, candidate, added, note = bot.stage_telegram_list_change(
+        ok, candidate, added, note = commandtext.stage_telegram_list_change(
             self.config, "exclude_keywords", "add", "çekiliş",
         )
         self.assertFalse(ok)
@@ -572,29 +582,29 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertIn("zaten bu listede", note)
 
     def test_batch_size_is_capped(self):
-        raw = ", ".join(f"kelime{i}" for i in range(bot.LIST_BATCH_MAX + 1))
-        ok, candidate, _, note = bot.stage_telegram_list_change(
+        raw = ", ".join(f"kelime{i}" for i in range(commandtext.LIST_BATCH_MAX + 1))
+        ok, candidate, _, note = commandtext.stage_telegram_list_change(
             self.config, "exclude_keywords", "add", raw,
         )
         self.assertFalse(ok)
-        self.assertIn(str(bot.LIST_BATCH_MAX), note)
+        self.assertIn(str(commandtext.LIST_BATCH_MAX), note)
         self.assertEqual(candidate, self.config)
 
     def test_add_chat_id_becomes_an_integer_and_names_are_case_insensitive(self):
-        ok, candidate, value, note = bot.stage_telegram_list_change(
+        ok, candidate, value, note = commandtext.stage_telegram_list_change(
             self.config, "source_chats", "add", "-1009876543210",
         )
         self.assertTrue(ok, note)
         self.assertEqual(value, [-1009876543210])
         self.assertIsInstance(candidate["source_chats"][-1], int)
-        ok, _, _, note = bot.stage_telegram_list_change(
+        ok, _, _, note = commandtext.stage_telegram_list_change(
             self.config, "source_chats", "add", "@FIRSAT",
         )
         self.assertFalse(ok)
         self.assertIn("zaten", note)
 
     def test_multiple_sources_can_be_added_at_once(self):
-        ok, candidate, added, note = bot.stage_telegram_list_change(
+        ok, candidate, added, note = commandtext.stage_telegram_list_change(
             self.config, "source_chats", "add", "@yenibir, -100555000111",
         )
         self.assertTrue(ok, note)
@@ -602,8 +612,8 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertEqual(candidate["source_chats"][-2:], ["@yenibir", -100555000111])
 
     def test_overlong_values_are_rejected_without_dropping_the_rest(self):
-        overlong = "x" * (bot.LIST_ITEM_MAX_LENGTH + 1)
-        ok, candidate, added, note = bot.stage_telegram_list_change(
+        overlong = "x" * (commandtext.LIST_ITEM_MAX_LENGTH + 1)
+        ok, candidate, added, note = commandtext.stage_telegram_list_change(
             self.config, "include_keywords", "add", f"şeker, {overlong}, süt",
         )
         self.assertTrue(ok, note)
@@ -612,14 +622,14 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertIn("alınamadı", note)
 
     def test_remove_by_row_number_or_exact_value_removes_one_entry(self):
-        ok, candidate, value, note = bot.stage_telegram_list_change(
+        ok, candidate, value, note = commandtext.stage_telegram_list_change(
             self.config, "include_keywords", "remove", "2",
         )
         self.assertTrue(ok, note)
         self.assertEqual(value, ["kahve"])
         self.assertEqual(candidate["include_keywords"], ["çay"])
 
-        ok, candidate, value, note = bot.stage_telegram_list_change(
+        ok, candidate, value, note = commandtext.stage_telegram_list_change(
             self.config, "exclude_keywords", "remove", "ÇEKİLİŞ",
         )
         self.assertTrue(ok, note)
@@ -628,7 +638,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
 
     def test_multiple_items_can_be_removed_with_numbers_and_values_mixed(self):
         config = dict(self.config, include_keywords=["çay", "kahve", "şeker", "süt"])
-        ok, candidate, removed, note = bot.stage_telegram_list_change(
+        ok, candidate, removed, note = commandtext.stage_telegram_list_change(
             config, "include_keywords", "remove", "2, süt; 1",
         )
         self.assertTrue(ok, note)
@@ -637,7 +647,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertEqual(config["include_keywords"], ["çay", "kahve", "şeker", "süt"])
 
     def test_remove_reports_missing_values_but_removes_the_found_ones(self):
-        ok, candidate, removed, note = bot.stage_telegram_list_change(
+        ok, candidate, removed, note = commandtext.stage_telegram_list_change(
             self.config, "exclude_keywords", "remove", "çekiliş, olmayankelime",
         )
         self.assertTrue(ok, note)
@@ -646,7 +656,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertIn("bulunamadı", note)
 
     def test_remove_with_nothing_matching_changes_nothing(self):
-        ok, candidate, removed, note = bot.stage_telegram_list_change(
+        ok, candidate, removed, note = commandtext.stage_telegram_list_change(
             self.config, "include_keywords", "remove", "olmayan1, olmayan2",
         )
         self.assertFalse(ok)
@@ -656,7 +666,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
 
     def test_last_source_cannot_be_removed(self):
         only_source = dict(self.config, source_chats=["@firsat"])
-        ok, candidate, _, note = bot.stage_telegram_list_change(
+        ok, candidate, _, note = commandtext.stage_telegram_list_change(
             only_source, "source_chats", "remove", "1",
         )
         self.assertFalse(ok)
@@ -664,7 +674,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertEqual(candidate["source_chats"], ["@firsat"])
 
     def test_removing_all_sources_at_once_is_blocked(self):
-        ok, candidate, _, note = bot.stage_telegram_list_change(
+        ok, candidate, _, note = commandtext.stage_telegram_list_change(
             self.config, "source_chats", "remove", "1, 2",
         )
         self.assertFalse(ok)
@@ -672,7 +682,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertEqual(candidate["source_chats"], ["@firsat", "-1001234567890"])
 
     def test_non_whitelisted_fields_cannot_be_staged(self):
-        ok, candidate, _, note = bot.stage_telegram_list_change(
+        ok, candidate, _, note = commandtext.stage_telegram_list_change(
             self.config, "destination", "add", "-100123",
         )
         self.assertFalse(ok)
@@ -680,7 +690,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertIn("düzenlenemez", note)
 
     def test_confirmation_offers_explicit_save_and_cancel(self):
-        text = bot.build_list_change_confirmation(
+        text = commandtext.build_list_change_confirmation(
             "add", "include_keywords", "şeker", dict(self.config, include_keywords=["çay", "kahve", "şeker"]),
         )
         self.assertIn("henüz aktif değil", text)
@@ -690,7 +700,7 @@ class TelegramListWorkflowTest(unittest.TestCase):
 
     def test_confirmation_numbers_every_value_and_keeps_warnings(self):
         config = dict(self.config, include_keywords=["çay", "kahve", "şeker", "süt"])
-        text = bot.build_list_change_confirmation(
+        text = commandtext.build_list_change_confirmation(
             "add", "include_keywords", ["şeker", "süt"], config,
             "Dahili kelimeler listesine eklenecek 2 kayıt: şeker, süt"
             "\n⚠️ 1 kayıt zaten listede, atlandı: kahve",
@@ -702,23 +712,23 @@ class TelegramListWorkflowTest(unittest.TestCase):
         self.assertIn("kayıt sayısı: 4", text)
 
     def test_confirmation_preview_is_capped_for_long_batches(self):
-        values = [f"kelime{i}" for i in range(bot.LIST_PREVIEW_MAX + 5)]
+        values = [f"kelime{i}" for i in range(commandtext.LIST_PREVIEW_MAX + 5)]
         config = dict(self.config, exclude_keywords=values)
-        text = bot.build_list_change_confirmation("remove", "exclude_keywords", values, config)
+        text = commandtext.build_list_change_confirmation("remove", "exclude_keywords", values, config)
         self.assertIn(f"Çıkarılacak {len(values)} kayıt:", text)
         self.assertIn("kayıt daha", text)
 
     def test_confirmation_choice_accepts_command_labels_and_plain_text(self):
         for value in ("kaydet", "✅ Kaydet", "kaydet ve github'a gönder", "ONAYLA"):
             with self.subTest(value=value):
-                self.assertEqual(bot.resolve_confirmation_choice(value), "save")
+                self.assertEqual(commandtext.resolve_confirmation_choice(value), "save")
         for value in ("iptal", "↩️ İptal et", "vazgeç", "CANCEL"):
             with self.subTest(value=value):
-                self.assertEqual(bot.resolve_confirmation_choice(value), "cancel")
-        self.assertIsNone(bot.resolve_confirmation_choice("sonra bakarım"))
+                self.assertEqual(commandtext.resolve_confirmation_choice(value), "cancel")
+        self.assertIsNone(commandtext.resolve_confirmation_choice("sonra bakarım"))
 
     def test_new_edit_keeps_a_separate_snapshot(self):
-        pending = bot.new_telegram_edit("remove", self.config)
+        pending = commandtext.new_telegram_edit("remove", self.config)
         pending["draft_config"]["include_keywords"].append("taslak")
         self.assertNotIn("taslak", self.config["include_keywords"])
         self.assertEqual(pending["stage"], "category")
@@ -741,25 +751,25 @@ class FilterToggleTest(unittest.TestCase):
                                ("harici", "exclude"), ("hariç kelimeler", "exclude"),
                                ("ikisi", "both"), ("her ikisi", "both")):
             with self.subTest(text=text):
-                self.assertEqual(bot.resolve_filter_target(text), expected)
+                self.assertEqual(commandtext.resolve_filter_target(text), expected)
         for text in ("", "   ", "hedef", "kahve"):
             with self.subTest(text=text):
-                self.assertIsNone(bot.resolve_filter_target(text))
+                self.assertIsNone(commandtext.resolve_filter_target(text))
 
     def test_prompt_shows_current_state_and_both_choices(self):
-        prompt = bot.build_filter_toggle_prompt("open", self.config)
+        prompt = commandtext.build_filter_toggle_prompt("open", self.config)
         self.assertIn("FİLTRE AÇ", prompt)
         self.assertIn("Hangi filtreyi açalım?", prompt)
         self.assertIn("1. 🔎  Dahili kelimeler  ·  şu an açık  ·  2 kayıt", prompt)
         self.assertIn("2. 🚫  Harici kelimeler  ·  şu an açık  ·  1 kayıt", prompt)
         self.assertIn("3. 🔁  İkisi birlikte", prompt)
         self.assertIn("/tgfiltreac dahili", prompt)
-        close_prompt = bot.build_filter_toggle_prompt("close", self.config)
+        close_prompt = commandtext.build_filter_toggle_prompt("close", self.config)
         self.assertIn("FİLTRE KAPAT", close_prompt)
         self.assertIn("Hangi filtreyi kapatalım?", close_prompt)
 
     def test_closing_include_keeps_exclude_running(self):
-        ok, candidate, note = bot.stage_filter_toggle(self.config, "close", "include")
+        ok, candidate, note = commandtext.stage_filter_toggle(self.config, "close", "include")
         self.assertTrue(ok, note)
         self.assertEqual(candidate["include_enabled"], False)
         self.assertNotIn("exclude_enabled", candidate, "harici filtreye dokunulmamalı")
@@ -769,7 +779,7 @@ class FilterToggleTest(unittest.TestCase):
         self.assertIn("🚫 Harici kelimeler: AÇIK", note)
 
     def test_closing_exclude_keeps_include_running(self):
-        ok, candidate, note = bot.stage_filter_toggle(self.config, "close", "exclude")
+        ok, candidate, note = commandtext.stage_filter_toggle(self.config, "close", "exclude")
         self.assertTrue(ok, note)
         self.assertEqual(candidate["exclude_enabled"], False)
         self.assertNotIn("include_enabled", candidate)
@@ -777,13 +787,13 @@ class FilterToggleTest(unittest.TestCase):
         self.assertIn("Harici filtre kapalı: engelleme yapılmaz", note)
 
     def test_both_can_be_closed_and_reopened(self):
-        ok, candidate, note = bot.stage_filter_toggle(self.config, "close", "both")
+        ok, candidate, note = commandtext.stage_filter_toggle(self.config, "close", "both")
         self.assertTrue(ok, note)
         self.assertEqual(candidate["include_enabled"], False)
         self.assertEqual(candidate["exclude_enabled"], False)
         self.assertIn("HER mesaj iletilir", note)
 
-        ok, reopened, note = bot.stage_filter_toggle(candidate, "open", "both")
+        ok, reopened, note = commandtext.stage_filter_toggle(candidate, "open", "both")
         self.assertTrue(ok, note)
         self.assertEqual(reopened["include_enabled"], True)
         self.assertEqual(reopened["exclude_enabled"], True)
@@ -791,22 +801,22 @@ class FilterToggleTest(unittest.TestCase):
     def test_no_change_is_reported_without_touching_config(self):
         for action, target in (("open", "include"), ("open", "exclude"), ("open", "both")):
             with self.subTest(action=action, target=target):
-                ok, candidate, note = bot.stage_filter_toggle(self.config, action, target)
+                ok, candidate, note = commandtext.stage_filter_toggle(self.config, action, target)
                 self.assertFalse(ok)
                 self.assertIn("değişiklik yok", note)
                 self.assertEqual(candidate, self.config)
 
     def test_opening_include_clears_legacy_forward_all_mode(self):
         legacy = dict(self.config, match_mode="forward_all")
-        ok, candidate, note = bot.stage_filter_toggle(legacy, "open", "include")
+        ok, candidate, note = commandtext.stage_filter_toggle(legacy, "open", "include")
         self.assertTrue(ok, note)
         self.assertEqual(candidate["include_enabled"], True)
         self.assertEqual(candidate["match_mode"], "any",
                          "eski 'tümünü al' modu bırakılmalı, yoksa kelimeler yine yok sayılırdı")
-        self.assertEqual(bot.filter_state_of(candidate)["include"], True)
+        self.assertEqual(keywords.filter_state_of(candidate)["include"], True)
 
     def test_unknown_target_is_rejected(self):
-        ok, candidate, note = bot.stage_filter_toggle(self.config, "open", "hedef")
+        ok, candidate, note = commandtext.stage_filter_toggle(self.config, "open", "hedef")
         self.assertFalse(ok)
         self.assertIn("1 (dahili), 2 (harici) veya 3", note)
         self.assertEqual(candidate, self.config)
@@ -823,7 +833,7 @@ class ThreeSystemsIndependenceTest(unittest.TestCase):
             "dm_keywords": ["tcl", "lg"],
             "dm_exclude_keywords": ["samsung"],
         }
-        ok, candidate, note = bot.stage_filter_toggle(config, "close", "both")
+        ok, candidate, note = commandtext.stage_filter_toggle(config, "close", "both")
         self.assertTrue(ok, note)
         self.assertFalse(candidate["include_enabled"])
         self.assertFalse(candidate["exclude_enabled"])
@@ -851,7 +861,7 @@ class ThreeSystemsIndependenceTest(unittest.TestCase):
             "exclude_enabled": False,
         }
         # Sadece dahiliyi kapat, hariciye dokunma (exclude zaten kapalı kalmalı)
-        ok, candidate, note = bot.stage_filter_toggle(config, "close", "include")
+        ok, candidate, note = commandtext.stage_filter_toggle(config, "close", "include")
         self.assertTrue(ok, note)
         self.assertFalse(candidate["include_enabled"])
         self.assertFalse(candidate["exclude_enabled"])
@@ -861,7 +871,7 @@ class ThreeSystemsIndependenceTest(unittest.TestCase):
             "include_enabled": False,
             "exclude_enabled": True,
         }
-        ok2, candidate2, note2 = bot.stage_filter_toggle(config2, "close", "exclude")
+        ok2, candidate2, note2 = commandtext.stage_filter_toggle(config2, "close", "exclude")
         self.assertTrue(ok2, note2)
         self.assertFalse(candidate2["include_enabled"])
         self.assertFalse(candidate2["exclude_enabled"])
@@ -869,24 +879,24 @@ class ThreeSystemsIndependenceTest(unittest.TestCase):
     def test_all_four_tg_filter_combinations(self):
         # 1) Açık/Açık → Her ikisini kapat
         config = {"include_enabled": True, "exclude_enabled": True}
-        ok, candidate, _ = bot.stage_filter_toggle(config, "close", "both")
+        ok, candidate, _ = commandtext.stage_filter_toggle(config, "close", "both")
         self.assertFalse(candidate["include_enabled"])
         self.assertFalse(candidate["exclude_enabled"])
 
         # 2) Her ikisi kapalı → Her ikisini aç
-        ok, reopened, _ = bot.stage_filter_toggle(candidate, "open", "both")
+        ok, reopened, _ = commandtext.stage_filter_toggle(candidate, "open", "both")
         self.assertTrue(reopened["include_enabled"])
         self.assertTrue(reopened["exclude_enabled"])
 
         # 3) Sadece Dahili açık, Harici kapalı → Hariciyi aç
         config3 = {"include_enabled": True, "exclude_enabled": False}
-        ok3, cand3, _ = bot.stage_filter_toggle(config3, "open", "exclude")
+        ok3, cand3, _ = commandtext.stage_filter_toggle(config3, "open", "exclude")
         self.assertTrue(cand3["include_enabled"])
         self.assertTrue(cand3["exclude_enabled"])
 
         # 4) Dahili kapalı, Harici açık → Dahiliyi aç
         config4 = {"include_enabled": False, "exclude_enabled": True}
-        ok4, cand4, _ = bot.stage_filter_toggle(config4, "open", "include")
+        ok4, cand4, _ = commandtext.stage_filter_toggle(config4, "open", "include")
         self.assertTrue(cand4["include_enabled"])
         self.assertTrue(cand4["exclude_enabled"])
 
@@ -895,20 +905,20 @@ class WordAnalysisTest(unittest.TestCase):
     """`/analiz`: yalnızca başlık (ilk satır) üzerinden kelime istatistikleri."""
 
     def test_title_is_the_first_non_empty_line(self):
-        self.assertEqual(bot.message_title("iPhone 15 indirim\n2.299 TL"), "iPhone 15 indirim")
-        self.assertEqual(bot.message_title("\n\n  Bebek bezi  \nlink"), "Bebek bezi")
-        self.assertEqual(bot.message_title("   "), "")
-        self.assertEqual(bot.message_title(None), "")
+        self.assertEqual(analysis_mod.message_title("iPhone 15 indirim\n2.299 TL"), "iPhone 15 indirim")
+        self.assertEqual(analysis_mod.message_title("\n\n  Bebek bezi  \nlink"), "Bebek bezi")
+        self.assertEqual(analysis_mod.message_title("   "), "")
+        self.assertEqual(analysis_mod.message_title(None), "")
 
     def test_tokens_are_turkish_aware_and_numbers_dropped_by_default(self):
-        self.assertEqual(bot.title_tokens("İNDİRİM %50 2.299 TL"), ["indirim", "tl"])
-        self.assertEqual(bot.title_tokens("İNDİRİM %50 2.299 TL", keep_everything=True),
+        self.assertEqual(analysis_mod.title_tokens("İNDİRİM %50 2.299 TL"), ["indirim", "tl"])
+        self.assertEqual(analysis_mod.title_tokens("İNDİRİM %50 2.299 TL", keep_everything=True),
                          ["indirim", "50", "2", "299", "tl"])
 
     def test_stop_words_and_single_letters_are_filtered(self):
-        tokens = bot.title_tokens("Bebek bezi ve ıslak mendil için x")
-        self.assertEqual(bot.content_tokens(tokens), ["bebek", "bezi", "ıslak", "mendil"])
-        self.assertEqual(bot.content_tokens(tokens, keep_everything=True), tokens)
+        tokens = analysis_mod.title_tokens("Bebek bezi ve ıslak mendil için x")
+        self.assertEqual(analysis_mod.content_tokens(tokens), ["bebek", "bezi", "ıslak", "mendil"])
+        self.assertEqual(analysis_mod.content_tokens(tokens, keep_everything=True), tokens)
 
     def test_analysis_counts_words_and_first_words(self):
         titles = [
@@ -943,28 +953,28 @@ class WordAnalysisTest(unittest.TestCase):
         self.assertEqual(everything["counts"]["filtered"], 0)
 
     def test_parse_analysis_request_splits_limit_and_query(self):
-        self.assertEqual(bot.parse_analysis_request("1000 tcl 65"),
+        self.assertEqual(analysis_mod.parse_analysis_request("1000 tcl 65"),
                          (1000, False, "tcl 65"))
-        self.assertEqual(bot.parse_analysis_request("tcl 65"),
-                         (bot.ANALYSIS_DEFAULT_LIMIT, False, "tcl 65"))
-        self.assertEqual(bot.parse_analysis_request("tümü 20 tcl 65"),
+        self.assertEqual(analysis_mod.parse_analysis_request("tcl 65"),
+                         (analysis_mod.ANALYSIS_DEFAULT_LIMIT, False, "tcl 65"))
+        self.assertEqual(analysis_mod.parse_analysis_request("tümü 20 tcl 65"),
                          (20, True, "tcl 65"))
-        self.assertEqual(bot.parse_analysis_request("350"),
+        self.assertEqual(analysis_mod.parse_analysis_request("350"),
                          (350, False, ""))
-        self.assertEqual(bot.parse_analysis_request(""),
-                         (bot.ANALYSIS_DEFAULT_LIMIT, False, ""))
+        self.assertEqual(analysis_mod.parse_analysis_request(""),
+                         (analysis_mod.ANALYSIS_DEFAULT_LIMIT, False, ""))
 
     def test_analysis_query_pattern_respects_word_boundaries(self):
-        pattern = bot.analysis_query_pattern("TCL 65")
-        self.assertTrue(pattern.search(bot.normalize("Yeni TCL 65 QLED")))
-        self.assertTrue(pattern.search(bot.normalize("tcl   65")))
-        self.assertFalse(pattern.search(bot.normalize("TCL 655 model")))
-        self.assertFalse(pattern.search(bot.normalize("ATCL 65")))
-        self.assertIsNone(bot.analysis_query_pattern("   "))
+        pattern = analysis_mod.analysis_query_pattern("TCL 65")
+        self.assertTrue(pattern.search(keywords.normalize("Yeni TCL 65 QLED")))
+        self.assertTrue(pattern.search(keywords.normalize("tcl   65")))
+        self.assertFalse(pattern.search(keywords.normalize("TCL 655 model")))
+        self.assertFalse(pattern.search(keywords.normalize("ATCL 65")))
+        self.assertIsNone(analysis_mod.analysis_query_pattern("   "))
 
     def test_build_query_lines_formats_title_and_first_price(self):
-        pattern = bot.analysis_query_pattern("tcl 65")
-        lines = bot.build_query_lines([
+        pattern = analysis_mod.analysis_query_pattern("tcl 65")
+        lines = analysis_mod.build_query_lines([
             "Philips Airfryer XXL 6.2L\nTCL 65 QLED TV\n🛍️ Amazon\n💰 1.299 TL",
             "🔥 %40 indirim\nTCL 655 Model 5.999,90 TL",
             "Abc Televizyon 55 inç\nTCL 65 ekran\n💸 İndirimli Fiyat: 14.500,00 TL",
@@ -977,8 +987,8 @@ class WordAnalysisTest(unittest.TestCase):
         ])
 
     def test_build_query_lines_dedupes_identical_lines(self):
-        pattern = bot.analysis_query_pattern("kablo")
-        lines = bot.build_query_lines([
+        pattern = analysis_mod.analysis_query_pattern("kablo")
+        lines = analysis_mod.build_query_lines([
             "Çok Uzun Bir Ürün Adı Burada Yer Alıyor Kablo 2 metre 99 TL",
             "Çok Uzun Bir Ürün Adı Burada Yer Alıyor Kablo 2 metre 99 TL",
         ], pattern)
@@ -989,13 +999,13 @@ class WordAnalysisTest(unittest.TestCase):
 
     def test_build_query_lines_keeps_full_name_with_model_code(self):
         """Kullanıcı isteği: ürün adı kesilmesin; model kodlu başlık tam gelsin."""
-        pattern = bot.analysis_query_pattern("tcl 65")
+        pattern = analysis_mod.analysis_query_pattern("tcl 65")
         amazon_title = (
             "TCL 65 inç Akıllı TV 65C7K 4K QD-Mini LED Renkli Quantum Crystal "
             "HDR10+ Oyun Google TV, 144Hz Doğal Yenileme Hızı, ONKYO 2.1 Hi-Fi "
             "Ses Sistemi, Dolby Atmos"
         )
-        lines = bot.build_query_lines([
+        lines = analysis_mod.build_query_lines([
             f"{amazon_title}\n🏷 31.866 TL\n\n👉 FIRSATA GİT",
         ], pattern)
         self.assertEqual(lines, [f"{amazon_title} - 31.866 TL"])
@@ -1003,7 +1013,7 @@ class WordAnalysisTest(unittest.TestCase):
 
     def test_build_query_lines_prefers_lowest_listed_price(self):
         """'Eski/yeni' ikilisinde ve taksit/kupon satırlarında doğru fiyat seçilir."""
-        pattern = bot.analysis_query_pattern("tcl 65")
+        pattern = analysis_mod.analysis_query_pattern("tcl 65")
         cases = {
             "TCL 65 inç Akıllı TV 65C7K\n❌ Eski fiyat: 44.999 TL\n✅ Yeni fiyat: 31.866 TL":
                 "TCL 65 inç Akıllı TV 65C7K - 31.866 TL",
@@ -1017,37 +1027,37 @@ class WordAnalysisTest(unittest.TestCase):
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
-                self.assertEqual(bot.build_query_lines([text], pattern), [expected])
+                self.assertEqual(analysis_mod.build_query_lines([text], pattern), [expected])
 
     def test_parse_price_value_reads_turkish_writing(self):
-        self.assertEqual(bot.parse_price_value("31.866 TL"), 31866.0)
-        self.assertEqual(bot.parse_price_value("5.999,90"), 5999.9)
-        self.assertEqual(bot.parse_price_value("99,90 TL"), 99.9)
-        self.assertEqual(bot.parse_price_value("₺1.299"), 1299.0)
-        self.assertEqual(bot.parse_price_value("14.500,00 TL"), 14500.0)
-        self.assertIsNone(bot.parse_price_value("TL"))
+        self.assertEqual(analysis_mod.parse_price_value("31.866 TL"), 31866.0)
+        self.assertEqual(analysis_mod.parse_price_value("5.999,90"), 5999.9)
+        self.assertEqual(analysis_mod.parse_price_value("99,90 TL"), 99.9)
+        self.assertEqual(analysis_mod.parse_price_value("₺1.299"), 1299.0)
+        self.assertEqual(analysis_mod.parse_price_value("14.500,00 TL"), 14500.0)
+        self.assertIsNone(analysis_mod.parse_price_value("TL"))
 
     def test_query_product_title_tidies_leftover_punctuation(self):
-        title = bot.query_product_title(
+        title = analysis_mod.query_product_title(
             "TCL 65 inç Akıllı TV 65C7K için 1299 TL indirim . Normal fiyat 1500 TL"
         )
         self.assertNotIn(" .", title)
         self.assertTrue(title.startswith("TCL 65 inç Akıllı TV 65C7K"))
 
     def test_parse_analysis_args(self):
-        self.assertEqual(bot.parse_analysis_args(""), (bot.ANALYSIS_DEFAULT_LIMIT, False))
-        self.assertEqual(bot.parse_analysis_args("1000"), (1000, False))
-        self.assertEqual(bot.parse_analysis_args("tümü"), (bot.ANALYSIS_DEFAULT_LIMIT, True))
-        self.assertEqual(bot.parse_analysis_args(" 500 hepsi "), (500, True))
-        self.assertEqual(bot.parse_analysis_args("5"), (bot.ANALYSIS_MIN_LIMIT, False))
-        self.assertEqual(bot.parse_analysis_args("99999"), (bot.ANALYSIS_MAX_LIMIT, False))
+        self.assertEqual(analysis_mod.parse_analysis_args(""), (analysis_mod.ANALYSIS_DEFAULT_LIMIT, False))
+        self.assertEqual(analysis_mod.parse_analysis_args("1000"), (1000, False))
+        self.assertEqual(analysis_mod.parse_analysis_args("tümü"), (analysis_mod.ANALYSIS_DEFAULT_LIMIT, True))
+        self.assertEqual(analysis_mod.parse_analysis_args(" 500 hepsi "), (500, True))
+        self.assertEqual(analysis_mod.parse_analysis_args("5"), (analysis_mod.ANALYSIS_MIN_LIMIT, False))
+        self.assertEqual(analysis_mod.parse_analysis_args("99999"), (analysis_mod.ANALYSIS_MAX_LIMIT, False))
         with self.assertRaises(ValueError):
-            bot.parse_analysis_args("dün")
+            analysis_mod.parse_analysis_args("dün")
 
     def test_ranking_marks_words_already_in_the_lists(self):
         counter = Counter({"bebek": 5, "oyuncak": 3, "kitap": 1})
         config = {"exclude_keywords": ["bebek bezi"], "include_keywords": ["oyuncak"]}
-        lines = bot.format_ranking(counter, config, top=3)
+        lines = analysis_mod.format_ranking(counter, config, top=3)
         self.assertEqual(len(lines), 3)
         self.assertTrue(lines[0].startswith("01."))
         self.assertIn("🚫", lines[0])
@@ -1056,7 +1066,7 @@ class WordAnalysisTest(unittest.TestCase):
 
     def test_report_has_both_statistics(self):
         analysis = bot.analyze_titles(["Bebek bezi indirim", "Bebek battaniye"])
-        report = bot.build_analysis_report(
+        report = analysis_mod.build_analysis_report(
             analysis, config={"exclude_keywords": ["bebek"], "include_keywords": []},
             sources=16, per_source=300, elapsed=12.0,
         )
@@ -1070,23 +1080,18 @@ class WordAnalysisTest(unittest.TestCase):
         self.assertIn("12sn", report)
 
     def test_report_notes_unreadable_sources_and_empty_result(self):
-        report = bot.build_analysis_report(
+        report = analysis_mod.build_analysis_report(
             bot.analyze_titles([]), config={}, sources=2, per_source=50,
             failures=["Kanal (FloodWaitError)"],
         )
         self.assertIn("Okunamayan kaynak", report)
         self.assertIn("(kelime bulunamadı)", report)
 
-    def test_usage_text_documents_options(self):
-        for text in ("/analiz", "/analiz tümü", "Harici kelimeler"):
-            self.assertIn(text, bot.ANALYSIS_USAGE)
-
-
 class ConfigStoreTest(unittest.TestCase):
     """ConfigStore yalnızca config yolu ve rollback anlık görüntüsü tutar."""
 
     def test_snapshot_and_restore(self):
-        store = bot.ConfigStore("config.json", {"match_mode": "any", "include_keywords": ["çay"]})
+        store = commandtext.ConfigStore("config.json", {"match_mode": "any", "include_keywords": ["çay"]})
         before = store.snapshot()
         store.config["match_mode"] = "forward_all"
         store.config["include_keywords"].append("kahve")
@@ -1140,7 +1145,7 @@ class AtomicWriteTest(unittest.TestCase):
         self.assertEqual(leftovers, [])
 
     def test_save_config_reports_push_status(self):
-        store = bot.ConfigStore(self.path, {"match_mode": "any"})
+        store = commandtext.ConfigStore(self.path, {"match_mode": "any"})
         store.config["match_mode"] = "forward_all"
         with mock.patch.object(bot, "commit_and_push", lambda *a, **k: ("pushed", "origin/main")):
             ok, note = asyncio.run(bot.save_config(store, "test"))
@@ -1149,7 +1154,7 @@ class AtomicWriteTest(unittest.TestCase):
         self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["match_mode"], "forward_all")
 
     def test_save_config_reports_unwritable_file(self):
-        store = bot.ConfigStore(self.path, {"match_mode": "any"})
+        store = commandtext.ConfigStore(self.path, {"match_mode": "any"})
         with mock.patch.object(bot, "atomic_write_json", side_effect=OSError("disk dolu")):
             ok, note = asyncio.run(bot.save_config(store, "test"))
         self.assertFalse(ok)
@@ -1158,18 +1163,18 @@ class AtomicWriteTest(unittest.TestCase):
 
 class ChunkTextTest(unittest.TestCase):
     def test_short_text_is_untouched(self):
-        self.assertEqual(bot.chunk_text("merhaba"), ["merhaba"])
+        self.assertEqual(analysis_mod.chunk_text("merhaba"), ["merhaba"])
 
     def test_long_text_is_split_under_limit(self):
         text = "\n".join(f"satır {i}" for i in range(500))
-        chunks = bot.chunk_text(text, 500)
+        chunks = analysis_mod.chunk_text(text, 500)
         self.assertTrue(len(chunks) > 1)
         for chunk in chunks:
             self.assertLessEqual(len(chunk), 500)
         self.assertEqual("\n".join(chunks), text)
 
     def test_single_very_long_line_is_forced_split(self):
-        chunks = bot.chunk_text("x" * 1200, 500)
+        chunks = analysis_mod.chunk_text("x" * 1200, 500)
         self.assertEqual(len(chunks), 3)
         self.assertEqual("".join(chunks), "x" * 1200)
 
@@ -1306,7 +1311,7 @@ class GitPersistTest(unittest.TestCase):
         self.assertEqual(status, "no-repo", detail)
 
     def test_save_config_end_to_end(self):
-        store = bot.ConfigStore(self.config_path, {"match_mode": "any", "include_keywords": ["çay"]})
+        store = commandtext.ConfigStore(self.config_path, {"match_mode": "any", "include_keywords": ["çay"]})
         store.config["match_mode"] = "forward_all"
         with mock.patch.dict(os.environ, {"CONFIG_PUSH_TOKEN": "dummy"}, clear=False):
             ok, note = asyncio.run(bot.save_config(store, "tüm mesajlar açıldı"))
@@ -1322,11 +1327,11 @@ class RealConfigTest(unittest.TestCase):
     def test_repository_config_is_usable(self):
         """Depodaki config.json gerçekten yüklenip doğrulanabilmeli."""
         path = Path(__file__).resolve().parents[1] / "config.json"
-        config = bot.load_config(path)
+        config = confutil.load_config(path)
         self.assertTrue(config["source_chats"], "en az bir Telegram kaynağı tanımlı olmalı")
         self.assertIsInstance(config["control_chat"], int)
         self.assertIsInstance(config["destination"], int)
-        self.assertEqual(bot.parse_admin_ids(config["admin_user_id"]), {1143378073})
+        self.assertEqual(confutil.parse_admin_ids(config["admin_user_id"]), {1143378073})
         self.assertNotIn("notify_bot_token", config)
         with mock.patch.dict(os.environ, CheckEnvironmentTest.good_env, clear=False):
             self.assertEqual(bot.check_environment(config), [])
@@ -1378,7 +1383,7 @@ class EnvOverrideTest(unittest.TestCase):
     def test_delivery_modes_env_overrides_config(self):
         env = {"DELIVERY_MODES": "copy, forward ,media", "MAX_MEDIA_MB": "10"}
         with mock.patch.dict(os.environ, env, clear=False):
-            config = bot.load_config(self._config_file())
+            config = confutil.load_config(self._config_file())
         self.assertEqual(config["delivery_modes"], ["copy", "forward", "media"])
         self.assertEqual(config["max_media_mb"], "10")
         self.assertEqual(bot.build_delivery_chain(config)[:3], ["copy", "forward", "media"])
@@ -1386,7 +1391,7 @@ class EnvOverrideTest(unittest.TestCase):
     def test_absent_env_leaves_config_alone(self):
         env = {"DELIVERY_MODES": "", "MAX_MEDIA_MB": ""}
         with mock.patch.dict(os.environ, env, clear=False):
-            config = bot.load_config(self._config_file())
+            config = confutil.load_config(self._config_file())
         self.assertNotIn("delivery_modes", config)
 
     def test_legacy_config_token_is_discarded(self):
@@ -1396,12 +1401,12 @@ class EnvOverrideTest(unittest.TestCase):
             "notify_bot_token": "legacy-test-value",
         })
         with mock.patch.dict(os.environ, {"DELIVERY_MODES": "", "MAX_MEDIA_MB": ""}, clear=False):
-            config = bot.load_config(path)
+            config = confutil.load_config(path)
         self.assertNotIn("notify_bot_token", config)
 
     def test_match_mode_environment_override_is_loaded(self):
         with mock.patch.dict(os.environ, {"MATCH_MODE": "forward_all"}, clear=False):
-            config = bot.load_config(self._config_file())
+            config = confutil.load_config(self._config_file())
         self.assertEqual(config["match_mode"], "forward_all")
 
     def test_notify_bot_secret_is_the_only_token_source(self):
@@ -1448,7 +1453,7 @@ def product_link_urls(composed) -> list:
     return [
         entity.url for entity in composed["entities"]
         if getattr(entity, "url", None)
-        and bot.utf16_slice(text, entity.offset, entity.length).startswith("👉 Ürün Linki")
+        and sanitize.utf16_slice(text, entity.offset, entity.length).startswith("👉 Ürün Linki")
     ]
 
 
@@ -1457,16 +1462,16 @@ class Utf16Test(unittest.TestCase):
 
     def test_emoji_counts_as_two_units(self):
         text = "🔥çay"
-        self.assertEqual(bot.utf16_length(text), 5)
-        self.assertEqual(bot.utf16_slice(text, 2, 3), "çay")
+        self.assertEqual(sanitize.utf16_length(text), 5)
+        self.assertEqual(sanitize.utf16_slice(text, 2, 3), "çay")
 
     def test_bad_ranges_are_safe(self):
-        self.assertEqual(bot.utf16_slice("abc", -1, 2), "")
-        self.assertEqual(bot.utf16_slice("abc", 0, 0), "")
-        self.assertEqual(bot.utf16_slice("", 0, 2), "")
+        self.assertEqual(sanitize.utf16_slice("abc", -1, 2), "")
+        self.assertEqual(sanitize.utf16_slice("abc", 0, 0), "")
+        self.assertEqual(sanitize.utf16_slice("", 0, 2), "")
 
     def test_plain_text_length_matches(self):
-        self.assertEqual(bot.utf16_length("çay"), 3)
+        self.assertEqual(sanitize.utf16_length("çay"), 3)
 
 
 class ExtractLinksTest(unittest.TestCase):
@@ -1476,10 +1481,10 @@ class ExtractLinksTest(unittest.TestCase):
         message = make_message(text, entities=[
             tl_types.MessageEntityTextUrl(offset=0, length=len(text), url="https://amzn.to/1"),
         ])
-        self.assertEqual(bot.extract_links(message), [
+        self.assertEqual(sanitize.extract_links(message), [
             {"url": "https://amzn.to/1", "label": "Fırsata Git", "kind": "entity"},
         ])
-        self.assertEqual(bot.build_link_appendix(message, kinds=("entity",)),
+        self.assertEqual(sanitize.build_link_appendix(message, kinds=("entity",)),
                          "🔗 Fırsata Git: https://amzn.to/1")
 
     def test_default_appendix_skips_already_tappable_entity_links(self):
@@ -1488,31 +1493,31 @@ class ExtractLinksTest(unittest.TestCase):
         message = make_message(text, entities=[
             tl_types.MessageEntityTextUrl(offset=0, length=len(text), url="https://amzn.to/1"),
         ])
-        self.assertEqual(bot.missing_links(message), [])
-        self.assertEqual(bot.build_link_appendix(message), "")
+        self.assertEqual(sanitize.missing_links(message), [])
+        self.assertEqual(sanitize.build_link_appendix(message), "")
 
     def test_button_links_are_still_written_in_smart_mode(self):
         """Butonlar kullanıcı hesabından gönderilemez; metne yazılmaları şart."""
         button = SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)
         message = make_message("çay", buttons=[button])
-        self.assertEqual(bot.build_link_appendix(message), "🔗 Fırsata Git: https://amzn.to/btn")
+        self.assertEqual(sanitize.build_link_appendix(message), "🔗 Fırsata Git: https://amzn.to/btn")
 
     def test_visible_url_is_not_repeated_in_appendix(self):
         text = "https://amzn.to/2 çay kampanyası"
         message = make_message(text, entities=[
             tl_types.MessageEntityUrl(offset=0, length=len("https://amzn.to/2")),
         ])
-        self.assertEqual(bot.missing_links(message), [])
-        self.assertEqual(bot.build_link_appendix(message), "")
+        self.assertEqual(sanitize.missing_links(message), [])
+        self.assertEqual(sanitize.build_link_appendix(message), "")
 
     def test_button_link_old_and_new_schema(self):
         eski = SimpleNamespace(text="Fırsata Git", url="https://amzn.to/eski", type=None)
         yeni = SimpleNamespace(text="Fırsata Git", url=None,
                                type=SimpleNamespace(url="https://amzn.to/yeni"))
         message = make_message("çay", buttons=[eski, yeni])
-        urls = [item["url"] for item in bot.extract_links(message)]
+        urls = [item["url"] for item in sanitize.extract_links(message)]
         self.assertEqual(urls, ["https://amzn.to/eski", "https://amzn.to/yeni"])
-        appendix = bot.build_link_appendix(message)
+        appendix = sanitize.build_link_appendix(message)
         self.assertIn("🔗 Fırsata Git: https://amzn.to/eski", appendix)
         self.assertIn("https://amzn.to/yeni", appendix)
 
@@ -1520,48 +1525,48 @@ class ExtractLinksTest(unittest.TestCase):
         kopyala = SimpleNamespace(text="Linki kopyala", url=None,
                                   type=SimpleNamespace(url=None, copy_text="https://amzn.to/kopya"))
         message = make_message("çay", buttons=[kopyala])
-        self.assertEqual([item["url"] for item in bot.extract_links(message)], ["https://amzn.to/kopya"])
+        self.assertEqual([item["url"] for item in sanitize.extract_links(message)], ["https://amzn.to/kopya"])
 
     def test_webpage_preview_is_found(self):
         message = make_message("çay fırsatı", webpage="https://amzn.to/onizleme")
-        self.assertEqual([item["url"] for item in bot.extract_links(message)], ["https://amzn.to/onizleme"])
+        self.assertEqual([item["url"] for item in sanitize.extract_links(message)], ["https://amzn.to/onizleme"])
 
     def test_plain_text_url_is_found_and_deduplicated(self):
         message = make_message("çay https://amzn.to/3 ve tekrar https://amzn.to/3")
-        links = bot.extract_links(message)
+        links = sanitize.extract_links(message)
         self.assertEqual([item["url"] for item in links], ["https://amzn.to/3"])
         self.assertEqual(links[0]["kind"], "text")
 
     def test_trailing_punctuation_is_trimmed(self):
         message = make_message("çay https://amzn.to/4, hemen al")
-        self.assertEqual([item["url"] for item in bot.extract_links(message)], ["https://amzn.to/4"])
+        self.assertEqual([item["url"] for item in sanitize.extract_links(message)], ["https://amzn.to/4"])
 
     def test_entity_label_with_emoji_uses_utf16_offsets(self):
         """Emoji'den sonra gelen entity offset'i UTF-16'dır; düz dilim kayardı."""
         text = "🔥 FIRSAT – Fırsata Git 👉"
-        offset = bot.utf16_length(text[:text.index("Fırsata Git")])
+        offset = sanitize.utf16_length(text[:text.index("Fırsata Git")])
         message = make_message(text, entities=[
-            tl_types.MessageEntityTextUrl(offset=offset, length=bot.utf16_length("Fırsata Git"),
+            tl_types.MessageEntityTextUrl(offset=offset, length=sanitize.utf16_length("Fırsata Git"),
                                           url="https://amzn.to/emoji"),
         ])
-        self.assertEqual(bot.extract_links(message)[0]["label"], "Fırsata Git")
+        self.assertEqual(sanitize.extract_links(message)[0]["label"], "Fırsata Git")
 
     def test_scheme_less_and_www_links_are_normalised(self):
         message = make_message("çay www.amazon.com.tr/urun ve t.me/firsatz/9")
         self.assertEqual(
-            [item["url"] for item in bot.extract_links(message)],
+            [item["url"] for item in sanitize.extract_links(message)],
             ["https://www.amazon.com.tr/urun", "https://t.me/firsatz/9"],
         )
 
     def test_missing_links_respects_limit(self):
         buttons = [SimpleNamespace(text=f"b{i}", url=f"https://amzn.to/{i}", type=None) for i in range(6)]
         message = make_message("çay", buttons=buttons)
-        self.assertEqual(len(bot.missing_links(message)), bot.LINK_APPENDIX_LIMIT)
+        self.assertEqual(len(sanitize.missing_links(message)), sanitize.LINK_APPENDIX_LIMIT)
 
     def test_inline_keyboard_is_rebuilt_for_bot_api(self):
         buttons = [SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)]
         message = make_message("çay", buttons=buttons)
-        self.assertEqual(bot.build_inline_keyboard(message), {"inline_keyboard": [
+        self.assertEqual(searchbuttons.build_inline_keyboard(message), {"inline_keyboard": [
             [{"text": "Fırsata Git", "url": "https://amzn.to/btn"}],
             [
                 {"text": "Google Alışveriş", "url": "https://www.google.com/search?udm=28&q=%C3%A7ay&hl=tr&gl=tr"},
@@ -1573,13 +1578,13 @@ class ExtractLinksTest(unittest.TestCase):
     def test_non_url_buttons_are_ignored(self):
         callback = SimpleNamespace(text="Onayla", url=None, type=SimpleNamespace(data=b"1"))
         message = make_message("çay", buttons=[callback])
-        keyboard = bot.build_inline_keyboard(message)
+        keyboard = searchbuttons.build_inline_keyboard(message)
         self.assertEqual(keyboard, {"inline_keyboard": [[
             {"text": "Google Alışveriş", "url": "https://www.google.com/search?udm=28&q=%C3%A7ay&hl=tr&gl=tr"},
             {"text": "Akakçe'de ara", "url": "https://www.akakce.com/arama/?q=%C3%A7ay"},
             {"text": "Cimri'de ara", "url": "https://www.cimri.com/arama?sort=price,asc&q=%C3%A7ay"},
         ]]})
-        self.assertEqual(bot.extract_links(message), [])
+        self.assertEqual(sanitize.extract_links(message), [])
 
 
 class MessageSanitizationTest(unittest.TestCase):
@@ -1588,7 +1593,7 @@ class MessageSanitizationTest(unittest.TestCase):
             "🔥 ÇAY #işbirliği #İŞBİRLİĞİ işbirliği #REKLAM reklamcı kampanyalı "
             "promoreklam foo#reklam https://example.com/reklam #isbirligi"
         )
-        cleaned = bot.sanitize_message(make_message(text, media=False))
+        cleaned = sanitize.sanitize_message(make_message(text, media=False))
         self.assertEqual(
             cleaned.message,
             "🔥 ÇAY reklamcı kampanyalı promoreklam foo#reklam "
@@ -1606,15 +1611,15 @@ class MessageSanitizationTest(unittest.TestCase):
         price_start = text.index("9 TL")
         entities = [
             tl_types.MessageEntityTextUrl(
-                offset=bot.utf16_length(text[:hidden_start]),
-                length=bot.utf16_length(hidden_label),
+                offset=sanitize.utf16_length(text[:hidden_start]),
+                length=sanitize.utf16_length(hidden_label),
                 url="https://chat.whatsapp.com/invite",
             ),
             tl_types.MessageEntityBold(
-                offset=bot.utf16_length(text[:price_start]), length=bot.utf16_length("9 TL"),
+                offset=sanitize.utf16_length(text[:price_start]), length=sanitize.utf16_length("9 TL"),
             ),
         ]
-        cleaned = bot.sanitize_message(make_message(text, entities=entities, media=False))
+        cleaned = sanitize.sanitize_message(make_message(text, entities=entities, media=False))
         self.assertEqual(
             cleaned.message,
             "🔥 ÇAY WhatsApp'tan bilgi gizli WhatsApp bağlantısı burada 9 TL.",
@@ -1623,22 +1628,22 @@ class MessageSanitizationTest(unittest.TestCase):
         self.assertEqual(len(cleaned.entities), 1, "WhatsApp hyperlink entity'si kaldırılmalı")
         entity = cleaned.entities[0]
         self.assertEqual(
-            bot.utf16_slice(cleaned.message, entity.offset, entity.length), "9 TL",
+            sanitize.utf16_slice(cleaned.message, entity.offset, entity.length), "9 TL",
             "emoji ve silinen içerikten sonra biçim entity'si kaymamalı",
         )
-        self.assertEqual(bot.extract_links(cleaned), [])
+        self.assertEqual(sanitize.extract_links(cleaned), [])
         self.assertTrue(cleaned.changed)
 
     def test_utf16_offset_zero_is_the_start_of_the_text(self):
         """UTF-16 ofseti 0 metnin başıdır; ilk karakterin sonu değil."""
         for text in ("Çay 5 TL", "🔥 Çay", "a", ""):
             with self.subTest(text=text):
-                self.assertEqual(bot._utf16_to_index(text, 0), 0)
+                self.assertEqual(sanitize._utf16_to_index(text, 0), 0)
         text = "a🔥b"  # 🔥 iki UTF-16 birimidir: karakter sınırları 0, 1, 3 ve 4
-        self.assertEqual([bot._utf16_to_index(text, offset) for offset in (0, 1, 3, 4)], [0, 1, 2, 3])
-        self.assertEqual(bot._utf16_to_index(text, 2), 2, "karakterin ortasına düşen ofset sağa yuvarlanır")
-        self.assertEqual(bot._utf16_to_index(text, 99), 3, "metnin ötesindeki ofset metnin sonudur")
-        self.assertEqual(bot._utf16_to_index(text, -1), 0, "eksi ofset metnin başıdır")
+        self.assertEqual([sanitize._utf16_to_index(text, offset) for offset in (0, 1, 3, 4)], [0, 1, 2, 3])
+        self.assertEqual(sanitize._utf16_to_index(text, 2), 2, "karakterin ortasına düşen ofset sağa yuvarlanır")
+        self.assertEqual(sanitize._utf16_to_index(text, 99), 3, "metnin ötesindeki ofset metnin sonudur")
+        self.assertEqual(sanitize._utf16_to_index(text, -1), 0, "eksi ofset metnin başıdır")
 
     def test_entity_at_message_start_keeps_its_first_character_when_text_is_removed(self):
         """Temizlik metin silince mesajın en başındaki biçim ilk karakterini kaybetmemeli.
@@ -1656,16 +1661,16 @@ class MessageSanitizationTest(unittest.TestCase):
             with self.subTest(name):
                 title = text.split("\n", 1)[0]
                 entities = [
-                    tl_types.MessageEntityBold(offset=0, length=bot.utf16_length(bold)),
+                    tl_types.MessageEntityBold(offset=0, length=sanitize.utf16_length(bold)),
                     tl_types.MessageEntityTextUrl(
-                        offset=0, length=bot.utf16_length(title), url="https://example.com/urun",
+                        offset=0, length=sanitize.utf16_length(title), url="https://example.com/urun",
                     ),
                 ]
-                cleaned = bot.sanitize_message(make_message(text, entities=entities, media=False))
+                cleaned = sanitize.sanitize_message(make_message(text, entities=entities, media=False))
                 self.assertTrue(cleaned.changed, "örnek, temizliğin metin sildiği bir mesaj olmalı")
                 self.assertTrue(cleaned.message.startswith(title))
                 self.assertEqual(
-                    [bot.utf16_slice(cleaned.message, entity.offset, entity.length)
+                    [sanitize.utf16_slice(cleaned.message, entity.offset, entity.length)
                      for entity in cleaned.entities],
                     [bold, title],
                     "baştaki biçim aynı metni kapsamalı",
@@ -1674,7 +1679,7 @@ class MessageSanitizationTest(unittest.TestCase):
     def test_external_link_on_removed_disclosure_label_is_preserved(self):
         text = "🔥 #reklam"
         entity = tl_types.MessageEntityTextUrl(
-            offset=bot.utf16_length("🔥 "), length=bot.utf16_length("#reklam"),
+            offset=sanitize.utf16_length("🔥 "), length=sanitize.utf16_length("#reklam"),
             url="https://example.com/campaign",
         )
         composed = bot.compose_message(make_message(text, entities=[entity], media=False))
@@ -1695,9 +1700,9 @@ class MessageSanitizationTest(unittest.TestCase):
         hidden = [
             entity.url for entity in composed["entities"]
             if getattr(entity, "url", None)
-            and bot.utf16_slice(text, entity.offset, entity.length).strip()
+            and sanitize.utf16_slice(text, entity.offset, entity.length).strip()
         ]
-        return hidden + bot.URL_RE.findall(text)
+        return hidden + sanitize.URL_RE.findall(text)
 
     def test_link_on_label_removed_after_leading_line_break_reaches_notification(self):
         """İleti satır sonuyla başlar; bağlantının etiketi "satır sonu + #işbirliği"dir.
@@ -1707,9 +1712,9 @@ class MessageSanitizationTest(unittest.TestCase):
         """
         url = "https://example.com/campaign"
         label = "\n#işbirliği"
-        entity = tl_types.MessageEntityTextUrl(offset=0, length=bot.utf16_length(label), url=url)
+        entity = tl_types.MessageEntityTextUrl(offset=0, length=sanitize.utf16_length(label), url=url)
         message = make_message(label + "\nÇay 5 TL", entities=[entity], media=False)
-        self.assertEqual(bot.sanitize_message(message).message, "Çay 5 TL")
+        self.assertEqual(sanitize.sanitize_message(message).message, "Çay 5 TL")
         self.assertEqual(self._links_reaching_notification(message), [url],
                          "etiketi temizlenen bağlantının hedefi kaybolmamalı")
 
@@ -1720,9 +1725,9 @@ class MessageSanitizationTest(unittest.TestCase):
         """
         url = "https://example.com/campaign"
         label = " #işbirliği"
-        entity = tl_types.MessageEntityTextUrl(offset=0, length=bot.utf16_length(label), url=url)
+        entity = tl_types.MessageEntityTextUrl(offset=0, length=sanitize.utf16_length(label), url=url)
         message = make_message(label + "\nÇay 5 TL", entities=[entity], media=False)
-        self.assertEqual(bot.sanitize_message(message).message, "Çay 5 TL")
+        self.assertEqual(sanitize.sanitize_message(message).message, "Çay 5 TL")
         self.assertEqual(self._links_reaching_notification(message), [url],
                          "etiketi temizlenen bağlantının hedefi kaybolmamalı")
 
@@ -1736,7 +1741,7 @@ class MessageSanitizationTest(unittest.TestCase):
         promo_line = "Kanalımıza katılın"
         entities = [
             tl_types.MessageEntityTextUrl(offset=0, length=1, url="https://instagram.com/ornek"),
-            tl_types.MessageEntityTextUrl(offset=0, length=bot.utf16_length(promo_line + "\n"), url=url),
+            tl_types.MessageEntityTextUrl(offset=0, length=sanitize.utf16_length(promo_line + "\n"), url=url),
         ]
         message = make_message(promo_line + "\nÇay 5 TL", entities=entities, media=False)
         self.assertEqual(self._links_reaching_notification(message), [url],
@@ -1752,10 +1757,10 @@ class MessageSanitizationTest(unittest.TestCase):
         text = "Çay 5 TL\n\n\n#işbirliği"
         label = "\n#işbirliği"
         entity = tl_types.MessageEntityTextUrl(
-            offset=bot.utf16_length(text[:text.index(label)]), length=bot.utf16_length(label), url=url,
+            offset=sanitize.utf16_length(text[:text.index(label)]), length=sanitize.utf16_length(label), url=url,
         )
         message = make_message(text, entities=[entity], media=False)
-        self.assertEqual(bot.sanitize_message(message).message, "Çay 5 TL")
+        self.assertEqual(sanitize.sanitize_message(message).message, "Çay 5 TL")
         self.assertEqual(self._links_reaching_notification(message), [url],
                          "etiketi temizlenen bağlantının hedefi kaybolmamalı")
 
@@ -1769,13 +1774,13 @@ class MessageSanitizationTest(unittest.TestCase):
         label = "Al #reklam"
         text = "Çay 5 TL" + "\n" * 8 + label
         entity = tl_types.MessageEntityTextUrl(
-            offset=bot.utf16_length(text[:text.index(label)]), length=bot.utf16_length(label), url=url,
+            offset=sanitize.utf16_length(text[:text.index(label)]), length=sanitize.utf16_length(label), url=url,
         )
         message = make_message(text, entities=[entity], media=False)
-        cleaned = bot.sanitize_message(message)
+        cleaned = sanitize.sanitize_message(message)
         self.assertEqual(cleaned.message, "Çay 5 TL\n\nAl")
         self.assertEqual(
-            [(link.url, bot.utf16_slice(cleaned.message, link.offset, link.length)) for link in cleaned.entities],
+            [(link.url, sanitize.utf16_slice(cleaned.message, link.offset, link.length)) for link in cleaned.entities],
             [(url, "Al")],
         )
         self.assertEqual(cleaned.preserved_links, [])
@@ -1798,38 +1803,38 @@ class MessageSanitizationTest(unittest.TestCase):
             with self.subTest(name):
                 entity = tl_types.MessageEntityTextUrl(offset=start, length=2, url=url)
                 message = make_message(text, entities=[entity], media=False)
-                cleaned = bot.sanitize_message(message)
+                cleaned = sanitize.sanitize_message(message)
                 self.assertEqual(cleaned.message, expected)
                 self.assertEqual(cleaned.preserved_links, [])
                 self.assertEqual(self._links_reaching_notification(message), [])
 
     def test_whatsapp_host_matching_is_not_substring_based(self):
-        self.assertTrue(bot.is_whatsapp_url("https://wa.me/905551234567"))
-        self.assertTrue(bot.is_whatsapp_url("https://api.whatsapp.com/send?phone=1"))
+        self.assertTrue(sanitize.is_whatsapp_url("https://wa.me/905551234567"))
+        self.assertTrue(sanitize.is_whatsapp_url("https://api.whatsapp.com/send?phone=1"))
         other_host = "https://notwhatsapp.com/path"
-        self.assertFalse(bot.is_whatsapp_url(other_host))
-        self.assertFalse(bot.is_whatsapp_url("https://whatsapp.com.example.org/path"))
-        self.assertFalse(bot.is_whatsapp_url("https://example.com/?next=wa.me"))
+        self.assertFalse(sanitize.is_whatsapp_url(other_host))
+        self.assertFalse(sanitize.is_whatsapp_url("https://whatsapp.com.example.org/path"))
+        self.assertFalse(sanitize.is_whatsapp_url("https://example.com/?next=wa.me"))
         self.assertEqual(
-            bot.sanitize_message(make_message(other_host, media=False)).message, other_host,
+            sanitize.sanitize_message(make_message(other_host, media=False)).message, other_host,
             "WhatsApp adına benzeyen diğer domain'ler korunmalı",
         )
 
     def test_search_service_detection_uses_existing_button_labels(self):
         redirect = "https://link.example/redirect"
-        self.assertEqual(bot._price_search_service(redirect, "Akakçe'de ara"), "akakce")
-        self.assertEqual(bot._price_search_service(redirect, "Google Alışveriş"), "google_shopping")
-        self.assertEqual(bot._price_search_service(redirect, "Cimri'de ara"), "cimri")
-        self.assertIsNone(bot._price_search_service(redirect, "Market Fiyatı"))
+        self.assertEqual(sanitize._price_search_service(redirect, "Akakçe'de ara"), "akakce")
+        self.assertEqual(sanitize._price_search_service(redirect, "Google Alışveriş"), "google_shopping")
+        self.assertEqual(sanitize._price_search_service(redirect, "Cimri'de ara"), "cimri")
+        self.assertIsNone(sanitize._price_search_service(redirect, "Market Fiyatı"))
 
     def test_cimri_domain_and_legacy_market_link_are_classified_separately(self):
-        self.assertEqual(bot._price_search_service("cimri.com/arama?q=cay"), "cimri")
+        self.assertEqual(sanitize._price_search_service("cimri.com/arama?q=cay"), "cimri")
         self.assertEqual(
-            bot._price_search_service("https://www.cimri.com/arama?sort=price,asc&q=cay"),
+            sanitize._price_search_service("https://www.cimri.com/arama?sort=price,asc&q=cay"),
             "cimri",
         )
         self.assertIsNone(
-            bot._price_search_service("https://marketfiyati.org.tr/ara?q=cay", "Market Fiyatı"),
+            sanitize._price_search_service("https://marketfiyati.org.tr/ara?q=cay", "Market Fiyatı"),
             "eski kaynak bağlantısı tanınabilir kalır ama artık arama hizmeti olarak üretilmez",
         )
 
@@ -1837,17 +1842,17 @@ class MessageSanitizationTest(unittest.TestCase):
         text = "Çay https://www.akakce.com/arama/?q=cay Google Alışveriş"
         hidden_label = "Google Alışveriş"
         entity = tl_types.MessageEntityTextUrl(
-            offset=bot.utf16_length(text[:text.index(hidden_label)]),
-            length=bot.utf16_length(hidden_label),
+            offset=sanitize.utf16_length(text[:text.index(hidden_label)]),
+            length=sanitize.utf16_length(hidden_label),
             url="https://www.google.com/search?udm=28&q=cay&hl=tr&gl=tr",
         )
         cimri_button = SimpleNamespace(
             text="Cimri", url="https://www.cimri.com/arama?sort=price,asc&q=cay", type=None,
         )
         message = make_message(text, entities=[entity], buttons=[cimri_button], media=False)
-        keyboard = bot.build_inline_keyboard(message)
+        keyboard = searchbuttons.build_inline_keyboard(message)
         buttons = [button for row in keyboard["inline_keyboard"] for button in row]
-        services = [bot._price_search_service(button["url"], button["text"]) for button in buttons]
+        services = [sanitize._price_search_service(button["url"], button["text"]) for button in buttons]
         self.assertEqual(services, ["cimri"], "gövde/gizli link hizmetleri çoğaltılmamalı")
         self.assertEqual(len(buttons), 1)
 
@@ -1858,7 +1863,7 @@ class MessageSanitizationTest(unittest.TestCase):
             SimpleNamespace(text="Google Alışveriş", url="https://google.com/shopping?q=cay", type=None),
             SimpleNamespace(text="Ürüne Git", url="https://example.com/product", type=None),
         ]
-        keyboard = bot.build_inline_keyboard(make_message("Çay fırsatı", buttons=buttons, media=False))
+        keyboard = searchbuttons.build_inline_keyboard(make_message("Çay fırsatı", buttons=buttons, media=False))
         rows = keyboard["inline_keyboard"]
         self.assertEqual(rows[0], [{"text": "Ürüne Git", "url": "https://example.com/product"}])
         self.assertEqual([button["text"] for button in rows[1]], [
@@ -1873,7 +1878,7 @@ class MessageSanitizationTest(unittest.TestCase):
     def test_only_missing_search_services_are_added_and_body_is_unchanged(self):
         text = "Çay fırsatı https://akakce.com/arama/?q=cay"
         message = make_message(text, media=False)
-        keyboard = bot.build_inline_keyboard(message)
+        keyboard = searchbuttons.build_inline_keyboard(message)
         buttons = [button for row in keyboard["inline_keyboard"] for button in row]
         self.assertEqual([button["text"] for button in buttons], ["Google Alışveriş", "Cimri'de ara"])
         composed = bot.compose_message(message)
@@ -1881,9 +1886,9 @@ class MessageSanitizationTest(unittest.TestCase):
         self.assertNotIn("Cimri", composed["text"], "inline düğmeler gövdeye karakter eklememeli")
 
     def test_no_search_services_are_added_without_a_product_query(self):
-        self.assertIsNone(bot.build_inline_keyboard(make_message("", media=False)))
-        self.assertIsNone(bot.build_inline_keyboard(make_message("Fırsata Git", media=False)))
-        self.assertIsNone(bot.build_inline_keyboard(make_message("%50 indirim\n1.299 TL", media=False)))
+        self.assertIsNone(searchbuttons.build_inline_keyboard(make_message("", media=False)))
+        self.assertIsNone(searchbuttons.build_inline_keyboard(make_message("Fırsata Git", media=False)))
+        self.assertIsNone(searchbuttons.build_inline_keyboard(make_message("%50 indirim\n1.299 TL", media=False)))
 
     def test_search_query_skips_price_first_discount_first_and_cta_lines(self):
         messages = [
@@ -1902,17 +1907,17 @@ class MessageSanitizationTest(unittest.TestCase):
         ]
         for message, title in zip(messages, expected):
             with self.subTest(message=message):
-                self.assertEqual(bot._search_query(make_message(message, media=False)), title)
+                self.assertEqual(producttitle._search_query(make_message(message, media=False)), title)
 
     def test_search_query_removes_price_and_discount_metadata_from_product_line(self):
         self.assertEqual(
-            bot._search_query(make_message(
+            producttitle._search_query(make_message(
                 "🎯 Samsung Galaxy S24 Ultra 256GB · 49.999 TL (%25 indirim)", media=False,
             )),
             "Samsung Galaxy S24 Ultra 256GB",
         )
         self.assertEqual(
-            bot._search_query(make_message("🔥 Sıcak ÇAY 5 TL", media=False)),
+            producttitle._search_query(make_message("🔥 Sıcak ÇAY 5 TL", media=False)),
             "Sıcak ÇAY",
         )
 
@@ -1931,17 +1936,17 @@ class MessageSanitizationTest(unittest.TestCase):
             "#Kozmetik@amazonfirsatalarmi"
         )
         self.assertEqual(
-            bot._search_query(make_message(message, media=False)),
+            producttitle._search_query(make_message(message, media=False)),
             "Restorex Besleyici Bakım Şampuanı 900 Mililitre, 7 Besleyici",
         )
 
     def test_search_query_keeps_first_line_when_all_candidates_are_weak(self):
         """Tüm adaylar zayıfsa eski davranış (ilk aday) korunur."""
-        self.assertEqual(bot._search_query(make_message("Çay\n🛒 Amazon", media=False)), "Çay")
+        self.assertEqual(producttitle._search_query(make_message("Çay\n🛒 Amazon", media=False)), "Çay")
 
     def test_search_query_prefers_first_multi_word_title_over_store_label(self):
         self.assertEqual(
-            bot._search_query(make_message(
+            producttitle._search_query(make_message(
                 "Abc Deterjan Çamaşır Sodası (Soda Matik) 500 Gr\n🛍️ Amazon", media=False,
             )),
             "Abc Deterjan Çamaşır Sodası Soda Matik 500 Gr",
@@ -1949,12 +1954,12 @@ class MessageSanitizationTest(unittest.TestCase):
 
     def test_search_query_drops_inline_call_to_action_words(self):
         self.assertEqual(
-            bot._search_query(make_message("Çay fırsatı – Fırsata Git 👇", media=False)),
+            producttitle._search_query(make_message("Çay fırsatı – Fırsata Git 👇", media=False)),
             "Çay",
         )
 
     def test_search_queries_drop_leading_emoji_and_encode_for_each_service(self):
-        keyboard = bot.build_inline_keyboard(make_message("🔥 Sıcak ÇAY 5 TL", media=False))
+        keyboard = searchbuttons.build_inline_keyboard(make_message("🔥 Sıcak ÇAY 5 TL", media=False))
         buttons = {button["text"]: button["url"]
                    for row in keyboard["inline_keyboard"] for button in row}
         self.assertEqual(list(buttons), ["Google Alışveriş", "Akakçe'de ara", "Cimri'de ara"])
@@ -1972,36 +1977,36 @@ class MessageSanitizationTest(unittest.TestCase):
         """Sorun Telegram'ın dahili tarayıcısındaydı; dışarıda tam başlıkla arama
         çalıştığı için Cimri sorgusu artık KISALTILMIYOR (kullanıcı isteği)."""
         self.assertEqual(
-            bot._price_search_url("cimri", "Arzum AR5106 Volume Pro"),
+            searchbuttons._price_search_url("cimri", "Arzum AR5106 Volume Pro"),
             "https://www.cimri.com/arama?sort=price,asc&q=Arzum+AR5106+Volume+Pro",
         )
         self.assertEqual(
-            bot._price_search_url("cimri", "  Çamaşır   Deterjanı / 2 Lt "),
+            searchbuttons._price_search_url("cimri", "  Çamaşır   Deterjanı / 2 Lt "),
             "https://www.cimri.com/arama?sort=price,asc&q=%C3%87ama%C5%9F%C4%B1r+Deterjan%C4%B1+%2F+2+Lt",
         )
-        self.assertEqual(bot._cimri_search_query("Sıcak ÇAY"), "Sıcak ÇAY")
+        self.assertEqual(searchbuttons._cimri_search_query("Sıcak ÇAY"), "Sıcak ÇAY")
         self.assertEqual(
-            bot._cimri_search_query("Philips Airfryer XXL 6.2L"),
+            searchbuttons._cimri_search_query("Philips Airfryer XXL 6.2L"),
             "Philips Airfryer XXL 6.2L",
             "başlığın tamamı aranır, ilk iki kelimeye inmez",
         )
-        self.assertEqual(bot._cimri_search_query("  çok   boşluklu  "), "çok boşluklu")
+        self.assertEqual(searchbuttons._cimri_search_query("  çok   boşluklu  "), "çok boşluklu")
 
     def test_akakce_and_google_search_urls_remain_stable(self):
         self.assertEqual(
-            bot._price_search_url("akakce", "çay"),
+            searchbuttons._price_search_url("akakce", "çay"),
             "https://www.akakce.com/arama/?q=%C3%A7ay",
         )
         self.assertEqual(
-            bot._price_search_url("google_shopping", "çay"),
+            searchbuttons._price_search_url("google_shopping", "çay"),
             "https://www.google.com/search?udm=28&q=%C3%A7ay&hl=tr&gl=tr",
         )
 
     def test_market_fiyati_source_url_is_preserved_but_no_market_button_is_created(self):
         url = "https://marketfiyati.org.tr/ara?q=cay"
         message = make_message(f"Çay\n{url}", media=False)
-        self.assertEqual([item["url"] for item in bot.extract_links(message)], [url])
-        keyboard = bot.build_inline_keyboard(message)
+        self.assertEqual([item["url"] for item in sanitize.extract_links(message)], [url])
+        keyboard = searchbuttons.build_inline_keyboard(message)
         buttons = [button for row in keyboard["inline_keyboard"] for button in row]
         self.assertEqual([button["text"] for button in buttons], [
             "Google Alışveriş", "Akakçe'de ara", "Cimri'de ara",
@@ -2015,7 +2020,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
     def test_removed_link_does_not_leave_a_hole(self):
         """WhatsApp linki/#reklam silinince geriye boş satır yığını kalmamalı."""
         text = "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n129,90 TL\n\nhttps://wa.me/905551234567\n#reklam\n\nStoklarla sınırlı"
-        cleaned = bot.sanitize_message(make_message(text, media=False)).message
+        cleaned = sanitize.sanitize_message(make_message(text, media=False)).message
         self.assertEqual(
             cleaned,
             "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n129,90 TL\n\nStoklarla sınırlı",
@@ -2023,33 +2028,33 @@ class BlankLineNormalizationTest(unittest.TestCase):
         self.assertNotIn("\n\n\n", cleaned, "bölümler arasında en fazla bir boş satır kalmalı")
 
     def test_three_or_more_newlines_collapse_to_one_blank_line(self):
-        cleaned = bot.sanitize_message(make_message("a\n\n\n\n\nb", media=False)).message
+        cleaned = sanitize.sanitize_message(make_message("a\n\n\n\n\nb", media=False)).message
         self.assertEqual(cleaned, "a\n\nb")
 
     def test_single_newline_is_preserved(self):
         """Bitişik satırlar birleştirilmemeli; tek boşluk farkı korunur."""
         for text in ("a\nb", "a\n\nb"):
-            self.assertEqual(bot.sanitize_message(make_message(text, media=False)).message, text)
+            self.assertEqual(sanitize.sanitize_message(make_message(text, media=False)).message, text)
 
     def test_leading_and_trailing_blank_lines_are_trimmed(self):
-        cleaned = bot.sanitize_message(make_message("\n\n\n  çay 5 TL \n\n\n", media=False)).message
+        cleaned = sanitize.sanitize_message(make_message("\n\n\n  çay 5 TL \n\n\n", media=False)).message
         self.assertEqual(cleaned, "çay 5 TL")
 
     def test_crlf_line_endings_are_normalized(self):
-        cleaned = bot.sanitize_message(make_message("a\r\n\r\n\r\nb", media=False)).message
+        cleaned = sanitize.sanitize_message(make_message("a\r\n\r\n\r\nb", media=False)).message
         self.assertEqual(cleaned, "a\n\nb")
 
     def test_spaces_between_newlines_are_dropped(self):
-        cleaned = bot.sanitize_message(make_message("a\n  \t \nb", media=False)).message
+        cleaned = sanitize.sanitize_message(make_message("a\n  \t \nb", media=False)).message
         self.assertEqual(cleaned, "a\n\nb")
 
     def test_first_line_indentation_is_kept(self):
         """Satır içi boşluk içerik sayılır; yalnızca boş satırlar atılır."""
-        cleaned = bot.sanitize_message(make_message("    girintili\nmetin", media=False)).message
+        cleaned = sanitize.sanitize_message(make_message("    girintili\nmetin", media=False)).message
         self.assertEqual(cleaned, "    girintili\nmetin")
 
     def test_only_whitespace_becomes_empty(self):
-        self.assertEqual(bot.sanitize_message(make_message("\n\n \t\n", media=False)).message, "")
+        self.assertEqual(sanitize.sanitize_message(make_message("\n\n \t\n", media=False)).message, "")
 
     def test_collapse_never_drops_content(self):
         """Güvence: temizlik gerekçesi olmayan hiçbir karakter kaybolmaz."""
@@ -2062,7 +2067,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
             "    girintili\n\n\n\nmetin",
         ]
         for text in samples:
-            cleaned = bot.sanitize_message(make_message(text, media=False)).message
+            cleaned = sanitize.sanitize_message(make_message(text, media=False)).message
             self.assertEqual(
                 "".join(char for char in cleaned if not char.isspace()),
                 "".join(char for char in text if not char.isspace()),
@@ -2072,7 +2077,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
     def test_collapse_keeps_every_word_besides_cleaned_tokens(self):
         """WhatsApp/#reklam dışında silinen hiçbir kelime olmamalı."""
         text = "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n\n\n129,90 TL\n\nhttps://wa.me/905551234567\n#reklam\n\nStoklarla sınırlı"
-        cleaned = bot.sanitize_message(make_message(text, media=False)).message
+        cleaned = sanitize.sanitize_message(make_message(text, media=False)).message
         for word in ("🔥", "A101", "Çamaşır", "Deterjanı", "4", "Lt", "129,90", "TL", "Stoklarla", "sınırlı"):
             self.assertIn(word, cleaned, f"{word!r} kaybolmamalı")
         self.assertNotIn("wa.me", cleaned)
@@ -2082,25 +2087,25 @@ class BlankLineNormalizationTest(unittest.TestCase):
         """Boş satırlar silinince biçim entity'leri kaymamalı (UTF-16)."""
         text = "🔥 Başlık\n\n\n\nhttps://wa.me/905551234567\n\n\n\n9 TL"
         entity = tl_types.MessageEntityBold(
-            offset=bot.utf16_length(text[:text.index("9 TL")]),
-            length=bot.utf16_length("9 TL"),
+            offset=sanitize.utf16_length(text[:text.index("9 TL")]),
+            length=sanitize.utf16_length("9 TL"),
         )
-        cleaned = bot.sanitize_message(make_message(text, entities=[entity], media=False))
+        cleaned = sanitize.sanitize_message(make_message(text, entities=[entity], media=False))
         self.assertEqual(len(cleaned.entities), 1, "entity silinmemeli")
         moved = cleaned.entities[0]
         self.assertEqual(
-            bot.utf16_slice(cleaned.message, moved.offset, moved.length), "9 TL",
+            sanitize.utf16_slice(cleaned.message, moved.offset, moved.length), "9 TL",
             "boş satır sıkıştırmasından sonra entity yanlış metni kapsamamalı",
         )
 
     def test_collapse_is_idempotent(self):
-        once = bot.sanitize_message(make_message("a\n\n\n\nb\n\n\n\nc", media=False)).message
-        twice = bot.sanitize_message(make_message(once, media=False)).message
+        once = sanitize.sanitize_message(make_message("a\n\n\n\nb\n\n\n\nc", media=False)).message
+        twice = sanitize.sanitize_message(make_message(once, media=False)).message
         self.assertEqual(once, twice)
 
     def test_blank_line_spans_returns_nothing_for_clean_text(self):
-        self.assertEqual(bot._blank_line_spans("a\n\nb"), [])
-        self.assertEqual(bot._blank_line_spans("düz metin"), [])
+        self.assertEqual(sanitize._blank_line_spans("a\n\nb"), [])
+        self.assertEqual(sanitize._blank_line_spans("düz metin"), [])
 
     def test_composed_message_has_one_blank_line_between_sections(self):
         """Basit düzen: başlık en üstte, mesaj olduğu gibi altında, bloklar tek boş satırla ayrılır."""
@@ -2123,7 +2128,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
         self.assertNotIn("Mesajı Gör", composed["text"])
         self.assertEqual(composed["source_name_url"], "https://t.me/firsatz/123")
         self.assertEqual(
-            [(item["type"], item["url"]) for item in bot.source_name_entity(composed)
+            [(item["type"], item["url"]) for item in botentities.source_name_entity(composed)
              if item["type"] == "text_link"],
             [("text_link", "https://t.me/firsatz/123")],
             "mesaj linki en alttaki grup adının içine gömülür",
@@ -2144,7 +2149,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
             message,
             message_link="https://t.me/firsatz/123",
             source_name="FırsatZ",
-            link_kinds=bot.link_kinds_for("smart", bot=True),
+            link_kinds=confutil.link_kinds_for("smart", bot=True),
         )
         self.assertEqual(composed["text"], (
             "A101 Çamaşır Deterjanı 4 Lt"
@@ -2170,7 +2175,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
             make_message(text, media=False),
             message_link="https://t.me/firsatz/123",
             source_name="FırsatZ",
-            link_kinds=bot.link_kinds_for("smart", bot=True),
+            link_kinds=confutil.link_kinds_for("smart", bot=True),
         )
         self.assertIn(text, composed["text"], "alıntı aynen korunur")
         self.assertEqual(composed["text"].count("https://amzn.to/urun"), 1)
@@ -2184,7 +2189,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
             make_message("", media=False),
             message_link="https://t.me/firsatz/123",
             source_name="FırsatZ",
-            link_kinds=bot.link_kinds_for("smart", bot=True),
+            link_kinds=confutil.link_kinds_for("smart", bot=True),
         )
         self.assertNotIn("\n\n\n", composed["text"])
         self.assertNotIn("🔗 https://", composed["text"])
@@ -2192,8 +2197,8 @@ class BlankLineNormalizationTest(unittest.TestCase):
         self.assertTrue(composed["text"].endswith("FırsatZ"))
 
     def test_changed_flag_is_set_when_only_blank_lines_differ(self):
-        self.assertTrue(bot.sanitize_message(make_message("a\n\n\n\nb", media=False)).changed)
-        self.assertFalse(bot.sanitize_message(make_message("a\n\nb", media=False)).changed)
+        self.assertTrue(sanitize.sanitize_message(make_message("a\n\n\n\nb", media=False)).changed)
+        self.assertFalse(sanitize.sanitize_message(make_message("a\n\nb", media=False)).changed)
 
 
 class PromoLineCleanupTest(unittest.TestCase):
@@ -2204,7 +2209,7 @@ class PromoLineCleanupTest(unittest.TestCase):
     """
 
     def _cleaned(self, text):
-        return bot.sanitize_message(make_message(text, media=False)).message
+        return sanitize.sanitize_message(make_message(text, media=False)).message
 
     def test_whatsapp_channel_promo_line_is_removed(self):
         text = "Çay 5 TL\n\n💚Whatsapp Önemli Fırsatlar\n\nStoklarla sınırlı"
@@ -2270,7 +2275,7 @@ class PromoLineCleanupTest(unittest.TestCase):
 
     def test_cleanup_marks_the_copy_as_changed(self):
         """Temizlik gereken mesajda forward atlanır (özgün içerik geri gelmesin)."""
-        cleaned = bot.sanitize_message(
+        cleaned = sanitize.sanitize_message(
             make_message("Çay 5 TL\n\n💚Whatsapp Önemli Fırsatlar", media=False),
         )
         self.assertTrue(cleaned.changed)
@@ -2285,10 +2290,10 @@ class PromoLineCleanupTest(unittest.TestCase):
         )
         label = "Son 3 ürün"
         entity = tl_types.MessageEntityBold(
-            offset=bot.utf16_length(text[:text.index(label)]),
-            length=bot.utf16_length(label),
+            offset=sanitize.utf16_length(text[:text.index(label)]),
+            length=sanitize.utf16_length(label),
         )
-        cleaned = bot.sanitize_message(make_message(text, entities=[entity], media=False))
+        cleaned = sanitize.sanitize_message(make_message(text, entities=[entity], media=False))
         self.assertEqual(
             cleaned.message,
             "🛍️ Urban Care Duş Jeli 500 Ml\n\n9️⃣ Son 3 ürün",
@@ -2296,7 +2301,7 @@ class PromoLineCleanupTest(unittest.TestCase):
         self.assertEqual(len(cleaned.entities), 1)
         kept = cleaned.entities[0]
         self.assertEqual(
-            bot.utf16_slice(cleaned.message, kept.offset, kept.length), label,
+            sanitize.utf16_slice(cleaned.message, kept.offset, kept.length), label,
             "silinen satırlardan sonra biçim entity'si kaymamalı",
         )
 
@@ -2312,7 +2317,7 @@ class InstagramPromoCleanupTest(unittest.TestCase):
             "📣 Diğer kanallarımız için TAZEFIRSAT.com\n"
             "https://www.amazon.com.tr/dp/B123"
         )
-        cleaned = bot.sanitize_message(make_message(text, media=False))
+        cleaned = sanitize.sanitize_message(make_message(text, media=False))
         self.assertNotIn("Instagram", cleaned.message)
         self.assertNotIn("instagram.com", cleaned.message)
         self.assertIn("Çay 5 TL", cleaned.message)
@@ -2326,13 +2331,13 @@ class InstagramPromoCleanupTest(unittest.TestCase):
         text = f"Çay 5 TL\n\n{instagram_label}\n\n{amazon_label}"
         entities = [
             tl_types.MessageEntityTextUrl(
-                offset=bot.utf16_length(text[:text.index(instagram_label)]),
-                length=bot.utf16_length(instagram_label),
+                offset=sanitize.utf16_length(text[:text.index(instagram_label)]),
+                length=sanitize.utf16_length(instagram_label),
                 url="https://instagram.com/ornek",
             ),
             tl_types.MessageEntityTextUrl(
-                offset=bot.utf16_length(text[:text.index(amazon_label)]),
-                length=bot.utf16_length(amazon_label),
+                offset=sanitize.utf16_length(text[:text.index(amazon_label)]),
+                length=sanitize.utf16_length(amazon_label),
                 url="https://www.amazon.com.tr/dp/B123",
             ),
         ]
@@ -2344,12 +2349,12 @@ class InstagramPromoCleanupTest(unittest.TestCase):
             text, entities=entities, buttons=buttons,
             webpage="https://www.instagram.com/ornek",
         )
-        cleaned = bot.sanitize_message(message)
+        cleaned = sanitize.sanitize_message(message)
         self.assertEqual(cleaned.message, f"Çay 5 TL\n\n{amazon_label}")
         self.assertIsNone(cleaned.media)
-        links = bot.extract_links(cleaned)
+        links = sanitize.extract_links(cleaned)
         self.assertTrue(links)
-        self.assertFalse(any(bot.is_instagram_url(item["url"]) for item in links))
+        self.assertFalse(any(sanitize.is_instagram_url(item["url"]) for item in links))
         self.assertEqual(
             {item["url"] for item in links},
             {"https://www.amazon.com.tr/dp/B123", "https://amazon.com.tr/dp/B456"},
@@ -2360,30 +2365,30 @@ class InstagramPromoCleanupTest(unittest.TestCase):
     def test_instagram_destination_identifies_generic_promo_label(self):
         label = "📣 Kanalımıza katılın"
         direct = f"Çay 5 TL\n\n{label} https://instagram.com/ornek"
-        self.assertEqual(bot.sanitize_message(make_message(direct, media=False)).message, "Çay 5 TL")
+        self.assertEqual(sanitize.sanitize_message(make_message(direct, media=False)).message, "Çay 5 TL")
 
         hidden = f"Çay 5 TL\n\n{label}"
         entity = tl_types.MessageEntityTextUrl(
-            offset=bot.utf16_length(hidden[:hidden.index(label)]),
-            length=bot.utf16_length(label), url="https://instagram.com/ornek",
+            offset=sanitize.utf16_length(hidden[:hidden.index(label)]),
+            length=sanitize.utf16_length(label), url="https://instagram.com/ornek",
         )
-        cleaned = bot.sanitize_message(make_message(hidden, entities=[entity], media=False))
+        cleaned = sanitize.sanitize_message(make_message(hidden, entities=[entity], media=False))
         self.assertEqual(cleaned.message, "Çay 5 TL")
-        self.assertEqual(bot.extract_links(cleaned), [])
+        self.assertEqual(sanitize.extract_links(cleaned), [])
 
         content = "Instagram bağlantısı ürün açıklamasında 9 TL"
-        self.assertIn(content, bot.sanitize_message(make_message(content, media=False)).message)
+        self.assertIn(content, sanitize.sanitize_message(make_message(content, media=False)).message)
 
     def test_instagram_url_on_product_line_does_not_delete_product_text(self):
         text = "Çay 5 TL instagram.com/ornek"
-        cleaned = bot.sanitize_message(make_message(text, media=False))
+        cleaned = sanitize.sanitize_message(make_message(text, media=False))
         self.assertEqual(cleaned.message, "Çay 5 TL")
         for url in ("https://notinstagram.com/ornek", "https://instagram.com.example.org/ornek"):
             with self.subTest(url=url):
-                self.assertFalse(bot.is_instagram_url(url))
-                self.assertEqual(bot.sanitize_message(make_message(url, media=False)).message, url)
+                self.assertFalse(sanitize.is_instagram_url(url))
+                self.assertEqual(sanitize.sanitize_message(make_message(url, media=False)).message, url)
         product = "Insta360 kamera 5 TL"
-        self.assertEqual(bot.sanitize_message(make_message(product, media=False)).message, product)
+        self.assertEqual(sanitize.sanitize_message(make_message(product, media=False)).message, product)
 
 
 class NoteCommandMessagesTest(unittest.TestCase):
@@ -2440,7 +2445,7 @@ class ComposeMessageTest(unittest.TestCase):
         self.assertEqual(composed["source_url"], "https://t.me/firsatz/9")
         first_entity = composed["entities"][0]
         self.assertEqual(
-            bot.utf16_slice(composed["text"], first_entity.offset, first_entity.length),
+            sanitize.utf16_slice(composed["text"], first_entity.offset, first_entity.length),
             "Philips Airfryer XXL 6.2L", "başlık kalın olmalı",
         )
         self.assertNotIn("Fırsatı Gönderen", composed["text"])
@@ -2511,10 +2516,10 @@ class ComposeMessageTest(unittest.TestCase):
             "\n\nFirsatZ"
         ))
         self.assertEqual(product_link_urls(composed), ["https://amzn.to/btn"])
-        self.assertEqual(bot.source_name_entity(composed)[-1], {
+        self.assertEqual(botentities.source_name_entity(composed)[-1], {
             "type": "text_link",
             "offset": composed["source_name_offset"],
-            "length": bot.utf16_length("FirsatZ"),
+            "length": sanitize.utf16_length("FirsatZ"),
             "url": "https://t.me/FirsatZ/31543",
         })
 
@@ -2528,7 +2533,7 @@ class ComposeMessageTest(unittest.TestCase):
         composed = bot.compose_message(make_message(text, media=False))
         self.assertIn(text, composed["text"], "kupon mesajı olduğu gibi iletilir")
         self.assertEqual(composed["body"], text)
-        self.assertNotIn(bot.PRICE_LINE_LABEL, composed["text"])
+        self.assertNotIn(searchbuttons.PRICE_LINE_LABEL, composed["text"])
 
     def test_titleless_message_has_no_title_block(self):
         """Ürün başlığı bulunamazsa gövde en üstte, olduğu gibi iletilir."""
@@ -2547,8 +2552,8 @@ class ComposeMessageTest(unittest.TestCase):
         text = "🛍️ Çay Bardağı 6'lı Set\n129,90 TL Stoklarla sınırlı"
         label = "Stoklarla sınırlı"
         entity = tl_types.MessageEntityBold(
-            offset=bot.utf16_length(text[:text.index(label)]),
-            length=bot.utf16_length(label),
+            offset=sanitize.utf16_length(text[:text.index(label)]),
+            length=sanitize.utf16_length(label),
         )
         composed = bot.compose_message(make_message(text, entities=[entity], media=False))
         self.assertEqual(composed["text"], (
@@ -2557,14 +2562,14 @@ class ComposeMessageTest(unittest.TestCase):
         ))
         bold = [item for item in composed["entities"]
                 if type(item).__name__ == "MessageEntityBold"
-                and bot.utf16_slice(composed["text"], item.offset, item.length) == label]
+                and sanitize.utf16_slice(composed["text"], item.offset, item.length) == label]
         self.assertEqual(len(bold), 1, composed["entities"])
 
     def test_hidden_entity_link_is_not_repeated_by_default(self):
         """Akıllı mod: gövdede tıklanabilir kalan gizli link tekrar yazılmaz."""
         text = "Fırsata Git 👉 çay 5 TL"
         entity = tl_types.MessageEntityTextUrl(
-            offset=0, length=bot.utf16_length("Fırsata Git"), url="https://amzn.to/gizli",
+            offset=0, length=sanitize.utf16_length("Fırsata Git"), url="https://amzn.to/gizli",
         )
         composed = bot.compose_message(
             make_message(text, entities=[entity], media=False),
@@ -2611,26 +2616,26 @@ class ComposeMessageTest(unittest.TestCase):
         self.assertNotIn("🔗 FırsatZ", composed["text"])
         self.assertEqual(composed["source_name"], "FırsatZ")
         self.assertNotIn("Mesajı Gör", composed["text"])
-        self.assertEqual(bot.source_name_entity(composed), [{
+        self.assertEqual(botentities.source_name_entity(composed), [{
             "type": "bold",
             "offset": composed["source_name_offset"],
-            "length": bot.utf16_length("FırsatZ"),
+            "length": sanitize.utf16_length("FırsatZ"),
         }, {
             "type": "text_link",
             "offset": composed["source_name_offset"],
-            "length": bot.utf16_length("FırsatZ"),
+            "length": sanitize.utf16_length("FırsatZ"),
             "url": "https://t.me/firsatz/9",
         }])
         self.assertEqual(
-            bot.utf16_slice(composed["text"], composed["source_name_offset"],
+            sanitize.utf16_slice(composed["text"], composed["source_name_offset"],
                             composed["source_name_length"]),
             "FırsatZ",
         )
 
     def test_source_name_entity_is_empty_without_a_name(self):
         composed = bot.compose_message(make_message("ÇAY 5 TL"))
-        self.assertEqual(bot.source_name_entity(composed), [])
-        self.assertEqual(bot.source_name_entity({"source_name_offset": -1, "source_name_length": 0}), [])
+        self.assertEqual(botentities.source_name_entity(composed), [])
+        self.assertEqual(botentities.source_name_entity({"source_name_offset": -1, "source_name_length": 0}), [])
 
     def test_source_name_survives_truncation_and_stays_bold(self):
         composed = bot.compose_message(
@@ -2640,7 +2645,7 @@ class ComposeMessageTest(unittest.TestCase):
         )
         self.assertLessEqual(len(composed["text"]), 120)
         self.assertTrue(composed["text"].endswith("FırsatZ"))
-        self.assertEqual(bot.source_name_entity(composed)[0]["type"], "bold")
+        self.assertEqual(botentities.source_name_entity(composed)[0]["type"], "bold")
         self.assertNotIn("Mesajı Gör", composed["text"], "adres grup adına gömülü")
         self.assertEqual(composed["source_name_url"], "https://t.me/firsatz/1")
         self.assertTrue(composed["text"].startswith("Çay Makinesi"), "başlık en üstte kalır")
@@ -2648,7 +2653,7 @@ class ComposeMessageTest(unittest.TestCase):
     def test_empty_source_name_is_ignored(self):
         composed = bot.compose_message(make_message("çay"), source_name="   ")
         self.assertIsNone(composed["source_name"])
-        self.assertEqual(bot.source_name_entity(composed), [])
+        self.assertEqual(botentities.source_name_entity(composed), [])
 
     def test_source_line_is_dropped_when_it_cannot_fit(self):
         composed = bot.compose_message(
@@ -2668,12 +2673,12 @@ class ComposeMessageTest(unittest.TestCase):
         self.assertLessEqual(len(composed["text"]), 200)
         # Telegram sınırı UTF-16 birimiyle sayılır; "🔗" iki birimdir. Kırpma bu
         # birimi esas alır, böylece kalıp sınırın TAM doluyor, aşmıyor.
-        self.assertLessEqual(bot.utf16_length(composed["text"]), 200)
+        self.assertLessEqual(sanitize.utf16_length(composed["text"]), 200)
         self.assertTrue(composed["text"].endswith("🔗 Mesajı Gör: https://t.me/firsatz/1"))
         self.assertEqual(
-            bot.utf16_length(composed["body"]),
-            200 - bot.utf16_length("Çay Makinesi") - 2
-            - bot.utf16_length("\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"),
+            sanitize.utf16_length(composed["body"]),
+            200 - sanitize.utf16_length("Çay Makinesi") - 2
+            - sanitize.utf16_length("\n\n🔗 Mesajı Gör: https://t.me/firsatz/1"),
         )
         self.assertNotIn("Fırsatı Gönderen", composed["text"])
 
@@ -2681,8 +2686,8 @@ class ComposeMessageTest(unittest.TestCase):
         entity = tl_types.MessageEntityBold(offset=0, length=4000)
         message = make_message("b" * 4000, entities=[entity])
         body = "kısa gövde"
-        self.assertEqual(bot.entities_for_text(message, body), [])
-        self.assertEqual(bot.entities_for_text(message, "b" * 4000), [entity])
+        self.assertEqual(botentities.entities_for_text(message, body), [])
+        self.assertEqual(botentities.entities_for_text(message, "b" * 4000), [entity])
 
     def test_bot_api_entities_map_types_and_skip_unknown(self):
         entities = [
@@ -2692,15 +2697,15 @@ class ComposeMessageTest(unittest.TestCase):
             tl_types.MessageEntityCode(offset=20, length=2),
         ]
         message = make_message("x" * 30, entities=entities)
-        converted = bot.bot_api_entities(message, "x" * 30)
+        converted = botentities.bot_api_entities(message, "x" * 30)
         self.assertEqual([item["type"] for item in converted], ["bold", "text_link", "code"])
         self.assertEqual(converted[1]["url"], "https://amzn.to/z")
         self.assertNotIn("date_time", [item["type"] for item in converted])
 
     def test_bot_api_entity_clamps_offsets(self):
         entity = tl_types.MessageEntityBold(offset=2, length=10)
-        self.assertEqual(bot.bot_api_entity(entity, 5), {"type": "bold", "offset": 2, "length": 3})
-        self.assertIsNone(bot.bot_api_entity(entity, 2))
+        self.assertEqual(botentities.bot_api_entity(entity, 5), {"type": "bold", "offset": 2, "length": 3})
+        self.assertIsNone(botentities.bot_api_entity(entity, 2))
 
 
 class MediaNamingTest(unittest.TestCase):
@@ -2708,28 +2713,28 @@ class MediaNamingTest(unittest.TestCase):
 
     def test_photo_gets_real_extension(self):
         message = make_message("çay", file=SimpleNamespace(name=None, ext=".jpg", mime_type="image/jpeg"))
-        self.assertEqual(bot.media_upload_name(message), "firsat_1.jpg")
+        self.assertEqual(botentities.media_upload_name(message), "firsat_1.jpg")
 
     def test_document_keeps_original_name(self):
         file = SimpleNamespace(name="kupon.pdf", ext=".pdf", mime_type="application/pdf")
-        self.assertEqual(bot.media_upload_name(make_message("çay", file=file, message_id=7)), "kupon.pdf")
+        self.assertEqual(botentities.media_upload_name(make_message("çay", file=file, message_id=7)), "kupon.pdf")
 
     def test_extension_is_guessed_from_mime_when_missing(self):
         file = SimpleNamespace(name=None, ext=None, mime_type="video/mp4")
-        self.assertEqual(bot.media_upload_name(make_message("çay", file=file)), "firsat_1.mp4")
+        self.assertEqual(botentities.media_upload_name(make_message("çay", file=file)), "firsat_1.mp4")
 
     def test_jpeg_extension_is_normalised(self):
         file = SimpleNamespace(name=None, ext=".jpeg", mime_type=None)
-        self.assertEqual(bot.media_upload_name(make_message("çay", file=file)), "firsat_1.jpg")
+        self.assertEqual(botentities.media_upload_name(make_message("çay", file=file)), "firsat_1.jpg")
 
     def test_media_buffer_carries_the_name(self):
-        buffer = bot.media_buffer(b"veri", "firsat_9.jpg")
+        buffer = botentities.media_buffer(b"veri", "firsat_9.jpg")
         self.assertEqual(buffer.name, "firsat_9.jpg")
         self.assertEqual(buffer.getvalue(), b"veri")
 
     def test_photo_descriptor(self):
         message = make_message("çay", file=SimpleNamespace(size=1234))
-        descriptor = bot.bot_media_descriptor(message)
+        descriptor = botentities.bot_media_descriptor(message)
         self.assertEqual(descriptor["kind"], "photo")
         self.assertEqual(descriptor["mime"], "image/jpeg")
         self.assertEqual(descriptor["filename"], "firsat_1.jpg")
@@ -2742,13 +2747,13 @@ class MediaNamingTest(unittest.TestCase):
         )
         message = make_message("çay", media=tl_types.MessageMediaDocument(document=doc),
                                file=SimpleNamespace(size=999))
-        descriptor = bot.bot_media_descriptor(message)
+        descriptor = botentities.bot_media_descriptor(message)
         self.assertEqual((descriptor["kind"], descriptor["filename"], descriptor["size"]),
                          ("video", "urun.mp4", 999))
 
     def test_webpage_only_message_has_no_media(self):
         message = make_message("çay fırsatı", webpage="https://amzn.to/x")
-        self.assertIsNone(bot.bot_media_descriptor(message))
+        self.assertIsNone(botentities.bot_media_descriptor(message))
 
     def test_video_attributes_are_reused_on_reupload(self):
         """Telethon metadata bulamazsa 1:1 video üretir; oran korunmalı."""
@@ -2758,11 +2763,11 @@ class MediaNamingTest(unittest.TestCase):
             dc_id=1, attributes=[tl_types.DocumentAttributeFilename(file_name="klip.mp4"), video],
         )
         message = make_message("çay", media=tl_types.MessageMediaDocument(document=doc))
-        attributes = bot.reupload_attributes(message)
+        attributes = botentities.reupload_attributes(message)
         self.assertEqual((attributes[0].w, attributes[0].h, attributes[0].duration), (1920, 1080, 12.5))
 
     def test_photos_have_no_attribute_override(self):
-        self.assertIsNone(bot.reupload_attributes(make_message("çay")))
+        self.assertIsNone(botentities.reupload_attributes(make_message("çay")))
 
 
 class MultipartTest(unittest.TestCase):
@@ -2857,44 +2862,44 @@ class LinkAppendixModeTest(unittest.TestCase):
     """``link_appendix`` ayarı: smart (varsayılan) / all / off + eski append_links."""
 
     def test_default_is_smart(self):
-        self.assertEqual(bot.link_appendix_mode({}), "smart")
-        self.assertEqual(bot.link_kinds_for("smart"), ("button", "webpage"))
+        self.assertEqual(confutil.link_appendix_mode({}), "smart")
+        self.assertEqual(confutil.link_kinds_for("smart"), ("button", "webpage"))
         # Buton linkleri bot bildiriminde de metne taşınır.
-        self.assertEqual(bot.link_kinds_for("smart", bot=True), ("button",))
+        self.assertEqual(confutil.link_kinds_for("smart", bot=True), ("button",))
 
     def test_all_and_off_modes(self):
         for value in ("all", "ALL", "hepsi", "tüm", True, 1):
-            self.assertEqual(bot.link_appendix_mode({"link_appendix": value}), "all", repr(value))
+            self.assertEqual(confutil.link_appendix_mode({"link_appendix": value}), "all", repr(value))
         for value in ("off", "kapalı", "false", "0", "none"):
-            self.assertEqual(bot.link_appendix_mode({"link_appendix": value}), "off", repr(value))
-        self.assertEqual(bot.link_kinds_for("off"), ())
-        self.assertEqual(bot.link_kinds_for("all"), ("entity", "button", "webpage"))
+            self.assertEqual(confutil.link_appendix_mode({"link_appendix": value}), "off", repr(value))
+        self.assertEqual(confutil.link_kinds_for("off"), ())
+        self.assertEqual(confutil.link_kinds_for("all"), ("entity", "button", "webpage"))
 
     def test_legacy_append_links_still_works(self):
-        self.assertEqual(bot.link_appendix_mode({"append_links": True}), "all")
-        self.assertEqual(bot.link_appendix_mode({"append_links": False}), "off")
-        self.assertEqual(bot.link_appendix_mode({"append_links": "evet"}), "all")
+        self.assertEqual(confutil.link_appendix_mode({"append_links": True}), "all")
+        self.assertEqual(confutil.link_appendix_mode({"append_links": False}), "off")
+        self.assertEqual(confutil.link_appendix_mode({"append_links": "evet"}), "all")
 
     def test_new_key_wins_over_legacy(self):
-        self.assertEqual(bot.link_appendix_mode({"append_links": True, "link_appendix": "off"}), "off")
+        self.assertEqual(confutil.link_appendix_mode({"append_links": True, "link_appendix": "off"}), "off")
 
     def test_unknown_value_falls_back_to_smart_with_warning(self):
         with self.assertLogs("telegram-filter", level="WARNING"):
-            self.assertEqual(bot.link_appendix_mode({"link_appendix": "saçma"}), "smart")
+            self.assertEqual(confutil.link_appendix_mode({"link_appendix": "saçma"}), "smart")
 
 
 class ConfigFlagTest(unittest.TestCase):
     def test_common_true_and_false_spellings(self):
         for value in (True, "true", "1", "evet", "açık", 1):
-            self.assertTrue(bot.config_flag(value), repr(value))
+            self.assertTrue(confutil.config_flag(value), repr(value))
         for value in (False, "false", "0", "hayır", "kapalı", 0):
-            self.assertFalse(bot.config_flag(value), repr(value))
+            self.assertFalse(confutil.config_flag(value), repr(value))
 
     def test_missing_values_fall_back_to_default(self):
-        self.assertTrue(bot.config_flag(None))
-        self.assertFalse(bot.config_flag(None, False))
-        self.assertFalse(bot.config_flag("yok", False))
-        self.assertTrue(bot.config_flag("", True))
+        self.assertTrue(confutil.config_flag(None))
+        self.assertFalse(confutil.config_flag(None, False))
+        self.assertFalse(confutil.config_flag("yok", False))
+        self.assertTrue(confutil.config_flag("", True))
 
 
 # ---------------------------------------------------------------------------
@@ -2904,41 +2909,41 @@ class ConfigFlagTest(unittest.TestCase):
 
 class DedupKeyTest(unittest.TestCase):
     def test_identical_titles_share_a_key(self):
-        self.assertEqual(bot.dedup_key("Sıcak ÇAY 5 TL"), bot.dedup_key("Sıcak ÇAY 5 TL"))
+        self.assertEqual(dedupbadge.dedup_key("Sıcak ÇAY 5 TL"), dedupbadge.dedup_key("Sıcak ÇAY 5 TL"))
 
     def test_case_and_whitespace_differences_are_ignored(self):
         """Kopyala-yapıştır başlıklar birebir aynı olur; harf/boşluk farkı tolere edilir."""
-        self.assertEqual(bot.dedup_key("  Sıcak   ÇAY 5 TL  "), bot.dedup_key("sıcak çay 5 tl"))
-        self.assertEqual(bot.dedup_key("İNDİRİM"), bot.dedup_key("indirim"))
+        self.assertEqual(dedupbadge.dedup_key("  Sıcak   ÇAY 5 TL  "), dedupbadge.dedup_key("sıcak çay 5 tl"))
+        self.assertEqual(dedupbadge.dedup_key("İNDİRİM"), dedupbadge.dedup_key("indirim"))
 
     def test_different_titles_have_different_keys(self):
-        self.assertNotEqual(bot.dedup_key("Çay 5 TL"), bot.dedup_key("Kahve 5 TL"))
+        self.assertNotEqual(dedupbadge.dedup_key("Çay 5 TL"), dedupbadge.dedup_key("Kahve 5 TL"))
 
     def test_different_source_layouts_normalize_to_the_same_product_key(self):
         price_first = "1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nFırsata Git"
         title_first = "Philips Airfryer XXL 6,2 L\nFiyat: 1.299₺\nÜrüne Git"
-        first_query = bot._search_query(price_first)
-        second_query = bot._search_query(title_first)
+        first_query = producttitle._search_query(price_first)
+        second_query = producttitle._search_query(title_first)
         self.assertEqual(first_query, "Philips Airfryer XXL 6.2L")
         self.assertEqual(second_query, "Philips Airfryer XXL 6,2 L")
-        self.assertEqual(bot.dedup_key(first_query), bot.dedup_key(second_query))
+        self.assertEqual(dedupbadge.dedup_key(first_query), dedupbadge.dedup_key(second_query))
 
     def test_empty_titles_have_no_key(self):
         """Başlıksız (medya-özel) iletiler birleştirilmez, her zaman gönderilir."""
         for title in (None, "", "   ", "\n\t "):
-            self.assertIsNone(bot.dedup_key(title), repr(title))
+            self.assertIsNone(dedupbadge.dedup_key(title), repr(title))
 
 
 class DedupBadgeTest(unittest.TestCase):
     def test_first_copy_has_no_badge(self):
-        self.assertEqual(bot.dedup_badge(1), "")
-        self.assertEqual(bot.dedup_badge(0), "")
+        self.assertEqual(dedupbadge.dedup_badge(1), "")
+        self.assertEqual(dedupbadge.dedup_badge(0), "")
 
     def test_emphasis_escalates_with_count(self):
-        two = bot.dedup_badge(2, sources=["FirsatZ", "İndirimde Al"])
-        three = bot.dedup_badge(3, sources=["A", "B", "C"])
-        four = bot.dedup_badge(4, sources=["A", "B", "C", "D"])
-        five = bot.dedup_badge(5, sources=["A", "B", "C", "D", "E"])
+        two = dedupbadge.dedup_badge(2, sources=["FirsatZ", "İndirimde Al"])
+        three = dedupbadge.dedup_badge(3, sources=["A", "B", "C"])
+        four = dedupbadge.dedup_badge(4, sources=["A", "B", "C", "D"])
+        five = dedupbadge.dedup_badge(5, sources=["A", "B", "C", "D", "E"])
         # Adlar " | " ile ayrılır (virgül grup adının kendisinde olabilir; virgülle
         # birleştirmek adları bölüp mesaj linklerini kaydırıyordu).
         self.assertEqual(two, "📌 2 kere paylaşıldı: FirsatZ | İndirimde Al")
@@ -2949,39 +2954,39 @@ class DedupBadgeTest(unittest.TestCase):
 
     def test_badge_lists_the_group_names_in_one_line(self):
         """Kullanıcı isteği: "2-3-4 kere paylaşıldı şu şu şu gruplarda" — tek satır."""
-        badge = bot.dedup_badge(3, sources=["FirsatZ", "İndirimde Al", "OnuAl"])
+        badge = dedupbadge.dedup_badge(3, sources=["FirsatZ", "İndirimde Al", "OnuAl"])
         self.assertNotIn("\n", badge, badge)
         self.assertEqual(badge, "📌 3 kere paylaşıldı: FirsatZ | İndirimde Al | OnuAl")
-        self.assertEqual(bot.dedup_badge(2), "📌 2 kere paylaşıldı",
+        self.assertEqual(dedupbadge.dedup_badge(2), "📌 2 kere paylaşıldı",
                          "grup adı yoksa sayı yeter")
 
     def test_repeated_group_names_are_written_once(self):
-        self.assertEqual(bot.dedup_badge(2, sources=["A", "A", "B"]),
+        self.assertEqual(dedupbadge.dedup_badge(2, sources=["A", "A", "B"]),
                          "📌 2 kere paylaşıldı: A | B")
 
     def test_single_group_repeat_is_explicit_without_changing_share_count(self):
-        badge = bot.dedup_badge(2, sources=["Fırsatlar (Sadece Paylaşım)"])
+        badge = dedupbadge.dedup_badge(2, sources=["Fırsatlar (Sadece Paylaşım)"])
         self.assertEqual(
             badge,
             "📌 2 kere paylaşıldı: Fırsatlar (Sadece Paylaşım) · tek grup",
         )
-        self.assertEqual(bot.dedup_badge_sources(badge), ["Fırsatlar (Sadece Paylaşım)"])
-        count, base = bot.strip_dedup_badge(f"Karcher\n\n{badge}")
+        self.assertEqual(dedupbadge.dedup_badge_sources(badge), ["Fırsatlar (Sadece Paylaşım)"])
+        count, base = dedupbadge.strip_dedup_badge(f"Karcher\n\n{badge}")
         self.assertEqual((count, base), (2, "Karcher"))
-        multiple = bot.dedup_badge(2, sources=["Fırsatlar", "Özel Fırsatlar"])
+        multiple = dedupbadge.dedup_badge(2, sources=["Fırsatlar", "Özel Fırsatlar"])
         self.assertNotIn("tek grup", multiple)
-        self.assertEqual(bot.dedup_badge_sources(multiple), ["Fırsatlar", "Özel Fırsatlar"])
+        self.assertEqual(dedupbadge.dedup_badge_sources(multiple), ["Fırsatlar", "Özel Fırsatlar"])
 
     def test_badge_sources_are_read_back(self):
-        badge = bot.dedup_badge(4, sources=["FirsatZ", "İndirimde Al"])
-        self.assertEqual(bot.dedup_badge_sources(badge), ["FirsatZ", "İndirimde Al"])
-        loud = bot.dedup_badge(6, sources=["A", "B"])
-        self.assertEqual(bot.dedup_badge_sources(loud), ["A", "B"])
-        self.assertEqual(bot.dedup_badge_sources("🔥 4 kaynakta paylaşıldı!!"), [],
+        badge = dedupbadge.dedup_badge(4, sources=["FirsatZ", "İndirimde Al"])
+        self.assertEqual(dedupbadge.dedup_badge_sources(badge), ["FirsatZ", "İndirimde Al"])
+        loud = dedupbadge.dedup_badge(6, sources=["A", "B"])
+        self.assertEqual(dedupbadge.dedup_badge_sources(loud), ["A", "B"])
+        self.assertEqual(dedupbadge.dedup_badge_sources("🔥 4 kaynakta paylaşıldı!!"), [],
                          "eski biçimde grup adı yok")
 
     def test_short_badge_is_headline_only(self):
-        short = bot.dedup_badge(5, sources=["FirsatZ", "İndirimde Al"], short=True)
+        short = dedupbadge.dedup_badge(5, sources=["FirsatZ", "İndirimde Al"], short=True)
         self.assertNotIn("\n", short)
         self.assertNotIn("FirsatZ", short, "dar açıklamada grup adları yazılmaz")
         self.assertIn("5", short)
@@ -2990,39 +2995,39 @@ class DedupBadgeTest(unittest.TestCase):
 class StripDedupBadgeTest(unittest.TestCase):
     def test_plain_text_is_untouched(self):
         text = "Sıcak ÇAY 5 TL\nAçıklama satırı"
-        self.assertEqual(bot.strip_dedup_badge(text), (1, text))
+        self.assertEqual(dedupbadge.strip_dedup_badge(text), (1, text))
 
     def test_full_badge_is_removed(self):
         text = "🔥 3 kaynakta paylaşıldı!\n📌 Kaynaklar: A, B\n\nSıcak ÇAY 5 TL"
-        count, base = bot.strip_dedup_badge(text)
+        count, base = dedupbadge.strip_dedup_badge(text)
         self.assertEqual(count, 3)
         self.assertEqual(base, "Sıcak ÇAY 5 TL")
 
     def test_short_and_loud_badges_are_removed(self):
-        count, base = bot.strip_dedup_badge("✅ 2 kaynakta paylaşıldı · teyitli fırsat\n\nÇay")
+        count, base = dedupbadge.strip_dedup_badge("✅ 2 kaynakta paylaşıldı · teyitli fırsat\n\nÇay")
         self.assertEqual((count, base), (2, "Çay"))
-        count, base = bot.strip_dedup_badge("🚨 7 KAYNAKTA PAYLAŞILDI — KAÇIRMA! 🚨\n\nÇay")
+        count, base = dedupbadge.strip_dedup_badge("🚨 7 KAYNAKTA PAYLAŞILDI — KAÇIRMA! 🚨\n\nÇay")
         self.assertEqual((count, base), (7, "Çay"))
 
     def test_badge_roundtrip(self):
         """Üretilen her not (en altta) geri sökülebilmeli (güncelleme + açılış taraması)."""
         for count in (2, 3, 4, 5, 12):
             for short in (False, True):
-                badge = bot.dedup_badge(count, sources=["FirsatZ", "İndirimde Al"], short=short)
-                parsed, base = bot.strip_dedup_badge(f"Gövde\n\n{badge}")
+                badge = dedupbadge.dedup_badge(count, sources=["FirsatZ", "İndirimde Al"], short=short)
+                parsed, base = dedupbadge.strip_dedup_badge(f"Gövde\n\n{badge}")
                 self.assertEqual(parsed, count, badge)
                 self.assertEqual(base, "Gövde", badge)
 
     def test_legacy_badge_under_the_price_line_is_still_removed(self):
         """Eski gönderilmiş rozetler (fiyat satırının altında) da sökülebilmeli."""
         text = "Çay\n\n💰Fiyat: 5 TL\n\n✅ 2 kaynakta paylaşıldı · teyitli fırsat\n\nfirsatz"
-        parsed, base = bot.strip_dedup_badge(text)
+        parsed, base = dedupbadge.strip_dedup_badge(text)
         self.assertEqual(parsed, 2)
         self.assertEqual(base, "Çay\n\n💰Fiyat: 5 TL\n\nfirsatz")
 
     def test_lookalike_first_line_is_not_a_badge(self):
         text = "2 kaynakta paylaşıldı yazan normal bir satır\nGövde"
-        self.assertEqual(bot.strip_dedup_badge(text), (1, text))
+        self.assertEqual(dedupbadge.strip_dedup_badge(text), (1, text))
 
 
 class DedupFooterNameTest(unittest.TestCase):
@@ -3030,33 +3035,33 @@ class DedupFooterNameTest(unittest.TestCase):
 
     def test_footer_is_found_under_the_message_link_block(self):
         text = "Çay\n\nÇay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9\n\nFırsatZ"
-        self.assertEqual(bot.dedup_footer_name(text), "FırsatZ")
+        self.assertEqual(dedupbadge.dedup_footer_name(text), "FırsatZ")
 
     def test_no_footer_without_message_link_block(self):
         """Ham forward'larda Mesajı Gör bloğu yoktur; ad bloğu da aranmaz."""
-        self.assertEqual(bot.dedup_footer_name("Çay 5 TL\n\nFırsatZ"), "")
+        self.assertEqual(dedupbadge.dedup_footer_name("Çay 5 TL\n\nFırsatZ"), "")
 
     def test_message_link_block_itself_is_not_a_footer(self):
         text = "Çay\n\n🔗 Mesajı Gör: https://t.me/firsatz/9"
-        self.assertEqual(bot.dedup_footer_name(text), "")
+        self.assertEqual(dedupbadge.dedup_footer_name(text), "")
 
     def test_badge_line_is_not_a_footer(self):
         text = ("Çay\n\n🔗 Mesajı Gör: https://t.me/firsatz/9"
                 "\n\n📌 2 kere paylaşıldı: A, B")
-        self.assertEqual(bot.dedup_footer_name(text), "")
+        self.assertEqual(dedupbadge.dedup_footer_name(text), "")
 
     def test_multi_line_or_long_last_block_is_not_a_footer(self):
         self.assertEqual(
-            bot.dedup_footer_name("A\n\n🔗 Mesajı Gör: x\n\nsatır1\nsatır2"), "",
+            dedupbadge.dedup_footer_name("A\n\n🔗 Mesajı Gör: x\n\nsatır1\nsatır2"), "",
         )
         self.assertEqual(
-            bot.dedup_footer_name("A\n\n🔗 Mesajı Gör: x\n\n" + "u" * 120), "",
+            dedupbadge.dedup_footer_name("A\n\n🔗 Mesajı Gör: x\n\n" + "u" * 120), "",
         )
 
     def test_empty_and_single_block_texts_are_safe(self):
-        self.assertEqual(bot.dedup_footer_name(""), "")
-        self.assertEqual(bot.dedup_footer_name(None), "")
-        self.assertEqual(bot.dedup_footer_name("tek blok"), "")
+        self.assertEqual(dedupbadge.dedup_footer_name(""), "")
+        self.assertEqual(dedupbadge.dedup_footer_name(None), "")
+        self.assertEqual(dedupbadge.dedup_footer_name("tek blok"), "")
 
 
 class DedupPrefixAndRebaseTest(unittest.TestCase):
@@ -3067,82 +3072,46 @@ class DedupPrefixAndRebaseTest(unittest.TestCase):
         böylece not, grup adının yerini alır.
         """
         base = "Ürün başlığı\n\nKampanya açıklaması\n\n🔗 Mesajı Gör: https://t.me/x/1"
-        badge = bot.dedup_badge(2, sources=["Kaynak satırı", "FirsatZ"])
-        updated, insert_at, insert_length, badge_at = bot.dedup_badge_insertion(base, badge)
+        badge = dedupbadge.dedup_badge(2, sources=["Kaynak satırı", "FirsatZ"])
+        updated, insert_at, insert_length, badge_at = dedupbadge.dedup_badge_insertion(base, badge)
         self.assertEqual(updated, f"{base}\n\n{badge}")
         self.assertEqual(insert_at, len(base))
         self.assertEqual(insert_length, len(badge) + 2)
         self.assertEqual(
-            bot.utf16_slice(updated, badge_at, bot.utf16_length(badge)), badge,
+            sanitize.utf16_slice(updated, badge_at, sanitize.utf16_length(badge)), badge,
         )
-        self.assertEqual(bot.strip_dedup_badge(updated), (2, base))
+        self.assertEqual(dedupbadge.strip_dedup_badge(updated), (2, base))
 
     def test_badge_never_lands_in_the_middle_even_with_a_price_line(self):
         base = ("Ürün\n\n💰Fiyat: 5 TL\n\n🔗 https://example.com/p\n\n"
                 "🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz")
-        badge = bot.dedup_badge(3, sources=["firsatz", "İndirimde Al"])
-        updated, _, _, badge_at = bot.dedup_badge_insertion(base, badge)
+        badge = dedupbadge.dedup_badge(3, sources=["firsatz", "İndirimde Al"])
+        updated, _, _, badge_at = dedupbadge.dedup_badge_insertion(base, badge)
         self.assertEqual(updated, f"{base}\n\n{badge}")
         self.assertTrue(updated.endswith(badge), "not bildirimi kapatır")
-        self.assertEqual(bot.utf16_slice(updated, badge_at, bot.utf16_length(badge)), badge)
-        self.assertEqual(bot.strip_dedup_badge(updated), (3, base))
+        self.assertEqual(sanitize.utf16_slice(updated, badge_at, sanitize.utf16_length(badge)), badge)
+        self.assertEqual(dedupbadge.strip_dedup_badge(updated), (3, base))
 
     def test_price_line_is_recognized_with_the_money_emoji(self):
         """Yeni biçim ``💰Fiyat: 5 TL``; boşluklu eski yazım da tanınır."""
-        self.assertTrue(bot.is_price_line("💰Fiyat: 5 TL"))
-        self.assertTrue(bot.is_price_line("💰 Fiyat: 5 TL"), "boşluklu eski yazım")
-        self.assertTrue(bot.is_price_line("Fiyat: 5 TL"), "eski biçim de tanınır")
-        self.assertFalse(bot.is_price_line("Sepette 5 TL"))
-        self.assertFalse(bot.is_price_line("🔗 https://example.com"))
+        self.assertTrue(searchbuttons.is_price_line("💰Fiyat: 5 TL"))
+        self.assertTrue(searchbuttons.is_price_line("💰 Fiyat: 5 TL"), "boşluklu eski yazım")
+        self.assertTrue(searchbuttons.is_price_line("Fiyat: 5 TL"), "eski biçim de tanınır")
+        self.assertFalse(searchbuttons.is_price_line("Sepette 5 TL"))
+        self.assertFalse(searchbuttons.is_price_line("🔗 https://example.com"))
         base = "Sıcak ÇAY\n\n💰Fiyat: 5 TL\n\n🔗 https://example.com/p"
-        badge = bot.dedup_badge(3, sources=["firsatz"])
-        updated, _, _, badge_at = bot.dedup_badge_insertion(base, badge)
+        badge = dedupbadge.dedup_badge(3, sources=["firsatz"])
+        updated, _, _, badge_at = dedupbadge.dedup_badge_insertion(base, badge)
         self.assertEqual(updated, f"{base}\n\n{badge}")
-        self.assertEqual(bot.utf16_slice(updated, badge_at, bot.utf16_length(badge)), badge)
-        self.assertEqual(bot.strip_dedup_badge(updated), (3, base))
-
-    def test_prefix_is_empty_without_badge(self):
-        self.assertEqual(bot.dedup_current_prefix("Sıcak ÇAY"), "")
-        self.assertEqual(bot.dedup_current_prefix(""), "")
-        self.assertEqual(bot.dedup_current_prefix(None), "")
-
-    def test_prefix_covers_badge_block(self):
-        # `dedup_current_prefix` yalnızca ESKİ üst-rozet biçimini tanır.
-        badge = "🔥 3 kaynakta paylaşıldı! · teyitli fırsat"
-        full = f"{badge}\n\nGövde"
-        self.assertEqual(bot.dedup_current_prefix(full), f"{badge}\n\n")
-
-    def test_bot_entities_inside_old_badge_are_dropped_and_rest_shifted(self):
-        badge_bold = {"type": "bold", "offset": 0, "length": 10}
-        link = {"type": "text_link", "offset": 40, "length": 5, "url": "https://x"}
-        result = bot.dedup_rebased_bot_entities([badge_bold, link], 30, 50)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["offset"], 60)
-        self.assertEqual(result[0]["url"], "https://x")
-        # Orijinal sözlük değişmemeli.
-        self.assertEqual(link["offset"], 40)
-
-    def test_telethon_entities_are_rebased_without_mutating(self):
-        from telethon.tl import types as tl
-
-        badge_bold = tl.MessageEntityBold(offset=0, length=10)
-        bold = tl.MessageEntityBold(offset=40, length=5)
-        result = bot.dedup_rebased_tl_entities([badge_bold, bold], 30, 50)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].offset, 60)
-        self.assertEqual(result[0].length, 5)
-        self.assertEqual(bold.offset, 40)
-
-    def test_boundary_spanning_entities_are_dropped(self):
-        spanning = {"type": "bold", "offset": 25, "length": 10}
-        self.assertEqual(bot.dedup_rebased_bot_entities([spanning], 30, 50), [])
+        self.assertEqual(sanitize.utf16_slice(updated, badge_at, sanitize.utf16_length(badge)), badge)
+        self.assertEqual(dedupbadge.strip_dedup_badge(updated), (3, base))
 
 
 class PruneDedupCacheTest(unittest.TestCase):
     NOW = 1700000000.0
 
     def _entry(self, age, pending=False):
-        entry = bot.new_dedup_entry("Başlık", object())
+        entry = dedupmatch.new_dedup_entry("Başlık", object())
         entry["pending"] = pending
         entry["first_seen"] = self.NOW - age
         return entry
@@ -3180,7 +3149,7 @@ class PruneDedupCacheTest(unittest.TestCase):
 class NewDedupEntryTest(unittest.TestCase):
     def test_reservation_defaults(self):
         token = object()
-        entry = bot.new_dedup_entry("Başlık", token)
+        entry = dedupmatch.new_dedup_entry("Başlık", token)
         self.assertTrue(entry["pending"])
         self.assertFalse(entry["failed"])
         self.assertIs(entry["token"], token)
@@ -3215,12 +3184,12 @@ class BotSendResultTest(unittest.TestCase):
 class FirstSentHelpersTest(unittest.TestCase):
     def test_single_and_list_results(self):
         item = SimpleNamespace(id=11, message="metin", entities=["e"])
-        self.assertEqual(bot.first_sent_text(item), "metin")
-        self.assertEqual(bot.first_sent_entities(item), ["e"])
-        self.assertEqual(bot.first_sent_text([None, item]), "metin")
-        self.assertIsNone(bot.first_sent_text(None))
-        self.assertIsNone(bot.first_sent_entities(SimpleNamespace(id=1)))
-        self.assertIsNone(bot.first_sent_text(SimpleNamespace(id=1, message="")))
+        self.assertEqual(sanitize.first_sent_text(item), "metin")
+        self.assertEqual(sanitize.first_sent_entities(item), ["e"])
+        self.assertEqual(sanitize.first_sent_text([None, item]), "metin")
+        self.assertIsNone(sanitize.first_sent_text(None))
+        self.assertIsNone(sanitize.first_sent_entities(SimpleNamespace(id=1)))
+        self.assertIsNone(sanitize.first_sent_text(SimpleNamespace(id=1, message="")))
 
 
 class EditBotHelpersTest(unittest.TestCase):
@@ -3321,7 +3290,7 @@ class DedupConfigTest(unittest.TestCase):
         self.addCleanup(os.unlink, handle.name)
         env = {"DEDUP_ENABLED": "false", "DEDUP_WINDOW_HOURS": "6", "DEDUP_SCAN_LIMIT": "10"}
         with mock.patch.dict(os.environ, env, clear=False):
-            config = bot.load_config(handle.name)
+            config = confutil.load_config(handle.name)
         self.assertEqual(config["dedup_enabled"], "false")
         self.assertEqual(config["dedup_window_hours"], "6")
         self.assertEqual(config["dedup_scan_limit"], "10")

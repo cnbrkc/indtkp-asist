@@ -33,6 +33,9 @@ from types import SimpleNamespace
 import unittest
 
 import bot
+import dedupbadge
+import dedupmatch
+import producttitle
 import price_filter as pf
 
 
@@ -266,22 +269,22 @@ class BadgeNameTests(unittest.TestCase):
         self.name_b = "İNDİRİM & FIRSAT TR 🛒 Sıcak Fırsatlar, Alışveriş & Kupon"
 
     def _entry(self):
-        entry = bot.new_dedup_entry("t", object(), self.name_a, self.name_a)
-        bot.note_dedup_source(entry, self.name_a, "https://t.me/g1/100")
-        bot.note_dedup_source(entry, self.name_b, "https://t.me/g2/200")
+        entry = dedupmatch.new_dedup_entry("t", object(), self.name_a, self.name_a)
+        dedupbadge.note_dedup_source(entry, self.name_a, "https://t.me/g1/100")
+        dedupbadge.note_dedup_source(entry, self.name_b, "https://t.me/g2/200")
         return entry
 
     def test_names_with_commas_survive_the_round_trip(self):
         entry = self._entry()
-        badge = bot.dedup_badge(2, sources=entry["sources"])
-        self.assertEqual(bot.dedup_badge_sources(badge), [self.name_a, self.name_b])
-        self.assertEqual(len(bot.dedup_badge_name_spans(badge)), 2)
+        badge = dedupbadge.dedup_badge(2, sources=entry["sources"])
+        self.assertEqual(dedupbadge.dedup_badge_sources(badge), [self.name_a, self.name_b])
+        self.assertEqual(len(dedupbadge.dedup_badge_name_spans(badge)), 2)
 
     def test_each_name_carries_its_own_message_link(self):
         entry = self._entry()
-        badge = bot.dedup_badge(2, sources=entry["sources"])
-        links = bot.dedup_badge_links(entry, entry["sources"])
-        entities = bot.dedup_badge_entities(badge, bot_api=True, offset=0, links=links)
+        badge = dedupbadge.dedup_badge(2, sources=entry["sources"])
+        links = dedupbadge.dedup_badge_links(entry, entry["sources"])
+        entities = dedupbadge.dedup_badge_entities(badge, bot_api=True, offset=0, links=links)
         # Entity konumları UTF-16 birimidir; metni aynı birimle dilimle.
         labelled = {entity["url"]: _utf16_slice(badge, entity["offset"], entity["length"])
                     for entity in entities if entity["type"] == "text_link"}
@@ -291,13 +294,13 @@ class BadgeNameTests(unittest.TestCase):
         })
 
     def test_single_group_still_prints_the_explicit_note(self):
-        badge = bot.dedup_badge(2, sources=["Fırsatlar (Sadece Paylaşım)"])
+        badge = dedupbadge.dedup_badge(2, sources=["Fırsatlar (Sadece Paylaşım)"])
         self.assertEqual(badge, "📌 2 kere paylaşıldı: Fırsatlar (Sadece Paylaşım) · tek grup")
-        self.assertEqual(bot.dedup_badge_sources(badge), ["Fırsatlar (Sadece Paylaşım)"])
+        self.assertEqual(dedupbadge.dedup_badge_sources(badge), ["Fırsatlar (Sadece Paylaşım)"])
 
     def test_legacy_comma_separated_badges_still_parse(self):
         legacy = "📌 2 kere paylaşıldı: FirsatZ, İndirimde Al"
-        self.assertEqual(bot.dedup_badge_sources(legacy), ["FirsatZ", "İndirimde Al"])
+        self.assertEqual(dedupbadge.dedup_badge_sources(legacy), ["FirsatZ", "İndirimde Al"])
 
     def test_single_group_name_with_comma_keeps_its_link(self):
         """TEK gruplu rozet: ad virgül içeriyorsa eski-format sanılıp BÖLÜNMEMELİ.
@@ -308,12 +311,12 @@ class BadgeNameTests(unittest.TestCase):
         Ayırt edici tek ölçüt eski biçimin son eki (``· tek grup`` / ``— KAÇIRMA!``).
         """
         name = "İNDİRİM & FIRSAT TR 🛒 Sıcak Fırsatlar, Alışveriş & Kupon"
-        entry = bot.new_dedup_entry("t", object(), name, name)
-        bot.note_dedup_source(entry, name, "https://t.me/g1/100")
-        badge = bot.dedup_badge(2, sources=entry["sources"])
-        self.assertEqual(bot.dedup_badge_sources(badge), [name])
-        links = bot.dedup_badge_links(entry, entry["sources"])
-        entities = bot.dedup_badge_entities(badge, bot_api=True, offset=0, links=links)
+        entry = dedupmatch.new_dedup_entry("t", object(), name, name)
+        dedupbadge.note_dedup_source(entry, name, "https://t.me/g1/100")
+        badge = dedupbadge.dedup_badge(2, sources=entry["sources"])
+        self.assertEqual(dedupbadge.dedup_badge_sources(badge), [name])
+        links = dedupbadge.dedup_badge_links(entry, entry["sources"])
+        entities = dedupbadge.dedup_badge_entities(badge, bot_api=True, offset=0, links=links)
         links_found = [e for e in entities if e["type"] == "text_link"]
         self.assertEqual(len(links_found), 1, badge)
         self.assertEqual(links_found[0]["url"], "https://t.me/g1/100")
@@ -323,7 +326,7 @@ class BadgeNameTests(unittest.TestCase):
         """Eski biçim son eki (``— KAÇIRMA!``) varsa virgülden bölme SÜRMELİ."""
         legacy = "🚨 3 kere paylaşıldı: FirsatZ, İndirimde Al, Fırsat Kupon — KAÇIRMA!"
         self.assertEqual(
-            bot.dedup_badge_sources(legacy), ["FirsatZ", "İndirimde Al", "Fırsat Kupon"],
+            dedupbadge.dedup_badge_sources(legacy), ["FirsatZ", "İndirimde Al", "Fırsat Kupon"],
         )
 
     def test_new_format_multi_group_names_survive_round_trip(self):
@@ -332,11 +335,11 @@ class BadgeNameTests(unittest.TestCase):
             "Kupon, Kampanya TR",
             "Sıcak Fırsatlar, İndirimde Al",
         ]
-        entry = bot.new_dedup_entry("t", object(), names[0], names[0])
+        entry = dedupmatch.new_dedup_entry("t", object(), names[0], names[0])
         for index, name in enumerate(names):
-            bot.note_dedup_source(entry, name, f"https://t.me/g{index}/1")
-        badge = bot.dedup_badge(3, sources=entry["sources"])
-        self.assertEqual(bot.dedup_badge_sources(badge), names)
+            dedupbadge.note_dedup_source(entry, name, f"https://t.me/g{index}/1")
+        badge = dedupbadge.dedup_badge(3, sources=entry["sources"])
+        self.assertEqual(dedupbadge.dedup_badge_sources(badge), names)
 
 
 class UnchangedBehaviourTests(unittest.TestCase):
@@ -430,7 +433,7 @@ class HeaderPriceAccuracyTests(unittest.TestCase):
         ve ``indirim`` deseni kaçar; ``normalize`` davranışı değiştirilmeden yalnız
         kampanya sözcüğü tanımasında katlanır.
         """
-        self.assertTrue(bot._is_coupon_announcement("EVTEKSTİLİ100 Kodu ile\nDekorasyonda 400 TL'ye 100 TL Indirim!"))
+        self.assertTrue(producttitle._is_coupon_announcement("EVTEKSTİLİ100 Kodu ile\nDekorasyonda 400 TL'ye 100 TL Indirim!"))
         self.assertNotIn(
             "❓",
             self._header("EVTEKSTİLİ100 Kodu ile Ev Tekstili\nDekorasyonda 400 TL'ye 100 TL Indirim!")["header"],
@@ -439,7 +442,7 @@ class HeaderPriceAccuracyTests(unittest.TestCase):
     def test_price_bearing_post_is_never_treated_as_coupon(self):
         """Kullanıcı şartı: "fiyat olan gönderiyi kupon sanıp çöpe atma"."""
         priced = "⚡ Bosch Home and Garden X/Line 40 Parça Aksesuar Seti\n\n✅ 647,90 ₺"
-        self.assertFalse(bot._is_coupon_announcement(priced))
+        self.assertFalse(producttitle._is_coupon_announcement(priced))
         couponed = "Filtre Kahve 1 kg\n2727 TL / KASIM250 koduyla 2477 TL"
         self.assertEqual(pf.extract_price(couponed).value, 2477)
         self.assertIn("₺2.477", self._header(couponed)["header"])
@@ -452,11 +455,11 @@ class HeaderPriceAccuracyTests(unittest.TestCase):
         kararı iki ayrı yerde yorumlanır ve sessizce ayrışabilir.
         """
         priced = "Philips Ütü 1.499 TL\n2 Öde 1'i Money Hediye"
-        self.assertTrue(bot._has_safe_price(priced))
-        self.assertFalse(bot._is_coupon_announcement(priced))
+        self.assertTrue(producttitle._has_safe_price(priced))
+        self.assertFalse(producttitle._is_coupon_announcement(priced))
         announcement = "Migros'ta 2 Öde 1'i Money Hediye"
-        self.assertFalse(bot._has_safe_price(announcement))
-        self.assertTrue(bot._is_coupon_announcement(announcement))
+        self.assertFalse(producttitle._has_safe_price(announcement))
+        self.assertTrue(producttitle._is_coupon_announcement(announcement))
 
     def test_priced_money_post_keeps_its_price_without_branch_order(self):
         """Fiyatlı Money gönderisinde fiyat DAİMA korunur.
@@ -471,7 +474,7 @@ class HeaderPriceAccuracyTests(unittest.TestCase):
             "Dyson Süpürge 12.499 TL\nMoney hesabına iade",
         ]
         for text in variants:
-            self.assertFalse(bot._is_coupon_announcement(text), text)
+            self.assertFalse(producttitle._is_coupon_announcement(text), text)
             header = self._header(text)["header"]
             self.assertIn("₺", header, text)
             self.assertNotIn("❓", header, text)
@@ -486,15 +489,15 @@ class HeaderPriceAccuracyTests(unittest.TestCase):
             "SNEAKER500 koduyla n11'de Sneaker Ürünlerinde 3000 TL ve üzeri 500 TL indirim",
         ]
         for text in variants:
-            self.assertTrue(bot._is_coupon_announcement(text), text)
+            self.assertTrue(producttitle._is_coupon_announcement(text), text)
             self.assertNotIn("❓", self._header(text)["header"], text)
 
     def test_uncertain_multi_product_keeps_question_mark(self):
         """Normal ürün gönderisindeki belirsizlik mekanizması DEĞİŞMEZ."""
         text = "Pamuk Havlu\n100 TL\nCam Bardak\n200 TL"
         self.assertEqual(pf.extract_price(text).confidence, "low")
-        self.assertFalse(bot._is_coupon_announcement(text))
-        self.assertFalse(bot._has_safe_price(text))
+        self.assertFalse(producttitle._is_coupon_announcement(text))
+        self.assertFalse(producttitle._has_safe_price(text))
 
     def test_product_price_wins_over_campaign_sentence_in_same_post(self):
         """Kampanya cümlesi + ürün fiyatı bir arada: fiyat korunur (örnek 13)."""

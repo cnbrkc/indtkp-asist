@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bot
+import commandtext
+import dedupmatch
+import header as header_mod
 import price_filter as pf
 from test_integration import FakeClient, FakeEvent, MainHarness, reset_state
 
@@ -16,12 +19,12 @@ class IncompletePriceTests(unittest.TestCase):
         info = pf.extract_price(text)
         self.assertNotIn(info.confidence, {'medium', 'high'})
         self.assertFalse(pf.price_matches(text, 99999)[0])
-        self.assertFalse(bot.dm_should_send({'dm_price_max': ['99999']}, text))
-        self.assertIsNone(bot.offer_terms(event)[0])
+        self.assertFalse(commandtext.dm_should_send({'dm_price_max': ['99999']}, text))
+        self.assertIsNone(dedupmatch.offer_terms(event)[0])
         with patch.object(bot, 'SMART_HEADER', True):
             header = bot.compose_message(event)['header']
         # Güvenilir fiyat yok: üst satırda uzun uyarı değil yalnızca ❓ (başlık sonda).
-        price, _ = bot.split_header_line(header)
+        price, _ = header_mod.split_header_line(header)
         self.assertEqual(price, '❓')
         self.assertNotIn('Fiyat tespit', header)
         self.assertNotIn('💰', header)
@@ -53,7 +56,7 @@ class IncompletePriceTests(unittest.TestCase):
                     self.assertIn(info.confidence, {'medium', 'high'})
                     self.assertTrue(pf.price_matches(text, value)[0])
                     self.assertFalse(pf.price_matches(text, value - 0.01)[0])
-                    self.assertEqual(bot.offer_terms(text)[0], value)
+                    self.assertEqual(dedupmatch.offer_terms(text)[0], value)
 
     def test_coupon_newlines_do_not_change_title_price_identity(self):
         for newline in ['\n', '\r\n', '\n\n', '\r\n\r\n']:
@@ -64,9 +67,9 @@ class IncompletePriceTests(unittest.TestCase):
                     text = ('Pamuk Havlu' + newline + 'Fiyat: 300 TL' + newline +
                             '\t Kupon: ' + code + explanation)
                     with self.subTest(newline=newline, explanation=explanation, code=code):
-                        terms = bot.offer_terms(text)
+                        terms = dedupmatch.offer_terms(text)
                         self.assertEqual(terms, (300, ''))
-                        keys.append(bot.dedup_offer_key('Pamuk Havlu', terms))
+                        keys.append(dedupmatch.dedup_offer_key('Pamuk Havlu', terms))
                 self.assertEqual(keys[0], keys[1])
 
     def test_missing_threshold_and_percent_only(self):
@@ -90,7 +93,7 @@ class IncompletePriceTests(unittest.TestCase):
             for code in ['KOD10', 'KOD20']:
                 text = ('Pamuk Havlu\nFiyat: 300 TL\nKupon: ' + code).replace(' ', space)
                 self.assertEqual(pf.extract_price(text).value, 300)
-                self.assertEqual(bot.offer_terms(text), (300, ''))
+                self.assertEqual(dedupmatch.offer_terms(text), (300, ''))
         self.assertEqual(pf.extract_price('Pamuk Havlu\n300 TL / 100 TL kupon').value, 300)
 
     def test_multiple_products_are_not_split_and_can_be_ambiguous(self):

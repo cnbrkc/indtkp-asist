@@ -5,6 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bot
+import commandtext
+import dedupbadge
+import dedupmatch
+import header
+import producttitle
+import searchbuttons
+import smarttitle
 import price_filter as pf
 
 
@@ -44,7 +51,7 @@ class NewPricePatterns(unittest.TestCase):
                         # Fiyat en başta, " - " ayracıyla ürün adına bağlanır; emoji yok.
                         self.assertEqual(
                             first_line,
-                            bot.build_header_line(bot.header_price_text(value), composed['title']),
+                            header.build_header_line(header.header_price_text(value), composed['title']),
                         )
                         self.assertNotIn('💰', first_line)
                     else:
@@ -52,10 +59,10 @@ class NewPricePatterns(unittest.TestCase):
                         self.assertNotIn('Fiyat tespit', first_line)
                     # Üst satıra yazılan fiyat arama sorgusuna karışmaz:
                     # Google/Akakçe/Cimri salt fiyatsız ürün adını arar.
-                    markup = bot.build_inline_keyboard(event) or {'inline_keyboard': []}
+                    markup = searchbuttons.build_inline_keyboard(event) or {'inline_keyboard': []}
                     search_urls = [button['url'] for row in markup['inline_keyboard'] for button in row]
                     self.assertEqual(len(search_urls), 3, search_urls)
-                    expected_query = bot._search_query(event)
+                    expected_query = producttitle._search_query(event)
                     for url in search_urls:
                         query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get('q', [''])[0]
                         self.assertEqual(query, expected_query, url)
@@ -64,11 +71,11 @@ class NewPricePatterns(unittest.TestCase):
                         self.assertNotIn('❓', query)
                         if reliable:
                             self.assertNotIn(pf.format_price(value), query)
-                    self.assertEqual(bot.offer_terms(event)[0], value if reliable else None)
+                    self.assertEqual(dedupmatch.offer_terms(event)[0], value if reliable else None)
                     for threshold, hit in [(value, reliable), (value - 1, False)]:
                         self.assertEqual(pf.price_matches(text, threshold)[0], hit)
-                        self.assertEqual(bot.dm_should_send({'dm_price_max': [str(threshold)]}, text), hit)
-                    self.assertIn(title.split()[0], bot.smart_dedup_title(event))
+                        self.assertEqual(commandtext.dm_should_send({'dm_price_max': [str(threshold)]}, text), hit)
+                    self.assertIn(title.split()[0], smarttitle.smart_dedup_title(event))
 
     def test_explicit_units_not_hidden_by_coupon(self):
         for phrase in ['1 adet', 'adedi', 'tanesi', 'adet başı']:
@@ -88,7 +95,7 @@ class NewPricePatterns(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(pf.extract_price(text).confidence, 'low')
                 self.assertFalse(pf.price_matches(text, 10000)[0])
-                self.assertIsNone(bot.offer_terms(text)[0])
+                self.assertIsNone(dedupmatch.offer_terms(text)[0])
 
     def test_threshold_and_campaign_roles(self):
         cs = pf.find_candidates(CASES[4][1])
@@ -124,27 +131,27 @@ class DedupIdentityRegressions(unittest.TestCase):
 
     def test_rounding_not_a_new_offer_but_meaningful_drop_is(self):
         for a, b in [(13485.92, 13485), (13485, 13485.92)]:
-            self.assertFalse(bot.better_or_different_offer((a, ''), (b, '')))
+            self.assertFalse(dedupmatch.better_or_different_offer((a, ''), (b, '')))
         # NOT (P1 kuruş politikası): (13485.92, 13485.5) artık yeni fırsat
         # DEĞİL; aynı tam TL (13485) içindeki kuruş farkı tek başına
         # birleştirilir. Tam TL'si de düşen fiyat yeni fırsat olmayı sürdürür.
         for a, b in [(13485, 13400), (10, 9.1), (200, 199), (13485.92, 13484.5)]:
-            self.assertTrue(bot.better_or_different_offer((a, ''), (b, '')))
-        self.assertFalse(bot.better_or_different_offer((13485, ''), (13485, 'prime')))  # non-price metadata ignored
+            self.assertTrue(dedupmatch.better_or_different_offer((a, ''), (b, '')))
+        self.assertFalse(dedupmatch.better_or_different_offer((13485, ''), (13485, 'prime')))  # non-price metadata ignored
 
     def test_metadata_and_punctuation_do_not_change_title(self):
         base = self.TITLE + '\nFiyat: 13.485,92 TL'
         for extra in ['\nSatıcı: Amazon', '\nSatıcı: Amazon Depo', '\nKargo Bedava']:
-            self.assertEqual(bot.dedup_key(bot.smart_dedup_title(base)),
-                             bot.dedup_key(bot.smart_dedup_title(base + extra)))
-        self.assertEqual(bot.dedup_key(self.TITLE), bot.dedup_key(self.TITLE.replace('-', ' ')))
+            self.assertEqual(dedupbadge.dedup_key(smarttitle.smart_dedup_title(base)),
+                             dedupbadge.dedup_key(smarttitle.smart_dedup_title(base + extra)))
+        self.assertEqual(dedupbadge.dedup_key(self.TITLE), dedupbadge.dedup_key(self.TITLE.replace('-', ' ')))
 
     def test_title_variants_remain_distinct_but_offer_conditions_do_not(self):
         for title in [self.TITLE.replace('55GFSG8', '55GFSG9'), self.TITLE.replace('55" 140', '65" 165'),
                       self.TITLE + ' Beyaz', self.TITLE + ' Siyah', self.TITLE + ' 128 GB', self.TITLE + ' 256 GB']:
-            self.assertNotEqual(bot.dedup_key(self.TITLE), bot.dedup_key(title))
+            self.assertNotEqual(dedupbadge.dedup_key(self.TITLE), dedupbadge.dedup_key(title))
         base = self.TITLE + '\nFiyat: 13.485 TL'
-        keys = [bot.dedup_offer_key(self.TITLE, bot.offer_terms(base + extra)) for extra in
+        keys = [dedupmatch.dedup_offer_key(self.TITLE, dedupmatch.offer_terms(base + extra)) for extra in
                 ['', '\nÜrün durumu: İkinci el', '\nÜrün durumu: İkinci el yeni gibi', '\nÜrün durumu: Yenilenmiş']]
         self.assertEqual(len(set(keys)), 1)
 
@@ -152,9 +159,9 @@ class DedupIdentityRegressions(unittest.TestCase):
         title = self.TITLE
         raw = title + '\nFiyat: 13.485 TL'
         notice = bot.compose_message(raw, message_link='https://t.me/c/1/2', source_name='Amazon Depo - İkinci El Fırsatlar')['text']
-        self.assertEqual(bot.offer_terms(raw), bot.offer_terms(notice))
+        self.assertEqual(dedupmatch.offer_terms(raw), dedupmatch.offer_terms(notice))
         badge_notice = notice.rsplit('\n\n', 1)[0] + '\n\n📌 4 kere paylaşıldı: Amazon Depo - İkinci El Fırsatlar'
-        self.assertEqual(bot.offer_terms(raw), bot.offer_terms(badge_notice))
+        self.assertEqual(dedupmatch.offer_terms(raw), dedupmatch.offer_terms(badge_notice))
 
     def test_exact_rounding_limits_and_dm_are_independent(self):
         cases = [
@@ -171,13 +178,13 @@ class DedupIdentityRegressions(unittest.TestCase):
         ]
         for old, new, different in cases:
             with self.subTest(old=old, new=new):
-                self.assertEqual(bot.better_or_different_offer((old, ''), (new, '')), different)
+                self.assertEqual(dedupmatch.better_or_different_offer((old, ''), (new, '')), different)
         # Dedup toleransı fiyat değerini ve DM fiyat eşiğini yuvarlamaz.
         text = self.TITLE + '\nFiyat: 13.485,92 TL'
         self.assertEqual(pf.extract_price(text).value, 13485.92)
         self.assertFalse(pf.price_matches(text, 13485)[0])
-        self.assertFalse(bot.dm_should_send({'dm_price_max': ['13485']}, text))
-        self.assertTrue(bot.dm_should_send({'dm_price_max': ['13485,92']}, text))
+        self.assertFalse(commandtext.dm_should_send({'dm_price_max': ['13485']}, text))
+        self.assertTrue(commandtext.dm_should_send({'dm_price_max': ['13485,92']}, text))
 
     def test_kurus_only_difference_merges_in_both_orders(self):
         # P1: aynı tam TL, farklı kuruş — geliş sırasından bağımsız birleşir.
@@ -190,27 +197,27 @@ class DedupIdentityRegressions(unittest.TestCase):
         ]
         for a, b in pairs:
             with self.subTest(old=a, new=b):
-                self.assertFalse(bot.better_or_different_offer((a, ''), (b, '')))
-                self.assertFalse(bot.better_or_different_offer((b, ''), (a, '')))
+                self.assertFalse(dedupmatch.better_or_different_offer((a, ''), (b, '')))
+                self.assertFalse(dedupmatch.better_or_different_offer((b, ''), (a, '')))
 
     def test_whole_tl_boundary_unknown_and_condition_rules(self):
         # Kesme sınırı: 12,00 -> 11,99 tam kısmı değiştirir ama 0,01 TL'lik
         # gerçek fark mevcut tolerans içinde kalır; 56 -> 49 gerçek düşüştür.
-        self.assertFalse(bot.better_or_different_offer((12.00, ''), (11.99, '')))
-        self.assertTrue(bot.better_or_different_offer((56, ''), (49, '')))
-        self.assertFalse(bot.better_or_different_offer((49, ''), (56, '')))
+        self.assertFalse(dedupmatch.better_or_different_offer((12.00, ''), (11.99, '')))
+        self.assertTrue(dedupmatch.better_or_different_offer((56, ''), (49, '')))
+        self.assertFalse(dedupmatch.better_or_different_offer((49, ''), (56, '')))
         # Bilinmeyen fiyat: yeni bilinmiyorsa birleşir, eski bilinmiyor ve
         # yeni biliniyorsa yeni fırsattır; None asla 0 sayılmaz.
-        self.assertFalse(bot.better_or_different_offer((1299.90, ''), (None, '')))
-        self.assertTrue(bot.better_or_different_offer((None, ''), (1299.90, '')))
-        self.assertFalse(bot.better_or_different_offer((None, ''), (None, '')))
-        self.assertIsNone(bot._dedup_whole_tl(None))
-        self.assertIsNone(bot._dedup_whole_tl(float('nan')))
-        self.assertIsNone(bot._dedup_whole_tl(-5))
-        self.assertEqual(bot._dedup_whole_tl(0.90), 0)
-        self.assertEqual(bot._dedup_whole_tl(1299.90), 1299)
+        self.assertFalse(dedupmatch.better_or_different_offer((1299.90, ''), (None, '')))
+        self.assertTrue(dedupmatch.better_or_different_offer((None, ''), (1299.90, '')))
+        self.assertFalse(dedupmatch.better_or_different_offer((None, ''), (None, '')))
+        self.assertIsNone(dedupmatch._dedup_whole_tl(None))
+        self.assertIsNone(dedupmatch._dedup_whole_tl(float('nan')))
+        self.assertIsNone(dedupmatch._dedup_whole_tl(-5))
+        self.assertEqual(dedupmatch._dedup_whole_tl(0.90), 0)
+        self.assertEqual(dedupmatch._dedup_whole_tl(1299.90), 1299)
         # Koşul değişimi kuruş normalleştirmesini aşar: yine yeni fırsattır.
-        self.assertFalse(bot.better_or_different_offer((1299.90, ''), (1299, 'prime')))
+        self.assertFalse(dedupmatch.better_or_different_offer((1299.90, ''), (1299, 'prime')))
 
     def test_real_price_survives_kurus_comparison_policy(self):
         # Karşılaştırma değeri yalnızca dedup katmanında yaşar: çıkarım ve
@@ -219,24 +226,24 @@ class DedupIdentityRegressions(unittest.TestCase):
         text = self.TITLE + '\nFiyat: 1.299,90 TL'
         self.assertEqual(pf.extract_price(text).value, 1299.90)
         self.assertEqual(pf.format_price(1299.90), '1.299,90 TL')
-        self.assertEqual(bot.header_price_text(1299.90), '₺1.299')
+        self.assertEqual(header.header_price_text(1299.90), '₺1.299')
         event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
-        self.assertEqual(bot.offer_terms(event)[0], 1299.90)
+        self.assertEqual(dedupmatch.offer_terms(event)[0], 1299.90)
 
     def test_offer_conditions_do_not_change_dedup_identity(self):
         base = self.TITLE + '\nFiyat: 13.485 TL'
         variants = [base, base + '\nİkinci El: Yeni Gibi', base + '\nÜrün durumu: Yenilenmiş',
                     base + '\nKargo ücretsiz\nKupon: KOD10', base + '\nPrime']
-        keys = [bot.dedup_offer_key(self.TITLE, bot.offer_terms(text)) for text in variants]
+        keys = [dedupmatch.dedup_offer_key(self.TITLE, dedupmatch.offer_terms(text)) for text in variants]
         self.assertEqual(len(set(keys)), 1)
-        for terms in map(bot.offer_terms, variants):
+        for terms in map(dedupmatch.offer_terms, variants):
             self.assertEqual(terms, (13485, ''))
 
     def test_seller_metadata_policy_and_state_match(self):
         base = self.TITLE + '\nFiyat: 13.485 TL'
-        a = bot.offer_terms(base + '\nSatıcı: Mağaza A\nİkinci El: Yeni Gibi')
-        b = bot.offer_terms(base + '\nSatıcı: Mağaza B\nİkinci El: Yeni Gibi')
+        a = dedupmatch.offer_terms(base + '\nSatıcı: Mağaza A\nİkinci El: Yeni Gibi')
+        b = dedupmatch.offer_terms(base + '\nSatıcı: Mağaza B\nİkinci El: Yeni Gibi')
         self.assertEqual(a, b)  # mevcut politika: satıcı adı bağımsız teklif anahtarı değil
-        self.assertFalse(bot.better_or_different_offer(a, b))
-        self.assertNotEqual(bot.dedup_offer_key(self.TITLE, a),
-                            bot.dedup_offer_key(self.TITLE.replace('55GFSG8', '55GFSG9'), b))
+        self.assertFalse(dedupmatch.better_or_different_offer(a, b))
+        self.assertNotEqual(dedupmatch.dedup_offer_key(self.TITLE, a),
+                            dedupmatch.dedup_offer_key(self.TITLE.replace('55GFSG8', '55GFSG9'), b))
