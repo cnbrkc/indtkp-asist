@@ -4,6 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import bot
+import confutil
+import producttitle
+import sanitize
 import price_filter as pf
 from telethon.tl import functions, types
 
@@ -28,7 +31,7 @@ class ReportedExamples(unittest.TestCase):
         self.assertEqual(pf.extract_price(CLEAR).value, 224)
         self.assertEqual(pf.extract_title('📂 Kozmetik, Kişisel Bakım\n🏷 224 TL'), '')
         self.assertEqual(pf.extract_title('Clear Şampuan\n📂 Kozmetik Bakım\n🏷 224 TL'), 'Clear Şampuan')
-        self.assertEqual(bot._search_query(message('📂 Kozmetik, Kişisel Bakım\n🏷 224 TL')), '')
+        self.assertEqual(producttitle._search_query(message('📂 Kozmetik, Kişisel Bakım\n🏷 224 TL')), '')
         self.assertEqual(pf.extract_title('Kozmetik Kişisel Bakım Seti 350 ml\n📂 Kozmetik'),
                          'Kozmetik Kişisel Bakım Seti 350 ml')
 
@@ -53,7 +56,7 @@ class ReportedExamples(unittest.TestCase):
         button = SimpleNamespace(text='Fırsata Git', url='https://example.com/deal')
         msg = message(OTL, [button])
         with patch.object(bot, 'SMART_HEADER', True):
-            result = bot.compose_message(msg, link_kinds=bot.link_kinds_for('smart', bot=True),
+            result = bot.compose_message(msg, link_kinds=confutil.link_kinds_for('smart', bot=True),
                                          message_link='https://t.me/depoindirim/88707')
         self.assertTrue(result['text'].startswith('₺953 — OTL Technologies - SUPER MARIO TWS KULAKLIK'), result['text'])
         self.assertEqual(pf.extract_price(OTL).value, 953.42)
@@ -63,9 +66,9 @@ class ReportedExamples(unittest.TestCase):
         self.assertEqual([entity.url for entity in result['entities'] if getattr(entity, 'url', None)],
                          ['https://example.com/deal'])
         self.assertIn('https://t.me/depoindirim/88707', result['text'])
-        self.assertEqual(bot.build_link_appendix(message(OTL + '\nhttps://example.com/deal', [button]),
+        self.assertEqual(sanitize.build_link_appendix(message(OTL + '\nhttps://example.com/deal', [button]),
                                                   kinds=('button',)), '')
-        self.assertEqual(bot.build_link_appendix(msg, kinds=bot.link_kinds_for('off', bot=True)), '')
+        self.assertEqual(sanitize.build_link_appendix(msg, kinds=confutil.link_kinds_for('off', bot=True)), '')
 
 
 class InviteResolution(unittest.IsolatedAsyncioTestCase):

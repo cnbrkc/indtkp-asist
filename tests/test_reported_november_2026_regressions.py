@@ -25,6 +25,12 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import confutil  # noqa: E402
+import constants  # noqa: E402
+import dedupbadge  # noqa: E402
+import quotes  # noqa: E402
+import sanitize  # noqa: E402
+import smarttitle  # noqa: E402
 import price_filter  # noqa: E402
 from telethon.tl import types  # noqa: E402
 
@@ -87,7 +93,7 @@ def _compose_obj(obj: SimpleNamespace, *, clean: bool) -> dict:
          mock.patch.object(bot, "CLEAN_QUOTE_DUPLICATES", clean):
         return bot.compose_message(
             obj,
-            link_kinds=bot.link_kinds_for("smart", bot=True),
+            link_kinds=confutil.link_kinds_for("smart", bot=True),
             message_link="https://t.me/kaynak/101",
             source_name="Kaynak",
             has_keyboard=True,
@@ -147,40 +153,40 @@ class BadgeExactNameLinkTest(unittest.TestCase):
         self.links = {name: f"https://t.me/k/{i}" for i, name in enumerate(PIPE_NAMES)}
 
     def test_live_badge_links_every_whole_name(self):
-        badge = bot.dedup_badge(6, sources=PIPE_NAMES)
+        badge = dedupbadge.dedup_badge(6, sources=PIPE_NAMES)
         # Eski ayrıştırıcı ad içindeki iki " | " yüzünden 7 parça görüyordu.
-        self.assertEqual(len(bot.dedup_badge_sources(badge)), 7)
-        entities = bot.dedup_badge_entities(
+        self.assertEqual(len(dedupbadge.dedup_badge_sources(badge)), 7)
+        entities = dedupbadge.dedup_badge_entities(
             badge, bot_api=True, offset=0, links=self.links, names=PIPE_NAMES,
         )
         labelled = {
-            entity["url"]: bot.utf16_slice(badge, entity["offset"], entity["length"])
+            entity["url"]: sanitize.utf16_slice(badge, entity["offset"], entity["length"])
             for entity in entities if entity["type"] == "text_link"
         }
         self.assertEqual(labelled, {url: name for name, url in self.links.items()})
 
     def test_preload_reconstructs_whole_names_from_link_labels(self):
-        badge = bot.dedup_badge(6, sources=PIPE_NAMES)
-        names = bot.dedup_badge_names(badge, self.links)
+        badge = dedupbadge.dedup_badge(6, sources=PIPE_NAMES)
+        names = dedupbadge.dedup_badge_names(badge, self.links)
         self.assertEqual(names, PIPE_NAMES)
-        self.assertEqual(bot.dedup_badge_links({"link_map": self.links}, names), self.links)
+        self.assertEqual(dedupbadge.dedup_badge_links({"link_map": self.links}, names), self.links)
 
     def test_partial_live_links_are_completed_from_preload_map(self):
         entry = {
             "links": {PIPE_NAMES[0]: self.links[PIPE_NAMES[0]]},
             "link_map": {name: url for name, url in self.links.items() if name != PIPE_NAMES[0]},
         }
-        self.assertEqual(bot.dedup_badge_links(entry, PIPE_NAMES), self.links)
+        self.assertEqual(dedupbadge.dedup_badge_links(entry, PIPE_NAMES), self.links)
 
     def test_legacy_comma_and_single_group_parsing_preserved(self):
         self.assertEqual(
-            bot.dedup_badge_sources("📌 2 kere paylaşıldı: FirsatZ, İndirimde Al"),
+            dedupbadge.dedup_badge_sources("📌 2 kere paylaşıldı: FirsatZ, İndirimde Al"),
             ["FirsatZ", "İndirimde Al"],
         )
         name = "İNDİRİM & FIRSAT TR 🛒 Sıcak Fırsatlar, Alışveriş & Kupon"
-        single = bot.dedup_badge(2, sources=[name])
+        single = dedupbadge.dedup_badge(2, sources=[name])
         self.assertTrue(single.endswith("· tek grup"))
-        self.assertEqual(bot.dedup_badge_sources(single), [name])
+        self.assertEqual(dedupbadge.dedup_badge_sources(single), [name])
 
     def test_requested_username_fallback_builds_message_link(self):
         event = _message("x")
@@ -201,12 +207,12 @@ class QuotedDetectedLineCleanupTest(unittest.TestCase):
                          "₺12.999 — Dyson V8 Origin Kablosuz Süpürge")
         self.assertNotIn("Dyson V8 Origin Kablosuz Süpürge", composed["body"])
         self.assertIn("🏷️ 12.999 TL", composed["body"])
-        self.assertIn(bot.PRODUCT_LINK_TEXT, composed["appendix"])
+        self.assertIn(constants.PRODUCT_LINK_TEXT, composed["appendix"])
         # Başlık/fiyat/link kimliği ORİJİNAL mesajdan hesaplanmaya devam eder.
         obj = _message(DYSON)
-        before = bot.smart_dedup_title(obj)
+        before = smarttitle.smart_dedup_title(obj)
         _compose_obj(obj, clean=True)
-        self.assertEqual(bot.smart_dedup_title(obj), before)
+        self.assertEqual(smarttitle.smart_dedup_title(obj), before)
         self.assertEqual(obj.message, DYSON)
 
     def test_confident_standalone_coupon_code_line_is_removed(self):
@@ -214,7 +220,7 @@ class QuotedDetectedLineCleanupTest(unittest.TestCase):
         self.assertIn("KOZMODA150", composed["header"])
         self.assertNotIn("\nKOZMODA150\n", "\n" + composed["body"] + "\n")
         self.assertIn("150 TL indirim kodu:", composed["body"])
-        self.assertIn(bot.PRODUCT_LINK_TEXT, composed["appendix"])
+        self.assertIn(constants.PRODUCT_LINK_TEXT, composed["appendix"])
 
     def test_uncertain_standalone_code_line_stays(self):
         composed = _compose(SOLO, clean=True)
@@ -235,7 +241,7 @@ class QuotedDetectedLineCleanupTest(unittest.TestCase):
 
     def test_linked_title_line_stays(self):
         title = "Dyson V8 Origin Kablosuz Süpürge"
-        entity = _text_link(0, bot.utf16_length(title), "https://www.hepsiburada.com/p")
+        entity = _text_link(0, sanitize.utf16_length(title), "https://www.hepsiburada.com/p")
         composed = _compose(DYSON, clean=False)
         self.assertIn(title, composed["body"])
         linked = _compose(DYSON, clean=True, entities=[entity])
@@ -243,8 +249,8 @@ class QuotedDetectedLineCleanupTest(unittest.TestCase):
                          "linkli ürün adı satırı alıntının tek taşıyıcısıdır, silinmez")
 
     def test_linked_code_line_stays(self):
-        start = bot.utf16_length(KOZMODA[:KOZMODA.index("KOZMODA150")])
-        entity = _text_link(start, bot.utf16_length("KOZMODA150"), "https://app.hb.biz/kod")
+        start = sanitize.utf16_length(KOZMODA[:KOZMODA.index("KOZMODA150")])
+        entity = _text_link(start, sanitize.utf16_length("KOZMODA150"), "https://app.hb.biz/kod")
         composed = _compose(KOZMODA, clean=True, entities=[entity])
         self.assertIn("KOZMODA150", composed["body"])
 
@@ -258,10 +264,10 @@ class QuotedDetectedLineCleanupTest(unittest.TestCase):
         self.assertEqual(composed["body"], text)
 
     def test_coupon_code_detection_is_narrow(self):
-        self.assertEqual(bot.quoted_code_lines(KOZMODA), {"KOZMODA150"})
-        self.assertEqual(bot.quoted_code_lines(SOLO), set())
-        self.assertEqual(bot.quoted_code_lines(PELLA), set())
-        self.assertEqual(bot.quoted_code_lines(CALVIN), set())
+        self.assertEqual(quotes.quoted_code_lines(KOZMODA), {"KOZMODA150"})
+        self.assertEqual(quotes.quoted_code_lines(SOLO), set())
+        self.assertEqual(quotes.quoted_code_lines(PELLA), set())
+        self.assertEqual(quotes.quoted_code_lines(CALVIN), set())
 
 
 class RuntimeConfigTest(unittest.TestCase):

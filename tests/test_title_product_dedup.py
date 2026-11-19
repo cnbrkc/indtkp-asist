@@ -20,6 +20,7 @@ for _p in (str(ROOT_DIR), str(TESTS_DIR)):
         sys.path.insert(0, _p)
 
 import bot  # noqa: E402
+import dedupmatch  # noqa: E402
 import test_integration as ti  # noqa: E402
 from test_cross_channel_dedup import FIRST_CHANNEL, Harness, SECOND_CHANNEL_ID  # noqa: E402
 
@@ -353,7 +354,7 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
         ]
         for title in titles[1:]:
             with self.subTest(title=title):
-                self.assertTrue(bot.titles_match_product(titles[0], title))
+                self.assertTrue(dedupmatch.titles_match_product(titles[0], title))
 
         client = self.start()
         items = []
@@ -374,53 +375,53 @@ class TitleMatcherUnitTests(unittest.TestCase):
     """Başlık normalizasyonu ve model kodu birim testleri."""
 
     def test_unit_and_turkish_character_normalization_matches(self):
-        self.assertTrue(bot.titles_match_product(
+        self.assertTrue(dedupmatch.titles_match_product(
             "Philips Airfryer XXL 6,2 L Sıcak Hava Fritözü HD9280 Siyah",
             "PHILIPS Airfryer XXL 6.2 Litre Fritoz HD9280 Siyah",
         ))
-        self.assertTrue(bot.titles_match_product(
+        self.assertTrue(dedupmatch.titles_match_product(
             'Next YE-55GFSG8 55" 4K Google TV',
             "Next YE-55GFSG8 55 inç 4K Google TV",
         ))
-        self.assertTrue(bot.titles_match_product(
+        self.assertTrue(dedupmatch.titles_match_product(
             "Hepsiburada: Homend Profashion 3023H Stand Mikser Antrasit",
             "Homend Profashion 3023-H Stand Mikser, Antrasit",
         ))
 
     def test_ordered_prefix_requires_identity_evidence_and_allows_truncated_last_word(self):
-        self.assertTrue(bot.titles_match_product(PHILIPS_SHORT, PHILIPS_LONG))
-        self.assertTrue(bot.titles_match_product(PHILIPS_LONG, PHILIPS_SHORT))
-        self.assertFalse(bot.titles_match_product(
+        self.assertTrue(dedupmatch.titles_match_product(PHILIPS_SHORT, PHILIPS_LONG))
+        self.assertTrue(dedupmatch.titles_match_product(PHILIPS_LONG, PHILIPS_SHORT))
+        self.assertFalse(dedupmatch.titles_match_product(
             PHILIPS_SHORT,
             PHILIPS_LONG.replace("2800W", "3200W"),
         ), "ortak önek içindeki farklı güç/model değeri korunmalı")
-        self.assertFalse(bot.titles_match_product(
+        self.assertFalse(dedupmatch.titles_match_product(
             PHILIPS_SHORT,
             PHILIPS_LONG + " Kırmızı",
         ), "uzun başlığa eklenen farklı renk varyantı birleşmemeli")
-        self.assertFalse(bot.titles_match_product(
+        self.assertFalse(dedupmatch.titles_match_product(
             PHILIPS_SHORT,
             PHILIPS_LONG + " 256 GB",
         ), "uzun başlığa eklenen kapasite varyantı birleşmemeli")
-        self.assertFalse(bot.titles_match_product(
+        self.assertFalse(dedupmatch.titles_match_product(
             PHILIPS_SHORT,
             PHILIPS_LONG + " 2026",
         ), "model koduna ait olmayan ek sayı güvenli önek sayılmamalı")
-        self.assertFalse(bot.titles_match_product(
+        self.assertFalse(dedupmatch.titles_match_product(
             "Philips 7000 Serisi Buharlı Ütü Otomatik Kapan",
             "Philips 7000 Serisi Buharlı Ütü Otomatik Kapanma Hızlı Kireç Temizleme DST7030/20",
         ), "kısa önek tek başına yeterli kimlik kanıtı değildir")
 
     def test_plus_duplicate_numbers_and_accessories_do_not_merge(self):
-        self.assertFalse(bot.titles_match_product(
+        self.assertFalse(dedupmatch.titles_match_product(
             "Roborock S8 Robot Süpürge Beyaz",
             "Roborock S8+ Robot Süpürge Beyaz",
         ))
-        self.assertFalse(bot.titles_match_product(
+        self.assertFalse(dedupmatch.titles_match_product(
             "Lenovo IdeaPad Slim 3 16GB 512GB Dizüstü Bilgisayar",
             "Lenovo IdeaPad Slim 3 16GB 16GB Dizüstü Bilgisayar",
         ))
-        self.assertFalse(bot.titles_match_product(
+        self.assertFalse(dedupmatch.titles_match_product(
             "Samsung Galaxy S24 256 GB Siyah",
             "Samsung Galaxy S24 256 GB Siyah Ekran Koruyucu",
         ))
@@ -435,7 +436,7 @@ class UserReportedProductIdentityRegressions(Harness, unittest.TestCase):
         asin = "B0CBVWVGHL"
         long_title = "JACK & JONES JJIGLENN JJCOLE AM 171 SN Kot Pantolon Erkek"
         short_title = "JACK & JONES Pantolon"
-        self.assertFalse(bot.titles_match_product(long_title, short_title))
+        self.assertFalse(dedupmatch.titles_match_product(long_title, short_title))
         self.offers(client, [
             (self.first_id, 101, deal(long_title, "804", f"https://www.amazon.com.tr/dp/{asin}?tag=butcedostum-21")),
             (SECOND_CHANNEL_ID, 201, deal(short_title, "804", f"https://www.amazon.com.tr/dp/{asin}?tag=firsatdolu010-21")),

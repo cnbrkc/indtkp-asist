@@ -12,6 +12,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bot
+import analysis
+import dedupmatch
+import header
 import price_filter as pf
 
 
@@ -65,20 +68,20 @@ class CampaignOnlyPriceTest(unittest.TestCase):
     def test_notification_header_stays_unknown(self):
         for text in self.CASES:
             with self.subTest(text=text):
-                self.assertTrue(_first_line(text).endswith(bot.PRICE_MISSING_MARK),
+                self.assertTrue(_first_line(text).endswith(header.PRICE_MISSING_MARK),
                                 _first_line(text))
 
     def test_dedup_and_dm_never_use_campaign_amount(self):
         for text in self.CASES:
             with self.subTest(text=text):
-                self.assertIsNone(bot.offer_terms(_event(text))[0])
+                self.assertIsNone(dedupmatch.offer_terms(_event(text))[0])
                 self.assertFalse(pf.price_matches(text, 5)[0])
                 self.assertFalse(pf.price_matches(text, 1000)[0])
 
     def test_analysis_report_does_not_quote_campaign_amount(self):
         for text in self.CASES:
             with self.subTest(text=text):
-                self.assertEqual(bot.query_price(text), "fiyat yok")
+                self.assertEqual(analysis.query_price(text), "fiyat yok")
 
     def test_campaign_role_is_recorded(self):
         roles = [c.role for c in pf.find_candidates("Kalem Set 10'lu\n2 al 2. ürün 1 TL")]
@@ -116,8 +119,8 @@ class RealPriceWithCampaignTest(unittest.TestCase):
                 info = pf.extract_price(text)
                 self.assertEqual(info.value, value)
                 self.assertIn(info.confidence, {"high", "medium"})
-                self.assertEqual(bot.offer_terms(_event(text))[0], value)
-                self.assertTrue(_first_line(text).startswith(bot.header_price_text(value)),
+                self.assertEqual(dedupmatch.offer_terms(_event(text))[0], value)
+                self.assertTrue(_first_line(text).startswith(header.header_price_text(value)),
                                 _first_line(text))
                 self.assertTrue(pf.price_matches(text, value)[0])
                 self.assertFalse(pf.price_matches(text, value - 1)[0])
@@ -130,8 +133,8 @@ class RealPriceWithCampaignTest(unittest.TestCase):
             ("Kalem Set 10'lu\n🏷 1 TL\n2. ürün\n1 TL", "1 TL"),
         ]:
             with self.subTest(text=text):
-                self.assertEqual(bot.query_price(text), shown)
-                self.assertEqual(bot.query_price(text), pf.extract_price(text).shown)
+                self.assertEqual(analysis.query_price(text), shown)
+                self.assertEqual(analysis.query_price(text), pf.extract_price(text).shown)
 
     def test_campaign_amount_is_kept_as_campaign_role(self):
         roles = [c.role for c in pf.find_candidates("🏷 49,90 TL\n2. ürün 1 TL")]
@@ -169,15 +172,15 @@ class NormalOneLiraPriceTest(unittest.TestCase):
                 info = pf.extract_price(text)
                 self.assertEqual(info.value, value)
                 self.assertIn(info.confidence, {"high", "medium"})
-                self.assertEqual(bot.offer_terms(_event(text))[0], value)
-                self.assertTrue(_first_line(text).startswith(bot.header_price_text(value)),
+                self.assertEqual(dedupmatch.offer_terms(_event(text))[0], value)
+                self.assertTrue(_first_line(text).startswith(header.header_price_text(value)),
                                 _first_line(text))
                 self.assertTrue(pf.price_matches(text, value)[0])
                 self.assertFalse(pf.price_matches(text, value - 1)[0])
 
     def test_one_lira_threshold_matches_real_price(self):
         self.assertTrue(pf.price_matches("Kalem\n🏷 1 TL", 1)[0])
-        self.assertEqual(bot.query_price("Kalem Set 10'lu\n🏷 1 TL"), "1 TL")
+        self.assertEqual(analysis.query_price("Kalem Set 10'lu\n🏷 1 TL"), "1 TL")
 
 
 class AmbiguousSameLineTest(unittest.TestCase):
@@ -210,11 +213,11 @@ class AmbiguousSameLineTest(unittest.TestCase):
                 info = pf.extract_price(text)
                 self.assertIsNone(info.value)
                 self.assertEqual(info.confidence, "none")
-                self.assertTrue(_first_line(text).endswith(bot.PRICE_MISSING_MARK),
+                self.assertTrue(_first_line(text).endswith(header.PRICE_MISSING_MARK),
                                 _first_line(text))
-                self.assertIsNone(bot.offer_terms(_event(text))[0])
+                self.assertIsNone(dedupmatch.offer_terms(_event(text))[0])
                 self.assertFalse(pf.price_matches(text, 1000)[0])
-                self.assertEqual(bot.query_price(text), "fiyat yok")
+                self.assertEqual(analysis.query_price(text), "fiyat yok")
 
 
 class AmbiguousLayoutTest(unittest.TestCase):
@@ -236,10 +239,10 @@ class AmbiguousLayoutTest(unittest.TestCase):
                 info = pf.extract_price(text)
                 self.assertIsNone(info.value)
                 self.assertEqual(info.confidence, "none")
-                self.assertTrue(_first_line(text).endswith(bot.PRICE_MISSING_MARK))
-                self.assertIsNone(bot.offer_terms(_event(text))[0])
+                self.assertTrue(_first_line(text).endswith(header.PRICE_MISSING_MARK))
+                self.assertIsNone(dedupmatch.offer_terms(_event(text))[0])
                 self.assertFalse(pf.price_matches(text, 1000)[0])
-                self.assertEqual(bot.query_price(text), "fiyat yok")
+                self.assertEqual(analysis.query_price(text), "fiyat yok")
 
 
 if __name__ == "__main__":

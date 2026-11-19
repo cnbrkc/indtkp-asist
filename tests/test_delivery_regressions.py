@@ -16,6 +16,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot
+import dedupbadge
+import dedupmatch
+import keywords
+import smarttitle
 import price_filter
 import private_bot
 import telegram_retry
@@ -34,9 +38,9 @@ class ProductIdentityRegressionTest(unittest.TestCase):
     def test_generic_fragments_can_never_be_dedup_keys(self):
         for fragment in self.GENERIC:
             with self.subTest(fragment=fragment):
-                self.assertIsNone(bot.dedup_key(fragment))
+                self.assertIsNone(dedupbadge.dedup_key(fragment))
                 self.assertEqual(price_filter.extract_title(fragment), "")
-                self.assertEqual(bot.smart_dedup_title(fragment), "")
+                self.assertEqual(smarttitle.smart_dedup_title(fragment), "")
 
     def test_product_beats_conditions_before_or_after_it(self):
         products = [
@@ -50,17 +54,17 @@ class ProductIdentityRegressionTest(unittest.TestCase):
             for fragment in self.GENERIC:
                 for text in (f"{fragment}\n{product}\n159 TL", f"{product}\n159 TL\n{fragment}"):
                     with self.subTest(product=product, fragment=fragment):
-                        self.assertEqual(bot.smart_dedup_title(text), product)
+                        self.assertEqual(smarttitle.smart_dedup_title(text), product)
 
     def test_model_and_size_suffixes_are_not_truncated_for_dedup(self):
         prefix = "Old Spice " + "Erkek Deodorant Vücut Spreyi " * 8
-        a = bot.smart_dedup_title(prefix + "Captain 150 ml\n159 TL")
-        b = bot.smart_dedup_title(prefix + "Whitewater 250 ml\n159 TL")
-        self.assertNotEqual(bot.dedup_key(a), bot.dedup_key(b))
+        a = smarttitle.smart_dedup_title(prefix + "Captain 150 ml\n159 TL")
+        b = smarttitle.smart_dedup_title(prefix + "Whitewater 250 ml\n159 TL")
+        self.assertNotEqual(dedupbadge.dedup_key(a), dedupbadge.dedup_key(b))
 
     def test_punctuation_variants_merge_but_sizes_do_not(self):
-        self.assertEqual(bot.dedup_key("De’Longhi Kahve Makinesi"), bot.dedup_key("Delonghi Kahve Makinesi"))
-        self.assertNotEqual(bot.dedup_key("Old Spice 150 ml"), bot.dedup_key("Old Spice 250 ml"))
+        self.assertEqual(dedupbadge.dedup_key("De’Longhi Kahve Makinesi"), dedupbadge.dedup_key("Delonghi Kahve Makinesi"))
+        self.assertNotEqual(dedupbadge.dedup_key("Old Spice 150 ml"), dedupbadge.dedup_key("Old Spice 250 ml"))
 
     def test_decimal_volumes_and_plus_models_are_different_products(self):
         for left, right in [
@@ -69,8 +73,8 @@ class ProductIdentityRegressionTest(unittest.TestCase):
             ("Roborock S8", "Roborock S8+"),
         ]:
             with self.subTest(left=left, right=right):
-                self.assertNotEqual(bot.dedup_key(left), bot.dedup_key(right))
-        self.assertEqual(bot.dedup_key("Philips 6.2L"), bot.dedup_key("Philips 6,2 L"))
+                self.assertNotEqual(dedupbadge.dedup_key(left), dedupbadge.dedup_key(right))
+        self.assertEqual(dedupbadge.dedup_key("Philips 6.2L"), dedupbadge.dedup_key("Philips 6,2 L"))
 
     def test_scheduled_monitor_does_not_cancel_an_active_run(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/telegram-monitor.yml").read_text()
@@ -81,32 +85,32 @@ class ProductIdentityRegressionTest(unittest.TestCase):
         for term in ["l’oreal", "l'oreal", "l’oréal"]:
             for spelling in ["L'Oréal", "Loreal", "L’ORÉAL"]:
                 with self.subTest(term=term, spelling=spelling):
-                    self.assertFalse(bot.matches(spelling + " şampuan", [], [term], include_enabled=False))
-                    self.assertTrue(bot.matches(spelling, [], [term], exclude_enabled=False))
-        self.assertTrue(bot.matches("Kahve makinesi", [], ["l’oréal"]))
+                    self.assertFalse(keywords.matches(spelling + " şampuan", [], [term], include_enabled=False))
+                    self.assertTrue(keywords.matches(spelling, [], [term], exclude_enabled=False))
+        self.assertTrue(keywords.matches("Kahve makinesi", [], ["l’oréal"]))
 
     def test_price_drop_and_purchase_conditions_are_distinct(self):
-        terms = bot.offer_terms
-        self.assertTrue(bot.better_or_different_offer(terms("Stanley IceFlow 1322 TL"), terms("Stanley IceFlow 1135 TL")))
-        self.assertFalse(bot.better_or_different_offer(terms("Stanley IceFlow 1135 TL"), terms("Stanley IceFlow 1322 TL")))
-        self.assertTrue(bot.better_or_different_offer(terms("Bingo 2000 ml 285 TL"), terms("Bingo 2000 ml 159 TL")))
+        terms = dedupmatch.offer_terms
+        self.assertTrue(dedupmatch.better_or_different_offer(terms("Stanley IceFlow 1322 TL"), terms("Stanley IceFlow 1135 TL")))
+        self.assertFalse(dedupmatch.better_or_different_offer(terms("Stanley IceFlow 1135 TL"), terms("Stanley IceFlow 1322 TL")))
+        self.assertTrue(dedupmatch.better_or_different_offer(terms("Bingo 2000 ml 285 TL"), terms("Bingo 2000 ml 159 TL")))
         self.assertIsNone(terms("Bingo 2000 ml\n3 adet alımda 159 TL")[0])
-        self.assertFalse(bot.better_or_different_offer(terms("Bingo 2000 ml 285 TL"), terms("Bingo 2000 ml\n3 adet alımda 159 TL")))
+        self.assertFalse(dedupmatch.better_or_different_offer(terms("Bingo 2000 ml 285 TL"), terms("Bingo 2000 ml\n3 adet alımda 159 TL")))
         a = terms("Bref WC\nFiyat: 97 TL / 2 adet alımda 48 TL")
         b = terms("Bref WC\nFiyat: 97 TL / 2 adet alımda 40 TL")
         self.assertEqual(a[0], 48)
-        self.assertTrue(bot.better_or_different_offer(a, b))
-        self.assertFalse(bot.better_or_different_offer(a, a))
+        self.assertTrue(dedupmatch.better_or_different_offer(a, b))
+        self.assertFalse(dedupmatch.better_or_different_offer(a, a))
         self.assertIsNone(terms("Ürün\nEski fiyat: 100 TL")[0])
 
     def test_history_id_namespaces_and_poll_backoff(self):
-        self.assertFalse(bot.bot_history_ids_shared(-5569562901))
-        self.assertFalse(bot.bot_history_ids_shared(1143378073))
-        self.assertTrue(bot.bot_history_ids_shared(-1001234567890))
-        interval = bot.next_poll_interval(3, 5)
+        self.assertFalse(dedupmatch.bot_history_ids_shared(-5569562901))
+        self.assertFalse(dedupmatch.bot_history_ids_shared(1143378073))
+        self.assertTrue(dedupmatch.bot_history_ids_shared(-1001234567890))
+        interval = dedupmatch.next_poll_interval(3, 5)
         self.assertGreaterEqual(interval, 10)
-        self.assertGreater(bot.next_poll_interval(interval, 5), interval)
-        self.assertEqual(bot.next_poll_interval(300, 1000), 300)
+        self.assertGreater(dedupmatch.next_poll_interval(interval, 5), interval)
+        self.assertEqual(dedupmatch.next_poll_interval(300, 1000), 300)
 
 
 class RateLimitRegressionTest(unittest.IsolatedAsyncioTestCase):

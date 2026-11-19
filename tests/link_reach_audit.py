@@ -33,6 +33,7 @@ aynı mesajların bir örneklemini her test çalıştırmasında, eski sürüme 
 """
 from __future__ import annotations
 
+import sanitize
 import argparse
 import contextlib
 import inspect
@@ -239,7 +240,7 @@ def build_message(types, spec: dict) -> SimpleNamespace:
 def deliveries(bot, types, spec: dict, both_limits: bool) -> list[dict]:
     """Üretimdeki çağrılarla kurulan iletiler ve her birinden açılabilen adresler."""
     def key(url) -> str:
-        return bot.clean_url(url).rstrip("/").lower()
+        return sanitize.clean_url(url).rstrip("/").lower()
 
     obj = build_message(types, spec)
     cleaned = bot.sanitize_message(obj)
@@ -256,7 +257,7 @@ def deliveries(bot, types, spec: dict, both_limits: bool) -> list[dict]:
                 composed = bot.compose_message(
                     obj, limit=limit, link_kinds=bot.link_kinds_for(mode, bot=as_bot),
                     message_link=MESSAGE_LINK, source_name=SOURCE_NAME, **extra)
-                reach = {key(url) for url in bot.visible_urls(composed["text"])}
+                reach = {key(url) for url in sanitize.visible_urls(composed["text"])}
                 keyboard: list[str] = []
                 if as_bot:
                     entities = (bot.bot_api_entities(composed["message"], composed["content"])

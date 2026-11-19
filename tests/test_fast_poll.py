@@ -15,6 +15,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 import bot  # noqa: E402
+import dedupmatch  # noqa: E402
 import test_integration as ti  # noqa: E402
 from telethon import events, utils  # noqa: E402
 from telethon.tl import types  # noqa: E402
@@ -536,15 +537,15 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
 
 class PollIntervalRecoveryTest(unittest.TestCase):
     def test_recovery_halves_but_never_below_base(self):
-        self.assertEqual(bot.recover_poll_interval(300, 3), 150)
-        self.assertEqual(bot.recover_poll_interval(181, 3), 90.5)
-        self.assertEqual(bot.recover_poll_interval(4, 3), 3)
-        self.assertEqual(bot.recover_poll_interval(3, 3), 3)
-        self.assertEqual(bot.recover_poll_interval(2, 3), 2)
+        self.assertEqual(dedupmatch.recover_poll_interval(300, 3), 150)
+        self.assertEqual(dedupmatch.recover_poll_interval(181, 3), 90.5)
+        self.assertEqual(dedupmatch.recover_poll_interval(4, 3), 3)
+        self.assertEqual(dedupmatch.recover_poll_interval(3, 3), 3)
+        self.assertEqual(dedupmatch.recover_poll_interval(2, 3), 2)
 
     def test_backoff_still_grows_and_caps(self):
-        self.assertEqual(bot.next_poll_interval(3, 180), 180)
-        self.assertEqual(bot.next_poll_interval(300, 1000), 300)
+        self.assertEqual(dedupmatch.next_poll_interval(3, 180), 180)
+        self.assertEqual(dedupmatch.next_poll_interval(300, 1000), 300)
 
 
 class LiveVsPollDedupTest(unittest.TestCase):

@@ -24,6 +24,13 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import botentities  # noqa: E402
+import confutil  # noqa: E402
+import dedupbadge  # noqa: E402
+import producttitle  # noqa: E402
+import sanitize  # noqa: E402
+import searchbuttons  # noqa: E402
+import smarttitle  # noqa: E402
 import price_filter as pf  # noqa: E402
 import test_cross_channel_dedup as cc  # noqa: E402
 import test_integration as ti  # noqa: E402
@@ -58,7 +65,7 @@ ONLY_TEXT = (f"⚡ {ONLY_TITLE}\n\n💰 Fiyat: 224,31 ₺\n\n🎯 Stokta var\n\n
 def linked(text: str, label: str, url: str) -> types.MessageEntityTextUrl:
     """``label`` yazısının altına gizlenmiş bağlantı (konumlar UTF-16)."""
     return types.MessageEntityTextUrl(
-        offset=bot.utf16_length(text[:text.index(label)]), length=bot.utf16_length(label), url=url)
+        offset=sanitize.utf16_length(text[:text.index(label)]), length=sanitize.utf16_length(label), url=url)
 
 
 def markup(*buttons: tuple[str, str]):
@@ -87,21 +94,21 @@ def compose(obj, mode: str = "smart", *, as_bot: bool = True, **extra):
     """Üretimdeki iki çağrı: bot bildirimi (inline klavyeli) ve hesap kopyası (klavyesiz)."""
     extra.setdefault("has_keyboard", as_bot)
     with mock.patch.object(bot, "SMART_HEADER", True):
-        return bot.compose_message(obj, link_kinds=bot.link_kinds_for(mode, bot=as_bot),
+        return bot.compose_message(obj, link_kinds=confutil.link_kinds_for(mode, bot=as_bot),
                                    message_link=MESSAGE_LINK, source_name="Kaynak", **extra)
 
 
 def product_links(composed) -> list[tuple[str, str]]:
     """Bot API'ye giden ``(görünen yazı, gömülü adres)`` çiftleri; yalnız ürün satırları."""
-    entities = bot.bot_api_entities(composed["message"], composed["content"])
-    found = [(bot.utf16_slice(composed["text"], item["offset"], item["length"]), item["url"])
+    entities = botentities.bot_api_entities(composed["message"], composed["content"])
+    found = [(sanitize.utf16_slice(composed["text"], item["offset"], item["length"]), item["url"])
              for item in entities if item["type"] == "text_link"]
     return [pair for pair in found if pair[0].startswith("👉 Ürün Linki")]
 
 
 def keyboard_labels(obj, composed) -> list[str]:
-    entities = bot.bot_api_entities(composed["message"], composed["content"]) + bot.source_name_entity(composed)
-    keyboard = bot.build_inline_keyboard(obj, body_text=composed["text"], body_entities=entities)
+    entities = botentities.bot_api_entities(composed["message"], composed["content"]) + botentities.source_name_entity(composed)
+    keyboard = searchbuttons.build_inline_keyboard(obj, body_text=composed["text"], body_entities=entities)
     return [button["text"] for row in (keyboard or {}).get("inline_keyboard", []) for button in row]
 
 
@@ -124,7 +131,7 @@ class ProductLinkTest(unittest.TestCase):
         self.assertNotIn("Satın Al", composed["text"], "buton etiketi link satırı olmaz")
         self.assertEqual(product_links(composed), [(LABEL, PLATINUM_URL)])
         # Alıntı yedek olarak aynen durur; gövdedeki Google araması ayrı satır olmaz.
-        self.assertEqual(composed["body"], bot.message_text(bot.sanitize_message(obj)))
+        self.assertEqual(composed["body"], sanitize.message_text(sanitize.sanitize_message(obj)))
         self.assertEqual(composed["text"].count("Google"), 1)
         # Adres metinde tıklanabilir kaldığı için kaynak butonu yinelenmez.
         self.assertEqual(keyboard_labels(obj, composed), SEARCH_ROW)
@@ -156,7 +163,7 @@ class ProductLinkTest(unittest.TestCase):
                 composed = compose(obj)
                 self.assertEqual(product_links(composed), [(LABEL, url)])
                 self.assertEqual(composed["text"].count(LABEL), 1)
-                self.assertEqual(composed["body"], bot.message_text(bot.sanitize_message(obj)),
+                self.assertEqual(composed["body"], sanitize.message_text(sanitize.sanitize_message(obj)),
                                  "alıntı (yedek) değişmez")
                 self.assertEqual(keyboard_labels(obj, composed), SEARCH_ROW)
 
@@ -187,17 +194,17 @@ class ProductLinkTest(unittest.TestCase):
     def test_search_chat_and_homepage_links_are_not_product_links(self):
         for url in (PLATINUM_GOOGLE, "https://www.google.com/search?udm=28&q=cay",
                     "https://www.akakce.com/arama/?q=cay", "https://www.cimri.com/arama?q=cay"):
-            self.assertTrue(bot.is_search_link(url), url)
-            self.assertFalse(bot.is_product_link(url), url)
+            self.assertTrue(sanitize.is_search_link(url), url)
+            self.assertFalse(producttitle.is_product_link(url), url)
         for url in ("https://t.me/kanal", "https://t.me/kanal/42", "https://wa.me/905550000000",
                     "https://instagram.com/kanal", "https://youtu.be/xyz", "https://www.amazon.com.tr",
                     "https://www.trendyol.com/", "tg://resolve?domain=kanal", ""):
-            self.assertFalse(bot.is_product_link(url), url)
+            self.assertFalse(producttitle.is_product_link(url), url)
         for url in (PLATINUM_URL, "https://fenom.io/amzn-mdz4p", "https://app.hb.biz/m6WukNoP939I",
                     "https://ty.gl/qm2qlv0davzbx", "https://link.amazon/B01xNall7", "https://amzn.to/4gOLDeN",
                     "https://play.google.com/store/apps/details?id=a.b"):
-            self.assertTrue(bot.is_product_link(url), url)
-            self.assertFalse(bot.is_search_link(url), url)
+            self.assertTrue(producttitle.is_product_link(url), url)
+            self.assertFalse(sanitize.is_search_link(url), url)
 
     def test_search_buttons_stay_on_the_bot_keyboard_and_channel_button_keeps_old_line(self):
         akakce, google = "https://www.akakce.com/arama/?q=nivea", "https://www.google.com/search?q=nivea"
@@ -273,7 +280,7 @@ class ReportedTitleAndPriceTest(unittest.TestCase):
 
     def test_coupon_sentence_price_and_no_slogan_title(self):
         obj = coupon()
-        body = bot.message_text(bot.sanitize_message(obj))
+        body = sanitize.message_text(sanitize.sanitize_message(obj))
         info = pf.extract_price(body)
         self.assertEqual((info.value, info.confidence, info.reason), (99.0, "high", "discounted"))
         composed = compose(obj)
@@ -281,8 +288,8 @@ class ReportedTitleAndPriceTest(unittest.TestCase):
         self.assertEqual(composed["header"], "₺99")
         self.assertEqual(composed["text"].split("\n\n")[:3],
                          ["₺99", LABEL, COUPON_LINE])
-        self.assertEqual(bot.smart_dedup_title(obj), "", "slogan ürün kimliği olamaz")
-        self.assertEqual(bot._search_query(bot.sanitize_message(obj)), "")
+        self.assertEqual(smarttitle.smart_dedup_title(obj), "", "slogan ürün kimliği olamaz")
+        self.assertEqual(producttitle._search_query(sanitize.sanitize_message(obj)), "")
         self.assertEqual(product_links(composed), [(LABEL, COUPON_URL)])
         self.assertEqual(keyboard_labels(obj, composed), [], "aranacak ad yokken arama düğmesi üretilmez")
 
@@ -313,13 +320,13 @@ class ReportedTitleAndPriceTest(unittest.TestCase):
 
     def test_linked_product_name_beats_campaign_line_with_glued_amount(self):
         obj = only()
-        body = bot.message_text(bot.sanitize_message(obj))
+        body = sanitize.message_text(sanitize.sanitize_message(obj))
         title, info = pf.analyze(body)
         self.assertEqual((title, info.value, info.confidence), (ONLY_TITLE, 224.31, "high"))
         composed = compose(obj)
         self.assertEqual(composed["header"], f"₺224 — {ONLY_TITLE}")
-        self.assertEqual(bot.smart_dedup_title(obj), ONLY_TITLE)
-        self.assertEqual(bot._search_query(bot.sanitize_message(obj)), ONLY_TITLE)
+        self.assertEqual(smarttitle.smart_dedup_title(obj), ONLY_TITLE)
+        self.assertEqual(producttitle._search_query(sanitize.sanitize_message(obj)), ONLY_TITLE)
         # Bağlantı olmasa da sonuç aynıdır: neden gömülü link değil, puanlamadır.
         self.assertEqual(pf.extract_title(ONLY_TEXT), ONLY_TITLE)
 
@@ -348,7 +355,7 @@ class BlankReplyUnitTest(unittest.TestCase):
             "yalnız temizlenen etiket": self.reply("#reklam", media=photo),
             "yalnız WhatsApp tanıtım linki": self.reply("https://wa.me/905550000000"),
         }.items():
-            self.assertTrue(bot.is_blank_reply(obj), name)
+            self.assertTrue(sanitize.is_blank_reply(obj), name)
         topic_root = message("", media=photo)
         topic_root.reply_to = types.MessageReplyHeader(reply_to_msg_id=5, forum_topic=True)
         for name, obj in {
@@ -361,10 +368,10 @@ class BlankReplyUnitTest(unittest.TestCase):
             "gizli hyperlink": self.reply("👉", links=[("👉", ONLY_URL)]),
             "buton": self.reply(buttons=[("Fırsata Git", ONLY_URL)]),
         }.items():
-            self.assertFalse(bot.is_blank_reply(obj), name)
+            self.assertFalse(sanitize.is_blank_reply(obj), name)
         in_topic = message("", media=photo)
         in_topic.reply_to = types.MessageReplyHeader(reply_to_msg_id=9, reply_to_top_id=5, forum_topic=True)
-        self.assertTrue(bot.is_blank_reply(in_topic), "forum konusu içindeki gerçek yanıt")
+        self.assertTrue(sanitize.is_blank_reply(in_topic), "forum konusu içindeki gerçek yanıt")
 
 
 class DeliveryTest(cc.Harness, unittest.TestCase):
@@ -430,7 +437,7 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
                          (f"₺106 — {PLATINUM_TITLE}", LABEL, cc.FIRST_CHANNEL))
         self.assertNotIn("Mesajı Gör", call["text"], "adres grup adına gömülü")
         self.assertNotIn("amazon.com.tr", call["text"])
-        hidden = [(bot.utf16_slice(call["text"], item["offset"], item["length"]), item["url"])
+        hidden = [(sanitize.utf16_slice(call["text"], item["offset"], item["length"]), item["url"])
                   for item in call["entities"] if item["type"] == "text_link"]
         self.assertEqual(hidden[:2], [("Google", PLATINUM_GOOGLE), (LABEL, PLATINUM_URL)])
         # Grup adı orijinal mesaja bağlanır (kimlik çözülmüş sohbetten kurulur).
@@ -445,7 +452,7 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
         edit = self.edit_text_calls[-1]
         self.assertIn("2 kere paylaşıldı", edit["text"])
         self.assertIn((LABEL, PLATINUM_URL), [
-            (bot.utf16_slice(edit["text"], item["offset"], item["length"]), item.get("url"))
+            (sanitize.utf16_slice(edit["text"], item["offset"], item["length"]), item.get("url"))
             for item in edit["entities"]])
 
     def test_badge_edit_keeps_link_on_its_label_in_emoji_heavy_messages(self):
@@ -457,7 +464,7 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
         self.send(client, cc.SECOND_CHANNEL_ID, 501, text, buttons=[("Satın Al", url)])
         edit = self.edit_text_calls[-1]
         self.assertIn("2 kere paylaşıldı", edit["text"])
-        spans = [(item["type"], bot.utf16_slice(edit["text"], item["offset"], item["length"]), item.get("url"))
+        spans = [(item["type"], sanitize.utf16_slice(edit["text"], item["offset"], item["length"]), item.get("url"))
                  for item in edit["entities"]]
         self.assertIn(("text_link", LABEL, url), spans)
         quote = next(piece for kind, piece, _ in spans if kind == "blockquote")
@@ -469,7 +476,7 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
         """Açılış taraması: ``👉 Ürün Linki 👈`` satırı ürün adı sayılmaz; gerçek başlık birleşir."""
         self.assertTrue(pf.is_generic_title(LABEL))
         self.assertTrue(pf.is_generic_title(LABEL.replace("Linki", "Linki 2")))
-        self.assertIsNone(bot.dedup_key(LABEL))
+        self.assertIsNone(dedupbadge.dedup_key(LABEL))
         self.assertFalse(pf.is_generic_title("Ürün Linkin Park Tişört"), "ürün adı elenmez")
         destination = -1001234567890   # süper grup: eski bot bildirimi düzenlenebilir
         full = (f"₺106 — {PLATINUM_TITLE}\n\n📦 {PLATINUM_TITLE}\n\n💰 106,26 TL\n\n{LABEL}\n\n"
@@ -489,7 +496,7 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
         self.assertEqual(edit["message_id"], 900)
         self.assertIn("2 kere paylaşıldı", edit["text"])
         self.assertIn(("text_link", LABEL, PLATINUM_URL), [
-            (item["type"], bot.utf16_slice(edit["text"], item["offset"], item["length"]), item.get("url"))
+            (item["type"], sanitize.utf16_slice(edit["text"], item["offset"], item["length"]), item.get("url"))
             for item in edit["entities"]
         ], "yeniden başlatmadan sonra da bağlantı etiketinde kalır")
 

@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bot
+import commandtext
 import price_filter
 import private_bot as private
 from test_integration import (
@@ -76,23 +77,23 @@ class PrivatePureTests(unittest.TestCase):
         self.assertTrue(private.dm_matches("TCL 65T6D", ["TCL 65"], ["", None]))
 
     def test_dm_list_staging_limits_normalization_and_exact_removal(self):
-        for field in bot.DM_LIST_FIELDS:
+        for field in commandtext.DM_LIST_FIELDS:
             config = {field: ["tcl 65", "iphone"]}
-            ok, candidate, values, _ = bot.stage_telegram_list_change(
+            ok, candidate, values, _ = commandtext.stage_telegram_list_change(
                 config, field, "add", "TCL  65, IPHONE, ＬＧ ７５",
             )
             self.assertTrue(ok)
             self.assertEqual(values, ["lg 75"])
             self.assertEqual(candidate[field], ["tcl 65", "iphone", "lg 75"])
-            ok, _, _, _ = bot.stage_telegram_list_change(config, field, "remove", "tcl")
+            ok, _, _, _ = commandtext.stage_telegram_list_change(config, field, "remove", "tcl")
             self.assertFalse(ok)  # removing an item still requires its full phrase
-            ok, candidate, _, _ = bot.stage_telegram_list_change(config, field, "remove", "TCL 65")
+            ok, candidate, _, _ = commandtext.stage_telegram_list_change(config, field, "remove", "TCL 65")
             self.assertTrue(ok)
             self.assertEqual(candidate[field], ["iphone"])
             for raw in ["a" * 101, "ß" * 100, ",".join(f"w{i}" for i in range(51))]:
-                self.assertFalse(bot.stage_telegram_list_change(config, field, "add", raw)[0])
+                self.assertFalse(commandtext.stage_telegram_list_change(config, field, "add", raw)[0])
             full = {field: [f"w{i}" for i in range(100)]}
-            ok, candidate, _, _ = bot.stage_telegram_list_change(full, field, "add", "new")
+            ok, candidate, _, _ = commandtext.stage_telegram_list_change(full, field, "add", "new")
             self.assertFalse(ok)
             self.assertEqual(candidate, full)
 
@@ -113,7 +114,7 @@ class PrivatePureTests(unittest.TestCase):
     def test_pending_dialogues_do_not_collide_with_saved_messages(self):
         private_event = private.PrivateControlEvent(FakeAPI(), dm_message("/ekle"))
         saved_event = FakeEvent(ADMIN_ID, ADMIN_ID, "/ekle")
-        self.assertNotEqual(bot.pending_key(private_event), bot.pending_key(saved_event))
+        self.assertNotEqual(commandtext.pending_key(private_event), commandtext.pending_key(saved_event))
 
     def test_text_copy_preserves_entities_keyboard_and_original(self):
         info = {"kind": "text", "text": "🔥 TCL fırsat", "entities": [
@@ -760,7 +761,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             await self.command("/dmfiltre")
             self.assertIn("Kelimeler: tcl, lg", self.replies())
             self.assertIn("DM gönderimi: KAPALI", self.replies())
-            self.assertFalse(bot.PENDING)
+            self.assertFalse(commandtext.PENDING)
             self.assertEqual(Path(self.path).read_text(), before)
             await self.command("/dmfiltre iphone")
             await self.command("iphone")
@@ -806,7 +807,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.assertFalse(saved["dm_enabled"])
             await self.command("/cikar")
             await self.command("4")
-            self.assertFalse(bot.PENDING)
+            self.assertFalse(commandtext.PENDING)
         await self.run_scenario(scenario, dm_keywords=["tcl", "lg", "iphone"], dm_enabled=True)
 
     async def test_remove_keeps_filter_paused_and_rejects_unknown_atomically(self):
@@ -837,11 +838,11 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.persist_ok = False
             await self.command("lg")
             self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], ["tcl", "lg"])
-            self.assertTrue(bot.PENDING)
+            self.assertTrue(commandtext.PENDING)
             self.persist_ok = True
             await self.command("/kaydet")
             self.assertEqual(json.loads(Path(self.path).read_text())["dm_keywords"], ["tcl"])
-            self.assertFalse(bot.PENDING)
+            self.assertFalse(commandtext.PENDING)
         await self.run_scenario(scenario, dm_keywords=["tcl", "lg"], dm_enabled=True)
 
     async def test_dmfiltre_and_komutlar_preserve_pending_removal(self):
@@ -874,7 +875,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(Path(self.path).read_text()), before)
             self.assertIn("DEĞİŞİKLİK TASLAĞI", self.replies())
             await self.command("/dmfiltre")
-            self.assertTrue(bot.PENDING)  # status does not discard the draft
+            self.assertTrue(commandtext.PENDING)  # status does not discard the draft
             await self.command("/kaydet")
             saved = json.loads(Path(self.path).read_text())
             self.assertEqual(saved["dm_keywords"], ["iphone", "tcl 65", "lg 75"])
@@ -901,7 +902,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.persist_ok = False
             await self.command("/kaydet")
             self.assertEqual(json.loads(Path(self.path).read_text()), original)
-            self.assertTrue(bot.PENDING)
+            self.assertTrue(commandtext.PENDING)
             await self.offer("Telefon model X\n90 TL", media=False)
             self.assertFalse(self.api.offers)
 
@@ -945,10 +946,10 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
         async def scenario():
             original = Path(self.path).read_text()
             await self.edit_list("add", "8", "TCL < 30000", save=False)
-            self.assertTrue(bot.PENDING)
+            self.assertTrue(commandtext.PENDING)
             self.assertEqual(Path(self.path).read_text(), original)
             await self.command("/iptal")
-            self.assertFalse(bot.PENDING)
+            self.assertFalse(commandtext.PENDING)
             self.assertEqual(Path(self.path).read_text(), original)
             await self.offer("TCL 65C7K TV\n25.000 TL", media=False)
             self.assertFalse(self.api.offers)
@@ -957,18 +958,18 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
     async def test_product_price_rule_stale_draft_conflict_does_not_overwrite(self):
         async def scenario():
             await self.edit_list("add", "8", "TCL < 30000", save=False)
-            pending = next(iter(bot.PENDING.values()))
+            pending = next(iter(commandtext.PENDING.values()))
             pending["base_config"]["dm_product_price_rules"] = ["externally changed < 10"]
             await self.command("/kaydet")
             self.assertIn("başka bir değişiklik", self.replies())
             self.assertEqual(json.loads(Path(self.path).read_text()).get("dm_product_price_rules", []), [])
-            self.assertFalse(bot.PENDING)
+            self.assertFalse(commandtext.PENDING)
         await self.run_scenario(scenario)
 
     async def test_queue_prepare_reuses_and_invalidates_product_offer_facts(self):
         async def scenario():
             text = "TCL 65C7K TV\n25.000 TL"
-            facts = bot.dm_decision(
+            facts = commandtext.dm_decision(
                 {"dm_product_price_rules": ["TCL < 30000"]}, text,
             ).facts
             item = {
@@ -1079,12 +1080,12 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.persist_ok = False
             await self.command("/kaydet")
             self.assertEqual(Path(self.path).read_text(), before)
-            self.assertTrue(bot.PENDING)
+            self.assertTrue(commandtext.PENDING)
             await self.offer("TCL 65T6D", media=False)
             self.assertFalse(self.api.offers)  # failed save rolled back runtime too
             self.persist_ok = True
             await self.command("/kaydet")
-            self.assertFalse(bot.PENDING)
+            self.assertFalse(commandtext.PENDING)
             await self.offer("TCL 65T6D", media=False)
             self.assertEqual(len(self.api.offers), 1)
         await self.run_scenario(scenario)
@@ -1119,12 +1120,12 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
         async def scenario():
             await self.edit_list("add", "dmharic", "yenilenmiş", save=False)
             # Simulate a base/list conflict at save time.
-            pending = next(iter(bot.PENDING.values()))
+            pending = next(iter(commandtext.PENDING.values()))
             pending["base_config"]["dm_exclude_keywords"] = ["old"]
             await self.command("/kaydet")
             self.assertIn("başka bir değişiklik", self.replies())
             self.assertEqual(json.loads(Path(self.path).read_text())["dm_exclude_keywords"], ["tcl"])
-            self.assertFalse(bot.PENDING)
+            self.assertFalse(commandtext.PENDING)
         await self.run_scenario(scenario, dm_exclude_keywords=["tcl"])
 
     async def test_auto_restart_persists_and_drains_before_dispatch(self):
@@ -1162,13 +1163,13 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
     async def test_master_command_lists_all_canonical_commands(self):
         async def scenario():
             await self.command("/komutlar")
-            self.assertEqual(self.api.calls[-1][1]["text"], bot.HELP_TEXT)
-            help_lines = [line for line in bot.HELP_TEXT.splitlines() if " - " in line]
+            self.assertEqual(self.api.calls[-1][1]["text"], commandtext.HELP_TEXT)
+            help_lines = [line for line in commandtext.HELP_TEXT.splitlines() if " - " in line]
             for line in help_lines:
                 self.assertRegex(line, r"^/\S+ - \S.*$")
-            self.assertLess(len(bot.HELP_TEXT), 3500)
+            self.assertLess(len(commandtext.HELP_TEXT), 3500)
             commands = [line.split(" - ", 1)[0] for line in help_lines]
-            self.assertEqual(commands, [name for name, _ in bot.COMMAND_DESCRIPTIONS])
+            self.assertEqual(commands, [name for name, _ in commandtext.COMMAND_DESCRIPTIONS])
             self.assertIn("/kaynaktest", commands)
             self.assertIn("/start", commands)
         await self.run_scenario(scenario)
@@ -1177,8 +1178,8 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
         async def scenario():
             await self.command("/dmdurum")
             self.assertIn("Bilinmeyen komut: /dmdurum", self.replies())
-            self.assertNotIn("/dmdurum", bot.HELP_TEXT)
-            self.assertFalse(bot.PENDING)
+            self.assertNotIn("/dmdurum", commandtext.HELP_TEXT)
+            self.assertFalse(commandtext.PENDING)
         await self.run_scenario(scenario)
 
 
