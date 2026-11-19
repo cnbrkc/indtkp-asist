@@ -79,8 +79,17 @@ class CursorMechanismTest(unittest.TestCase):
         self.assertEqual(bot.cursor_collect_for_persist(), {"-1002": 44},
                          "ilk live ID tek başına restart cursor'ı olarak kaydedilmemeli")
 
-    def test_fast_poll_backfill_age_is_1800(self):
-        self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 1800.0)
+    def test_fast_poll_backfill_age_is_fifteen_minutes(self):
+        # Kopukluk sonrası geriye tarama penceresi 15 dk (eskiden 30 dk; yedek imleç eskiyse
+        # saatlerce önceki mesajlar yığılıyordu).
+        self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
+
+    def test_loaded_cursor_is_marked_for_age_check(self):
+        bot.cursor_load_from_config({"source_cursors": {"-1001": 42}})
+        entry = bot.CURSOR_RAM[-1001]
+        self.assertEqual(entry["cursor"], 42)
+        self.assertTrue(entry["resume_check"], "önceki oturumdan kalan imleç ilk taramada yaş sınırından geçmeli")
+        self.assertNotIn("resume_check", bot._cursor_ensure(-2002))
 
 
 class CursorIntegrationTest(ti.MainHarness, unittest.TestCase):

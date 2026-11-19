@@ -219,11 +219,21 @@ async def fast_poll_loop(rt: Runtime) -> None:
                     continue
                 cur_entry = rt.bot.CURSOR_RAM.get(chat_id)
                 initializing = cur_entry is None or not cur_entry.get("initialized", True)
+                # Kayıtlı (önceki oturumdan kalma) veya duraklama sonrası şüpheli imleç:
+                # önce o kullanılır, ama yaş sınırı yine uygulanır (eski birikim bildirilmez).
+                resuming = not initializing and bool(cur_entry.get("resume_check"))
+                saved_cursor = int(cur_entry.get("cursor", 0) or 0) if resuming else 0
+                if resuming:
+                    if top <= saved_cursor:
+                        cur_entry.pop("resume_check", None)  # kaçırılan mesaj yok
+                        continue
+                    initializing = True
                 if initializing:
-                    # Cursor yoksa/toparlanmış kaynaksa sınırlı bir start-up
-                    # pencere tara. Eski geçmişi patlatma; son 30 dk ve en
-                    # fazla 100 ileti. Geçmiş sorgusu hata verirse cursor'ı
-                    # ilerletme, sonraki turda güvenle tekrar dene.
+                    # Cursor yoksa/toparlanmış kaynaksa ya da kayıtlı cursor eskiyse
+                    # sınırlı bir pencere tara. Eski geçmişi patlatma; son
+                    # FAST_POLL_BACKFILL_MAX_AGE (15 dk) ve en fazla 100 ileti.
+                    # Geçmiş sorgusu hata verirse cursor'ı ilerletme, sonraki
+                    # turda güvenle tekrar dene.
                     try:
                         messages = await rt.client.get_messages(
                             peer, limit=rt.bot.FAST_POLL_BACKFILL_LIMIT, max_id=int(top) + 1,
@@ -250,15 +260,19 @@ async def fast_poll_loop(rt: Runtime) -> None:
                     known_ids = set(st["pending"]) | set(st["failed"]) | set(st["completed"])
                     known_ids = {int(mid) for mid in known_ids if int(mid) > 0}
                     if not recent:
-                        st["cursor"] = min(int(top), min(known_ids) - 1) if known_ids else int(top)
+                        st["cursor"] = max(saved_cursor, min(int(top), min(known_ids) - 1) if known_ids else int(top))
                         st["initialized"] = True
+                        st.pop("resume_check", None)
                         rt.bot._cursor_advance(chat_id)
                         log.info("Yeni kaynak için cursor bootstrap: %s → %s (son %d ileti içinde son %.0f dk'da ileti yok).",
                                  chat_id, st["cursor"], rt.bot.FAST_POLL_BACKFILL_LIMIT, rt.bot.FAST_POLL_BACKFILL_MAX_AGE / 60)
                         continue
                     baseline_ids = [int(recent[0].id), *known_ids]
-                    st["cursor"] = max(0, min(baseline_ids) - 1)
+                    # Kayıtlı cursor pencereden yeniyse korunur (aradaki taze mesajlar hâlâ
+                    # cursor'dan sonra gelir); pencereden eskiyse pencere başına atlanır.
+                    st["cursor"] = max(saved_cursor, max(0, min(baseline_ids) - 1))
                     st["initialized"] = True
+                    st.pop("resume_check", None)
                     # Mark stale messages that fall *inside* the recent ID
                     # range as intentionally skipped; otherwise a later
                     # min_id poll could rediscover and deliver them.
@@ -268,8 +282,9 @@ async def fast_poll_loop(rt: Runtime) -> None:
                         if stale_id > st["cursor"] and stale_id not in recent_ids:
                             rt.bot._cursor_mark_success(chat_id, stale_id)
                     messages = recent
-                    log.info("Yeni kaynak için sınırlı kurtarma: %s → cursor=%s, %d ileti (son %.0f dk).",
-                             chat_id, st["cursor"], len(messages), rt.bot.FAST_POLL_BACKFILL_MAX_AGE / 60)
+                    log.info("%s için sınırlı kurtarma: %s → cursor=%s, %d ileti (son %.0f dk).",
+                             "Kayıtlı cursor" if saved_cursor else "Yeni kaynak", chat_id, st["cursor"], len(messages),
+                             rt.bot.FAST_POLL_BACKFILL_MAX_AGE / 60)
                     cur = int(st["cursor"])
                 else:
                     cur = int(cur_entry.get("cursor", 0) or 0)
@@ -290,6 +305,25 @@ async def fast_poll_loop(rt: Runtime) -> None:
                                         chat_id, cur, type(exc).__name__, exc)
                         continue
                     messages = sorted(messages, key=lambda message: int(getattr(message, "id", 0) or 0))
+                    # Duraklama (ağ kopması, uzun FloodWait) sonrası cursor'ın ardında eski
+                    # birikim varsa toplu bildirme: sonraki turda sınırlı pencereye atla.
+                    # Bilinen (bekleyen/başarısız/tamamlanan) ve canlıda görülmüş mesajlar sayılmaz.
+                    known = set(cur_entry["pending"]) | set(cur_entry["failed"]) | set(cur_entry["completed"])
+                    stale_cutoff = rt.bot.time.time() - rt.bot.FAST_POLL_BACKFILL_MAX_AGE
+                    for message in messages:
+                        mid = int(getattr(message, "id", 0) or 0)
+                        if mid in known or (chat_id, mid) in rt.bot.LIVE_SEEN:
+                            continue
+                        try:
+                            first_stamp = message.date.timestamp()
+                        except Exception:  # noqa: BLE001 - malformed date: pencere yolu karar versin
+                            first_stamp = 0.0
+                        if first_stamp < stale_cutoff:
+                            cur_entry["resume_check"] = True
+                            log.info("Duraklama sonrası eski birikim (kaynak=%s, cursor=%s): son %.0f dk penceresine atlanacak.",
+                                     chat_id, cur, rt.bot.FAST_POLL_BACKFILL_MAX_AGE / 60)
+                            messages = []
+                        break
                 # Poll-confirmed leading ID gaps are deleted messages; do not
                 # skip an ID currently being delivered or awaiting retry.
                 fetched_ids = {int(getattr(m, "id", 0) or 0) for m in messages if getattr(m, "id", None)}
