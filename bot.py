@@ -791,11 +791,14 @@ FAST_NOTIFY = False
 # config.json → fast_poll (varsayılan AÇIK; kapatmak için false), fast_poll_seconds (varsayılan 3).
 FAST_POLL = True
 FAST_POLL_SECONDS = 3.0
-# P6: açılışta her kaynak için geriye dönük tarama sınırları. Kesinti
-# sırasında gelen mesajlar yalnızca bu pencere içinde yakalanır; daha eski
-# mesajlar topluca yeniden bildirilmez. Kalıcı imleç tutulmaz.
-FAST_POLL_BACKFILL_LIMIT = 100       # yeni/yeniden başlayan kaynak başına başlangıç penceresi
-FAST_POLL_BACKFILL_MAX_AGE = 1800.0  # başlangıçta yalnızca son 30 dk içindeki iletiler
+# P6: geriye dönük tarama sınırları (açılış, restart ve duraklama sonrası).
+# Kesinti sırasında gelen mesajlar yalnızca bu pencere içinde yakalanır; daha eski
+# mesajlar topluca yeniden bildirilmez. Kayıtlı (restart öncesi) imleç varsa önce o
+# kullanılır, ama yaş sınırı yine uygulanır: imleç ne kadar eski olursa olsun pencere
+# dışındaki mesajlar atlanır.
+# config.json → fast_poll_backfill_minutes (varsayılan 15; 1-120 arası).
+FAST_POLL_BACKFILL_LIMIT = 100       # kaynak başına en fazla bu kadar geçmiş ileti taranır
+FAST_POLL_BACKFILL_MAX_AGE = 900.0   # yalnızca son 15 dk içindeki iletiler
 FAST_POLL_BATCH_LIMIT = 30           # kaynak başına bir turda en fazla 30 yeni ileti
 # P0 ölçümleme: hızlı taramanın anlık durumu (/durum ve kalp atışında görünür).
 # Yalnızca sayaç/aralık bilgisi tutar; davranış değişmez.
@@ -910,7 +913,9 @@ def cursor_load_from_config(config: dict) -> None:
         try:
             cid = int(k)
             cur = int(v)
-            CURSOR_RAM[cid] = {"cursor": cur, "pending": set(), "completed": set(), "failed": set(), "failed_at": {}, "initialized": True}
+            # resume_check: bu imleç bir önceki oturumdan kalma; ilk taramada yaş sınırı uygulanır
+            CURSOR_RAM[cid] = {"cursor": cur, "pending": set(), "completed": set(), "failed": set(), "failed_at": {},
+                               "initialized": True, "resume_check": True}
         except Exception:
             continue
 
@@ -1636,7 +1641,7 @@ async def save_config(store: ConfigStore, note: str = "") -> tuple[bool, str]:
 
 def apply_runtime_config(config: dict) -> list[str]:
     """Global çalışma ayarlarını config'ten yenile (Telegram bağlantısı gerekmez)."""
-    global SMART_HEADER, FAST_NOTIFY, SLOW_REPORT_SECONDS, FAST_POLL, FAST_POLL_SECONDS
+    global SMART_HEADER, FAST_NOTIFY, SLOW_REPORT_SECONDS, FAST_POLL, FAST_POLL_SECONDS, FAST_POLL_BACKFILL_MAX_AGE
     global FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE, ADMIN_IDS
     global FILTER_INCLUDE_ENABLED, FILTER_EXCLUDE_ENABLED
     global DELIVERY_CHAIN, MAX_MEDIA_MB
@@ -1677,6 +1682,10 @@ def apply_runtime_config(config: dict) -> list[str]:
         FAST_POLL_SECONDS = min(30.0, max(1.0, float(config.get("fast_poll_seconds", 3))))
     except (TypeError, ValueError):
         FAST_POLL_SECONDS = 3.0
+    try:
+        FAST_POLL_BACKFILL_MAX_AGE = min(120.0, max(1.0, float(config.get("fast_poll_backfill_minutes", 15)))) * 60.0
+    except (TypeError, ValueError):
+        FAST_POLL_BACKFILL_MAX_AGE = 900.0
     try:
         SLOW_REPORT_SECONDS = max(0.0, float(config.get("slow_report_seconds", 8)))
     except (TypeError, ValueError):

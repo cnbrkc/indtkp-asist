@@ -157,6 +157,12 @@ Loglar gösterdi ki bazı yoğun kanallarda mesaj, Telegram tarafından hesaba *
 - Aynı kaynak/mesaj ID'si canlı olaydan, taramadan veya taramadan tekrar gelirse tek kez işlenir; devam eden gönderim de bu korumaya dahildir.
 - `FloodWait` süresi kısaltılmaz. Hata ya da Telethon'un kısa beklemeleri nedeniyle yavaşlayan yoklama sonrası tarama aralığı kademeli artırılır (en fazla 300 sn); canlı dinleme devam eder.
 - Geçmiş sorgusu başarısızsa tarama imleci ilerletilmez; bir turda 30'dan fazla yeni mesaj olması kalanları düşürmez.
+- **Kopukluk sonrası geriye tarama (restart, yeniden başlatma, duraklama):** bot yalnızca
+  **son 15 dakikadaki** mesajları (en fazla 100) toplar; daha eski birikim bildirilmez.
+  Önce restart sırasında yedeklenen kaynak imleci (`source_cursors`) kullanılır; imleç pencereden
+  yeniyse kaldığı yerden devam edilir, pencereden eskiyse (ör. yedek saatler önce alınmışsa)
+  pencerenin başına atlanır. Aynı sınır çalışırken uzun bir duraklamadan (ağ kopması, uzun
+  `FloodWait`) sonra da uygulanır. Süre: `"fast_poll_backfill_minutes": 15` (1–120 dk).
 - Logda `⚡ Hızlı tarama yeni mesajı yakaladı` satırı, Telegram'ın geciktirdiği ve taramanın kurtardığı mesajları gösterir.
 
 

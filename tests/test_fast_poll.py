@@ -154,9 +154,15 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         async def get_input_entity(client_self, chat_id):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
 
+        polls = {"n": 0}
+
         async def call(client_self, request):
+            polls["n"] += 1
+            # İlk tur: backlog kaynağı kayıtlı cursor'ına (1) eşit → geçmiş istenmez.
+            # Sonraki turlarda 1000'e sıçrar → normal (30'luk, eskiden-yeniye) yol.
             return SimpleNamespace(dialogs=[
-                SimpleNamespace(peer=utils.get_peer(chat_id), top_message=1000 if chat_id == backlog_chat else 1)
+                SimpleNamespace(peer=utils.get_peer(chat_id),
+                                top_message=(1000 if polls["n"] > 1 else 1) if chat_id == backlog_chat else 1)
                 for chat_id in chat_ids
             ])
 
@@ -171,7 +177,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
                                   date=now, message="çay other source unique")]
 
         async def run_until_disconnected(client_self):
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(2.4)
             for _ in range(200):
                 if bot.STATS["forwarded"] >= 31:
                     break
@@ -180,7 +186,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         config = self._write_config(
             fast_poll=True, fast_poll_seconds=1, dedup_enabled=False,
             source_chats=["@src0", "@src1"],
-            source_cursors={str(chat_ids[0]): 0, str(chat_ids[1]): 0},
+            source_cursors={str(backlog_chat): 1, str(max(chat_ids)): 0},
         )
         self.addCleanup(os.unlink, config)
         with mock.patch.object(ti.FakeClient, "get_entity", get_entity, create=True), \
@@ -191,8 +197,9 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
                                SimpleNamespace(get=lambda *a, **k: None), create=True), \
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
-        self.assertEqual(fetches, [(backlog_channel, bot.FAST_POLL_BATCH_LIMIT, True),
-                                   (other_channel, bot.FAST_POLL_BATCH_LIMIT, True)])
+        # Diğer kaynak (cursor 0, kayıtlı) yaş sınırlı pencereyle, backlog kaynağı 30'luk dilimle taranır.
+        self.assertEqual(fetches, [(other_channel, bot.FAST_POLL_BACKFILL_LIMIT, False),
+                                   (backlog_channel, bot.FAST_POLL_BATCH_LIMIT, True)])
         self.assertEqual(bot.STATS["forwarded"], 31, "30-item batch + diğer kaynağın iletisi tamamlanmalı")
         self.assertEqual(len([item for item in client.delivered if item[0] != "me"]), 31)
 
@@ -521,11 +528,113 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected), \
              mock.patch.object(bot.asyncio, "sleep", sleep):
             client = self._run_main(config)
-        # Geçici history hatası cursor'ı ilerletmez; ikinci deneme 30'luk
-        # oldest-first sayfayı, sonraki tur kalan 10 mesajı alır.
-        self.assertEqual(fetches[:3], [(0, 30), (0, 30), (30, 30)])
+        # Geçici history hatası cursor'ı ilerletmez; ikinci deneme (kayıtlı cursor için
+        # yaş sınırlı pencere) ilk 30 mesajı, sonraki tur kalan 10 mesajı alır.
+        self.assertEqual(fetches[:3], [(0, 100), (0, 100), (30, 30)])
         self.assertEqual(len([item for item in client.delivered if item[0] != "me"]), 40)
         self.assertFalse(bot.SOURCE_IN_FLIGHT)
+
+    # --- Restart / duraklama sonrası geriye tarama: yaş sınırı (varsayılan 15 dk) ---
+
+    def _run_resume_scenario(self, *, saved_cursor, tops, ages, expect_deliveries, run_seconds=3.4,
+                             extra_config=None):
+        """Kayıtlı cursor ile açılış. tops: tur başına top_message (son değer tekrar edilir);
+        ages: {mesaj_id: yaş_saniye}. Döner: (client, get_messages çağrıları)."""
+        test = self
+        calls = []
+        real_sleep = asyncio.sleep
+        chat_id = -2001111111111
+
+        def messages_at(now):
+            return [types.Message(id=mid, peer_id=types.PeerChannel(channel_id), post=True,
+                                  date=now - datetime.timedelta(seconds=age), message=f"çay ürün {mid}")
+                    for mid, age in ages.items()]
+
+        channel_id = utils.get_peer(chat_id).channel_id
+
+        async def get_input_entity(client_self, cid):
+            return types.InputPeerChannel(channel_id=channel_id, access_hash=1)
+
+        async def call(client_self, request):
+            top = tops[min(test.polls, len(tops) - 1)]
+            test.polls += 1
+            return SimpleNamespace(dialogs=[SimpleNamespace(peer=utils.get_peer(chat_id), top_message=top)])
+
+        async def get_messages(client_self, peer, min_id=0, limit=30, max_id=0, reverse=False):
+            calls.append({"min_id": min_id, "limit": limit, "max_id": max_id, "reverse": reverse})
+            msgs = messages_at(datetime.datetime.now(datetime.timezone.utc))
+            top = tops[min(max(test.polls - 1, 0), len(tops) - 1)]
+            msgs = [m for m in msgs if m.id <= top]
+            if max_id:
+                return sorted([m for m in msgs if m.id < max_id], key=lambda m: -m.id)[:limit]
+            return sorted([m for m in msgs if m.id > min_id], key=lambda m: m.id)[:limit]
+
+        async def run_until_disconnected(client_self):
+            waited = 0.0
+            while waited < run_seconds:
+                await real_sleep(0.05)
+                waited += 0.05
+                if len(client_self.delivered) >= expect_deliveries and waited > 1.2:
+                    break
+
+        config = self._write_config(fast_poll=True, fast_poll_seconds=1, dedup_enabled=False,
+                                    source_cursors={str(chat_id): saved_cursor}, **(extra_config or {}))
+        self.addCleanup(os.unlink, config)
+        with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
+             mock.patch.object(ti.FakeClient, "__call__", call, create=True), \
+             mock.patch.object(ti.FakeClient, "get_messages", get_messages, create=True), \
+             mock.patch.object(ti.FakeClient, "_mb_entity_cache", SimpleNamespace(get=lambda *a, **k: None), create=True), \
+             mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
+            client = self._run_main(config)
+        return client, calls
+
+    def test_stale_saved_cursor_replays_only_recent_window(self):
+        # Kayıtlı cursor (5) çok eski: 6-7 numaralı mesajlar 2 saat önceki. Yalnızca son
+        # 15 dk içindeki 8-10 bildirilir; cursor'dan itibaren tam geçmiş çekilmez.
+        client, calls = self._run_resume_scenario(
+            saved_cursor=5, tops=[10],
+            ages={10: 5, 9: 200, 8: 600, 7: 7200, 6: 7500}, expect_deliveries=3)
+        delivered = list(client.delivered)
+        self.assertEqual(len(delivered), 3, "yalnızca 15 dk içindeki 3 mesaj bildirilmeli")
+        self.assertEqual(calls[0]["max_id"], 11, "kayıtlı cursor önce yaş sınırlı pencere yolundan geçmeli")
+        self.assertEqual(calls[0]["limit"], bot.FAST_POLL_BACKFILL_LIMIT)
+        self.assertFalse(any(c["reverse"] and c["min_id"] == 5 for c in calls),
+                         "eski cursor'dan başlayıp tüm birikimi çekmemeli")
+
+    def test_recent_saved_cursor_is_kept_and_not_replayed(self):
+        # Kopukluk kısa: cursor (8) pencere içinde. 8 zaten bildirilmişti; yalnızca 9-10 gelir.
+        client, calls = self._run_resume_scenario(
+            saved_cursor=8, tops=[10], ages={10: 5, 9: 60, 8: 120, 7: 180}, expect_deliveries=2)
+        delivered = list(client.delivered)
+        self.assertEqual(len(delivered), 2, "cursor'dan sonraki 2 mesaj bildirilmeli, 8 tekrar bildirilmemeli")
+
+    def test_saved_cursor_without_new_messages_makes_no_history_request(self):
+        client, calls = self._run_resume_scenario(
+            saved_cursor=10, tops=[10], ages={10: 5}, expect_deliveries=0, run_seconds=1.6)
+        self.assertEqual(calls, [], "kaçırılan mesaj yoksa geçmiş istenmemeli")
+        self.assertEqual(list(client.delivered), [])
+
+    def test_pause_gap_skips_old_backlog_and_delivers_recent_only(self):
+        # Çalışırken duraklama: cursor 10 iken top 20'ye sıçradı; 11-13 saatler önceki,
+        # 14-20 taze. Eski birikim toplu bildirilmez; yalnızca taze 7 mesaj gider.
+        ages = {20: 3, 19: 8, 18: 20, 17: 40, 16: 60, 15: 90, 14: 120, 13: 9000, 12: 9100, 11: 9200, 10: 9300}
+        client, calls = self._run_resume_scenario(
+            saved_cursor=10, tops=[10, 20], ages=ages, expect_deliveries=7, run_seconds=4.5)
+        delivered = list(client.delivered)
+        self.assertEqual(len(delivered), 7, "yalnızca 15 dk içindeki mesajlar bildirilmeli")
+
+    def test_backfill_window_is_configurable_and_defaults_to_fifteen_minutes(self):
+        original = bot.FAST_POLL_BACKFILL_MAX_AGE
+        self.addCleanup(setattr, bot, "FAST_POLL_BACKFILL_MAX_AGE", original)
+        self.assertEqual(original, 900.0)
+        bot.apply_runtime_config({})
+        self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
+        bot.apply_runtime_config({"fast_poll_backfill_minutes": 5})
+        self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 300.0)
+        bot.apply_runtime_config({"fast_poll_backfill_minutes": 9999})
+        self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 7200.0)
+        bot.apply_runtime_config({"fast_poll_backfill_minutes": "bozuk"})
+        self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
 
     def test_fast_poll_can_be_disabled(self):
         config = self._write_config(fast_poll=False)
