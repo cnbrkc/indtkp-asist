@@ -15,6 +15,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
+import listener  # noqa: E402
 import dedupmatch  # noqa: E402
 import test_integration as ti  # noqa: E402
 from telethon import events, utils  # noqa: E402
@@ -41,13 +43,13 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
 
         async def call(client_self, request):
             test.polls += 1
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             top = 10 if test.polls == 1 else 11      # ilk tur başlangıç, ikinci turda yeni mesaj
             peer = utils.get_peer(chat_id)
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=top)])
 
         async def get_messages(client_self, peer, min_id=0, limit=30, max_id=0, reverse=False):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             return [test._make_message(channel_id, 11, "çay 5 TL fırsat")]
 
@@ -66,8 +68,8 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
 
         self.assertGreaterEqual(self.polls, 2)
         self.assertEqual(len(client.delivered), 1, "tarama mesajı tam bir kez işlemeli")
-        self.assertEqual(bot.STATS["matched"], 1)
-        chat_id = sorted(bot.SOURCE_IDS)[0]
+        self.assertEqual(appstate.STATS["matched"], 1)
+        chat_id = sorted(appstate.SOURCE_IDS)[0]
         # Aynı mesaj sonradan canlı olayla gelirse tekrar işlenmemeli
         late_live = SimpleNamespace(chat_id=chat_id, id=11)
         self.assertTrue(bot.live_event_should_skip(late_live))
@@ -130,7 +132,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         self.assertGreaterEqual(entity_attempts[first_source], 2, "geçici hata sonraki turda tekrar denenmeli")
         self.assertEqual(history_sources, set(channel_ids), "bir kaynak hatası diğerinin poll'unu engellememeli")
         self.assertEqual(len([item for item in client.delivered if item[0] != "me"]), 2,
-                         f"poll teslimi yok; stats={bot.STATS}; logs={logs.output}")
+                         f"poll teslimi yok; stats={appstate.STATS}; logs={logs.output}")
         self.assertTrue(any("FloodWait" in line and "diğer kaynaklar sürüyor" in line
                             for line in logs.output))
 
@@ -179,7 +181,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         async def run_until_disconnected(client_self):
             await asyncio.sleep(2.4)
             for _ in range(200):
-                if bot.STATS["forwarded"] >= 31:
+                if appstate.STATS["forwarded"] >= 31:
                     break
                 await asyncio.sleep(0)
 
@@ -198,9 +200,9 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
         # Diğer kaynak (cursor 0, kayıtlı) yaş sınırlı pencereyle, backlog kaynağı 30'luk dilimle taranır.
-        self.assertEqual(fetches, [(other_channel, bot.FAST_POLL_BACKFILL_LIMIT, False),
-                                   (backlog_channel, bot.FAST_POLL_BATCH_LIMIT, True)])
-        self.assertEqual(bot.STATS["forwarded"], 31, "30-item batch + diğer kaynağın iletisi tamamlanmalı")
+        self.assertEqual(fetches, [(other_channel, appstate.FAST_POLL_BACKFILL_LIMIT, False),
+                                   (backlog_channel, appstate.FAST_POLL_BATCH_LIMIT, True)])
+        self.assertEqual(appstate.STATS["forwarded"], 31, "30-item batch + diğer kaynağın iletisi tamamlanmalı")
         self.assertEqual(len([item for item in client.delivered if item[0] != "me"]), 31)
 
     def test_flood_wait_is_not_capped_and_poll_interval_backs_off(self):
@@ -256,12 +258,12 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
 
         async def call(client_self, request):
             test.polls += 1
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=10)])
 
         async def get_messages(client_self, peer, min_id=0, limit=30, max_id=0, reverse=False):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
             return [make(channel_id, 10, "çay 5 TL fırsat", now),
@@ -284,9 +286,9 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         # Yalnızca 30 dk içindeki mesajlar kalır; aynı ürün dedup ile tek teslim olur.
         destination_deliveries = [item for item in client.delivered if item[0] != "me"]
         self.assertEqual(len(destination_deliveries), 1, "taze backlog yakalanmalı, aynı ürün birleşmeli")
-        self.assertEqual(bot.STATS["deduped"], 1)
-        chat_id = sorted(bot.SOURCE_IDS)[0]
-        self.assertIn(chat_id, [int(k) for k in bot.CURSOR_RAM.keys()] if hasattr(bot, "CURSOR_RAM") else [])
+        self.assertEqual(appstate.STATS["deduped"], 1)
+        chat_id = sorted(appstate.SOURCE_IDS)[0]
+        self.assertIn(chat_id, [int(k) for k in appstate.CURSOR_RAM])
 
     def test_backfill_same_product_burst_merges_to_one_delivery(self):
         # Aynı fırsatın birçok kopyası geriye taramayla aynı anda gelse bile
@@ -297,12 +299,12 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
 
         async def call(client_self, request):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=10)])
 
         async def get_messages(client_self, peer, min_id=0, limit=30, max_id=0, reverse=False):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
             return [types.Message(id=i, peer_id=types.PeerChannel(channel_id), post=True,
@@ -319,11 +321,11 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "_mb_entity_cache",
                                SimpleNamespace(get=lambda *a, **k: None), create=True), \
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected), \
-             mock.patch.object(bot, "DEDUP_EDIT_MIN_INTERVAL", 0):
+             mock.patch.object(appstate, "DEDUP_EDIT_MIN_INTERVAL", 0):
             client = self._run_main(config)
         # Aynı ürün 5 kaynak iletisinde görünse de tek bildirim üretilmeli.
         self.assertEqual(len([item for item in client.delivered if item[0] != "me"]), 1)
-        self.assertEqual(bot.STATS["deduped"], 4)
+        self.assertEqual(appstate.STATS["deduped"], 4)
 
     def test_backfill_unique_opportunities_are_delivered_serially(self):
         # Açılışta bulunan benzersiz fırsatların hepsi iletilir ama geriye
@@ -332,12 +334,12 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
 
         async def call(client_self, request):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=10)])
 
         async def get_messages(client_self, peer, min_id=0, limit=30, max_id=0, reverse=False):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
             return [types.Message(id=i, peer_id=types.PeerChannel(channel_id), post=True,
@@ -375,7 +377,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
 
         async def call(client_self, request):
             dialogs = [SimpleNamespace(peer=utils.get_peer(chat_id), top_message=250)
-                       for chat_id in sorted(bot.SOURCE_IDS)]
+                       for chat_id in sorted(appstate.SOURCE_IDS)]
             return SimpleNamespace(dialogs=dialogs)
 
         async def get_messages(client_self, peer, min_id=0, limit=30, max_id=0, reverse=False):
@@ -398,9 +400,9 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
                                SimpleNamespace(get=lambda *a, **k: None), create=True), \
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
-        self.assertEqual(len(bot.SOURCE_IDS), 24)
+        self.assertEqual(len(appstate.SOURCE_IDS), 24)
         self.assertEqual(len(fetches), 24)
-        self.assertTrue(all(limit == bot.FAST_POLL_BACKFILL_LIMIT and max_id == 251
+        self.assertTrue(all(limit == appstate.FAST_POLL_BACKFILL_LIMIT and max_id == 251
                             for _, limit, max_id, _ in fetches))
         self.assertEqual(client.delivered, [])
 
@@ -441,7 +443,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         # FloodWait aralığı korur; sonraki HIZLI başarılı yoklamalar aralığı
         # yarıya indirerek gevşetir (300 sn'de takılı kalmaz, birden de açılmaz).
         self.assertEqual(sleeps[:4], [3, 181, 181, 90.5])
-        self.assertLessEqual(bot.POLL_TELEMETRY["interval"], 45.25)
+        self.assertLessEqual(appstate.POLL_TELEMETRY["interval"], 45.25)
 
     def test_telethon_internal_wait_also_slows_polling(self):
         done = asyncio.Event()
@@ -476,7 +478,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         with mock.patch.object(ti.FakeClient, "get_input_entity", get_input_entity, create=True), \
              mock.patch.object(ti.FakeClient, "__call__", call, create=True), \
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected), \
-             mock.patch.object(bot, "time", clock), \
+             mock.patch.object(listener, "time", clock), \
              mock.patch.object(bot.asyncio, "sleep", sleep):
             self._run_main(config)
         self.assertEqual(sleeps[:2], [3, 10])
@@ -498,7 +500,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         async def call(client_self, request):
             test.polls += 1
             top = 10 if test.polls == 1 else 50
-            chat_id = next(iter(bot.SOURCE_IDS))
+            chat_id = next(iter(appstate.SOURCE_IDS))
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=utils.get_peer(chat_id), top_message=top)])
 
         async def get_messages(client_self, peer, min_id=0, limit=30, max_id=0, reverse=False):
@@ -515,7 +517,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
             # The bounded page leaves another 10-message page for the next poll.
             await real_sleep(1.2)
             for _ in range(100):
-                if bot.STATS["forwarded"] >= 40:
+                if appstate.STATS["forwarded"] >= 40:
                     break
                 await real_sleep(0.01)
 
@@ -532,7 +534,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         # yaş sınırlı pencere) ilk 30 mesajı, sonraki tur kalan 10 mesajı alır.
         self.assertEqual(fetches[:3], [(0, 100), (0, 100), (30, 30)])
         self.assertEqual(len([item for item in client.delivered if item[0] != "me"]), 40)
-        self.assertFalse(bot.SOURCE_IN_FLIGHT)
+        self.assertFalse(appstate.SOURCE_IN_FLIGHT)
 
     # --- Restart / duraklama sonrası geriye tarama: yaş sınırı (varsayılan 15 dk) ---
 
@@ -597,7 +599,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         delivered = list(client.delivered)
         self.assertEqual(len(delivered), 3, "yalnızca 15 dk içindeki 3 mesaj bildirilmeli")
         self.assertEqual(calls[0]["max_id"], 11, "kayıtlı cursor önce yaş sınırlı pencere yolundan geçmeli")
-        self.assertEqual(calls[0]["limit"], bot.FAST_POLL_BACKFILL_LIMIT)
+        self.assertEqual(calls[0]["limit"], appstate.FAST_POLL_BACKFILL_LIMIT)
         self.assertFalse(any(c["reverse"] and c["min_id"] == 5 for c in calls),
                          "eski cursor'dan başlayıp tüm birikimi çekmemeli")
 
@@ -624,23 +626,23 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         self.assertEqual(len(delivered), 7, "yalnızca 15 dk içindeki mesajlar bildirilmeli")
 
     def test_backfill_window_is_configurable_and_defaults_to_fifteen_minutes(self):
-        original = bot.FAST_POLL_BACKFILL_MAX_AGE
+        original = appstate.FAST_POLL_BACKFILL_MAX_AGE
         self.addCleanup(setattr, bot, "FAST_POLL_BACKFILL_MAX_AGE", original)
         self.assertEqual(original, 900.0)
         bot.apply_runtime_config({})
-        self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
+        self.assertEqual(appstate.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
         bot.apply_runtime_config({"fast_poll_backfill_minutes": 5})
-        self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 300.0)
+        self.assertEqual(appstate.FAST_POLL_BACKFILL_MAX_AGE, 300.0)
         bot.apply_runtime_config({"fast_poll_backfill_minutes": 9999})
-        self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 7200.0)
+        self.assertEqual(appstate.FAST_POLL_BACKFILL_MAX_AGE, 7200.0)
         bot.apply_runtime_config({"fast_poll_backfill_minutes": "bozuk"})
-        self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
+        self.assertEqual(appstate.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
 
     def test_fast_poll_can_be_disabled(self):
         config = self._write_config(fast_poll=False)
         self.addCleanup(os.unlink, config)
         client = self._run_main(config)
-        self.assertFalse(bot.FAST_POLL)
+        self.assertFalse(appstate.FAST_POLL)
         self.assertEqual(client.delivered, [])
 
 
@@ -659,20 +661,20 @@ class PollIntervalRecoveryTest(unittest.TestCase):
 
 class LiveVsPollDedupTest(unittest.TestCase):
     def setUp(self):
-        bot.LIVE_SEEN.clear()
-        bot.POLL_DISPATCHED.clear()
+        appstate.LIVE_SEEN.clear()
+        appstate.POLL_DISPATCHED.clear()
 
     def test_live_first_then_poll_is_skipped_by_poller_check(self):
         event = SimpleNamespace(chat_id=-1001, id=5)
         self.assertFalse(bot.live_event_should_skip(event))
-        self.assertIn((-1001, 5), bot.LIVE_SEEN)       # tarama bunu görüp atlayacak
+        self.assertIn((-1001, 5), appstate.LIVE_SEEN)       # tarama bunu görüp atlayacak
 
     def test_poll_first_then_live_is_skipped(self):
-        bot._remember(bot.POLL_DISPATCHED, -1001, 7)
+        bot._remember(appstate.POLL_DISPATCHED, -1001, 7)
         self.assertTrue(bot.live_event_should_skip(SimpleNamespace(chat_id=-1001, id=7)))
 
     def test_poll_event_itself_is_not_skipped(self):
-        bot._remember(bot.POLL_DISPATCHED, -1001, 9)
+        bot._remember(appstate.POLL_DISPATCHED, -1001, 9)
         self.assertFalse(bot.live_event_should_skip(SimpleNamespace(chat_id=-1001, id=9, _fast_poll=True)))
 
     def test_real_event_object_accepts_fast_poll_flag(self):

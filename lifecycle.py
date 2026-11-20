@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import appstate
+import time
 from runtime import Runtime
 
 log = logging.getLogger("telegram-filter")
@@ -32,22 +34,22 @@ async def private_status_changed(rt: Runtime, status: str, detail: str) -> None:
     else:
         return
     try:
-        await rt.client.send_message(rt.bot.DESTINATION, text)
+        await rt.client.send_message(appstate.DESTINATION, text)
     except Exception as exc:  # noqa: BLE001
         log.warning("Özel komut durum uyarısı gruba gönderilemedi: %s", type(exc).__name__)
 
 
 async def prepare_scheduled_restart(rt: Runtime) -> bool:
-    rt.bot.RESTARTING = True
-    drain_deadline = rt.bot.time.time() + 6
-    while rt.bot.time.time() < drain_deadline and (rt.bot.SOURCE_IN_FLIGHT or rt.poll_delivery_tasks):
+    appstate.RESTARTING = True
+    drain_deadline = time.time() + 6
+    while time.time() < drain_deadline and (appstate.SOURCE_IN_FLIGHT or rt.poll_delivery_tasks):
         await asyncio.sleep(0.2)
-    if rt.bot.SOURCE_IN_FLIGHT or rt.poll_delivery_tasks:
+    if appstate.SOURCE_IN_FLIGHT or rt.poll_delivery_tasks:
         log.warning("Otomatik restart drain %ss doldu — %s uçuş + %s poll görevi kaldı; güvenli cursor kaydedilip yenileme sürüyor.",
-                    6, len(rt.bot.SOURCE_IN_FLIGHT), len(rt.poll_delivery_tasks))
+                    6, len(appstate.SOURCE_IN_FLIGHT), len(rt.poll_delivery_tasks))
     ok_save, save_note = await rt.bot.cursor_persist_for_restart(rt.store)
     if not ok_save:
-        rt.bot.RESTARTING = False
+        appstate.RESTARTING = False
         log.error("Otomatik restart cursor kaydı başarısız; mevcut süreç dinlemeye devam edecek: %s", save_note)
         return False
     log.info("Otomatik restart cursor'ı kaydedildi: %s", save_note)
@@ -55,5 +57,5 @@ async def prepare_scheduled_restart(rt: Runtime) -> bool:
 
 
 async def resume_after_scheduled_restart_failure(rt: Runtime) -> None:
-    rt.bot.RESTARTING = False
+    appstate.RESTARTING = False
     log.warning("Yeni çalışma başlatılamadı; mevcut süreç kaynakları dinlemeye devam edecek.")

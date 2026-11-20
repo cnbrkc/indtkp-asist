@@ -7,6 +7,7 @@ from collections.abc import Sequence
 
 from telethon import events
 
+import appstate
 from analysis import chunk_text
 from confutil import config_flag
 from private_bot import PrivateControlEvent
@@ -21,17 +22,17 @@ def is_control_event(rt: Runtime, event: events.NewMessage.Event) -> bool:
     if isinstance(event, PrivateControlEvent):
         return config_flag(rt.store.config.get("private_control"), False)
     if config_flag(rt.store.config.get("private_control"), False):
-        return event.chat_id == rt.bot.SELF_ID  # emergency fallback, not the offer group
-    return event.chat_id in rt.bot.CONTROL_IDS
+        return event.chat_id == appstate.SELF_ID  # emergency fallback, not the offer group
+    return event.chat_id in appstate.CONTROL_IDS
 
 
 def is_admin_event(rt: Runtime, event: events.NewMessage.Event) -> bool:
     """Kayıtlı Mesajlar'a yazan hesabın sahibi; gruptaysa admin listesi geçerli."""
     if isinstance(event, PrivateControlEvent):
-        return event.sender_id in (rt.bot.ADMIN_IDS | {rt.bot.SELF_ID}) and event.chat_id == event.sender_id
-    if event.chat_id == rt.bot.SELF_ID:
+        return event.sender_id in (appstate.ADMIN_IDS | {appstate.SELF_ID}) and event.chat_id == event.sender_id
+    if event.chat_id == appstate.SELF_ID:
         return True
-    return event.sender_id in rt.bot.ADMIN_IDS
+    return event.sender_id in appstate.ADMIN_IDS
 
 
 async def delete_command_messages(rt: Runtime, chat_id: int, message_ids: Sequence[int]) -> None:
@@ -50,7 +51,7 @@ async def delete_command_messages(rt: Runtime, chat_id: int, message_ids: Sequen
         log.warning("Eski komut mesajları silinemedi (chat=%s, adet=%d): %s: %s",
                     chat_id, len(ids), type(exc).__name__, exc)
         return
-    rt.bot.STATS["cleaned_commands"] += len(ids)
+    appstate.STATS["cleaned_commands"] += len(ids)
     log.debug("Komut sohbeti temizlendi: chat=%s, %d mesaj.", chat_id, len(ids))
 
 
@@ -68,7 +69,7 @@ async def control_reply(rt: Runtime, event: events.NewMessage.Event, text: str, 
         sent_ids += sent_message_ids(await event.reply(chunk))
     # Keep private dialogue history; never let the user-client cleanup
     # delete a DM offer or a bot message with a colliding numeric ID.
-    if isinstance(event, PrivateControlEvent) or not rt.bot.CLEAN_COMMANDS:
+    if isinstance(event, PrivateControlEvent) or not appstate.CLEAN_COMMANDS:
         return sent_ids
     chat_id = int(getattr(event, "chat_id", 0) or 0)
     current = [int(getattr(event, "id", 0) or 0), *sent_ids]

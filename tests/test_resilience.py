@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bot
+import appstate
 import commandtext
 import dedupmatch
 import header as header_mod
@@ -21,7 +22,7 @@ class IncompletePriceTests(unittest.TestCase):
         self.assertFalse(pf.price_matches(text, 99999)[0])
         self.assertFalse(commandtext.dm_should_send({'dm_price_max': ['99999']}, text))
         self.assertIsNone(dedupmatch.offer_terms(event)[0])
-        with patch.object(bot, 'SMART_HEADER', True):
+        with patch.object(appstate, 'SMART_HEADER', True):
             header = bot.compose_message(event)['header']
         # Güvenilir fiyat yok: üst satırda uzun uyarı değil yalnızca ❓ (başlık sonda).
         price, _ = header_mod.split_header_line(header)
@@ -119,7 +120,7 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
         path = self._write_config(source_chats=['@firsatz'], include_keywords=[], smart_header=True)
         self.addCleanup(os.unlink, path)
         self.client = self._run_main(path)
-        self.source = next(iter(bot.SOURCE_IDS))
+        self.source = next(iter(appstate.SOURCE_IDS))
 
     def event(self, text, mid, poll=False, source=None):
         event = FakeEvent(source or self.source, 7, text, message_id=mid, media=False)
@@ -132,17 +133,17 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
     def test_metadata_changes_preserve_canonical_price_body_and_sources(self):
         text = self.TITLE + '\nFiyat: 300 TL / 2 adet alımda 200 TL\nSatıcı: Mağaza A'
         second = -1001111111112
-        bot.SOURCE_IDS.add(second)
-        bot.SOURCES.append({'id': second, 'name': 'Diğer Kaynak'})
+        appstate.SOURCE_IDS.add(second)
+        appstate.SOURCES.append({'id': second, 'name': 'Diğer Kaynak'})
         async def run():
-            with patch.object(bot, 'DEDUP_EDIT_MIN_INTERVAL', 0):
+            with patch.object(appstate, 'DEDUP_EDIT_MIN_INTERVAL', 0):
                 await self.send(self.event(text, 1))
-                key, first = next(iter(bot.DEDUP_CACHE.items()))
+                key, first = next(iter(appstate.DEDUP_CACHE.items()))
                 original_offer = first['offer']
                 original_body = first['text']
                 copy = self.TITLE.replace(' ', '  ') + '\n💰 Fiyat: 300₺ / 2 adet alımda 200₺\nSatıcı: Mağaza B'
                 await self.send(self.event(copy, 2, True, second))
-                entry = bot.DEDUP_CACHE[key]
+                entry = appstate.DEDUP_CACHE[key]
                 self.assertEqual(entry['offer'], original_offer)
                 self.assertEqual(entry['count'], 2)
                 self.assertIn('Diğer Kaynak', entry['sources'])
@@ -161,8 +162,8 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
             await self.send(self.event(self.TITLE + '\nFiyat: 300 TL\nKupon: KOD20', 2))
         asyncio.run(run())
         self.assertEqual(len(self.client.delivered), 1)
-        self.assertEqual(len(bot.DEDUP_CACHE), 1)
-        self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['count'], 2)
+        self.assertEqual(len(appstate.DEDUP_CACHE), 1)
+        self.assertEqual(next(iter(appstate.DEDUP_CACHE.values()))['count'], 2)
 
     def test_poll_live_order_and_concurrent_same_source_claim(self):
         async def run():
@@ -171,17 +172,17 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
                 events = [self.event(self.TITLE + '\nFiyat: 300 TL', mid, first_poll),
                           self.event(self.TITLE + '\nFiyat: 300 TL', mid, not first_poll)]
                 await asyncio.gather(*(self.send(e) for e in events))
-        with patch.object(bot, 'DEDUP_EDIT_MIN_INTERVAL', 0):
+        with patch.object(appstate, 'DEDUP_EDIT_MIN_INTERVAL', 0):
             asyncio.run(run())
         self.assertEqual(len(self.client.delivered), 1)
-        self.assertEqual(bot.STATS['seen'], 2)
-        self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['count'], 2)
-        self.assertFalse(bot.SOURCE_IN_FLIGHT)
+        self.assertEqual(appstate.STATS['seen'], 2)
+        self.assertEqual(next(iter(appstate.DEDUP_CACHE.values()))['count'], 2)
+        self.assertFalse(appstate.SOURCE_IN_FLIGHT)
 
     def test_distinct_sources_wait_for_pending_send(self):
         async def run():
             second_source = -1001111111112
-            bot.SOURCE_IDS.add(second_source)
+            appstate.SOURCE_IDS.add(second_source)
             started, release = asyncio.Event(), asyncio.Event()
             original = self.client.send_message
             calls = 0
@@ -191,21 +192,21 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
                 started.set()
                 await release.wait()
                 return await original(*args, **kwargs)
-            with patch.object(self.client, 'send_message', slow_send), patch.object(bot, 'DEDUP_EDIT_MIN_INTERVAL', 0):
+            with patch.object(self.client, 'send_message', slow_send), patch.object(appstate, 'DEDUP_EDIT_MIN_INTERVAL', 0):
                 first = asyncio.create_task(self.send(self.event(self.TITLE + '\n300 TL', 1)))
                 try:
                     await asyncio.wait_for(started.wait(), 2)
                     second = asyncio.create_task(self.send(self.event(self.TITLE + '\n300 TL', 2, True, second_source)))
                     await asyncio.sleep(0.01)
                     self.assertEqual(calls, 1)
-                    self.assertTrue(next(iter(bot.DEDUP_CACHE.values()))['pending'])
+                    self.assertTrue(next(iter(appstate.DEDUP_CACHE.values()))['pending'])
                 finally:
                     release.set()
                 await asyncio.wait_for(asyncio.gather(first, second), 2)
                 self.assertEqual(calls, 1)
         asyncio.run(run())
         self.assertEqual(len(self.client.delivered), 1)
-        self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['count'], 2)
+        self.assertEqual(next(iter(appstate.DEDUP_CACHE.values()))['count'], 2)
 
     def test_new_lower_price_after_pending_send_is_not_lost(self):
         async def run():
@@ -226,12 +227,12 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
                 await asyncio.wait_for(asyncio.gather(first, second), 2)
         asyncio.run(run())
         self.assertEqual(len(self.client.delivered), 2)
-        self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['offer'][0], 250)
+        self.assertEqual(next(iter(appstate.DEDUP_CACHE.values()))['offer'][0], 250)
 
     def test_cache_loss_can_renotify_without_history_reload(self):
         async def run():
             await self.send(self.event(self.TITLE + '\n300 TL', 1))
-            bot.DEDUP_CACHE.clear()
+            appstate.DEDUP_CACHE.clear()
             await self.send(self.event(self.TITLE + '\n300 TL', 2))
         asyncio.run(run())
         self.assertEqual(len(self.client.delivered), 2)
@@ -245,13 +246,13 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
 
     def test_late_low_confidence_copy_cannot_overwrite_reliable_price(self):
         async def run():
-            with patch.object(bot, 'DEDUP_EDIT_MIN_INTERVAL', 0):
+            with patch.object(appstate, 'DEDUP_EDIT_MIN_INTERVAL', 0):
                 await self.send(self.event(self.TITLE + '\nFiyat: 300 TL', 1))
-                offer = next(iter(bot.DEDUP_CACHE.values()))['offer']
+                offer = next(iter(appstate.DEDUP_CACHE.values()))['offer']
                 low = self.TITLE + '\nEski fiyat: 100 TL'
                 self.assertEqual(pf.extract_price(low).confidence, 'low')
                 await self.send(self.event(low, 2))
-                entry = next(iter(bot.DEDUP_CACHE.values()))
+                entry = next(iter(appstate.DEDUP_CACHE.values()))
                 self.assertEqual(entry['offer'], offer)
                 self.assertIn('₺300 — Deneme Pamuk Havlu', entry['text'])
                 self.assertNotIn('Eski fiyat: 100 TL', entry['text'])
@@ -263,11 +264,11 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
                 '\nAçıklama: Kutusu açılmış; aksesuarları tam')
         copy = self.TITLE + '\n300 TL\nKupon: KOD10\nİkinci El: Yeni Gibi'
         async def run():
-            with patch.object(bot, 'DEDUP_EDIT_MIN_INTERVAL', 0):
+            with patch.object(appstate, 'DEDUP_EDIT_MIN_INTERVAL', 0):
                 await self.send(self.event(text, 1))
-                original_offer = next(iter(bot.DEDUP_CACHE.values()))['offer']
+                original_offer = next(iter(appstate.DEDUP_CACHE.values()))['offer']
                 await self.send(self.event(copy, 2))
-                entry = next(iter(bot.DEDUP_CACHE.values()))
+                entry = next(iter(appstate.DEDUP_CACHE.values()))
                 self.assertEqual(entry['offer'], original_offer)
                 self.assertEqual(entry['offer'], (300, ''))
                 self.assertIn(text, entry['text'])
@@ -284,7 +285,7 @@ class FlowResilienceTests(MainHarness, unittest.TestCase):
                 await self.send(self.event(text, mid, mid == 1))
         asyncio.run(run())
         self.assertEqual(len(self.client.delivered), 1)
-        self.assertEqual(len(bot.DEDUP_CACHE), 1)
-        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertEqual(len(appstate.DEDUP_CACHE), 1)
+        entry = next(iter(appstate.DEDUP_CACHE.values()))
         self.assertEqual(entry['offer'], (300, ''))
         self.assertIn('Kupon: KOD10', entry['text'])

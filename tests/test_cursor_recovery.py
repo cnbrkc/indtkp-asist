@@ -14,6 +14,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import test_integration as ti  # noqa: E402
 from telethon import utils  # noqa: E402
 from telethon.tl import types  # noqa: E402
@@ -22,16 +23,16 @@ from telethon.tl import types  # noqa: E402
 class CursorMechanismTest(unittest.TestCase):
     def setUp(self):
         ti.reset_state()
-        bot.CURSOR_RAM.clear()
-        self.addCleanup(lambda: (bot.CURSOR_RAM.clear(), ti.reset_state()))
+        appstate.CURSOR_RAM.clear()
+        self.addCleanup(lambda: (appstate.CURSOR_RAM.clear(), ti.reset_state()))
 
     def test_single_cursor_per_group(self):
         bot._cursor_ensure(-1001)["cursor"] = 100
         bot._cursor_mark_pending(-1001, 101)
         bot._cursor_mark_pending(-1002, 50)
-        self.assertEqual(len(bot.CURSOR_RAM), 2)
-        self.assertEqual(bot.CURSOR_RAM[-1001]["cursor"], 100)
-        self.assertIn(101, bot.CURSOR_RAM[-1001]["pending"])
+        self.assertEqual(len(appstate.CURSOR_RAM), 2)
+        self.assertEqual(appstate.CURSOR_RAM[-1001]["cursor"], 100)
+        self.assertIn(101, appstate.CURSOR_RAM[-1001]["pending"])
 
     def test_cursor_advances_only_contiguously(self):
         cid = -1001
@@ -39,20 +40,20 @@ class CursorMechanismTest(unittest.TestCase):
         # 1521 success
         bot._cursor_mark_pending(cid, 1521)
         bot._cursor_mark_success(cid, 1521)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 1521)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1521)
         # 1522 fail
         bot._cursor_mark_pending(cid, 1522)
         bot._cursor_mark_failed(cid, 1522)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 1521)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1521)
         # 1523 success but gap at 1522 → cursor stays 1521
         bot._cursor_mark_pending(cid, 1523)
         bot._cursor_mark_success(cid, 1523)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 1521)
-        self.assertIn(1523, bot.CURSOR_RAM[cid]["completed"])
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1521)
+        self.assertIn(1523, appstate.CURSOR_RAM[cid]["completed"])
         # 1522 now success → both advance to 1523
         bot._cursor_mark_pending(cid, 1522)
         bot._cursor_mark_success(cid, 1522)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 1523)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1523)
 
     def test_pending_blocks_advance(self):
         cid = -1002
@@ -61,19 +62,19 @@ class CursorMechanismTest(unittest.TestCase):
         bot._cursor_mark_pending(cid, 12)
         # 12 completes before 11 → still blocked
         bot._cursor_mark_success(cid, 12)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 10)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 10)
         bot._cursor_mark_success(cid, 11)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 12)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 12)
 
     def test_load_and_collect(self):
         config = {"source_cursors": {"-1001": 1521, "-1002": 870}}
         bot.cursor_load_from_config(config)
-        self.assertEqual(bot.CURSOR_RAM[-1001]["cursor"], 1521)
+        self.assertEqual(appstate.CURSOR_RAM[-1001]["cursor"], 1521)
         collected = bot.cursor_collect_for_persist()
         self.assertEqual(collected, {"-1001": 1521, "-1002": 870})
 
     def test_uninitialized_live_cursor_is_not_persisted(self):
-        bot.CURSOR_RAM[-1001] = {"cursor": 0, "pending": {17}, "completed": set(),
+        appstate.CURSOR_RAM[-1001] = {"cursor": 0, "pending": {17}, "completed": set(),
                                  "failed": set(), "failed_at": {}, "initialized": False}
         bot._cursor_ensure(-1002)["cursor"] = 44
         self.assertEqual(bot.cursor_collect_for_persist(), {"-1002": 44},
@@ -82,11 +83,11 @@ class CursorMechanismTest(unittest.TestCase):
     def test_fast_poll_backfill_age_is_fifteen_minutes(self):
         # Kopukluk sonrası geriye tarama penceresi 15 dk (eskiden 30 dk; yedek imleç eskiyse
         # saatlerce önceki mesajlar yığılıyordu).
-        self.assertEqual(bot.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
+        self.assertEqual(appstate.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
 
     def test_loaded_cursor_is_marked_for_age_check(self):
         bot.cursor_load_from_config({"source_cursors": {"-1001": 42}})
-        entry = bot.CURSOR_RAM[-1001]
+        entry = appstate.CURSOR_RAM[-1001]
         self.assertEqual(entry["cursor"], 42)
         self.assertTrue(entry["resume_check"], "önceki oturumdan kalan imleç ilk taramada yaş sınırından geçmeli")
         self.assertNotIn("resume_check", bot._cursor_ensure(-2002))
@@ -95,15 +96,15 @@ class CursorMechanismTest(unittest.TestCase):
 class CursorIntegrationTest(ti.MainHarness, unittest.TestCase):
     def setUp(self):
         ti.reset_state()
-        bot.CURSOR_RAM.clear()
-        self.addCleanup(lambda: (bot.CURSOR_RAM.clear(), ti.reset_state()))
+        appstate.CURSOR_RAM.clear()
+        self.addCleanup(lambda: (appstate.CURSOR_RAM.clear(), ti.reset_state()))
 
     def test_bootstrap_no_replay(self):
         """İlk kurulumda yalnızca sınırlı/yaş filtreli geçmiş okunur; eski ileti gönderilmez."""
         async def get_input_entity(client_self, chat_id):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
         async def call(client_self, request):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=10)])
         fetches = []
@@ -121,7 +122,7 @@ class CursorIntegrationTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
         self.assertEqual(len(client.delivered), 0)
-        self.assertEqual(fetches, [(0, bot.FAST_POLL_BACKFILL_LIMIT, 11, False)])
+        self.assertEqual(fetches, [(0, appstate.FAST_POLL_BACKFILL_LIMIT, 11, False)])
 
     def test_cursor_based_recovery_delivers_after_bootstrap(self):
         """Cursor sonrası yeni mesajlar cursor’dan alınır, sayfalı."""
@@ -130,13 +131,13 @@ class CursorIntegrationTest(ti.MainHarness, unittest.TestCase):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
         async def call(client_self, request):
             polls[0] += 1
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             top = 10 if polls[0] == 1 else 13
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=top)])
         async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
             # After bootstrap cur=10, second poll should fetch min_id=10 → 11,12,13
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
             if min_id == 10:
@@ -159,8 +160,8 @@ class CursorIntegrationTest(ti.MainHarness, unittest.TestCase):
 class CursorGapAndBloatTest(unittest.TestCase):
     def setUp(self):
         ti.reset_state()
-        bot.CURSOR_RAM.clear()
-        self.addCleanup(lambda: (bot.CURSOR_RAM.clear(), ti.reset_state()))
+        appstate.CURSOR_RAM.clear()
+        self.addCleanup(lambda: (appstate.CURSOR_RAM.clear(), ti.reset_state()))
 
     def test_telegram_id_gap_skipped(self):
         """Silinmiş ID (1522 yok) — live tek başına atlamaz, cursor 1521’de kalır."""
@@ -169,8 +170,8 @@ class CursorGapAndBloatTest(unittest.TestCase):
         bot._cursor_mark_pending(cid, 1523)
         bot._cursor_mark_success(cid, 1523)
         # poll onayı olmadan gap atlanmaz — güvenli davranış
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 1521)
-        self.assertNotIn(1522, bot.CURSOR_RAM[cid]["completed"])
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1521)
+        self.assertNotIn(1522, appstate.CURSOR_RAM[cid]["completed"])
 
     def test_failed_blocks_then_gap_timeout(self):
         cid = -1002
@@ -179,12 +180,12 @@ class CursorGapAndBloatTest(unittest.TestCase):
         bot._cursor_mark_failed(cid, 11)
         bot._cursor_mark_pending(cid, 12)
         bot._cursor_mark_success(cid, 12)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 10)  # fail blokluyor
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 10)  # fail blokluyor
         # failed timeout yok — hatayı gizlemeden bloklar
         # poll retry ile failed tekrar denenir (fast_poll_loop)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 10)
-        self.assertIn(11, bot.CURSOR_RAM[cid]["failed"])
-        self.assertIn(12, bot.CURSOR_RAM[cid]["completed"])
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 10)
+        self.assertIn(11, appstate.CURSOR_RAM[cid]["failed"])
+        self.assertIn(12, appstate.CURSOR_RAM[cid]["completed"])
 
     def test_completed_pruned_at_200(self):
         cid = -1003
@@ -196,13 +197,13 @@ class CursorGapAndBloatTest(unittest.TestCase):
             bot._cursor_mark_pending(cid, i)
             bot._cursor_mark_success(cid, i)
         # fail 2 blokluyor, completed 3..250 birikti → 248
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 1)
-        self.assertGreater(len(bot.CURSOR_RAM[cid]["completed"]), 200)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1)
+        self.assertGreater(len(appstate.CURSOR_RAM[cid]["completed"]), 200)
         # poll 2’nin silindiğini gösterince (failed’dan çıkar) cursor 250’ye ilerler
-        bot.CURSOR_RAM[cid]["failed"].discard(2)
-        bot.CURSOR_RAM[cid]["completed"].add(2)
+        appstate.CURSOR_RAM[cid]["failed"].discard(2)
+        appstate.CURSOR_RAM[cid]["completed"].add(2)
         bot._cursor_advance(cid)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 250)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 250)
 
     def test_completed_not_lost_behind_failed_on_prune(self):
         """101 fail, 102-400 done: budama 102-250'yi silmemeli; 101 düzelince 400'e ilerlemeli."""
@@ -214,21 +215,21 @@ class CursorGapAndBloatTest(unittest.TestCase):
             bot._cursor_mark_pending(cid, i)
             bot._cursor_mark_success(cid, i)
         # Cursor 100'de takılı, completed 102-400 birikti (299)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 100)
-        self.assertIn(102, bot.CURSOR_RAM[cid]["completed"])
-        self.assertIn(250, bot.CURSOR_RAM[cid]["completed"])
-        self.assertIn(400, bot.CURSOR_RAM[cid]["completed"])
-        self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 299)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 100)
+        self.assertIn(102, appstate.CURSOR_RAM[cid]["completed"])
+        self.assertIn(250, appstate.CURSOR_RAM[cid]["completed"])
+        self.assertIn(400, appstate.CURSOR_RAM[cid]["completed"])
+        self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 299)
         # Prune tetiklenmemeli — failed varken completed korunmalı
         # Manuel _cursor_advance çağrısı prune etmemeli
         bot._cursor_advance(cid)
-        self.assertIn(102, bot.CURSOR_RAM[cid]["completed"], "failed varken completed silinmemeli")
-        self.assertIn(250, bot.CURSOR_RAM[cid]["completed"])
+        self.assertIn(102, appstate.CURSOR_RAM[cid]["completed"], "failed varken completed silinmemeli")
+        self.assertIn(250, appstate.CURSOR_RAM[cid]["completed"])
         # 101 düzelince cursor zinciri 400'e kadar ilerlemeli
         bot._cursor_mark_pending(cid, 101)
         bot._cursor_mark_success(cid, 101)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 400)
-        self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 0)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 400)
+        self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 0)
 
     def test_poll_gap_advances_completed_chain(self):
         """Poll 101'in silindiğini doğrulayınca 102,103 completed zinciri ilerlemeli."""
@@ -239,9 +240,9 @@ class CursorGapAndBloatTest(unittest.TestCase):
         bot._cursor_mark_success(cid, 102)
         bot._cursor_mark_pending(cid, 103)
         bot._cursor_mark_success(cid, 103)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 100)
-        self.assertIn(102, bot.CURSOR_RAM[cid]["completed"])
-        self.assertIn(103, bot.CURSOR_RAM[cid]["completed"])
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 100)
+        self.assertIn(102, appstate.CURSOR_RAM[cid]["completed"])
+        self.assertIn(103, appstate.CURSOR_RAM[cid]["completed"])
         # Poll gap: 101 silinmiş → gap skip 101 + completed zinciri 102,103
         st = bot._cursor_ensure(cid)
         fetched_ids = {102, 103}
@@ -253,8 +254,8 @@ class CursorGapAndBloatTest(unittest.TestCase):
                 break
             st["cursor"] = gid
         bot._cursor_advance(cid)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 103)
-        self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 0)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 103)
+        self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 0)
 
 
     def test_unverified_gap_with_mass_completed_not_pruned(self):
@@ -265,12 +266,12 @@ class CursorGapAndBloatTest(unittest.TestCase):
         for i in range(102, 701):
             bot._cursor_mark_pending(cid, i)
             bot._cursor_mark_success(cid, i)
-        self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 599)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 100)
+        self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 599)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 100)
         # Budama olmamalı — kayıtlar korunmalı
-        self.assertIn(102, bot.CURSOR_RAM[cid]["completed"])
-        self.assertIn(350, bot.CURSOR_RAM[cid]["completed"])
-        self.assertIn(700, bot.CURSOR_RAM[cid]["completed"])
+        self.assertIn(102, appstate.CURSOR_RAM[cid]["completed"])
+        self.assertIn(350, appstate.CURSOR_RAM[cid]["completed"])
+        self.assertIn(700, appstate.CURSOR_RAM[cid]["completed"])
         # Poll 101'in silinmiş olduğunu doğrulayana kadar cursor ilerleyemez
         # (poll akışı gibi gap skip + _cursor_advance)
         st = bot._cursor_ensure(cid)
@@ -283,8 +284,8 @@ class CursorGapAndBloatTest(unittest.TestCase):
                 break
             st["cursor"] = gid
         bot._cursor_advance(cid)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 700, "101 silinmiş doğrulayınca completed zinciri 700'e kadar ilerlemeli")
-        self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 0)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 700, "101 silinmiş doğrulayınca completed zinciri 700'e kadar ilerlemeli")
+        self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 0)
 
 
 class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
@@ -292,8 +293,8 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
 
     def setUp(self):
         ti.reset_state()
-        bot.CURSOR_RAM.clear()
-        self.addCleanup(lambda: (bot.CURSOR_RAM.clear(), ti.reset_state()))
+        appstate.CURSOR_RAM.clear()
+        self.addCleanup(lambda: (appstate.CURSOR_RAM.clear(), ti.reset_state()))
 
     def test_unverified_gap_with_mass_completed_via_real_poll(self):
         """Cursor 100, 101 doğrulanmamış, 102-700 done — gerçek poll 101 gap'ini doğrulayınca 700'e ilerlemeli (budama yok)."""
@@ -304,13 +305,13 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
 
         async def call(client_self, request):
             polls[0] += 1
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             top = 100 if polls[0] == 1 else 700
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=top)])
 
         async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
             if min_id == 100:
@@ -320,13 +321,13 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
 
         async def run_until_disconnected(client_self):
             await asyncio.sleep(1.2)
-            cid = sorted(bot.SOURCE_IDS)[0]
+            cid = sorted(appstate.SOURCE_IDS)[0]
             # Bootstrap sonrası cursor=100, 102-700 completed biriktir (599 kayıt, budama tetiklenirdi)
             for mid in range(102, 701):
                 bot._cursor_mark_pending(cid, mid)
                 bot._cursor_mark_success(cid, mid)
-            self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 100)
-            self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 599)
+            self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 100)
+            self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 599)
             await asyncio.sleep(3.0)
 
         config = self._write_config(fast_poll=True, fast_poll_seconds=1, dedup_enabled=False)
@@ -337,9 +338,9 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "_mb_entity_cache", SimpleNamespace(get=lambda *a, **k: None), create=True), \
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
-        cid = sorted(bot.SOURCE_IDS)[0]
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 700, "poll 101 silinmiş doğrulayınca completed 102-700 zinciri 700'e ilerlemeli")
-        self.assertEqual(len(bot.CURSOR_RAM[cid]["completed"]), 0)
+        cid = sorted(appstate.SOURCE_IDS)[0]
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 700, "poll 101 silinmiş doğrulayınca completed 102-700 zinciri 700'e ilerlemeli")
+        self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 0)
 
     def test_poll_gap_with_completed_chain_via_real_poll(self):
         """Cursor 100, 102+103 completed, poll 101 silinmiş → gap+chain 103'e ilerler."""
@@ -351,7 +352,7 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
 
         async def call(client_self, request):
             polls[0] += 1
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             # İlk poll: bootstrap top=100
             # İkinci poll: top=103 (yeni mesajlar var)
@@ -359,7 +360,7 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=top)])
 
         async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
             if min_id == 100:
@@ -374,7 +375,7 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
             # İlk bootstrap sonrası completed doldur
             await asyncio.sleep(1.5)
             # Poll öncesi completed hazırla
-            cid = sorted(bot.SOURCE_IDS)[0]
+            cid = sorted(appstate.SOURCE_IDS)[0]
             # Bootstrap sonrası cursor=100, şimdi 102,103 completed ekle
             bot._cursor_mark_pending(cid, 102)
             bot._cursor_mark_success(cid, 102)
@@ -391,16 +392,16 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "_mb_entity_cache", SimpleNamespace(get=lambda *a, **k: None), create=True), \
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
-        cid = sorted(bot.SOURCE_IDS)[0]
+        cid = sorted(appstate.SOURCE_IDS)[0]
         # Gap 101 atlandı + completed 102,103 zinciri ilerledi → cursor 103
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 103)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 103)
 
 
 class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
     def setUp(self):
         ti.reset_state()
-        bot.CURSOR_RAM.clear()
-        self.addCleanup(lambda: (bot.CURSOR_RAM.clear(), ti.reset_state()))
+        appstate.CURSOR_RAM.clear()
+        self.addCleanup(lambda: (appstate.CURSOR_RAM.clear(), ti.reset_state()))
 
     def test_live_before_first_poll_uses_limited_poll_bootstrap(self):
         """Live olay, önceki tek bir ID'yi cursor varsaymaz; poll sınırlı geçmişi belirler."""
@@ -408,7 +409,7 @@ class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
 
         async def call(client_self, request):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=10)])
 
@@ -418,7 +419,7 @@ class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
             return []
 
         async def run_until_disconnected(client_self):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             await asyncio.sleep(0.5)
             handler = None
             for _, hdl in client_self.handlers:
@@ -432,12 +433,12 @@ class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
                         handler = hdl
                         break
             self.assertIsNotNone(handler, "on_new_message handler bulunmalı")
-            seen_before = bot.STATS["seen"]
+            seen_before = appstate.STATS["seen"]
             ev = ti.FakeEvent(chat_id, 1143378073, "çay fırsat", message_id=11)
             ev.message.date = datetime.datetime.now(datetime.timezone.utc)
             await handler(ev)
-            self.assertIn(bot.CURSOR_RAM.get(chat_id, {}).get("cursor"), (0, 10, 11), "ilk poll güvenli cursor'ı belirlemeli")
-            self.assertGreater(bot.STATS["seen"], seen_before, "on_new_message seen artırmalı")
+            self.assertIn(appstate.CURSOR_RAM.get(chat_id, {}).get("cursor"), (0, 10, 11), "ilk poll güvenli cursor'ı belirlemeli")
+            self.assertGreater(appstate.STATS["seen"], seen_before, "on_new_message seen artırmalı")
             await asyncio.sleep(1.5)
 
         config = self._write_config(fast_poll=True, fast_poll_seconds=1)
@@ -449,7 +450,7 @@ class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
              mock.patch.object(ti.FakeClient, "run_until_disconnected", run_until_disconnected):
             client = self._run_main(config)
         # Canlı handler cursor'u id-1=10'a bootstrap etmeli → poll get_messages çağırmamalı
-        chat_id = sorted(bot.SOURCE_IDS)[0]
+        chat_id = sorted(appstate.SOURCE_IDS)[0]
         # On_new_message içindeki bootstrap cursor 10 yapar; poll top<=cur ile skip eder
         # Not: on_new_message dedup nedeniyle teslim etmeyebilir ama cursor ilerlemeli
         # En azından hata fırlatmadan geçti (get_messages çağrılmadı)
@@ -462,12 +463,12 @@ class FirstPollLiveRaceTest(ti.MainHarness, unittest.TestCase):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
         async def call(client_self, request):
             polls[0] += 1
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             top = 10 if polls[0] == 1 else 210
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=top)])
         async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             channel_id = utils.get_peer(chat_id).channel_id
             now = datetime.datetime.now(datetime.timezone.utc)
             if min_id == 10:
@@ -491,16 +492,16 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
 
     def setUp(self):
         ti.reset_state()
-        bot.CURSOR_RAM.clear()
-        bot.RESTARTING = False
-        self.addCleanup(lambda: (bot.CURSOR_RAM.clear(), ti.reset_state(), setattr(bot, "RESTARTING", False)))
+        appstate.CURSOR_RAM.clear()
+        appstate.RESTARTING = False
+        self.addCleanup(lambda: (appstate.CURSOR_RAM.clear(), ti.reset_state(), setattr(appstate, "RESTARTING", False)))
 
     def test_restart_blocks_new_messages_but_allows_drain(self):
         """RESTARTING açıkken gerçek on_new_message işlenmez ve gerçek drain akışı çalışır."""
         async def get_input_entity(client_self, chat_id):
             return types.InputPeerChannel(channel_id=abs(chat_id) % 10**10, access_hash=1)
         async def call(client_self, request):
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             peer = utils.get_peer(chat_id)
             return SimpleNamespace(dialogs=[SimpleNamespace(peer=peer, top_message=20)])
         async def get_messages(client_self, peer, min_id=0, limit=None, max_id=0, reverse=False):
@@ -510,13 +511,13 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
             self.assertGreaterEqual(len(client_self.handlers), 2, "iki handler kayıtlı olmalı")
             on_control = client_self.handlers[0][1]
             on_new = client_self.handlers[1][1]
-            chat_id = sorted(bot.SOURCE_IDS)[0]
+            chat_id = sorted(appstate.SOURCE_IDS)[0]
             # RESTARTING kapalıyken on_new işler
-            seen_before = bot.STATS["seen"]
+            seen_before = appstate.STATS["seen"]
             ev = ti.FakeEvent(chat_id, 1143378073, "çay fırsat", message_id=11)
             ev.message.date = datetime.datetime.now(datetime.timezone.utc)
             await on_new(ev)
-            self.assertGreater(bot.STATS["seen"], seen_before, "RESTARTING kapalıyken on_new_message işlemeli")
+            self.assertGreater(appstate.STATS["seen"], seen_before, "RESTARTING kapalıyken on_new_message işlemeli")
             # poll_delivery_tasks closure'dan
             poll_tasks = None
             if hasattr(on_control, "__closure__") and on_control.__closure__:
@@ -541,19 +542,19 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
                 except Exception:
                     pass
             # Gerçek drain: SOURCE_IN_FLIGHT ve poll_delivery_tasks
-            bot.SOURCE_IN_FLIGHT.add((chat_id, 999))
+            appstate.SOURCE_IN_FLIGHT.add((chat_id, 999))
             fake_poll_task = asyncio.create_task(asyncio.sleep(10))
             if poll_tasks is not None:
                 poll_tasks.add(fake_poll_task)
                 fake_poll_task.add_done_callback(poll_tasks.discard)
-            bot.RESTARTING = True
-            seen_before_restart = bot.STATS["seen"]
+            appstate.RESTARTING = True
+            seen_before_restart = appstate.STATS["seen"]
             ev2 = ti.FakeEvent(chat_id, 1143378073, "çay 5 TL", message_id=12)
             ev2.message.date = datetime.datetime.now(datetime.timezone.utc)
             await on_new(ev2)
-            self.assertEqual(bot.STATS["seen"], seen_before_restart, "RESTARTING açıkken on_new_message seen artırmamalı")
-            self.assertTrue(bot.RESTARTING)
-            self.assertIn((chat_id, 999), bot.SOURCE_IN_FLIGHT)
+            self.assertEqual(appstate.STATS["seen"], seen_before_restart, "RESTARTING açıkken on_new_message seen artırmamalı")
+            self.assertTrue(appstate.RESTARTING)
+            self.assertIn((chat_id, 999), appstate.SOURCE_IN_FLIGHT)
             if poll_tasks is not None:
                 self.assertIn(fake_poll_task, poll_tasks)
                 fake_poll_task.cancel()
@@ -562,8 +563,8 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
                 except asyncio.CancelledError:
                     pass
                 self.assertNotIn(fake_poll_task, poll_tasks)
-            bot.SOURCE_IN_FLIGHT.discard((chat_id, 999))
-            bot.RESTARTING = False
+            appstate.SOURCE_IN_FLIGHT.discard((chat_id, 999))
+            appstate.RESTARTING = False
             await asyncio.sleep(0.1)
         config = self._write_config(fast_poll=True, fast_poll_seconds=1)
         self.addCleanup(os.unlink, config)
@@ -588,15 +589,15 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
             return True, "ok"
         async def run_until_disconnected(client_self):
             handler = client_self.handlers[0][1]
-            control_id = next(iter(bot.CONTROL_IDS)) if bot.CONTROL_IDS else -5092968106
-            admin_id = next(iter(bot.ADMIN_IDS)) if hasattr(bot, "ADMIN_IDS") and bot.ADMIN_IDS else 1143378073
+            control_id = next(iter(appstate.CONTROL_IDS)) if appstate.CONTROL_IDS else -5092968106
+            admin_id = next(iter(appstate.ADMIN_IDS)) if hasattr(bot, "ADMIN_IDS") and appstate.ADMIN_IDS else 1143378073
             ev = ti.FakeEvent(control_id, admin_id, "/restart", message_id=99)
             with mock.patch.object(bot, "cursor_persist_for_restart", fake_persist), \
                  mock.patch.object(bot, "dispatch_next_run", fake_dispatch):
                 await handler(ev)
                 self.assertEqual(len(persist_calls), 1, "gerçek handler persist çağırmalı")
                 self.assertEqual(len(dispatch_calls), 0, "persist başarısızsa gerçek handler dispatch çağırmamalı")
-                self.assertFalse(bot.RESTARTING, "persist fail sonrası RESTARTING false olmalı")
+                self.assertFalse(appstate.RESTARTING, "persist fail sonrası RESTARTING false olmalı")
                 self.assertTrue(any("Restart iptal" in r for r in ev.replies), "handler Restart iptal yanıtı vermeli")
             await asyncio.sleep(0.1)
         config = self._write_config(fast_poll=False)
@@ -619,8 +620,8 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
             return True, "başlatıldı"
         async def run_until_disconnected(client_self):
             handler = client_self.handlers[0][1]
-            control_id = next(iter(bot.CONTROL_IDS)) if bot.CONTROL_IDS else -5092968106
-            admin_id = next(iter(bot.ADMIN_IDS)) if hasattr(bot, "ADMIN_IDS") and bot.ADMIN_IDS else 1143378073
+            control_id = next(iter(appstate.CONTROL_IDS)) if appstate.CONTROL_IDS else -5092968106
+            admin_id = next(iter(appstate.ADMIN_IDS)) if hasattr(bot, "ADMIN_IDS") and appstate.ADMIN_IDS else 1143378073
             ev = ti.FakeEvent(control_id, admin_id, "/restart", message_id=99)
             with mock.patch.object(bot, "cursor_persist_for_restart", fake_persist), \
                  mock.patch.object(bot, "dispatch_next_run", fake_dispatch):
@@ -640,7 +641,7 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
         cid = -1008
         bot._cursor_ensure(cid)["cursor"] = 100
         bot._cursor_mark_pending(cid, 101)
-        bot.SOURCE_IN_FLIGHT.add((cid, 101))
+        appstate.SOURCE_IN_FLIGHT.add((cid, 101))
         for mid in range(102, 201):
             bot._cursor_mark_pending(cid, mid)
             bot._cursor_mark_success(cid, mid)
@@ -651,12 +652,12 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
         # Sonraki run cursor 100'den sayfalı kurtarma yapar — 101 yeniden gelir (kayıp yok)
         # Bu, poll'un get_messages(min_id=100) ile 101'i tekrar döndürmesiyle kanıtlanır
         # ve dedup/pending ile tekrar işlenir
-        self.assertIn(101, bot.CURSOR_RAM[cid]["pending"])
-        self.assertIn((cid, 101), bot.SOURCE_IN_FLIGHT)
+        self.assertIn(101, appstate.CURSOR_RAM[cid]["pending"])
+        self.assertIn((cid, 101), appstate.SOURCE_IN_FLIGHT)
         # Temizlik: pending işlenince cursor 200'e kadar ilerler
-        bot.SOURCE_IN_FLIGHT.discard((cid, 101))
+        appstate.SOURCE_IN_FLIGHT.discard((cid, 101))
         bot._cursor_mark_success(cid, 101)
-        self.assertEqual(bot.CURSOR_RAM[cid]["cursor"], 200)
+        self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 200)
 
     def test_restart_drain_waits_for_inflight_and_poll_tasks(self):
         """Gerçek drain: SOURCE_IN_FLIGHT ve poll_delivery_tasks boşalana kadar bekler."""
@@ -684,16 +685,16 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
                             break
                 except Exception:
                     pass
-            cid = next(iter(bot.SOURCE_IDS)) if bot.SOURCE_IDS else -1001
-            bot.SOURCE_IN_FLIGHT.add((cid, 500))
+            cid = next(iter(appstate.SOURCE_IDS)) if appstate.SOURCE_IDS else -1001
+            appstate.SOURCE_IN_FLIGHT.add((cid, 500))
             t = asyncio.create_task(asyncio.sleep(10))
             if poll_tasks is not None:
                 poll_tasks.add(t)
                 t.add_done_callback(poll_tasks.discard)
-            ev = ti.FakeEvent(next(iter(bot.CONTROL_IDS)) if bot.CONTROL_IDS else -5092968106, next(iter(bot.ADMIN_IDS)) if hasattr(bot, "ADMIN_IDS") and bot.ADMIN_IDS else 1143378073, "/restart", message_id=99)
+            ev = ti.FakeEvent(next(iter(appstate.CONTROL_IDS)) if appstate.CONTROL_IDS else -5092968106, next(iter(appstate.ADMIN_IDS)) if hasattr(bot, "ADMIN_IDS") and appstate.ADMIN_IDS else 1143378073, "/restart", message_id=99)
             async def clear_after():
                 await asyncio.sleep(0.4)
-                bot.SOURCE_IN_FLIGHT.discard((cid, 500))
+                appstate.SOURCE_IN_FLIGHT.discard((cid, 500))
                 t.cancel()
                 try:
                     await t
@@ -706,11 +707,11 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
                 await handler(ev)
             elapsed = asyncio.get_event_loop().time() - start
             self.assertGreaterEqual(elapsed, 0.3, "drain SOURCE_IN_FLIGHT ve poll_delivery_tasks için beklemeli")
-            self.assertEqual(len(bot.SOURCE_IN_FLIGHT), 0)
+            self.assertEqual(len(appstate.SOURCE_IN_FLIGHT), 0)
             if poll_tasks is not None:
                 self.assertEqual(len(poll_tasks), 0)
             await clearer
-            bot.RESTARTING = False
+            appstate.RESTARTING = False
             await asyncio.sleep(0.1)
         config = self._write_config(fast_poll=False)
         self.addCleanup(os.unlink, config)

@@ -6,6 +6,7 @@ import logging
 
 from telethon.tl import types
 
+import appstate
 import dm_filters
 import price_filter
 from botentities import bot_api_entities, entities_for_text
@@ -71,7 +72,7 @@ async def prepare_private_offer(rt: Runtime, item):
             info["kind"] = "text"
             info["message_id"] = None
             info["text"] = text or "📎 Medyalı fırsat: gruptaki hesap kopyasına bak."
-    return private_copy_request(rt.bot.SELF_ID, item["destination"], info)
+    return private_copy_request(appstate.SELF_ID, item["destination"], info)
 
 
 def enqueue_private_offer(rt: Runtime, event, info):
@@ -84,7 +85,7 @@ def enqueue_private_offer(rt: Runtime, event, info):
     _log_dm_decision(decision)
     if decision.should_send:
         rt.private_offers.submit({
-            "destination": rt.bot.DESTINATION_ID, "match_text": text, "strike": strike,
+            "destination": appstate.DESTINATION_ID, "match_text": text, "strike": strike,
             "dm_facts": decision.facts,
             "bot": info.get("bot"), "account_ids": info.get("account_ids"),
             "keyboard": build_inline_keyboard(event),
@@ -124,7 +125,7 @@ def dm_status(rt: Runtime):
 
 async def private_channel_health(rt: Runtime) -> str:
     """Özel komut kanalının teşhisi; /test ile görünür (token asla yazılmaz)."""
-    if not rt.bot.NOTIFY_BOT_TOKEN:
+    if not appstate.NOTIFY_BOT_TOKEN:
         return ("🔎 Özel komut kanalı: KAPALI — NOTIFY_BOT_TOKEN tanımlı değil.\n"
                 "Komutlar Kayıtlı Mesajlar'dan işlenir; bot sana özel mesaj atamaz.")
     lines = ["🔎 Özel komut kanalı (bildirim botu):"]
@@ -197,7 +198,7 @@ async def save_dm_setting(rt: Runtime, event, *, action=None, raw="", enabled=Tr
 
 
 async def handle_dm_command(rt: Runtime, event, command, rest):
-    if not isinstance(event, PrivateControlEvent) or event.sender_id != rt.bot.SELF_ID:
+    if not isinstance(event, PrivateControlEvent) or event.sender_id != appstate.SELF_ID:
         await control_reply(rt, event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
         return
     if command == COMMAND_DM_STATUS:

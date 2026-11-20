@@ -10,7 +10,9 @@ from typing import Any
 
 from telethon import events
 
+import appstate
 import dm_filters
+import time
 import timefmt
 from analysis import (
     ANALYSIS_QUERY_MAX_LINES,
@@ -102,7 +104,7 @@ async def apply_setting_change(rt: Runtime, before: dict,
 
 async def can_edit_list(rt: Runtime, event, field):
     if (field in DM_LIST_FIELDS or field in {DM_PRICE_FIELD, DM_PRODUCT_PRICE_FIELD}) and (
-        not isinstance(event, PrivateControlEvent) or event.sender_id != rt.bot.SELF_ID
+        not isinstance(event, PrivateControlEvent) or event.sender_id != appstate.SELF_ID
     ):
         await control_reply(rt, event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
         return False
@@ -267,7 +269,7 @@ async def list_query_matches(rt: Runtime, event: events.NewMessage.Event, target
     listeler ``control_reply`` tarafından birden çok mesaja bölünür.
     """
     pattern = analysis_query_pattern(query)
-    started = rt.bot.time.time()
+    started = time.time()
     status = await start_analysis_scan(
         event, targets, per_source,
         purpose="Bitince eşleşen ürünleri (ürün adı - fiyat) göndereceğim.",
@@ -295,7 +297,7 @@ async def list_query_matches(rt: Runtime, event: events.NewMessage.Event, target
     header = [
         f"🔎 '{query}' içeren mesajlar: {len(lines)} ürün",
         f"• Kaynak: {len(targets)} grup · kaynak başına son {per_source} mesaj"
-        f" · süre: {humanize(rt.bot.time.time() - started)}",
+        f" · süre: {humanize(time.time() - started)}",
     ]
     if failures:
         header.append(f"• ⚠️ Okunamayan kaynak: {', '.join(failures)}")
@@ -322,7 +324,7 @@ async def analyze_history(rt: Runtime, event: events.NewMessage.Event, rest: str
     """
     per_source, keep_everything, query = parse_analysis_request(rest)
 
-    targets = [item for item in rt.bot.SOURCES if item.get("joined")]
+    targets = [item for item in appstate.SOURCES if item.get("joined")]
     if not targets:
         await control_reply(rt, event, "ℹ️ Taranacak kaynak yok. Önce /kaynaklar ile listeyi kontrol et.")
         return
@@ -331,7 +333,7 @@ async def analyze_history(rt: Runtime, event: events.NewMessage.Event, rest: str
         await list_query_matches(rt, event, targets, per_source, query)
         return
 
-    started = rt.bot.time.time()
+    started = time.time()
     # İlerleme mesajı bilinçli olarak temizlik kaydına girmez: rapor gelince
     # "stale" listesiyle silinir, böylece ekranda yalnızca istatistik raporu
     # kalır. Uzun taramaların çalıştığı bu mesajdan görülür.
@@ -364,7 +366,7 @@ async def analyze_history(rt: Runtime, event: events.NewMessage.Event, rest: str
         sources=len(targets),
         per_source=per_source,
         keep_everything=keep_everything,
-        elapsed=rt.bot.time.time() - started,
+        elapsed=time.time() - started,
         failures=failures,
     )
     await control_reply(rt, event, report, stale=[status_id])
@@ -428,7 +430,7 @@ async def handle_pending_message(rt: Runtime, event: events.NewMessage.Event,
 
     text = raw.strip()
     if item.get("stage") == "dm_words":
-        if not isinstance(event, PrivateControlEvent) or event.sender_id != rt.bot.SELF_ID:
+        if not isinstance(event, PrivateControlEvent) or event.sender_id != appstate.SELF_ID:
             return False
         await save_dm_setting(rt, event, action=item["action"], raw=text)
         return True
@@ -455,7 +457,7 @@ async def handle_pending_message(rt: Runtime, event: events.NewMessage.Event,
             return True
 
         if field == WEBTAKIP_FIELD:
-            if not isinstance(event, PrivateControlEvent) or event.sender_id != rt.bot.SELF_ID:
+            if not isinstance(event, PrivateControlEvent) or event.sender_id != appstate.SELF_ID:
                 await control_reply(rt, event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
                 return True
             if rt.tracker is None:
@@ -492,7 +494,7 @@ async def handle_pending_message(rt: Runtime, event: events.NewMessage.Event,
             drop_pending(key)
             await control_reply(rt, event, "❌ Ürün takibi şu an çalışmıyor (bildirim botu yapılandırması eksik).")
             return True
-        if not isinstance(event, PrivateControlEvent) or event.sender_id != rt.bot.SELF_ID:
+        if not isinstance(event, PrivateControlEvent) or event.sender_id != appstate.SELF_ID:
             await control_reply(rt, event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
             return True
         action = str(item.get("action") or "add")
@@ -596,7 +598,7 @@ async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> Non
             return
         # Sessizce yok saymak yerine net bir hata ver: kullanıcı ID'sini
         # gösterip nasıl yetki vereceğini de söylüyoruz.
-        rt.bot.STATS["commands"] += 1
+        appstate.STATS["commands"] += 1
         log.warning("Yetkisiz komut denemesi: %s (chat=%s, sender=%s)",
                     command, event.chat_id, event.sender_id)
         await event.reply(
@@ -604,13 +606,13 @@ async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> Non
             f"• Komut: {command}\n"
             f"• Kontrol sohbeti: {event.chat_id}\n"
             f"• Senin kullanıcı ID'n: {event.sender_id}\n"
-            f"• Yetkili ID'ler: {', '.join(str(i) for i in sorted(rt.bot.ADMIN_IDS)) or 'tanımsız'}\n"
+            f"• Yetkili ID'ler: {', '.join(str(i) for i in sorted(appstate.ADMIN_IDS)) or 'tanımsız'}\n"
             "Yetki için hesap sahibinden admin_user_id değerini config.json'da güncellemesini iste."
         )
         return
 
     # Owner-only optional feature. Existing config drafts always retain priority.
-    if rt.tracker and isinstance(event, PrivateControlEvent) and event.sender_id == rt.bot.SELF_ID:
+    if rt.tracker and isinstance(event, PrivateControlEvent) and event.sender_id == appstate.SELF_ID:
         handled = await rt.tracker.handle(event, raw, existing_pending=peek_pending(pending_key(event)) is not None)
         if handled:
             pending = peek_pending(pending_key(event))
@@ -631,7 +633,7 @@ async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> Non
         await handle_pending_message(rt, event, raw)
         return
 
-    rt.bot.STATS["commands"] += 1
+    appstate.STATS["commands"] += 1
     # Bekleyen liste düzenleme taslağını yalnızca /kaydet veya /iptal kapatır;
     # /durum gibi başka komutlar taslağı sessizce düşürmez.
     rest = raw[len(raw.split()[0]):].strip()
@@ -663,18 +665,18 @@ async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> Non
     elif command == COMMAND_TEST:
         text = (
             f"🧪 Deneme mesajı – {timefmt.local().strftime('%Y-%m-%d %H:%M:%S')} TSİ\n"
-            f"Hedef: {rt.bot.DESTINATION_LABEL}\n"
-            f"Kaynaklar: {len(rt.bot.SOURCE_IDS)} | Görülen: {rt.bot.STATS['seen']} | Eşleşen: {rt.bot.STATS['matched']}"
+            f"Hedef: {appstate.DESTINATION_LABEL}\n"
+            f"Kaynaklar: {len(appstate.SOURCE_IDS)} | Görülen: {appstate.STATS['seen']} | Eşleşen: {appstate.STATS['matched']}"
         )
         try:
-            await rt.client.send_message(rt.bot.DESTINATION, text)
-            reply = f"✅ Deneme mesajı gönderildi: {rt.bot.DESTINATION_LABEL}"
+            await rt.client.send_message(appstate.DESTINATION, text)
+            reply = f"✅ Deneme mesajı gönderildi: {appstate.DESTINATION_LABEL}"
         except Exception as exc:  # noqa: BLE001
             await control_reply(rt, event, f"❌ Deneme mesajı gönderilemedi: {type(exc).__name__}: {exc}")
             return
-        if rt.bot.NOTIFY_BOT_TOKEN and rt.bot.DESTINATION_ID is not None:
+        if appstate.NOTIFY_BOT_TOKEN and appstate.DESTINATION_ID is not None:
             ok, detail = await rt.bot.send_bot_ping(
-                rt.bot.NOTIFY_BOT_TOKEN, rt.bot.DESTINATION_ID,
+                appstate.NOTIFY_BOT_TOKEN, appstate.DESTINATION_ID,
                 "🔔 Bildirim denemesi\n\n(Bildirimlerde mesajın kopyası + '🔗 Mesajı Gör' linki gelir.)",
             )
             reply += "\n" + ("🔔 Bot bildirimi de gönderildi (telefonuna düşmeli)." if ok
@@ -695,7 +697,7 @@ async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> Non
         if isinstance(event, PrivateControlEvent):
             await control_reply(rt, event,
                 f"🆔 Özel sohbet / kullanıcı ID'n: {event.sender_id}\n"
-                f"🎯 Fırsat hedefi değişmedi: {rt.bot.DESTINATION_LABEL}\n"
+                f"🎯 Fırsat hedefi değişmedi: {appstate.DESTINATION_LABEL}\n"
                 "Bu özel sohbet ID'sini destination olarak yazmana gerek yok."
             )
             return
@@ -714,18 +716,18 @@ async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> Non
         )
     elif command == COMMAND_RESTART:
         # Yalnızca bilinçli /restart’ta cursor yedeği — otomatik restart değil
-        rt.bot.RESTARTING = True
+        appstate.RESTARTING = True
         # 1) Uçuş drain — yeni mesajlar RESTARTING bayrağıyla zaten bekletiliyor
-        drain_deadline = rt.bot.time.time() + 6
-        while rt.bot.time.time() < drain_deadline and (rt.bot.SOURCE_IN_FLIGHT or rt.poll_delivery_tasks):
+        drain_deadline = time.time() + 6
+        while time.time() < drain_deadline and (appstate.SOURCE_IN_FLIGHT or rt.poll_delivery_tasks):
             await asyncio.sleep(0.2)
-        if rt.bot.SOURCE_IN_FLIGHT or rt.poll_delivery_tasks:
+        if appstate.SOURCE_IN_FLIGHT or rt.poll_delivery_tasks:
             log.warning("Restart drain %ss doldu — %s uçuş + %s poll görevi kaldı; mevcut ardışık cursor ile yedek alınıyor.",
-                        6, len(rt.bot.SOURCE_IN_FLIGHT), len(rt.poll_delivery_tasks))
+                        6, len(appstate.SOURCE_IN_FLIGHT), len(rt.poll_delivery_tasks))
         # 2) Tek toplu persist (mevcut atomic_write_json + GIT_WRITE_LOCK yolunu kullan)
         ok_save, save_note = await rt.bot.cursor_persist_for_restart(rt.store)
         if not ok_save:
-            rt.bot.RESTARTING = False
+            appstate.RESTARTING = False
             await control_reply(rt, event, "✗ Restart iptal — cursor kalıcılaştırılamadı: " + save_note)
             return
         # 3) Dispatch yalnızca persist başarıyla bittiyse
@@ -733,7 +735,7 @@ async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> Non
         if ok:
             await control_reply(rt, event, "🔄 " + message + "\n" + save_note)
         else:
-            rt.bot.RESTARTING = False
+            appstate.RESTARTING = False
             await control_reply(rt, event, "⚠️ " + message + "\n" + save_note + "\nCursor yedeği alındı ama yeni çalışma başlatılamadı; mevcut süreç çalışmaya devam ediyor.")
     elif command == COMMAND_HELP:
         await control_reply(rt, event, HELP_TEXT)

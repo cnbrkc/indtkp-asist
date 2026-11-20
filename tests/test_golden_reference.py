@@ -68,6 +68,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import price_filter  # noqa: E402
 from telethon.tl import types  # noqa: E402
 from test_integration import (  # noqa: E402
@@ -200,7 +201,7 @@ def variants_for(index: int, profile: str) -> tuple[str, ...]:
 
 
 def build_event(index: int, text: str, variant: str, message_id: int = EVENT_ID) -> FakeEvent:
-    chat_id = next(iter(bot.SOURCE_IDS))
+    chat_id = next(iter(appstate.SOURCE_IDS))
     if variant == "plain":
         return FakeEvent(chat_id, 999, text, message_id=message_id, media=True)
     if variant == "long":
@@ -359,14 +360,16 @@ def bot_module_restored():
     eski nesnesine ve eski içeriğine döndürülür, koşunun yarattığı adlar silinir.
     Günlük ve yapılandırma raporu yalnızca gürültü olduğu için susturulur.
     """
-    saved = {name: value for name, value in vars(bot).items() if name.isupper()}
-    contents: dict[str, Any] = {}
-    for name, value in saved.items():
+    modules = (bot, appstate)   # ayarlar/önbellekler appstate'te, sabitler bot'ta durur
+    saved = {(module, name): value for module in modules
+             for name, value in vars(module).items() if name.isupper()}
+    contents: dict[tuple[Any, str], Any] = {}
+    for key, value in saved.items():
         if isinstance(value, (dict, list, set)):
             try:
-                contents[name] = copy.deepcopy(value)
+                contents[key] = copy.deepcopy(value)
             except Exception:  # noqa: BLE001 - kilit/olay nesnesi taşıyan kayıtlar: yüzeysel kopya yeter
-                contents[name] = copy.copy(value)
+                contents[key] = copy.copy(value)
     disabled = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
     try:
@@ -374,13 +377,14 @@ def bot_module_restored():
             yield
     finally:
         logging.disable(disabled)
-        for name in [name for name in vars(bot) if name.isupper() and name not in saved]:
-            delattr(bot, name)
-        for name, value in saved.items():
-            if name in contents and value != contents[name]:
+        for module in modules:
+            for name in [name for name in vars(module) if name.isupper() and (module, name) not in saved]:
+                delattr(module, name)
+        for (module, name), value in saved.items():
+            if (module, name) in contents and value != contents[(module, name)]:
                 value.clear()
-                (value.extend if isinstance(value, list) else value.update)(contents[name])
-            setattr(bot, name, value)
+                (value.extend if isinstance(value, list) else value.update)(contents[(module, name)])
+            setattr(module, name, value)
 
 
 Scenario = Callable[[FakeClient, CapturingQueue], Awaitable[None]]
@@ -441,7 +445,7 @@ _DEDUP_KEYS = ("title", "count", "sources", "footer_name", "offer", "plain_offer
 def dedup_snapshot() -> dict[str, Any]:
     """Tekrar önbelleğinin kimlik alanları (zaman damgaları ve kilit nesneleri hariç)."""
     return {key: {name: plain(entry.get(name)) for name in _DEDUP_KEYS if name in entry}
-            for key, entry in sorted(bot.DEDUP_CACHE.items())}
+            for key, entry in sorted(appstate.DEDUP_CACHE.items())}
 
 
 def account_actions(client: FakeClient) -> dict[str, Any]:
@@ -503,16 +507,16 @@ def deliver_all(profile_name: str, corpus: list[dict[str, str]]) -> list[dict[st
             for entries in logs:
                 entries.clear()
             client._next_id = 100
-            stats = {key: bot.STATS[key] for key in _STAT_KEYS}
-            modes = dict(bot.STATS["modes"])
+            stats = {key: appstate.STATS[key] for key in _STAT_KEYS}
+            modes = dict(appstate.STATS["modes"])
             await handler(event)
             return {
                 "bot": [wire_request(request, full=wire.ok) for request in wire.requests],
                 "account": account_actions(client),
-                "stats": {key: bot.STATS[key] - stats[key] for key in _STAT_KEYS
-                          if bot.STATS[key] != stats[key]},
+                "stats": {key: appstate.STATS[key] - stats[key] for key in _STAT_KEYS
+                          if appstate.STATS[key] != stats[key]},
                 "modes": {mode: count - modes.get(mode, 0)
-                          for mode, count in sorted(bot.STATS["modes"].items())
+                          for mode, count in sorted(appstate.STATS["modes"].items())
                           if count != modes.get(mode, 0)},
                 "dedup": dedup_snapshot(),
                 "dm": [await private_copy(queue, item) for item in list(queue.captured)],
@@ -525,7 +529,7 @@ def deliver_all(profile_name: str, corpus: list[dict[str, str]]) -> list[dict[st
             record: dict[str, Any] = {}
             for variant in variants_for(index, profile_name):
                 # Yalıtım: her örnek boş tekrar önbelleğiyle başlar.
-                for registry in (bot.DEDUP_CACHE, bot.LIVE_SEEN, bot.POLL_DISPATCHED, bot.SOURCE_IN_FLIGHT, bot.CURSOR_RAM):
+                for registry in (appstate.DEDUP_CACHE, appstate.LIVE_SEEN, appstate.POLL_DISPATCHED, appstate.SOURCE_IN_FLIGHT, appstate.CURSOR_RAM):
                     registry.clear()
                 cell = await observe(build_event(index, item["text"], variant))
                 if profile_name == "prod":

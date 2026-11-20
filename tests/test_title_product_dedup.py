@@ -20,6 +20,7 @@ for _p in (str(ROOT_DIR), str(TESTS_DIR)):
         sys.path.insert(0, _p)
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import dedupmatch  # noqa: E402
 import test_integration as ti  # noqa: E402
 from test_cross_channel_dedup import FIRST_CHANNEL, Harness, SECOND_CHANNEL_ID  # noqa: E402
@@ -69,7 +70,7 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
         for name, (first, second, buttons) in cases.items():
             with self.subTest(name):
                 self.assertPings(first, second, 1, msg=name, **buttons)
-                self.assertEqual(bot.STATS["deduped"], 1, msg=name)
+                self.assertEqual(appstate.STATS["deduped"], 1, msg=name)
 
     def test_same_title_different_hepsiburada_redirect_urls_one_notification(self):
         cases = {
@@ -99,7 +100,7 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
         for name, (first, second, buttons) in cases.items():
             with self.subTest(name):
                 self.assertPings(first, second, 1, msg=name, **buttons)
-                self.assertEqual(bot.STATS["deduped"], 1, msg=name)
+                self.assertEqual(appstate.STATS["deduped"], 1, msg=name)
 
     def test_same_title_different_trendyol_affiliate_urls_one_notification(self):
         cases = {
@@ -129,7 +130,7 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
         for name, (first, second, buttons) in cases.items():
             with self.subTest(name):
                 self.assertPings(first, second, 1, msg=name, **buttons)
-                self.assertEqual(bot.STATS["deduped"], 1, msg=name)
+                self.assertEqual(appstate.STATS["deduped"], 1, msg=name)
 
     def test_same_title_different_paylas_kazan_urls_one_notification(self):
         cases = {
@@ -151,7 +152,7 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
         for name, (first, second) in cases.items():
             with self.subTest(name):
                 self.assertPings(first, second, 1, msg=name)
-                self.assertEqual(bot.STATS["deduped"], 1, msg=name)
+                self.assertEqual(appstate.STATS["deduped"], 1, msg=name)
 
     def test_completely_different_urls_same_title_and_product_identity_one_notification(self):
         cases = {
@@ -180,7 +181,7 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
         for name, (first, second) in cases.items():
             with self.subTest(name):
                 self.assertPings(first, second, 1, msg=name)
-                self.assertEqual(bot.STATS["deduped"], 1, msg=name)
+                self.assertEqual(appstate.STATS["deduped"], 1, msg=name)
 
     def test_same_first_three_words_different_model_number_not_merged(self):
         cases = {
@@ -315,7 +316,7 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
                  "antrasit-p-HBCV00003XYZ12?magaza=Hepsiburada&wt_pc=aff"),
         )])
         self.assertEqual(len(self.ping_calls), 0, "geçmişteki HB bildirimi ikinci kanalı bastırmalı")
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
 
     def test_philips_ordered_long_title_merges_with_truncated_short_title(self):
@@ -325,8 +326,8 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
             (SECOND_CHANNEL_ID, 682, deal(PHILIPS_LONG, "1.874", "https://ty.gl/long7030")),
         ])
         self.assertEqual(len(self.ping_calls), 1)
-        self.assertEqual(bot.STATS["deduped"], 1)
-        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertEqual(appstate.STATS["deduped"], 1)
+        entry = next(iter(appstate.DEDUP_CACHE.values()))
         self.assertEqual(entry["count"], 2)
         self.assertEqual(entry["title"], PHILIPS_LONG,
                          "daha zengin model kodlu başlık sonraki eşleşmeler için korunmalı")
@@ -342,7 +343,7 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
         ])
         self.assertEqual(len(self.ping_calls), 2,
                          "iki farklı model kodu kısa ortak başlık üzerinden birleşmemeli")
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_iffalcon_50u65_editorial_titles_at_same_price_merge(self):
         titles = [
@@ -367,7 +368,7 @@ class TitleBasedProductDedupTest(Harness, unittest.TestCase):
                           deal(title, "14.999", extra[index], links[index])))
         self.offers(client, items)
         self.assertEqual(len(self.ping_calls), 1)
-        self.assertEqual(bot.STATS["deduped"], 3)
+        self.assertEqual(appstate.STATS["deduped"], 3)
 
 
 
@@ -442,7 +443,7 @@ class UserReportedProductIdentityRegressions(Harness, unittest.TestCase):
             (SECOND_CHANNEL_ID, 201, deal(short_title, "804", f"https://www.amazon.com.tr/dp/{asin}?tag=firsatdolu010-21")),
         ])
         self.assertEqual(len(self.ping_calls), 1, "aynı ASIN güçlü ürün kimliğidir")
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
         self.assertEqual(len(self.edit_text_calls), 1)
         self.assertIn("2 kere paylaşıldı", self.edit_text_calls[0]["text"])
 
@@ -497,7 +498,7 @@ class UserReportedProductIdentityRegressions(Harness, unittest.TestCase):
             (SECOND_CHANNEL_ID, 201, deal(title, "6299", link)),
         ])
         self.assertEqual(len(self.ping_calls), 1)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
         self.assertEqual(len(self.edit_text_calls), 1)
         self.assertIn("2 kere paylaşıldı", self.edit_text_calls[0]["text"])
 

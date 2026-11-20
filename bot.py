@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import collections
-import contextvars
 import base64
 import copy
 import json
@@ -41,6 +39,7 @@ from telethon import TelegramClient, errors, events, utils
 from telethon.sessions import StringSession
 from telethon.tl import functions, types
 
+import appstate
 import price_filter
 import dm_filters
 import timefmt
@@ -131,69 +130,6 @@ logging.basicConfig(
 log = logging.getLogger("telegram-filter")
 
 STARTED_AT = time.time()
-STATS = {
-    "seen": 0,        # kaynaklarda görülen mesaj
-    "matched": 0,     # anahtar kelimeye uyan mesaj
-    "forwarded": 0,   # hedefe iletilen mesaj
-    "failed": 0,      # hedefe hiçbir teslim yolu çalışmayan kaynak mesajı
-    "notification_failed": 0,  # içerik iletilse bile Bot API telefon bildirimi başarısız
-    "commands": 0,    # çalıştırılan komut
-    "modes": {},      # hangi iletim yolu kaç kez işe yaradı
-    "cleaned": 0,     # bildirim gittikten sonra silinen hesap kopyası
-    "cleaned_commands": 0,  # komut sohbetinde silinen eski komut/yanıt mesajı
-    "deduped": 0,     # aynı ürün sorgusuyla birleştirilen (yeniden gönderilmeyen) tekrar
-    "dedup_edits": 0,  # tekrarda ilk mesaja işlenen çoklu paylaşım notu güncellemesi
-    "last_match": None,
-    "last_match_source": None,
-    "source_seen": {},  # kaynak chat_id -> bu oturumda alınan canlı NewMessage sayısı
-}
-
-# Kaynak/kontrol listelerinin açılışta çözülmüş hâli (main() doldurur).
-SOURCES: list[dict[str, Any]] = []
-SOURCE_IDS: set[int] = set()
-SOURCE_FAILURES: list[tuple[Any, Exception]] = []
-CONTROL_IDS: set[int] = set()
-CONTROL_NAMES: list[str] = []
-DESTINATION: Any = "me"       # hedefin çözülmüş hâli (int ID veya "me")
-DESTINATION_LABEL = "me"
-DESTINATION_ID: int | None = None
-NOTIFY_BOT_TOKEN = ""
-DELIVERY_CHAIN: list[str] = []
-MAX_MEDIA_MB = 0
-SELF_ID: int | None = None
-# Aktif filtre/komut durumları (apply_runtime_config yazar).
-FILTER_INCLUDE: list[str] = []
-FILTER_EXCLUDE: list[str] = []
-FILTER_MODE = "any"           # any | all (dahili kelimeler nasıl eşleşsin)
-FILTER_INCLUDE_ENABLED = True  # 🔎 dahili kelime filtresi açık mı?
-FILTER_EXCLUDE_ENABLED = True  # 🚫 harici kelime engeli açık mı?
-ADMIN_IDS: set[int] = set()
-SOURCE_FOOTER = True  # bildirimin en altına kaynak grup adını KALIN yaz (etiket yok; link: mesajın kendisi)
-NOTIFY_MEDIA = True   # bildirim botu medyayı da göndersin
-MESSAGE_LINK_LINE = True      # mesajın t.me adresini kaynak adına göm (ad yoksa "🔗 Mesajı Gör" satırı)
-LINK_APPENDIX_MODE = "smart"  # smart | all | off (bkz. link_appendix_mode)
-# Tek mesaj modu: bildirim botu mesajı gruba attıysa, hesabın attığı kopya silinir.
-# Böylece her fırsat grupta tek mesaj olarak kalır (botun bildirimi = uyarı düşen mesaj).
-SINGLE_MESSAGE = True
-# Komut sohbeti temizliği: yeni bir komut/yanıt geldiğinde bir önceki komut
-# alışverişi (senin komutun + botun yanıtı) silinir; ekranda yalnızca son mesaj
-# kalır. İndirim bildirimleri bu kayda girmediği için ASLA silinmez.
-CLEAN_COMMANDS = True
-# Alıntı temizliği (kullanıcı isteği, "ilk adım"): üst satırda GÜVENLE tespit
-# edilen ürün adı satırı ile tespit edilen tek başına kupon kodu satırı alıntıdan
-# silinir. Emin olunmayan satır ASLA silinmez. config: clean_quote_duplicates.
-CLEAN_QUOTE_DUPLICATES = False
-# chat_id -> son komut alışverişinin mesaj ID'leri (yalnızca komut diyaloğu).
-COMMAND_MESSAGES: dict[int, list[int]] = {}
-# Tekrar birleştirme (dedup): aynı normalize ürün sorgulu fırsat tek mesaja toplanır.
-# Ayrıntı: aşağıdaki "Tekrar birleştirme" bölümü.
-DEDUP_ENABLED = True       # aynı ürün başlıklı tekrarlar birleştirilsin mi?
-DEDUP_WINDOW_SECONDS = 12 * 3600  # normalize ürün başlığı kaç saniye "aynı fırsat" sayılsın
-DEDUP_SCAN_LIMIT = 100     # açılışta hedefteki son kaç mesaj önbelleğe alınsın
-DEDUP_MAX_ENTRIES = 1000   # bellekte tutulacak en fazla başlık (en eskiler düşer)
-# normalize ürün sorgusu -> kayıt sözlüğü (bkz. new_dedup_entry).
-DEDUP_CACHE: dict[str, dict[str, Any]] = {}
-DEDUP_LOCK = asyncio.Lock()  # kayıt/rezervasyon kısa kritik bölümü
 
 
 # ---------------------------------------------------------------------------
@@ -779,53 +715,6 @@ def product_links(obj: Any, limit: int = LINK_APPENDIX_LIMIT) -> list[dict[str, 
     return buttons[:limit] if buttons else links[:1]
 
 
-# Yeni bildirim üst bloğu (TEK ÜST SATIR: "₺56 — ürün adı" ya da "❓ — ürün adı";
-# alıntılanmış orijinal mesajın üstünde).
-# config.json → smart_header; anahtar yoksa KAPALI (eski düzen aynen sürer).
-SMART_HEADER = False
-# Hızlı bildirim: bot bildirimi ÖNCE gider; hesap kopyası yalnızca bot başarısız olursa atılır.
-# config.json → fast_notify; anahtar yoksa KAPALI (eski sıra aynen sürer).
-FAST_NOTIFY = False
-# Hızlı tarama: Telegram bazı yoğun kanalların güncellemelerini geç (10-60 sn) iletiyor.
-# Bu görev kaynakları birkaç saniyede bir tek istekle yoklar, yeni mesajı hemen işler.
-# config.json → fast_poll (varsayılan AÇIK; kapatmak için false), fast_poll_seconds (varsayılan 3).
-FAST_POLL = True
-FAST_POLL_SECONDS = 3.0
-# P6: geriye dönük tarama sınırları (açılış, restart ve duraklama sonrası).
-# Kesinti sırasında gelen mesajlar yalnızca bu pencere içinde yakalanır; daha eski
-# mesajlar topluca yeniden bildirilmez. Kayıtlı (restart öncesi) imleç varsa önce o
-# kullanılır, ama yaş sınırı yine uygulanır: imleç ne kadar eski olursa olsun pencere
-# dışındaki mesajlar atlanır.
-# config.json → fast_poll_backfill_minutes (varsayılan 15; 1-120 arası).
-FAST_POLL_BACKFILL_LIMIT = 100       # kaynak başına en fazla bu kadar geçmiş ileti taranır
-FAST_POLL_BACKFILL_MAX_AGE = 900.0   # yalnızca son 15 dk içindeki iletiler
-FAST_POLL_BATCH_LIMIT = 30           # kaynak başına bir turda en fazla 30 yeni ileti
-# P0 ölçümleme: hızlı taramanın anlık durumu (/durum ve kalp atışında görünür).
-# Yalnızca sayaç/aralık bilgisi tutar; davranış değişmez.
-POLL_TELEMETRY: dict[str, float] = {
-    "interval": FAST_POLL_SECONDS,   # o an kullanılan yoklama aralığı (sn)
-    "last_elapsed": 0.0,             # son tam tarama turunun süresi (sn)
-    "last_dialog_elapsed": 0.0,      # son GetPeerDialogs isteğinin süresi (sn)
-    "flood_count": 0,                # bu oturumdaki tarama FloodWait sayısı
-    "last_flood_wait": 0.0,          # son tarama FloodWait beklemesi (sn)
-}
-LIVE_SEEN: "collections.OrderedDict[tuple[int, int], float]" = collections.OrderedDict()
-POLL_DISPATCHED: "collections.OrderedDict[tuple[int, int], float]" = collections.OrderedDict()
-SOURCE_IN_FLIGHT: set[tuple[int, int]] = set()
-# Kaynak bazlı kalıcı cursor (yalnızca RAM — bilinçli /restart’ta tek commit)
-CURSOR_RAM: dict[int, dict[str, Any]] = {}
-RESTARTING = False  # /restart drain sırasında yeni mesajlar bekletilsin
-# Yavaş bildirim raporu: toplam süre bu eşiği (sn) aşarsa Kayıtlı Mesajlar'a döküm gelir. 0 = kapalı.
-SLOW_REPORT_SECONDS = 8.0
-_SLOW_REPORT_LAST = 0.0
-MEDIA_TIMING: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar("media_timing", default=None)
-# P5: tek bir deliver() çağrısı içinde indirilen medyanın bildirime taşınması;
-# (chat_id, message_id) -> bytes. deliver() bitince bağlam sıfırlanır, kalıcı
-# önbellek değildir; eşzamanlı teslimler birbirinin bağlamını görmez.
-MEDIA_DOWNLOAD_CACHE: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
-    "media_download_cache", default=None)
-
-
 def _remember(store_: "collections.OrderedDict[tuple[int, int], float]", chat_id: Any, message_id: Any) -> None:
     store_[(int(chat_id), int(message_id))] = time.time()
     while len(store_) > 5000:
@@ -839,11 +728,11 @@ def live_event_should_skip(event: Any) -> bool:
     deliveries. POLL_DISPATCHED only marks scheduled work, not completed work.
     """
     key = (int(event.chat_id), int(event.id))
-    if key in LIVE_SEEN or key in SOURCE_IN_FLIGHT:
+    if key in appstate.LIVE_SEEN or key in appstate.SOURCE_IN_FLIGHT:
         return True
-    if key in POLL_DISPATCHED and not getattr(event, "_fast_poll", False):
+    if key in appstate.POLL_DISPATCHED and not getattr(event, "_fast_poll", False):
         return True
-    _remember(LIVE_SEEN, *key)
+    _remember(appstate.LIVE_SEEN, *key)
     return False
 
 
@@ -851,9 +740,9 @@ def live_event_should_skip(event: Any) -> bool:
 
 def _cursor_ensure(chat_id: int) -> dict[str, Any]:
     cid = int(chat_id)
-    if cid not in CURSOR_RAM:
-        CURSOR_RAM[cid] = {"cursor": 0, "pending": set(), "completed": set(), "failed": set(), "failed_at": {}, "initialized": True}
-    return CURSOR_RAM[cid]
+    if cid not in appstate.CURSOR_RAM:
+        appstate.CURSOR_RAM[cid] = {"cursor": 0, "pending": set(), "completed": set(), "failed": set(), "failed_at": {}, "initialized": True}
+    return appstate.CURSOR_RAM[cid]
 
 
 def _cursor_advance(chat_id: int) -> None:
@@ -905,7 +794,7 @@ def _cursor_mark_failed(chat_id: int, msg_id: int) -> None:
 
 def cursor_load_from_config(config: dict) -> None:
     """config.json → source_cursors RAM’e yükle (main başlangıcında)."""
-    CURSOR_RAM.clear()
+    appstate.CURSOR_RAM.clear()
     raw = config.get("source_cursors")
     if not isinstance(raw, dict):
         return
@@ -914,7 +803,7 @@ def cursor_load_from_config(config: dict) -> None:
             cid = int(k)
             cur = int(v)
             # resume_check: bu imleç bir önceki oturumdan kalma; ilk taramada yaş sınırı uygulanır
-            CURSOR_RAM[cid] = {"cursor": cur, "pending": set(), "completed": set(), "failed": set(), "failed_at": {},
+            appstate.CURSOR_RAM[cid] = {"cursor": cur, "pending": set(), "completed": set(), "failed": set(), "failed_at": {},
                                "initialized": True, "resume_check": True}
         except Exception:
             continue
@@ -924,7 +813,7 @@ def cursor_collect_for_persist() -> dict[str, int]:
     """Yalnızca başlangıç noktası belirlenmiş RAM cursor’larını kalıcılaştır."""
     return {
         str(int(cid)): int(st["cursor"])
-        for cid, st in CURSOR_RAM.items()
+        for cid, st in appstate.CURSOR_RAM.items()
         if st.get("initialized", True)
     }
 
@@ -939,20 +828,19 @@ async def cursor_persist_for_restart(store: ConfigStore) -> tuple[bool, str]:
 
 def maybe_report_slow(tg_client: Any, source_name: str, lag: float, steps: list[tuple[str, float]]) -> None:
     """Toplam süre eşiği aşarsa Kayıtlı Mesajlar'a süre dökümü gönder (arka planda; en fazla dakikada 1)."""
-    global _SLOW_REPORT_LAST
     processing = sum(seconds for _, seconds in steps)
     total = processing + max(lag, 0.0)
-    if SLOW_REPORT_SECONDS <= 0 or total < SLOW_REPORT_SECONDS:
+    if appstate.SLOW_REPORT_SECONDS <= 0 or total < appstate.SLOW_REPORT_SECONDS:
         return
     now = time.time()
-    if now - _SLOW_REPORT_LAST < 60:
+    if now - appstate._SLOW_REPORT_LAST < 60:
         return
-    _SLOW_REPORT_LAST = now
+    appstate._SLOW_REPORT_LAST = now
     lines = [f"⏱ Yavaş bildirim ({total:.0f} sn) — {source_name}"]
     if lag >= 0:
         lines.append(f"• Telegram → bot: {lag:.1f} sn")
     lines += [f"• {name}: {seconds:.1f} sn" for name, seconds in steps]
-    media = MEDIA_TIMING.get()
+    media = appstate.MEDIA_TIMING.get()
     if media:
         lines.append(
             f"• Medya: {media.get('kind')}, {media.get('mb', 0):.1f} MB, "
@@ -979,7 +867,7 @@ def _compose_resolve_header(
     product_title = fallback_title
     price_text = ""
     quote_body = False
-    if SMART_HEADER:
+    if appstate.SMART_HEADER:
         smart_title, smart_price = smart_header_info(obj, cleaned_obj, source_body)
         multiple_products = smart_price.reason == "birden fazla ürün bloğu: seçim belirsiz"
         product_title = smart_title or (
@@ -1152,7 +1040,7 @@ def compose_message(
     body = source_body
     body_entities = entities_for_text(cleaned_obj, source_body)
     body_obj = cleaned_obj
-    if CLEAN_QUOTE_DUPLICATES and SMART_HEADER and quote_body:
+    if appstate.CLEAN_QUOTE_DUPLICATES and appstate.SMART_HEADER and quote_body:
         # Yalnızca GÖRÜNEN alıntı temizlenir. Başlık, fiyat, tekrar kimliği,
         # arama sorgusu ve ürün linkleri ORİJİNAL (kırpılmamış) mesajdan
         # hesaplanmaya devam eder; doğru tespitler değişmez.
@@ -1254,16 +1142,6 @@ def compose_message(
         "entities": [*content_entities, *name_entities],
         "message": composed_message,
     }
-# Aynı sohbete Bot API ~1/sn sınırı uygular; not güncellemeleri bunun
-# altında kalmak için mesaj başına bu kadar aralık bırakır. Aralık içinde
-# gelen tekrarlar tek düzenlemede birleşir (düzenleme kilidi altında sayaç
-# yeniden okunur); bekleme Bot API kilidi alınmadan yapılır, bu yüzden yeni
-# bildirimler rozet beklemesinin arkasında kilitlenmez.
-DEDUP_EDIT_MIN_INTERVAL = 5.0
-# Rezervasyon koyup bitirmeyen göndereni bekleme süresi (sonrası devralma).
-DEDUP_RESERVE_TIMEOUT = 60.0
-# Yarım kalmış rezervasyonun önbellekten atılma süresi (temizlik).
-DEDUP_RESERVE_TTL = 300.0
 
 
 def prune_dedup_cache(
@@ -1281,7 +1159,7 @@ def prune_dedup_cache(
         age = now - float(entry.get("first_seen", now))
         if entry.get("pending"):
             owner = entry.get("owner")
-            if age > DEDUP_RESERVE_TTL and (owner is None or owner.done()):
+            if age > appstate.DEDUP_RESERVE_TTL and (owner is None or owner.done()):
                 entry["failed"] = True
                 try:
                     entry["ready"].set()
@@ -1318,9 +1196,9 @@ def prune_dedup_cache(
 
 def _bot_api_stats_line() -> str:
     """P0 ölçümleme özeti: Bot API 429 sayaçları (token/içerik yazılmaz)."""
-    if not NOTIFY_BOT_TOKEN:
+    if not appstate.NOTIFY_BOT_TOKEN:
         return "• Bot API hız sınırı: token yok (ölçüm kapalı)"
-    stats = gate_stats(NOTIFY_BOT_TOKEN)
+    stats = gate_stats(appstate.NOTIFY_BOT_TOKEN)
     line = (
         f"• Bot API hız sınırı: 429={stats['rate_limit_count']}"
         f" · retry bekleme {stats['retry_wait_seconds']:.1f} sn"
@@ -1336,10 +1214,10 @@ def _bot_api_stats_line() -> str:
 
 
 def build_status_text(config: dict, *, connected: bool = True) -> str:
-    last = STATS["last_match"]
+    last = appstate.STATS["last_match"]
     last_line = "henüz eşleşme yok"
     if last:
-        last_line = f"{humanize(time.time() - last)} önce ({STATS['last_match_source']})"
+        last_line = f"{humanize(time.time() - last)} önce ({appstate.STATS['last_match_source']})"
     keywords = telegram_list_items(config, "include_keywords")
     exclude_words = telegram_list_items(config, "exclude_keywords")
     mode = match_mode_of(config)
@@ -1357,7 +1235,7 @@ def build_status_text(config: dict, *, connected: bool = True) -> str:
     filter_line += "\n• Değiştirmek için /tgfiltreac ve /tgfiltrekapat"
     if not connected:
         listening = "• Dinleme: BAĞLANTI YOK — Telegram bağlantısı bekleniyor."
-    elif not SOURCE_IDS:
+    elif not appstate.SOURCE_IDS:
         listening = "• Dinleme: KAYNAK YOK — kaynak listesini kontrol et."
     else:
         listening = "• Dinleme: AKTİF — kaynak mesajları bekleniyor."
@@ -1366,42 +1244,42 @@ def build_status_text(config: dict, *, connected: bool = True) -> str:
         f"{listening}\n"
         f"• Çalışma süresi: {humanize(time.time() - STARTED_AT)}"
         f" · başlangıç {timefmt.stamp(STARTED_AT)} TSİ (şimdi {timefmt.clock()} TSİ)\n"
-        f"• Dinlenen kaynak: {len(SOURCE_IDS)}/{len(config.get('source_chats') or [])}"
-        + (f" (çözülemeyen {len(SOURCE_FAILURES)})" if SOURCE_FAILURES else "")
+        f"• Dinlenen kaynak: {len(appstate.SOURCE_IDS)}/{len(config.get('source_chats') or [])}"
+        + (f" (çözülemeyen {len(appstate.SOURCE_FAILURES)})" if appstate.SOURCE_FAILURES else "")
         + "\n"
-        f"• Görülen: {STATS['seen']} | Eşleşen: {STATS['matched']} | İletilen: {STATS['forwarded']}"
-        + (f" | Hedefe iletilemeyen: {STATS['failed']}" if STATS["failed"] else "")
-        + (f" | Telefon bildirimi başarısız: {STATS['notification_failed']}"
-           if STATS.get("notification_failed") else "")
+        f"• Görülen: {appstate.STATS['seen']} | Eşleşen: {appstate.STATS['matched']} | İletilen: {appstate.STATS['forwarded']}"
+        + (f" | Hedefe iletilemeyen: {appstate.STATS['failed']}" if appstate.STATS["failed"] else "")
+        + (f" | Telefon bildirimi başarısız: {appstate.STATS['notification_failed']}"
+           if appstate.STATS.get("notification_failed") else "")
         + "\n"
         f"• Son eşleşme: {last_line}\n"
-        f"• Hedef: {DESTINATION_LABEL}\n"
-        f"• Kontrol sohbeti: {('Bot özel sohbeti + Kayıtlı Mesajlar' if config_flag(config.get('private_control'), False) else ', '.join(CONTROL_NAMES) or 'me')}\n"
+        f"• Hedef: {appstate.DESTINATION_LABEL}\n"
+        f"• Kontrol sohbeti: {('Bot özel sohbeti + Kayıtlı Mesajlar' if config_flag(config.get('private_control'), False) else ', '.join(appstate.CONTROL_NAMES) or 'me')}\n"
         f"{filter_line}\n"
-        f"• İletim sırası: {' → '.join(DELIVERY_CHAIN) or 'yok'}"
-        + (f" | kullanılan: {', '.join(f'{k}×{v}' for k, v in STATS['modes'].items())}"
-           if STATS["modes"] else "")
+        f"• İletim sırası: {' → '.join(appstate.DELIVERY_CHAIN) or 'yok'}"
+        + (f" | kullanılan: {', '.join(f'{k}×{v}' for k, v in appstate.STATS['modes'].items())}"
+           if appstate.STATS["modes"] else "")
         + "\n"
-        f"• Tek mesaj modu: {'açık' if SINGLE_MESSAGE else 'kapalı'}"
-        + (f" · bildirim sonrası silinen hesap kopyası: {STATS.get('cleaned', 0)}"
-           if SINGLE_MESSAGE and STATS.get("cleaned") else "")
+        f"• Tek mesaj modu: {'açık' if appstate.SINGLE_MESSAGE else 'kapalı'}"
+        + (f" · bildirim sonrası silinen hesap kopyası: {appstate.STATS.get('cleaned', 0)}"
+           if appstate.SINGLE_MESSAGE and appstate.STATS.get("cleaned") else "")
         + "\n"
-        f"• Komut temizliği: {'açık' if CLEAN_COMMANDS else 'kapalı'}"
-        + (f" · silinen eski komut mesajı: {STATS.get('cleaned_commands', 0)}"
-           if CLEAN_COMMANDS and STATS.get("cleaned_commands") else "")
+        f"• Komut temizliği: {'açık' if appstate.CLEAN_COMMANDS else 'kapalı'}"
+        + (f" · silinen eski komut mesajı: {appstate.STATS.get('cleaned_commands', 0)}"
+           if appstate.CLEAN_COMMANDS and appstate.STATS.get("cleaned_commands") else "")
         + "\n"
         + (
-            f"• Tekrar birleştirme: açık · birleştirilen {STATS.get('deduped', 0)}"
-            f" · rozet {STATS.get('dedup_edits', 0)} · izlenen {len(DEDUP_CACHE)} başlık"
-            if DEDUP_ENABLED else "• Tekrar birleştirme: kapalı"
+            f"• Tekrar birleştirme: açık · birleştirilen {appstate.STATS.get('deduped', 0)}"
+            f" · rozet {appstate.STATS.get('dedup_edits', 0)} · izlenen {len(appstate.DEDUP_CACHE)} başlık"
+            if appstate.DEDUP_ENABLED else "• Tekrar birleştirme: kapalı"
         )
         + "\n"
         + (
-            f"• Hızlı tarama: açık · aralık {POLL_TELEMETRY['interval']:.0f} sn"
-            f" · son yoklama {POLL_TELEMETRY['last_elapsed']:.1f} sn"
-            f" · FloodWait {int(POLL_TELEMETRY['flood_count'])}"
-            + (f" (son {POLL_TELEMETRY['last_flood_wait']:.0f} sn)" if POLL_TELEMETRY["flood_count"] else "")
-            if FAST_POLL else "• Hızlı tarama: kapalı"
+            f"• Hızlı tarama: açık · aralık {appstate.POLL_TELEMETRY['interval']:.0f} sn"
+            f" · son yoklama {appstate.POLL_TELEMETRY['last_elapsed']:.1f} sn"
+            f" · FloodWait {int(appstate.POLL_TELEMETRY['flood_count'])}"
+            + (f" (son {appstate.POLL_TELEMETRY['last_flood_wait']:.0f} sn)" if appstate.POLL_TELEMETRY["flood_count"] else "")
+            if appstate.FAST_POLL else "• Hızlı tarama: kapalı"
         )
         + "\n"
         + _bot_api_stats_line()
@@ -1409,10 +1287,10 @@ def build_status_text(config: dict, *, connected: bool = True) -> str:
 
 
 def build_source_text() -> str:
-    lines = [f"İzlenen {len(SOURCES)} kaynak:"]
+    lines = [f"İzlenen {len(appstate.SOURCES)} kaynak:"]
     lines += [f"• {item['name']}  [{item['id']}]" + ("" if item["joined"] else "  ⚠️ ÜYE DEĞİLSİN")
-              for item in SOURCES]
-    for value, exc in SOURCE_FAILURES:
+              for item in appstate.SOURCES]
+    for value, exc in appstate.SOURCE_FAILURES:
         lines.append(f"✗ {value} çözülemedi: {exc}")
     return "\n".join(lines)
 
@@ -1641,76 +1519,68 @@ async def save_config(store: ConfigStore, note: str = "") -> tuple[bool, str]:
 
 def apply_runtime_config(config: dict) -> list[str]:
     """Global çalışma ayarlarını config'ten yenile (Telegram bağlantısı gerekmez)."""
-    global SMART_HEADER, FAST_NOTIFY, SLOW_REPORT_SECONDS, FAST_POLL, FAST_POLL_SECONDS, FAST_POLL_BACKFILL_MAX_AGE
-    global FILTER_INCLUDE, FILTER_EXCLUDE, FILTER_MODE, ADMIN_IDS
-    global FILTER_INCLUDE_ENABLED, FILTER_EXCLUDE_ENABLED
-    global DELIVERY_CHAIN, MAX_MEDIA_MB
-    global LINK_APPENDIX_MODE, LINK_KINDS, BOT_LINK_KINDS
-    global MESSAGE_LINK_LINE, SOURCE_FOOTER, NOTIFY_MEDIA, NOTIFY_BOT_TOKEN
-    global SINGLE_MESSAGE, CLEAN_COMMANDS, CLEAN_QUOTE_DUPLICATES
-    global DEDUP_ENABLED, DEDUP_WINDOW_SECONDS, DEDUP_SCAN_LIMIT
 
     notes: list[str] = []
-    FILTER_INCLUDE = [normalize(x) for x in config.get("include_keywords") or []]
-    FILTER_EXCLUDE = [normalize(x) for x in config.get("exclude_keywords") or []]
-    FILTER_MODE = match_mode_of(config)
+    appstate.FILTER_INCLUDE = [normalize(x) for x in config.get("include_keywords") or []]
+    appstate.FILTER_EXCLUDE = [normalize(x) for x in config.get("exclude_keywords") or []]
+    appstate.FILTER_MODE = match_mode_of(config)
     filter_state = filter_state_of(config)
-    FILTER_INCLUDE_ENABLED = filter_state["include"]
-    FILTER_EXCLUDE_ENABLED = filter_state["exclude"]
-    ADMIN_IDS = parse_admin_ids(config.get("admin_user_id"))
-    DELIVERY_CHAIN = build_delivery_chain(config)
+    appstate.FILTER_INCLUDE_ENABLED = filter_state["include"]
+    appstate.FILTER_EXCLUDE_ENABLED = filter_state["exclude"]
+    appstate.ADMIN_IDS = parse_admin_ids(config.get("admin_user_id"))
+    appstate.DELIVERY_CHAIN = build_delivery_chain(config)
     try:
-        MAX_MEDIA_MB = int(config.get("max_media_mb", 25))
+        appstate.MAX_MEDIA_MB = int(config.get("max_media_mb", 25))
     except (TypeError, ValueError):
         log.warning("max_media_mb sayı değil, 25 kabul edildi.")
-        MAX_MEDIA_MB = 25
-    LINK_APPENDIX_MODE = link_appendix_mode(config)
-    LINK_KINDS = link_kinds_for(LINK_APPENDIX_MODE, bot=False)
-    BOT_LINK_KINDS = link_kinds_for(LINK_APPENDIX_MODE, bot=True)
-    MESSAGE_LINK_LINE = config_flag(config.get("message_link"), True)
-    SOURCE_FOOTER = config_flag(config.get("source_footer"), True)
-    NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
-    SINGLE_MESSAGE = config_flag(config.get("single_message"), True)
-    CLEAN_COMMANDS = config_flag(config.get("clean_commands"), True)
+        appstate.MAX_MEDIA_MB = 25
+    appstate.LINK_APPENDIX_MODE = link_appendix_mode(config)
+    appstate.LINK_KINDS = link_kinds_for(appstate.LINK_APPENDIX_MODE, bot=False)
+    appstate.BOT_LINK_KINDS = link_kinds_for(appstate.LINK_APPENDIX_MODE, bot=True)
+    appstate.MESSAGE_LINK_LINE = config_flag(config.get("message_link"), True)
+    appstate.SOURCE_FOOTER = config_flag(config.get("source_footer"), True)
+    appstate.NOTIFY_MEDIA = config_flag(config.get("notify_media"), True)
+    appstate.SINGLE_MESSAGE = config_flag(config.get("single_message"), True)
+    appstate.CLEAN_COMMANDS = config_flag(config.get("clean_commands"), True)
     # Varsayılan kapalı: davranış değişikliği yalnız config.json açtığında
     # üretimde görülür; mevcut testler/altın referans eski düzeni sınamaya devam eder.
-    CLEAN_QUOTE_DUPLICATES = config_flag(config.get("clean_quote_duplicates"), False)
-    SMART_HEADER = config_flag(config.get("smart_header"), False)
-    FAST_NOTIFY = config_flag(config.get("fast_notify"), False)
-    FAST_POLL = config_flag(config.get("fast_poll"), True)
+    appstate.CLEAN_QUOTE_DUPLICATES = config_flag(config.get("clean_quote_duplicates"), False)
+    appstate.SMART_HEADER = config_flag(config.get("smart_header"), False)
+    appstate.FAST_NOTIFY = config_flag(config.get("fast_notify"), False)
+    appstate.FAST_POLL = config_flag(config.get("fast_poll"), True)
     try:
-        FAST_POLL_SECONDS = min(30.0, max(1.0, float(config.get("fast_poll_seconds", 3))))
+        appstate.FAST_POLL_SECONDS = min(30.0, max(1.0, float(config.get("fast_poll_seconds", 3))))
     except (TypeError, ValueError):
-        FAST_POLL_SECONDS = 3.0
+        appstate.FAST_POLL_SECONDS = 3.0
     try:
-        FAST_POLL_BACKFILL_MAX_AGE = min(120.0, max(1.0, float(config.get("fast_poll_backfill_minutes", 15)))) * 60.0
+        appstate.FAST_POLL_BACKFILL_MAX_AGE = min(120.0, max(1.0, float(config.get("fast_poll_backfill_minutes", 15)))) * 60.0
     except (TypeError, ValueError):
-        FAST_POLL_BACKFILL_MAX_AGE = 900.0
+        appstate.FAST_POLL_BACKFILL_MAX_AGE = 900.0
     try:
-        SLOW_REPORT_SECONDS = max(0.0, float(config.get("slow_report_seconds", 8)))
+        appstate.SLOW_REPORT_SECONDS = max(0.0, float(config.get("slow_report_seconds", 8)))
     except (TypeError, ValueError):
-        SLOW_REPORT_SECONDS = 8.0
-    DEDUP_ENABLED = config_flag(config.get("dedup_enabled"), True)
+        appstate.SLOW_REPORT_SECONDS = 8.0
+    appstate.DEDUP_ENABLED = config_flag(config.get("dedup_enabled"), True)
     try:
-        DEDUP_WINDOW_SECONDS = max(1, min(72, int(config.get("dedup_window_hours", 12)))) * 3600
+        appstate.DEDUP_WINDOW_SECONDS = max(1, min(72, int(config.get("dedup_window_hours", 12)))) * 3600
     except (TypeError, ValueError):
         log.warning("dedup_window_hours sayı değil, 12 saat kabul edildi.")
-        DEDUP_WINDOW_SECONDS = 12 * 3600
+        appstate.DEDUP_WINDOW_SECONDS = 12 * 3600
     try:
-        DEDUP_SCAN_LIMIT = max(0, min(100, int(config.get("dedup_scan_limit", 100))))
+        appstate.DEDUP_SCAN_LIMIT = max(0, min(100, int(config.get("dedup_scan_limit", 100))))
     except (TypeError, ValueError):
         log.warning("dedup_scan_limit sayı değil, 100 kabul edildi.")
-        DEDUP_SCAN_LIMIT = 100
+        appstate.DEDUP_SCAN_LIMIT = 100
     # Bildirim token'ının tek kaynağı environment/Actions secret'ı olsun;
     # config.json içindeki eski notify_bot_token alanı artık kullanılmaz.
     token = str(os.getenv("NOTIFY_BOT_TOKEN", "") or "").strip()
-    NOTIFY_BOT_TOKEN = "" if token.lower() in {"null", "none", "yok"} else token
+    appstate.NOTIFY_BOT_TOKEN = "" if token.lower() in {"null", "none", "yok"} else token
 
-    if not FILTER_INCLUDE_ENABLED:
+    if not appstate.FILTER_INCLUDE_ENABLED:
         notes.append("🔓 Dahili kelime filtresi kapalı; anahtar kelimeler yok sayılıyor"
-                     + (" (harici kelimeler yine engeller)." if FILTER_EXCLUDE_ENABLED
+                     + (" (harici kelimeler yine engeller)." if appstate.FILTER_EXCLUDE_ENABLED
                         else " ve harici engelleme de kapalı: her mesaj iletilir."))
-    if not FILTER_EXCLUDE_ENABLED:
+    if not appstate.FILTER_EXCLUDE_ENABLED:
         notes.append("🚫 Harici kelime filtresi kapalı; engelleme yapılmıyor.")
     return notes
 
@@ -1827,7 +1697,6 @@ async def _prefill_missing_ids_from_dialogs(client: TelegramClient, values: list
 
 async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = False) -> list[str]:
     """Kaynakları tek tek çöz; biri bozuksa diğerleri çalışmaya devam eder."""
-    global SOURCES, SOURCE_IDS, SOURCE_FAILURES
     resolved: list[dict[str, Any]] = []
     failures: list[tuple[Any, Exception]] = []
     stored_ids = config.get("source_chat_ids")
@@ -1932,8 +1801,8 @@ async def resolve_sources(client: TelegramClient, config: dict, quiet: bool = Fa
                 config["source_chat_ids"][rk] = item["id"]
     elif resolved:
         config["source_chat_ids"] = {str(item["requested"]).strip(): item["id"] for item in resolved}
-    SOURCES, SOURCE_FAILURES = resolved, failures
-    SOURCE_IDS = {item["id"] for item in resolved}
+    appstate.SOURCES, appstate.SOURCE_FAILURES = resolved, failures
+    appstate.SOURCE_IDS = {item["id"] for item in resolved}
     notes: list[str] = []
     for item in resolved:
         flag = "" if item["joined"] else "  <-- ÜYE DEĞİLSİN, mesaj gelmez!"
@@ -1975,7 +1844,6 @@ async def resolve_control(client: TelegramClient, config: dict,
     Dönen ikinci değer: istenen sohbetlerden en az biri çözülebildi mi?
     `quiet` ileriye dönük sessiz mod için ayrılmıştır.
     """
-    global CONTROL_IDS, CONTROL_NAMES
     ids: set[int] = set()
     names: list[str] = []
     control_config = config.get("control_chat", "me")
@@ -1988,12 +1856,12 @@ async def resolve_control(client: TelegramClient, config: dict,
             continue
         ids.add(peer_id)
         names.append(f"{name} [{peer_id}]")
-    if SELF_ID is not None:
-        ids.add(SELF_ID)  # Kayıtlı Mesajlar her zaman kontrol edilebilir
+    if appstate.SELF_ID is not None:
+        ids.add(appstate.SELF_ID)  # Kayıtlı Mesajlar her zaman kontrol edilebilir
     resolved = bool(names)
     if not names:
         names.append("me (Kayıtlı Mesajlar)")
-    CONTROL_IDS, CONTROL_NAMES = ids, names
+    appstate.CONTROL_IDS, appstate.CONTROL_NAMES = ids, names
     # Not: açılışta çağıran taraf loglar; burada tekrar loglamıyoruz.
     return [f"🎛 Komut sohbeti: {', '.join(names)}"], resolved
 
@@ -2003,18 +1871,17 @@ async def resolve_destination(client: TelegramClient, config: dict, quiet: bool 
 
     `quiet` ileriye dönük sessiz mod için ayrılmıştır.
     """
-    global DESTINATION, DESTINATION_ID, DESTINATION_LABEL
     value = parse_chat_value(config.get("destination", "me"))
     try:
         peer_id, name, _ = await resolve_chat(client, value)
-        DESTINATION, DESTINATION_ID = peer_id, peer_id
-        DESTINATION_LABEL = f"{name} [{peer_id}]"
+        appstate.DESTINATION, appstate.DESTINATION_ID = peer_id, peer_id
+        appstate.DESTINATION_LABEL = f"{name} [{peer_id}]"
     except Exception as exc:  # noqa: BLE001
         log.error("destination çözülemedi: %r -> %s. Kayıtlı Mesajlar'a düşülüyor.", value, exc)
-        DESTINATION, DESTINATION_ID = "me", None
-        DESTINATION_LABEL = "me (Kayıtlı Mesajlar)"
+        appstate.DESTINATION, appstate.DESTINATION_ID = "me", None
+        appstate.DESTINATION_LABEL = "me (Kayıtlı Mesajlar)"
         return [f"⚠️ destination çözülemedi ({value}); Kayıtlı Mesajlar'a düşüldü."]
-    return [f"🎯 Hedef: {DESTINATION_LABEL}"]
+    return [f"🎯 Hedef: {appstate.DESTINATION_LABEL}"]
 
 
 async def resolve_chat_groups(
@@ -2029,12 +1896,12 @@ async def resolve_chat_groups(
     notes: list[str] = []
     if "sources" in groups:
         notes += await resolve_sources(client, config)
-        if not SOURCE_IDS:
+        if not appstate.SOURCE_IDS:
             return notes, ("hiçbir kaynak çözülemedi; source_chats listesini ve "
                            "hesabın kanallara üyeliğini kontrol et")
     if "destination" in groups:
         notes += await resolve_destination(client, config)
-        if strict and DESTINATION_ID is None:
+        if strict and appstate.DESTINATION_ID is None:
             return notes, "destination çözülemedi; sohbet ID'sini/kullanıcı adını kontrol et"
     if "control" in groups:
         control_notes, resolved = await resolve_control(client, config)
@@ -2053,8 +1920,8 @@ def note_command_messages(chat_id: int, message_ids: Sequence[int]) -> list[int]
     """
     chat = int(chat_id or 0)
     current = [int(item) for item in message_ids if item]
-    previous = COMMAND_MESSAGES.get(chat, [])
-    COMMAND_MESSAGES[chat] = current
+    previous = appstate.COMMAND_MESSAGES.get(chat, [])
+    appstate.COMMAND_MESSAGES[chat] = current
     return [item for item in previous if item not in current]
 
 
@@ -2126,11 +1993,11 @@ async def heartbeat() -> None:
             "Kalp atışı: %s çalışıyor | görülen=%d eşleşen=%d iletilen=%d"
             " | tarama aralığı=%.0f sn (son yoklama %.1f sn, FloodWait=%d)"
             " | Bot API 429=%d (retry bekleme %.1f sn, kilit bekleme %.1f sn)",
-            humanize(time.time() - STARTED_AT), STATS["seen"], STATS["matched"], STATS["forwarded"],
-            POLL_TELEMETRY["interval"], POLL_TELEMETRY["last_elapsed"], int(POLL_TELEMETRY["flood_count"]),
-            gate_stats(NOTIFY_BOT_TOKEN)["rate_limit_count"],
-            gate_stats(NOTIFY_BOT_TOKEN)["retry_wait_seconds"],
-            gate_stats(NOTIFY_BOT_TOKEN)["lock_wait_seconds"],
+            humanize(time.time() - STARTED_AT), appstate.STATS["seen"], appstate.STATS["matched"], appstate.STATS["forwarded"],
+            appstate.POLL_TELEMETRY["interval"], appstate.POLL_TELEMETRY["last_elapsed"], int(appstate.POLL_TELEMETRY["flood_count"]),
+            gate_stats(appstate.NOTIFY_BOT_TOKEN)["rate_limit_count"],
+            gate_stats(appstate.NOTIFY_BOT_TOKEN)["retry_wait_seconds"],
+            gate_stats(appstate.NOTIFY_BOT_TOKEN)["lock_wait_seconds"],
         )
 
 
@@ -2162,7 +2029,6 @@ def run_check(config_path: str | None) -> int:
 async def main(argv: Sequence[str] | None = None) -> int:
     # Filtre/link bayraklarını apply_runtime_config yazar; burada yalnızca
     # kimlik atanır (diğer adlar yalnızca okunur, `global` gerekmez).
-    global SELF_ID
     rt = Runtime(sys.modules[__name__])
 
     args = build_parser().parse_args(argv)
@@ -2202,32 +2068,32 @@ async def main(argv: Sequence[str] | None = None) -> int:
         )
 
     me = await rt.client.get_me()
-    SELF_ID = me.id
+    appstate.SELF_ID = me.id
     log.info("Bağlanıldı: %s (id=%s)", display_name(me), me.id)
 
-    if LINK_APPENDIX_MODE == "smart":
+    if appstate.LINK_APPENDIX_MODE == "smart":
         log.info("Bağlantı ekleri: akıllı mod — ürün adresi '%s' yazısına gömülür "
                  "(buton, gizli hyperlink ya da görünür URL); alıntıdaki bağlantılar yedek kalır.",
                  PRODUCT_LINK_TEXT)
-    elif LINK_APPENDIX_MODE == "all":
+    elif appstate.LINK_APPENDIX_MODE == "all":
         log.info("Bağlantı ekleri: tüm gizli linkler iletinin sonuna yazılacak.")
-    if MESSAGE_LINK_LINE:
+    if appstate.MESSAGE_LINK_LINE:
         log.info("Orijinal mesajın t.me adresi kaynak grup adının içine gömülecek "
                  "(ayrı '🔗 %s' satırı yok).", MESSAGE_LINK_LABEL)
-    if NOTIFY_BOT_TOKEN:
+    if appstate.NOTIFY_BOT_TOKEN:
         log.info("Bildirim biçimi (basit düzen): en üstte ürün başlığı → '%s' → altında mesaj "
                  "OLDUĞU GİBİ → en altta kalın kaynak adı%s; mesajın adresi o adın içine "
                  "gömülüdür. Tekrarlı paylaşımlarda kaynak adı satırı kalkar, yerine çoklu "
                  "paylaşım notu yazılır (📌 N kere paylaşıldı: <gruplar>; her ad kendi "
                  "mesajına bağlı).",
-                 PRODUCT_LINK_TEXT, " + medya" if NOTIFY_MEDIA else "")
-    if CLEAN_COMMANDS:
+                 PRODUCT_LINK_TEXT, " + medya" if appstate.NOTIFY_MEDIA else "")
+    if appstate.CLEAN_COMMANDS:
         log.info("Komut temizliği açık: yeni komutta önceki komut/yanıt silinir, "
                  "bildirimlere dokunulmaz.")
-    if DEDUP_ENABLED:
+    if appstate.DEDUP_ENABLED:
         log.info("Tekrar birleştirme açık: aynı ürün sorgusu %s boyunca tek mesajda toplanır, "
                  "açılışta hedefteki son %d ileti taranır.",
-                 humanize(DEDUP_WINDOW_SECONDS), DEDUP_SCAN_LIMIT)
+                 humanize(appstate.DEDUP_WINDOW_SECONDS), appstate.DEDUP_SCAN_LIMIT)
     else:
         log.info("Tekrar birleştirme kapalı: her eşleşme ayrı mesaj olarak iletilir.")
 
@@ -2253,16 +2119,16 @@ async def main(argv: Sequence[str] | None = None) -> int:
                 log.info("Kaynak ID push: %s %s", _st, _dt)
         except Exception as exc:  # noqa: BLE001 - kalıcılık hatası bot'u durdurmasın
             log.warning("Kaynak ID'leri yazılamadı: %s: %s", type(exc).__name__, exc)
-    not_joined = [item["name"] for item in SOURCES if not item["joined"]]
+    not_joined = [item["name"] for item in appstate.SOURCES if not item["joined"]]
     if not_joined:
         log.warning(
             "Bu hesaptan üye olunmayan kaynaklar var, bunlardan mesaj GELMEZ: %s", ", ".join(not_joined)
         )
-    if ADMIN_IDS:
-        log.info("Komut kullanabilecek admin ID'leri: %s", sorted(ADMIN_IDS))
-    elif len(CONTROL_IDS) > 1:
+    if appstate.ADMIN_IDS:
+        log.info("Komut kullanabilecek admin ID'leri: %s", sorted(appstate.ADMIN_IDS))
+    elif len(appstate.CONTROL_IDS) > 1:
         log.warning("admin_user_id boş: grup komutları kimse tarafından kullanılamaz.")
-    if not NOTIFY_BOT_TOKEN:
+    if not appstate.NOTIFY_BOT_TOKEN:
         log.warning(
             "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil: mesajları kendi hesabın "
             "gönderdiği için Telegram BİLDİRİM ÜRETMEZ. Sesli bildirim istiyorsan @BotFather'dan "
@@ -2271,7 +2137,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
 
     rt.settings_lock = asyncio.Lock()
-    rt.private_api = BotAPI(NOTIFY_BOT_TOKEN) if NOTIFY_BOT_TOKEN else None
+    rt.private_api = BotAPI(appstate.NOTIFY_BOT_TOKEN) if appstate.NOTIFY_BOT_TOKEN else None
     # Optional feature: failure to initialize must not prevent channel listening.
     rt.tracker = None
     if rt.private_api and config_flag(rt.store.config.get("private_control"), False):
@@ -2308,7 +2174,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
             rt.tracker = ProductTracker(
                 rt.store.path.with_name("product_watches.json"), rt.private_api, persist_products,
-                owner_id=SELF_ID,
+                owner_id=appstate.SELF_ID,
                 header_formatter=lambda cents, title: build_header_line(header_price_text(cents / 100), title),
             )
         except Exception:
@@ -2344,10 +2210,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
     # Tekrar önbelleğini sıfırla ve hedefin son iletileriyle ısıt: yeniden
     # başlamalarda yalnızca güvenle eşlenebilen geçmişi kullan (tek tarama).
-    DEDUP_CACHE.clear()
-    LIVE_SEEN.clear()
-    POLL_DISPATCHED.clear()
-    SOURCE_IN_FLIGHT.clear()
+    appstate.DEDUP_CACHE.clear()
+    appstate.LIVE_SEEN.clear()
+    appstate.POLL_DISPATCHED.clear()
+    appstate.SOURCE_IN_FLIGHT.clear()
     await dedup_preload(rt)
     # Cursor: RAM sadece, bilinçli /restart’ta tek persist
     cursor_load_from_config(rt.store.config)
@@ -2377,7 +2243,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
         private_tasks.append(asyncio.create_task(rt.private_offers.run()))
         if config_flag(rt.store.config.get("private_control"), False):
             private_tasks.append(asyncio.create_task(poll_private_commands(
-                rt.private_api, lambda: ADMIN_IDS | {SELF_ID}, on_control_message,
+                rt.private_api, lambda: appstate.ADMIN_IDS | {appstate.SELF_ID}, on_control_message,
                 functools.partial(private_status_changed, rt),
             )))
             await asyncio.sleep(0)  # poller görevi ilk adımını atsın
@@ -2389,7 +2255,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
     if auto_restart and rt.gh_pat:
         asyncio.create_task(auto_restart_scheduler(
-            rt.client, DESTINATION, rt.gh_pat, max(60, restart_minutes * 60),
+            rt.client, appstate.DESTINATION, rt.gh_pat, max(60, restart_minutes * 60),
             prepare_restart=functools.partial(prepare_scheduled_restart, rt),
             resume_after_failure=functools.partial(resume_after_scheduled_restart_failure, rt),
         ))
@@ -2397,10 +2263,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
         log.warning("auto_restart açık ama GH_PAT yok; oturum Actions süresi bitince kapanacak.")
     asyncio.create_task(heartbeat())
 
-    if FAST_POLL:
+    if appstate.FAST_POLL:
         private_tasks.append(asyncio.create_task(fast_poll_loop(rt)))
 
-    log.info("Dinleniyor... (kaynak=%d, kontrol=%s, hedef=%s)", len(SOURCE_IDS), sorted(CONTROL_IDS), DESTINATION_LABEL)
+    log.info("Dinleniyor... (kaynak=%d, kontrol=%s, hedef=%s)", len(appstate.SOURCE_IDS), sorted(appstate.CONTROL_IDS), appstate.DESTINATION_LABEL)
     try:
         await rt.client.run_until_disconnected()
     finally:

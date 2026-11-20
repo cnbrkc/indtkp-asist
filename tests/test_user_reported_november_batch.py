@@ -33,23 +33,24 @@ from types import SimpleNamespace
 import unittest
 
 import bot
+import appstate
 import dedupbadge
 import dedupmatch
 import producttitle
 import price_filter as pf
 
 
-_SMART_HEADER = bot.SMART_HEADER
+_SMART_HEADER = appstate.SMART_HEADER
 
 
 def setUpModule():
     # Üretim düzeni: config.json'da smart_header açık. Başlık ("₺274 — …")
     # yalnız bu bayrakla kurulur; testler gerçek üretim düzenini ölçer.
-    bot.SMART_HEADER = True
+    appstate.SMART_HEADER = True
 
 
 def tearDownModule():
-    bot.SMART_HEADER = _SMART_HEADER
+    appstate.SMART_HEADER = _SMART_HEADER
 
 
 def event(text):
@@ -368,11 +369,11 @@ class HeaderPriceAccuracyTests(unittest.TestCase):
     """Doğrulama sırasında bulunan iki ek kök neden (PR incelemesi)."""
 
     def setUp(self):
-        self._smart = bot.SMART_HEADER
-        bot.SMART_HEADER = True
+        self._smart = appstate.SMART_HEADER
+        appstate.SMART_HEADER = True
 
     def tearDown(self):
-        bot.SMART_HEADER = self._smart
+        appstate.SMART_HEADER = self._smart
 
     def _header(self, text, **kwargs):
         obj = SimpleNamespace(

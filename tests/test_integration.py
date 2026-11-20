@@ -22,6 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import analysis  # noqa: E402
 import commandtext  # noqa: E402
 import constants  # noqa: E402
@@ -295,18 +296,18 @@ BASE_ENV = {
 
 
 def reset_state():
-    bot.SOURCES.clear()
-    bot.SOURCE_FAILURES.clear()
-    bot.CONTROL_NAMES.clear()
-    bot.SOURCE_IDS.clear()
-    bot.CONTROL_IDS.clear()
-    bot.DESTINATION_ID = None
+    appstate.SOURCES.clear()
+    appstate.SOURCE_FAILURES.clear()
+    appstate.CONTROL_NAMES.clear()
+    appstate.SOURCE_IDS.clear()
+    appstate.CONTROL_IDS.clear()
+    appstate.DESTINATION_ID = None
     commandtext.PENDING.clear()
-    bot.COMMAND_MESSAGES.clear()
-    bot.DEDUP_CACHE.clear()
-    bot.CURSOR_RAM.clear()
-    bot.STATS["cleaned_commands"] = 0
-    bot.STATS.update({"seen": 0, "matched": 0, "forwarded": 0, "failed": 0,
+    appstate.COMMAND_MESSAGES.clear()
+    appstate.DEDUP_CACHE.clear()
+    appstate.CURSOR_RAM.clear()
+    appstate.STATS["cleaned_commands"] = 0
+    appstate.STATS.update({"seen": 0, "matched": 0, "forwarded": 0, "failed": 0,
                       "notification_failed": 0, "commands": 0, "modes": {}, "cleaned": 0, "last_match": None,
                       "last_match_source": None, "source_seen": {}, "deduped": 0, "dedup_edits": 0})
 
@@ -366,12 +367,12 @@ class IntegrationTest(MainHarness, unittest.TestCase):
     # --- açılış -------------------------------------------------------------
 
     def test_unresolvable_source_does_not_kill_the_rest(self):
-        self.assertEqual(len(bot.SOURCE_IDS), 1, bot.SOURCES)
-        self.assertEqual([value for value, _ in bot.SOURCE_FAILURES], ["@olmayan"])
+        self.assertEqual(len(appstate.SOURCE_IDS), 1, appstate.SOURCES)
+        self.assertEqual([value for value, _ in appstate.SOURCE_FAILURES], ["@olmayan"])
 
     def test_control_group_is_resolved_to_int(self):
-        self.assertIn(GROUP_ID, bot.CONTROL_IDS)
-        self.assertIn(ADMIN_ID, bot.CONTROL_IDS, "Kayıtlı Mesajlar her zaman kontrol edilebilmeli")
+        self.assertIn(GROUP_ID, appstate.CONTROL_IDS)
+        self.assertIn(ADMIN_ID, appstate.CONTROL_IDS, "Kayıtlı Mesajlar her zaman kontrol edilebilmeli")
 
     def test_handlers_are_registered_without_chats_filter(self):
         """chats= filtresi Telethon tarafından ilk mesajda çözülür ve hata verirse tüm
@@ -386,7 +387,7 @@ class IntegrationTest(MainHarness, unittest.TestCase):
         path = self._write_config(control_chat=str(GROUP_ID), destination=str(GROUP_ID))
         self.addCleanup(os.unlink, path)
         client = self._run_main(path)
-        self.assertIn(GROUP_ID, bot.CONTROL_IDS)
+        self.assertIn(GROUP_ID, appstate.CONTROL_IDS)
         self.assertEqual(client.sent, [], "notify_on_start=False iken mesaj gitmemeli")
 
     # --- komutlar -----------------------------------------------------------
@@ -450,7 +451,7 @@ class IntegrationTest(MainHarness, unittest.TestCase):
         self.assertIn("çözülemedi", event.replies[0])
 
     def test_source_test_reads_latest_message_reports_failures_and_live_events(self):
-        source_id = next(iter(bot.SOURCE_IDS))
+        source_id = next(iter(appstate.SOURCE_IDS))
         self.client.history.append((source_id, "Kahve Dünyası 250 g", 7, None, None, [], 123))
         self._call(self.client.handlers[1][1], FakeEvent(source_id, 999, "Çay 5 TL", message_id=124))
 
@@ -505,37 +506,37 @@ class IntegrationTest(MainHarness, unittest.TestCase):
     # --- mesaj dinleme ------------------------------------------------------
 
     def test_matching_message_is_delivered_to_group(self):
-        source_id = next(iter(bot.SOURCE_IDS))
+        source_id = next(iter(appstate.SOURCE_IDS))
         self._call(self.client.handlers[1][1], FakeEvent(source_id, 999, "Sıcak ÇAY 5 TL"))
-        self.assertEqual(bot.STATS["matched"], 1)
+        self.assertEqual(appstate.STATS["matched"], 1)
         self.assertEqual(len(self.client.delivered), 1)
         self.assertEqual(self.client.delivered[0][0], GROUP_ID, "mesaj gruba gitmeli")
 
     def test_capital_turkish_keyword_matches(self):
-        source_id = next(iter(bot.SOURCE_IDS))
+        source_id = next(iter(appstate.SOURCE_IDS))
         self._call(self.client.handlers[1][1], FakeEvent(source_id, 1001, "ÇAY KAMPANYASI"))
-        self.assertEqual(bot.STATS["matched"], 1)
+        self.assertEqual(appstate.STATS["matched"], 1)
 
     def test_exclude_keyword_blocks(self):
-        source_id = next(iter(bot.SOURCE_IDS))
+        source_id = next(iter(appstate.SOURCE_IDS))
         self._call(self.client.handlers[1][1], FakeEvent(source_id, 1002, "Çay çekilişi"))
-        self.assertEqual(bot.STATS["matched"], 0)
+        self.assertEqual(appstate.STATS["matched"], 0)
 
     def test_non_matching_message_is_not_delivered(self):
-        source_id = next(iter(bot.SOURCE_IDS))
+        source_id = next(iter(appstate.SOURCE_IDS))
         self._call(self.client.handlers[1][1], FakeEvent(source_id, 1000, "iPhone 17 geldi"))
-        self.assertEqual(bot.STATS["matched"], 0)
+        self.assertEqual(appstate.STATS["matched"], 0)
         self.assertEqual(self.client.sent, [])
-        self.assertEqual(bot.STATS["seen"], 1, "görülen mesaj sayacı artmalı")
+        self.assertEqual(appstate.STATS["seen"], 1, "görülen mesaj sayacı artmalı")
 
     def test_unknown_chat_is_ignored(self):
         self._call(self.client.handlers[1][1], FakeEvent(-1007777777777, 1, "çay"))
-        self.assertEqual(bot.STATS["seen"], 0)
+        self.assertEqual(appstate.STATS["seen"], 0)
         self.assertEqual(self.client.sent, [])
 
     def test_control_chat_message_is_not_forwarded(self):
         self._call(self.client.handlers[1][1], FakeEvent(GROUP_ID, ADMIN_ID, "çay"))
-        self.assertEqual(bot.STATS["seen"], 0)
+        self.assertEqual(appstate.STATS["seen"], 0)
         self.assertEqual(self.client.sent, [])
 
     def test_forward_mode_uses_forward_messages(self):
@@ -545,7 +546,7 @@ class IntegrationTest(MainHarness, unittest.TestCase):
                                   include_keywords=[])
         self.addCleanup(os.unlink, path)
         client = self._run_main(path)
-        source_id = next(iter(bot.SOURCE_IDS))
+        source_id = next(iter(appstate.SOURCE_IDS))
         asyncio.run(client.handlers[1][1](FakeEvent(source_id, 5, "🔥")))
         self.assertEqual(len(client.forwarded), 1)
         self.assertEqual(client.sent, [])
@@ -556,7 +557,7 @@ class IntegrationTest(MainHarness, unittest.TestCase):
         path = self._write_config(copy_mode="forward", source_chats=["@firsatz"])
         self.addCleanup(os.unlink, path)
         client = self._run_main(path)
-        source_id = next(iter(bot.SOURCE_IDS))
+        source_id = next(iter(appstate.SOURCE_IDS))
         asyncio.run(client.handlers[1][1](FakeEvent(source_id, 5, "çay")))
         self.assertEqual(client.forwarded, [], "başlık ekleneceği için forward atlanır")
         self.assertEqual(len(client.delivered), 1)
@@ -578,7 +579,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.config_path = self._write_config()
         self.client = self._run_main(self.config_path)
-        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.source_id = next(iter(appstate.SOURCE_IDS))
 
     def tearDown(self):
         os.unlink(self.config_path)
@@ -637,7 +638,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertIn("/iptal", draft)
         self.assertIn("henüz aktif değil", draft)
         self.assertEqual(self._config(), original, "kaydetmeden config dosyası değişmemeli")
-        self.assertEqual(bot.FILTER_INCLUDE, ["çay"], "kaydetmeden canlı filtre değişmemeli")
+        self.assertEqual(appstate.FILTER_INCLUDE, ["çay"], "kaydetmeden canlı filtre değişmemeli")
         self.assertEqual(self.command_log, [], "GitHub'a henüz gönderilmemeli")
         self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "confirm")
 
@@ -649,7 +650,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertIn("Değişiklik kaydedildi", reply)
         self.assertIn("config.json yazıldı", reply)
         self.assertEqual(self._config()["include_keywords"], ["çay", "kahve"])
-        self.assertEqual(bot.FILTER_INCLUDE, ["çay", "kahve"])
+        self.assertEqual(appstate.FILTER_INCLUDE, ["çay", "kahve"])
         self.assertEqual(len(self.command_log), 1)
         self.assertFalse(commandtext.PENDING)
 
@@ -663,7 +664,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
             self.assertIn(word, draft)
         self._reply("/kaydet")
         self.assertEqual(self._config()["include_keywords"], ["çay", "kahve", "şeker", "süt"])
-        self.assertEqual(bot.FILTER_INCLUDE, ["çay", "kahve", "şeker", "süt"])
+        self.assertEqual(appstate.FILTER_INCLUDE, ["çay", "kahve", "şeker", "süt"])
 
         self._reply("/cikar")
         self._say("1")
@@ -671,7 +672,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertIn("Çıkarılacak 2 kayıt:", removed)
         self._reply("/kaydet")
         self.assertEqual(self._config()["include_keywords"], ["çay", "şeker"])
-        self.assertEqual(bot.FILTER_INCLUDE, ["çay", "şeker"])
+        self.assertEqual(appstate.FILTER_INCLUDE, ["çay", "şeker"])
 
     def test_partially_duplicate_batch_warns_and_adds_the_rest(self):
         self._reply("/ekle")
@@ -700,7 +701,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
             reply = self._reply("/kaydet")
         self.assertIn("çalışan ayarlar geri yüklendi", reply)
         self.assertEqual(self._config(), original)
-        self.assertEqual(bot.FILTER_INCLUDE, ["çay"])
+        self.assertEqual(appstate.FILTER_INCLUDE, ["çay"])
         self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "confirm")
         self.assertEqual(self.command_log, [])
 
@@ -712,7 +713,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         reply = self._reply("/iptal")
         self.assertIn("Taslak silindi", reply)
         self.assertEqual(self._config(), original)
-        self.assertEqual(bot.FILTER_INCLUDE, ["çay"])
+        self.assertEqual(appstate.FILTER_INCLUDE, ["çay"])
         self.assertEqual(self.command_log, [])
         self.assertFalse(commandtext.PENDING)
 
@@ -746,7 +747,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(self._config(), original, "çıkarma da önce taslak olmalı")
         self._reply("/kaydet")
         self.assertEqual(self._config()["include_keywords"], [])
-        self.assertEqual(bot.FILTER_INCLUDE, [])
+        self.assertEqual(appstate.FILTER_INCLUDE, [])
 
     def test_remove_accepts_exact_value_with_canonical_command(self):
         self._reply("/cikar")
@@ -772,7 +773,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         reply = self._reply("/kaydet")
         self.assertIn("Değişiklik kaydedildi", reply)
         self.assertIn("@yenikanal", self._config()["source_chats"])
-        self.assertTrue(any(item["requested"] == "@yenikanal" for item in bot.SOURCES))
+        self.assertTrue(any(item["requested"] == "@yenikanal" for item in appstate.SOURCES))
 
     def test_joined_invite_is_staged_and_saved_as_id_not_secret(self):
         self._reply("/ekle")
@@ -791,7 +792,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
             self._reply("/kaydet")
         self.assertIn(-12345, self._config()["source_chats"])
         self.assertNotIn("PrivateSecret", str(self._config()))
-        self.assertTrue(any(item["id"] == -12345 for item in bot.SOURCES))
+        self.assertTrue(any(item["id"] == -12345 for item in appstate.SOURCES))
 
     def test_invite_failure_does_not_stage_any_source_or_expose_secret(self):
         self._reply("/ekle")
@@ -843,13 +844,13 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertIn("Harici kelimeler: AÇIK", reply)
         self.assertEqual(self._config()["include_enabled"], False)
         self.assertNotIn("exclude_enabled", self._config())
-        self.assertFalse(bot.FILTER_INCLUDE_ENABLED)
-        self.assertTrue(bot.FILTER_EXCLUDE_ENABLED)
+        self.assertFalse(appstate.FILTER_INCLUDE_ENABLED)
+        self.assertTrue(appstate.FILTER_EXCLUDE_ENABLED)
         self.assertEqual(len(self.command_log), 1, "anında kaydedilmeli")
 
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 301, "iPhone kampanyası")))
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 302, "iPhone çekiliş")))
-        self.assertEqual(bot.STATS["matched"], 1, "harici kelime yine engellemeli")
+        self.assertEqual(appstate.STATS["matched"], 1, "harici kelime yine engellemeli")
         self.assertEqual(len(self.client.delivered), 1)
 
     def test_tgfiltreac_include_restores_keyword_filter(self):
@@ -857,12 +858,12 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         reply = self._reply("/tgfiltreac dahili")
         self.assertIn("Dahili kelimeler filtresi AÇILDI", reply)
         self.assertEqual(self._config()["include_enabled"], True)
-        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+        self.assertTrue(appstate.FILTER_INCLUDE_ENABLED)
         self.assertEqual(len(self.command_log), 2)
 
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 303, "iPhone kampanyası")))
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 304, "Sıcak çay", message_id=2)))
-        self.assertEqual(bot.STATS["matched"], 1)
+        self.assertEqual(appstate.STATS["matched"], 1)
         self.assertEqual(len(self.client.delivered), 1)
 
     def test_tgfiltrekapat_exclude_stops_blocking_while_include_keeps_filtering(self):
@@ -870,12 +871,12 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         reply = self._reply("/tgfiltrekapat harici")
         self.assertIn("Harici kelimeler filtresi KAPATILDI", reply)
         self.assertIn("engelleme yapılmaz", reply)
-        self.assertFalse(bot.FILTER_EXCLUDE_ENABLED)
-        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+        self.assertFalse(appstate.FILTER_EXCLUDE_ENABLED)
+        self.assertTrue(appstate.FILTER_INCLUDE_ENABLED)
         self.assertEqual(self._config()["exclude_enabled"], False)
 
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 305, "Sıcak çay çekiliş")))
-        self.assertEqual(bot.STATS["matched"], 1,
+        self.assertEqual(appstate.STATS["matched"], 1,
                          "harici engel kapalıyken dahili kelime geçen mesaj iletilmeli")
         self.assertEqual(len(self.client.delivered), 1)
 
@@ -883,16 +884,16 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         reply = self._reply("/tgfiltrekapat ikisi")
         self.assertIn("Dahili ve harici filtreler KAPATILDI", reply)
         self.assertIn("HER mesaj iletilir", reply)
-        self.assertFalse(bot.FILTER_INCLUDE_ENABLED)
-        self.assertFalse(bot.FILTER_EXCLUDE_ENABLED)
+        self.assertFalse(appstate.FILTER_INCLUDE_ENABLED)
+        self.assertFalse(appstate.FILTER_EXCLUDE_ENABLED)
 
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 306, "iPhone çekiliş")))
-        self.assertEqual(bot.STATS["matched"], 1, "iki filtre kapalıyken her mesaj geçmeli")
+        self.assertEqual(appstate.STATS["matched"], 1, "iki filtre kapalıyken her mesaj geçmeli")
 
         reply = self._reply("/tgfiltreac ikisi")
         self.assertIn("AÇILDI", reply)
-        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
-        self.assertTrue(bot.FILTER_EXCLUDE_ENABLED)
+        self.assertTrue(appstate.FILTER_INCLUDE_ENABLED)
+        self.assertTrue(appstate.FILTER_EXCLUDE_ENABLED)
 
     def test_tgfiltreac_with_unknown_argument_shows_the_menu(self):
         original = self._config()
@@ -933,7 +934,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         with mock.patch.object(bot, "atomic_write_json", side_effect=OSError("disk dolu")):
             reply = self._reply("/tgfiltrekapat dahili")
         self.assertIn("önceki durum geri yüklendi", reply)
-        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+        self.assertTrue(appstate.FILTER_INCLUDE_ENABLED)
         self.assertNotIn("include_enabled", self._config())
         self.assertEqual(self.command_log, [])
 
@@ -944,7 +945,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         reply = self._reply("/tgfiltrekapat dahili")
         self.assertIn("Önce bekleyen liste taslağını sonuçlandır", reply)
         self.assertEqual(next(iter(commandtext.PENDING.values()))["stage"], "confirm")
-        self.assertTrue(bot.FILTER_INCLUDE_ENABLED)
+        self.assertTrue(appstate.FILTER_INCLUDE_ENABLED)
 
     def test_removed_filter_commands_are_unknown_now(self):
         original = self._config()
@@ -963,7 +964,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
                 reply = self._reply(command)
                 self.assertIn("Bilinmeyen komut", reply)
                 self.assertEqual(self._config(), original)
-                self.assertEqual(bot.FILTER_MODE, "any")
+                self.assertEqual(appstate.FILTER_MODE, "any")
         self.assertEqual(self.command_log, [])
 
     def test_save_without_a_confirmed_draft_does_not_rewrite_config(self):
@@ -1082,7 +1083,7 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.config_path = self._write_config()
         self.client = self._run_main(self.config_path)
-        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.source_id = next(iter(appstate.SOURCE_IDS))
 
     def tearDown(self):
         os.unlink(self.config_path)
@@ -1170,11 +1171,11 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
     def test_each_control_chat_has_its_own_dialogue(self):
         """Kayıtlı Mesajlar ve grup ayrı tutulur; biri diğerini silmez."""
         group_command = self._command("/durum", 90)
-        self.assertEqual(bot.COMMAND_MESSAGES.get(GROUP_ID), self._exchange_ids(group_command))
+        self.assertEqual(appstate.COMMAND_MESSAGES.get(GROUP_ID), self._exchange_ids(group_command))
         asyncio.run(self.client.handlers[0][1](FakeEvent(ADMIN_ID, ADMIN_ID, "/durum", message_id=91)))
         self.assertEqual(self.client.deleted, [],
                          "Kayıtlı Mesajlar'daki ilk komut gruptaki diyaloğu silmemeli")
-        self.assertEqual(bot.COMMAND_MESSAGES.get(GROUP_ID), self._exchange_ids(group_command))
+        self.assertEqual(appstate.COMMAND_MESSAGES.get(GROUP_ID), self._exchange_ids(group_command))
 
     # --- bayrak ve hata durumu ----------------------------------------------
 
@@ -1187,7 +1188,7 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
             event = FakeEvent(GROUP_ID, ADMIN_ID, command, message_id=60 + index)
             asyncio.run(client.handlers[0][1](event))
         self.assertEqual(client.deleted, [], "clean_commands=false iken silme yapılmamalı")
-        self.assertEqual(bot.STATS["cleaned_commands"], 0)
+        self.assertEqual(appstate.STATS["cleaned_commands"], 0)
 
     def test_delete_failure_does_not_break_the_command(self):
         self.client.fail_modes.add("delete")
@@ -1230,7 +1231,8 @@ class NotificationTest(unittest.TestCase):
 
     def _patch(self, target, replacement):
         """Handler'lar main() döndükten SONRA çağrıldığı için yamalar açık kalmalı."""
-        patcher = mock.patch.object(bot, target, replacement)
+        owner = appstate if hasattr(appstate, target) else bot   # ayar/önbellek appstate'te, işlevler bot'ta
+        patcher = mock.patch.object(owner, target, replacement)
         patcher.start()
         self._patchers.append(patcher)
 
@@ -1282,7 +1284,7 @@ class NotificationTest(unittest.TestCase):
         return created[0]
 
     def _send(self, client, text, **kwargs):
-        asyncio.run(client.handlers[1][1](FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text, **kwargs)))
+        asyncio.run(client.handlers[1][1](FakeEvent(next(iter(appstate.SOURCE_IDS)), 7, text, **kwargs)))
 
     @staticmethod
     def _links(entity_list, kind="text_link"):
@@ -1558,7 +1560,7 @@ class NotificationTest(unittest.TestCase):
         self._send(client, "ÇAY")
         self.assertEqual(self.calls, [])
         self.assertEqual(self.media_calls, [])
-        self.assertEqual(bot.STATS["matched"], 1, "mesaj yine de iletilmeli")
+        self.assertEqual(appstate.STATS["matched"], 1, "mesaj yine de iletilmeli")
 
     def test_null_string_token_is_treated_as_empty(self):
         client = self._run({"notify_bot_token": "none"})
@@ -1587,7 +1589,7 @@ class DeliveryChainTest(unittest.TestCase):
         reset_state()
         self.config_path = self._write_config()
         self.client = self._run_main(self.config_path)
-        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.source_id = next(iter(appstate.SOURCE_IDS))
 
     def tearDown(self):
         os.unlink(self.config_path)
@@ -1630,14 +1632,14 @@ class DeliveryChainTest(unittest.TestCase):
         asyncio.run(self.client.handlers[1][1](FakeEvent(self.source_id, 1234, text)))
 
     def test_chain_is_built_in_order(self):
-        self.assertEqual(bot.DELIVERY_CHAIN, ["forward", "copy", "media", "text", "link"])
+        self.assertEqual(appstate.DELIVERY_CHAIN, ["forward", "copy", "media", "text", "link"])
 
     def test_happy_path_uses_copy_for_the_title_layout(self):
         """Ürün başlığı bulunan mesaj kopyalanır ki başlık üste eklenebilsin."""
         self._send("Sıcak çay")
         self.assertEqual(self.client.forwarded, [])
         self.assertEqual(len(self.client.delivered), 1)
-        self.assertEqual(bot.STATS["modes"].get("copy"), 1)
+        self.assertEqual(appstate.STATS["modes"].get("copy"), 1)
 
     def test_titleless_message_uses_forward(self):
         """Başlık bulunamayan mesaj olduğu gibi forward edilir."""
@@ -1645,10 +1647,10 @@ class DeliveryChainTest(unittest.TestCase):
         path = self._write_config(include_keywords=[])
         self.addCleanup(os.unlink, path)
         self.client = self._run_main(path)
-        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.source_id = next(iter(appstate.SOURCE_IDS))
         self._send("🔥🔥🔥")
         self.assertEqual(len(self.client.forwarded), 1)
-        self.assertEqual(bot.STATS["modes"].get("forward"), 1)
+        self.assertEqual(appstate.STATS["modes"].get("forward"), 1)
 
     def test_forward_blocked_falls_back_to_copy(self):
         """Korumalı kanal: forward CHAT_FORWARDS_RESTRICTED verir, copy denenir."""
@@ -1656,14 +1658,14 @@ class DeliveryChainTest(unittest.TestCase):
         self._send("Sıcak çay")
         self.assertEqual(self.client.forwarded, [])
         self.assertEqual(len(self.client.delivered), 1)
-        self.assertEqual(bot.STATS["modes"].get("copy"), 1)
+        self.assertEqual(appstate.STATS["modes"].get("copy"), 1)
 
     def test_forward_and_copy_blocked_falls_back_to_media_reupload(self):
         """En kritik senaryo: ikisi de korumalıysa medya indirilip yeniden yüklenir."""
         self.client.fail_modes.update({"forward", "copy"})
         self._send("Sıcak çay")
         self.assertEqual(len(self.client.files), 1, "medya yeniden yüklenmeli")
-        self.assertEqual(bot.STATS["modes"].get("media"), 1)
+        self.assertEqual(appstate.STATS["modes"].get("media"), 1)
 
     def test_reuploaded_photo_keeps_its_name_and_type(self):
         """Eski hata: bytes olarak yüklenen fotoğraf 'unnamed' adlı belgeye dönüşüyordu."""
@@ -1678,7 +1680,7 @@ class DeliveryChainTest(unittest.TestCase):
         delivered = "\n".join(str(m) for _, m in self.client.sent)
         self.assertIn("ÇAY 5 TL kampanya", delivered, "mesaj olduğu gibi iletilir")
         self.assertIn("ÇAY", delivered, "başlık en üstte")
-        self.assertEqual(bot.STATS["modes"].get("text"), 1)
+        self.assertEqual(appstate.STATS["modes"].get("text"), 1)
 
     def test_everything_blocked_falls_back_to_link_card(self):
         """include_keywords boşken metinsiz (yalnızca medya) mesajlar da akar;
@@ -1687,12 +1689,12 @@ class DeliveryChainTest(unittest.TestCase):
         path = self._write_config(include_keywords=[])
         self.addCleanup(os.unlink, path)
         self.client = self._run_main(path)
-        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.source_id = next(iter(appstate.SOURCE_IDS))
         self.client.fail_modes.update({"forward", "copy", "media", "download"})
         self._send("")
         link_messages = [m for _, m in self.client.sent if "t.me" in str(m)]
         self.assertEqual(len(link_messages), 1, "son çare olarak t.me bağlantısı gönderilmeli")
-        self.assertEqual(bot.STATS["modes"].get("link"), 1)
+        self.assertEqual(appstate.STATS["modes"].get("link"), 1)
 
     def test_all_paths_failing_counts_as_failure(self):
         """Metin yok + bağlantı üretilemiyor -> hiçbir iletim yolu kalmaz."""
@@ -1700,20 +1702,20 @@ class DeliveryChainTest(unittest.TestCase):
         path = self._write_config(include_keywords=[])
         self.addCleanup(os.unlink, path)
         self.client = self._run_main(path)
-        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.source_id = next(iter(appstate.SOURCE_IDS))
         self.client.fail_modes.update({"forward", "copy", "media", "download"})
         with mock.patch.object(bot, "build_message_link", lambda *a, **k: None):
             self._send("")
-        self.assertEqual(bot.STATS["forwarded"], 0)
-        self.assertEqual(bot.STATS["failed"], 1)
+        self.assertEqual(appstate.STATS["forwarded"], 0)
+        self.assertEqual(appstate.STATS["failed"], 1)
 
     def test_custom_chain_order_is_respected(self):
         reset_state()
         path = self._write_config(delivery_modes=["copy", "forward"])
         self.addCleanup(os.unlink, path)
         client = self._run_main(path)
-        self.assertEqual(bot.DELIVERY_CHAIN[:2], ["copy", "forward"])
-        asyncio.run(client.handlers[1][1](FakeEvent(next(iter(bot.SOURCE_IDS)), 5, "çay")))
+        self.assertEqual(appstate.DELIVERY_CHAIN[:2], ["copy", "forward"])
+        asyncio.run(client.handlers[1][1](FakeEvent(next(iter(appstate.SOURCE_IDS)), 5, "çay")))
         self.assertEqual(len(client.delivered), 1)
 
     def test_legacy_copy_mode_still_works(self):
@@ -1721,7 +1723,7 @@ class DeliveryChainTest(unittest.TestCase):
         path = self._write_config(delivery_modes=None, copy_mode="copy")
         self.addCleanup(os.unlink, path)
         self._run_main(path)
-        self.assertEqual(bot.DELIVERY_CHAIN[0], "copy", "eski copy_mode alanı ilk sıraya konmalı")
+        self.assertEqual(appstate.DELIVERY_CHAIN[0], "copy", "eski copy_mode alanı ilk sıraya konmalı")
 
     def test_unknown_mode_is_rejected_by_check(self):
         config = {"source_chats": ["@firsatz"], "control_chat": "me",
@@ -1818,7 +1820,7 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         reset_state()
         self.config_path = self._write_config()
         self.client = self._run_main(self.config_path)
-        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.source_id = next(iter(appstate.SOURCE_IDS))
 
     def tearDown(self):
         os.unlink(self.config_path)
@@ -1890,7 +1892,7 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
                          "mesaj linki grup adına gömülür")
         self.assertNotIn("https://amzn.to/gizli", delivered,
                          "gövdede tıklanabilir kalan link tekrar yazılmaz")
-        self.assertEqual(bot.STATS["modes"].get("text"), 1)
+        self.assertEqual(appstate.STATS["modes"].get("text"), 1)
 
     def test_media_reupload_keeps_message_verbatim_under_the_title(self):
         """Fotoğraf yeniden yüklenirken başlık üste çıkar, mesaj aynen korunur."""
@@ -1913,7 +1915,7 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
         path = self._write_config(link_appendix="all")
         self.addCleanup(os.unlink, path)
         self.client = self._run_main(path)
-        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.source_id = next(iter(appstate.SOURCE_IDS))
         self.client.fail_modes.add("forward")  # metin kopyası incelenecek
         entity = types.MessageEntityTextUrl(offset=0, length=3, url="https://amzn.to/hepsi")
         self._send("çay fırsatı 5 TL", entities=[entity])
@@ -1946,7 +1948,7 @@ class HiddenLinkDeliveryTest(unittest.TestCase):
                          ["https://amzn.to/kart", "https://t.me/firsatz/1"])
         self.assertNotIn("https://t.me/firsatz/1", delivered,
                          "mesaj linki metne yazılmaz; grup adına gömülür")
-        self.assertEqual(bot.STATS["modes"].get("text"), 1)
+        self.assertEqual(appstate.STATS["modes"].get("text"), 1)
 
     def test_sensitive_terms_and_whatsapp_links_force_clean_copy_not_forward(self):
         """Temizlik gerekiyorsa özgün ileti forward edilmemeli; emoji entity'leri kaymamalı."""
@@ -2118,7 +2120,7 @@ class SingleMessageTest(unittest.TestCase):
 
     def _send(self, client: FakeClient, text: str = "Sıcak ÇAY 5 TL", **kwargs) -> None:
         asyncio.run(client.handlers[1][1](
-            FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text, message_id=7, **kwargs)))
+            FakeEvent(next(iter(appstate.SOURCE_IDS)), 7, text, message_id=7, **kwargs)))
 
     def test_account_copy_is_deleted_after_successful_notification(self):
         client = self._run()
@@ -2129,7 +2131,7 @@ class SingleMessageTest(unittest.TestCase):
         self.assertEqual(entity, GROUP_ID)
         self.assertEqual(len(ids), 1)
         self.assertTrue(revoke)
-        self.assertEqual(bot.STATS["cleaned"], 1)
+        self.assertEqual(appstate.STATS["cleaned"], 1)
 
     def test_notification_has_search_buttons_without_extending_message_body(self):
         client = self._run()
@@ -2177,7 +2179,7 @@ class SingleMessageTest(unittest.TestCase):
         client = self._run(notify_bot_token=None)
         self._send(client)
         self.assertEqual(client.deleted, [], "bildirim yoksa mesaj silinmemeli")
-        self.assertEqual(bot.STATS["cleaned"], 0)
+        self.assertEqual(appstate.STATS["cleaned"], 0)
         self.assertEqual(len(client.delivered), 1, "hesap kopyası grupta kalmalı")
 
     def test_flag_can_disable_single_message_mode(self):
@@ -2190,9 +2192,9 @@ class SingleMessageTest(unittest.TestCase):
         client = self._run()
         client.fail_modes.add("delete")
         self._send(client)
-        self.assertEqual(bot.STATS["matched"], 1)
-        self.assertEqual(bot.STATS["forwarded"], 1)
-        self.assertEqual(bot.STATS["cleaned"], 0)
+        self.assertEqual(appstate.STATS["matched"], 1)
+        self.assertEqual(appstate.STATS["forwarded"], 1)
+        self.assertEqual(appstate.STATS["cleaned"], 0)
         self.assertEqual(client.deleted, [])
 
     def test_forward_mode_copy_is_deleted_too(self):
@@ -2210,15 +2212,15 @@ class SingleMessageTest(unittest.TestCase):
         self.assertEqual(client.files, [], "hızlı yolda hesap kopyası atılmamalı")
         self.assertEqual(client.delivered, [])
         self.assertEqual(client.deleted, [], "silinecek kopya yok")
-        self.assertEqual(bot.STATS["forwarded"], 1)
-        self.assertEqual(bot.STATS["modes"].get("bot"), 1)
+        self.assertEqual(appstate.STATS["forwarded"], 1)
+        self.assertEqual(appstate.STATS["modes"].get("bot"), 1)
 
     def test_fast_notify_falls_back_to_account_copy_without_bot(self):
         client = self._run(fast_notify=True, notify_bot_token=None)
         self._send(client)
         self.assertEqual(len(client.delivered), 1, "bot yoksa normal zincir çalışmalı")
         self.assertEqual(client.deleted, [], "bildirim yoksa kopya silinmemeli")
-        self.assertEqual(bot.STATS["notification_failed"], 0, "yapılandırılmamış bildirim arızası sayılmamalı")
+        self.assertEqual(appstate.STATS["notification_failed"], 0, "yapılandırılmamış bildirim arızası sayılmamalı")
 
     def test_bot_notification_failure_is_not_counted_as_notification_success(self):
         async def failed_ping(token, chat_id, text, **kwargs):
@@ -2230,10 +2232,10 @@ class SingleMessageTest(unittest.TestCase):
         client = self._run(fast_notify=True)
         self._send(client)
         self.assertEqual(len(client.delivered), 1, "normal hesap kopyası yedek olarak kalmalı")
-        self.assertEqual(bot.STATS["forwarded"], 1, "hedef içerik gerçekten iletildi")
-        self.assertEqual(bot.STATS["notification_failed"], 1, "telefon bildirimi ayrı başarısız kaydedilmeli")
-        self.assertEqual(bot.STATS["failed"], 0, "hedefe içerik teslimi başarısız değil")
-        source_cursor = bot.CURSOR_RAM[next(iter(bot.SOURCE_IDS))]
+        self.assertEqual(appstate.STATS["forwarded"], 1, "hedef içerik gerçekten iletildi")
+        self.assertEqual(appstate.STATS["notification_failed"], 1, "telefon bildirimi ayrı başarısız kaydedilmeli")
+        self.assertEqual(appstate.STATS["failed"], 0, "hedefe içerik teslimi başarısız değil")
+        source_cursor = appstate.CURSOR_RAM[next(iter(appstate.SOURCE_IDS))]
         self.assertIn(7, source_cursor["completed"],
                       "içerik teslimi tamamlanmış olarak tutulmalı; başlangıç cursor'ı henüz poll belirlemedi")
 
@@ -2253,8 +2255,8 @@ class SingleMessageTest(unittest.TestCase):
         self._send(client)
         self.assertEqual(len(calls), 2, "belirgin HTTP 503 yeniden denenmeli")
         self.assertEqual(client.delivered, [], "bildirim başarılı olunca hesap kopyasına düşülmemeli")
-        self.assertEqual(bot.STATS["notification_failed"], 0)
-        self.assertEqual(bot.STATS["forwarded"], 1)
+        self.assertEqual(appstate.STATS["notification_failed"], 0)
+        self.assertEqual(appstate.STATS["forwarded"], 1)
 
     def test_default_keeps_account_copy_then_bot_order(self):
         client = self._run()
@@ -2296,7 +2298,7 @@ class AnalyzeCommandTest(unittest.TestCase):
              mock.patch.object(bot, "StringSession", lambda *a, **k: object()):
             asyncio.run(bot.main(["--config", handle.name]))
         self.client = created[0]
-        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.source_id = next(iter(appstate.SOURCE_IDS))
         self.client.history = [
             (self.source_id, "Bebek bezi indirim\n2 al 1 öde"),
             (self.source_id, "Bebek bezi fırsatı"),
@@ -2410,7 +2412,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         FakeClient.default_history = []
         self.config_path = self._write_config(source_chats=["@firsatz"])
         self.client = self._run_main(self.config_path)
-        self.source_id = next(iter(bot.SOURCE_IDS))
+        self.source_id = next(iter(appstate.SOURCE_IDS))
 
     def tearDown(self):
         os.unlink(self.config_path)
@@ -2426,7 +2428,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         asyncio.run(_run())
 
     def test_multibuy_upgrade_account_path_badges_new_before_old_delete(self):
-        bot.FILTER_INCLUDE_ENABLED = False
+        appstate.FILTER_INCLUDE_ENABLED = False
         title = "Hayat Doğal Mineralli Su 6x1,5 L"
         self._send(title + "\n🏷 79 TL", media=False)
         old_id = self.client.sent_ids[0]
@@ -2442,8 +2444,8 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         first_id = self.client.sent_ids[0]
         self._send("Sıcak ÇAY 5 TL")
         self.assertEqual(len(self.client.delivered), 1, "tekrar gruba düşmemeli")
-        self.assertEqual(bot.STATS["deduped"], 1)
-        self.assertEqual(bot.STATS["dedup_edits"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["dedup_edits"], 1)
         self.assertEqual(len(self.client.edited), 1)
         entity, message_id, text, kwargs = self.client.edited[0]
         self.assertEqual(entity, GROUP_ID)
@@ -2468,7 +2470,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
     def test_same_product_merges_across_price_first_and_title_first_sources(self):
         """Kaynak sırası/fiyat yazımı değişse de ürün başlığı ortak anahtar olur."""
         second_source_id = -1001111111112
-        bot.SOURCE_IDS.add(second_source_id)
+        appstate.SOURCE_IDS.add(second_source_id)
         price_first = (
             "1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nFırsata Git\nÇay fırsatı"
         )
@@ -2482,7 +2484,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         asyncio.run(_send_second())
 
         self.assertEqual(len(self.client.delivered), 1, "ikinci sayfa aynı fırsatı çoğaltmamalı")
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
         text = self.client.edited[0][2]
         blocks = text.split("\n\n")
         self.assertEqual(blocks[0], "Philips Airfryer XXL 6.2L")
@@ -2498,7 +2500,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         # İkinci rozet, aynı sohbetteki düzenleme hız sınırına (1,2 sn) takılır.
         self._send("Sıcak ÇAY 5 TL", settle=1.6)
         self.assertEqual(len(self.client.delivered), 1)
-        self.assertEqual(bot.STATS["deduped"], 2)
+        self.assertEqual(appstate.STATS["deduped"], 2)
         self.assertEqual(len(self.client.edited), 2)
         text = self.client.edited[-1][2]
         blocks = text.split("\n\n")
@@ -2527,7 +2529,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         path = self._write_config(source_chats=["@firsatz"], source_footer=False)
         self.addCleanup(os.unlink, path)
         client = self._run_main(path)
-        source_id = next(iter(bot.SOURCE_IDS))
+        source_id = next(iter(appstate.SOURCE_IDS))
 
         async def _run():
             for _ in range(2):
@@ -2535,7 +2537,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
                 await asyncio.sleep(0.05)
         asyncio.run(_run())
         self.assertEqual(len(client.delivered), 1)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
         text = client.edited[0][2]
         self.assertTrue(text.endswith("📌 2 kere paylaşıldı: firsatz · tek grup"), text)
         # Kaynak adı kapalı: adresin tek taşıyıcısı ``Mesajı Gör`` satırıdır.
@@ -2545,14 +2547,14 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         self._send("Sıcak ÇAY 5 TL")
         self._send("Soğuk ÇAY 3 TL")
         self.assertEqual(len(self.client.delivered), 2)
-        self.assertEqual(bot.STATS["deduped"], 0)
+        self.assertEqual(appstate.STATS["deduped"], 0)
         self.assertEqual(self.client.edited, [])
 
     def test_title_match_ignores_case(self):
         self._send("ÇAY 5 TL")
         self._send("çay 5 tl")
         self.assertEqual(len(self.client.delivered), 1)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_messages_without_title_are_never_merged(self):
         """Başlıksız (salt medya) iletiler birleştirilmez, her zaman gönderilir."""
@@ -2560,7 +2562,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
         path = self._write_config(source_chats=["@firsatz"], include_keywords=[], exclude_keywords=[])
         self.addCleanup(os.unlink, path)
         client = self._run_main(path)
-        source_id = next(iter(bot.SOURCE_IDS))
+        source_id = next(iter(appstate.SOURCE_IDS))
 
         async def _run():
             for _ in range(2):
@@ -2568,14 +2570,14 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
                 await asyncio.sleep(0.01)
         asyncio.run(_run())
         self.assertEqual(len(client.delivered), 2)
-        self.assertEqual(bot.STATS["deduped"], 0)
+        self.assertEqual(appstate.STATS["deduped"], 0)
 
     def test_dedup_disabled_sends_everything(self):
         reset_state()
         path = self._write_config(source_chats=["@firsatz"], dedup_enabled=False)
         self.addCleanup(os.unlink, path)
         client = self._run_main(path)
-        source_id = next(iter(bot.SOURCE_IDS))
+        source_id = next(iter(appstate.SOURCE_IDS))
 
         async def _run():
             for _ in range(2):
@@ -2583,7 +2585,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
                 await asyncio.sleep(0.01)
         asyncio.run(_run())
         self.assertEqual(len(client.delivered), 2)
-        self.assertEqual(bot.STATS["deduped"], 0)
+        self.assertEqual(appstate.STATS["deduped"], 0)
 
     def test_simultaneous_duplicates_send_once(self):
         """Aynı anda gelen kopyalar: rezervasyon sayesinde tek gönderim."""
@@ -2597,7 +2599,7 @@ class DedupFlowTest(MainHarness, unittest.TestCase):
             await asyncio.sleep(0.05)
         asyncio.run(_burst())
         self.assertEqual(len(self.client.delivered), 1)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
         self.assertEqual(len(self.client.edited), 1)
 
 
@@ -2620,7 +2622,7 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
 
     def _send_and_settle(self, client, text):
         async def _run():
-            await client.handlers[1][1](FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text))
+            await client.handlers[1][1](FakeEvent(next(iter(appstate.SOURCE_IDS)), 7, text))
             await asyncio.sleep(0.05)
         asyncio.run(_run())
 
@@ -2628,10 +2630,10 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
         old_deal = (GROUP_ID, "Çay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9\n\nfirsatz",
                     ADMIN_ID, None, None, [], 777)
         client = self._run_with_history([old_deal])
-        self.assertEqual(len(bot.DEDUP_CACHE), 1)
+        self.assertEqual(len(appstate.DEDUP_CACHE), 1)
         self._send_and_settle(client, "Çay 5 TL")
         self.assertEqual(client.delivered, [])
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
         self.assertEqual(len(client.edited), 1)
         self.assertEqual(client.edited[0][1], 777, "not eski mesaja işlenmeli")
         self.assertTrue(client.edited[0][2].endswith("📌 2 kere paylaşıldı: firsatz · tek grup"),
@@ -2647,10 +2649,10 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
             ADMIN_ID, None, None, [], 778,
         )
         client = self._run_with_history([deal])
-        self.assertEqual(len(bot.DEDUP_CACHE), 1)
+        self.assertEqual(len(appstate.DEDUP_CACHE), 1)
         self._send_and_settle(client, "Çay 5 TL")
         self.assertEqual(client.delivered, [])
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
         self.assertEqual(len(client.edited), 1)
         self.assertEqual(client.edited[0][1], 778, "not eski mesaja işlenmeli")
         self.assertIn("💰Fiyat: 5 TL", client.edited[0][2])
@@ -2668,25 +2670,25 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
         """İnsan sohbeti kayda alınmaz; fırsat kaçmasın diye temkinli taraf seçilir."""
         human = (GROUP_ID, "arkadaşlar çay 5 tl demiş", 999999, None, None, [], 55)
         client = self._run_with_history([human])
-        self.assertEqual(bot.DEDUP_CACHE, {})
+        self.assertEqual(appstate.DEDUP_CACHE, {})
         self._send_and_settle(client, "arkadaşlar çay 5 tl demiş")
         self.assertEqual(len(client.delivered), 1)
-        self.assertEqual(bot.STATS["deduped"], 0)
+        self.assertEqual(appstate.STATS["deduped"], 0)
 
     def test_bot_message_without_token_suppresses_but_cannot_badge(self):
         foreign = (GROUP_ID, "Çay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9",
                    123456789, None, None, [], 66)
         client = self._run_with_history([foreign])
-        self.assertEqual(len(bot.DEDUP_CACHE), 1)
+        self.assertEqual(len(appstate.DEDUP_CACHE), 1)
         self._send_and_settle(client, "Çay 5 TL")
         self.assertEqual(client.delivered, [])
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
         self.assertEqual(client.edited, [], "token yoksa eski bot iletisi düzenlenemez")
 
     def test_old_message_outside_window_is_ignored(self):
         ancient = (GROUP_ID, "Çay 5 TL", ADMIN_ID, 1000000000, None, [], 70)
         client = self._run_with_history([ancient])
-        self.assertEqual(bot.DEDUP_CACHE, {})
+        self.assertEqual(appstate.DEDUP_CACHE, {})
         self._send_and_settle(client, "Çay 5 TL")
         self.assertEqual(len(client.delivered), 1)
 
@@ -2695,7 +2697,7 @@ class DedupPreloadTest(MainHarness, unittest.TestCase):
                   ADMIN_ID, None, None, [], 71)
         client = self._run_with_history([badged])
         key = dedupbadge.dedup_key(producttitle._search_query("Çay 5 TL"))
-        self.assertEqual(bot.DEDUP_CACHE[key]["count"], 3)
+        self.assertEqual(appstate.DEDUP_CACHE[key]["count"], 3)
         self._send_and_settle(client, "Çay 5 TL")
         self.assertEqual(client.delivered, [])
         text = client.edited[-1][2]
@@ -2726,7 +2728,8 @@ class DedupBotBadgeTest(unittest.TestCase):
         reset_state()
 
     def _patch(self, target, replacement):
-        patcher = mock.patch.object(bot, target, replacement)
+        owner = appstate if hasattr(appstate, target) else bot   # ayar/önbellek appstate'te, işlevler bot'ta
+        patcher = mock.patch.object(owner, target, replacement)
         patcher.start()
         self._patchers.append(patcher)
 
@@ -2793,7 +2796,7 @@ class DedupBotBadgeTest(unittest.TestCase):
         self._event_id = getattr(self, "_event_id", 0) + 1
         kwargs.setdefault("message_id", self._event_id)
         async def _run():
-            await client.handlers[1][1](FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text, **kwargs))
+            await client.handlers[1][1](FakeEvent(next(iter(appstate.SOURCE_IDS)), 7, text, **kwargs))
             await asyncio.sleep(settle)
         asyncio.run(_run())
 
@@ -2803,7 +2806,7 @@ class DedupBotBadgeTest(unittest.TestCase):
         self._send(client, "Çay fırsatı")
         self.assertEqual(len(self.media_calls), 1, "tekrar bot bildirimi atmamalı")
         self.assertEqual(self.ping_calls, [])
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
         self.assertEqual(len(self.edit_caption_calls), 1)
         call = self.edit_caption_calls[0]
         self.assertEqual(call["message_id"], self.media_calls[0]["message_id"])
@@ -2895,7 +2898,7 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
 
     def dispatch(self, client, offers):
         async def run():
-            with mock.patch.object(bot, 'DEDUP_EDIT_MIN_INTERVAL', 0):
+            with mock.patch.object(appstate, 'DEDUP_EDIT_MIN_INTERVAL', 0):
                 for source_id, message_id, text, polled in offers:
                     event = FakeEvent(source_id, 7, text, message_id=message_id, media=False)
                     event._fast_poll = polled
@@ -2905,11 +2908,11 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
 
     def test_four_rounded_shares_merge_across_sources_and_poll_live(self):
         client = self.start(fast_notify=True)
-        first = next(iter(bot.SOURCE_IDS))
+        first = next(iter(appstate.SOURCE_IDS))
         second, third = -1001111111112, -1001111111113
         names = ['Fırsatlar (Sadece Paylaşım)', 'FırsatZ - İndirim Kanalı', 'Amazon Depo - İkinci El Fırsatlar']
-        bot.SOURCE_IDS.update([second, third])
-        bot.SOURCES[:] = [{'id': first, 'name': names[0]}, {'id': second, 'name': names[1]}, {'id': third, 'name': names[2]}]
+        appstate.SOURCE_IDS.update([second, third])
+        appstate.SOURCES[:] = [{'id': first, 'name': names[0]}, {'id': second, 'name': names[1]}, {'id': third, 'name': names[2]}]
         self.dispatch(client, [
             (first, 101, self.TITLE + '\nFiyat: 13.485,92 TL', True),
             (second, 102, self.TITLE + '\nFiyat: 13.485,92 TL\nSatıcı: Amazon', False),
@@ -2919,8 +2922,8 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
             (first, 101, self.TITLE + '\nFiyat: 13.485,92 TL', False),
         ])
         self.assertEqual(len(client.delivered), 1)
-        self.assertEqual(bot.STATS['deduped'], 3)
-        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertEqual(appstate.STATS['deduped'], 3)
+        entry = next(iter(appstate.DEDUP_CACHE.values()))
         self.assertEqual(entry['count'], 4)
         self.assertEqual(set(entry['sources']), set(names))
         self.assertIn('4 kere paylaşıldı', client.edited[-1][2])
@@ -2931,10 +2934,10 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
         from_text = self.TITLE + '\n\n💰 13.485,92 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz'
         old = (GROUP_ID, from_text, ADMIN_ID, None, None, [], 777)
         client = self.start([old])
-        source = next(iter(bot.SOURCE_IDS))
+        source = next(iter(appstate.SOURCE_IDS))
         self.dispatch(client, [(source, 105, self.TITLE + '\nFiyat: 13.485 TL', False)])
         self.assertEqual(len(client.delivered), 0)
-        self.assertEqual(bot.STATS['deduped'], 1)
+        self.assertEqual(appstate.STATS['deduped'], 1)
         self.assertEqual(client.edited[-1][1], 777)
 
     def test_restart_campaign_header_offer_does_not_resend_identical_copy(self):
@@ -2945,30 +2948,30 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
 
         old = (GROUP_ID, LENOVO_LP80_NOTIFICATION, ADMIN_ID, None, None, [], 528179)
         client = self.start([old])
-        source = next(iter(bot.SOURCE_IDS))
+        source = next(iter(appstate.SOURCE_IDS))
         self.dispatch(client, [(source, 528179, LENOVO_LP80, False)])
         self.assertEqual(len(client.delivered), 0, "aynı ₺440 teklif restart sonrası yeniden gönderilmemeli")
-        self.assertEqual(bot.STATS['deduped'], 1)
-        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertEqual(appstate.STATS['deduped'], 1)
+        entry = next(iter(appstate.DEDUP_CACHE.values()))
         self.assertEqual(entry['offer'], (440, ''))
         self.assertEqual(entry['count'], 2)
 
     def test_explicit_used_condition_does_not_split_title_price_identity(self):
         client = self.start()
-        source = next(iter(bot.SOURCE_IDS))
+        source = next(iter(appstate.SOURCE_IDS))
         self.dispatch(client, [(source, 1, self.TITLE + '\nFiyat: 13.485 TL', False),
                                (source, 2, self.TITLE + '\nFiyat: 13.485 TL\nÜrün durumu: İkinci el yeni gibi', True)])
         self.assertEqual(len(client.delivered), 1)
-        self.assertEqual(bot.STATS['deduped'], 1)
+        self.assertEqual(appstate.STATS['deduped'], 1)
 
     def test_different_model_and_real_price_drop_are_not_suppressed(self):
         client = self.start()
-        source = next(iter(bot.SOURCE_IDS))
+        source = next(iter(appstate.SOURCE_IDS))
         self.dispatch(client, [(source, 1, self.TITLE + '\nFiyat: 13.485 TL', False),
                                (source, 2, self.TITLE.replace('55GFSG8', '55GFSG9') + '\nFiyat: 13.485 TL', True),
                                (source, 3, self.TITLE + '\nFiyat: 13.400 TL', False)])
         self.assertEqual(len(client.delivered), 3)
-        self.assertEqual(bot.STATS['deduped'], 0)
+        self.assertEqual(appstate.STATS['deduped'], 0)
 
     def test_requested_rounding_drop_in_live_and_history(self):
         for preload in [False, True]:
@@ -2977,14 +2980,14 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
                 old_text = self.TITLE + '\n\n💰 13.485,92 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz'
                 history = [(GROUP_ID, old_text, ADMIN_ID, None, None, [], 777)] if preload else []
                 client = self.start(history)
-                source = next(iter(bot.SOURCE_IDS))
+                source = next(iter(appstate.SOURCE_IDS))
                 offers = [] if preload else [(source, 1, self.TITLE + '\nFiyat: 13.485,92 TL', True)]
                 offers += [(source, 2, self.TITLE + '\nFiyat: 13.485 TL', False),
                            (source, 3, self.TITLE + '\nFiyat: 13.484 TL', True)]
                 self.dispatch(client, offers)
                 self.assertEqual(len(client.delivered), 1 if preload else 2)
-                self.assertEqual(bot.STATS['deduped'], 1)
-                self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['offer'][0], 13484)
+                self.assertEqual(appstate.STATS['deduped'], 1)
+                self.assertEqual(next(iter(appstate.DEDUP_CACHE.values()))['offer'][0], 13484)
 
     def test_kurus_only_price_merges_live_and_in_preload(self):
         # P1: 10.000 TL altında, aynı tam TL içindeki kuruş farkı canlı yolda
@@ -2997,18 +3000,18 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
                 old_text = self.TITLE + '\n\n💰 1.299,90 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz'
                 history = [(GROUP_ID, old_text, ADMIN_ID, None, None, [], 777)] if preload else []
                 client = self.start(history)
-                source = next(iter(bot.SOURCE_IDS))
+                source = next(iter(appstate.SOURCE_IDS))
                 offers = [] if preload else [(source, 1, self.TITLE + '\nFiyat: 1.299,90 TL', True)]
                 offers += [(source, 2, self.TITLE + '\nFiyat: 1.299 TL', False),
                            (source, 3, self.TITLE + '\nFiyat: 1.298 TL', True)]
                 self.dispatch(client, offers)
                 self.assertEqual(len(client.delivered), 1 if preload else 2)
-                self.assertEqual(bot.STATS['deduped'], 1)
-                self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['offer'][0], 1298)
+                self.assertEqual(appstate.STATS['deduped'], 1)
+                self.assertEqual(next(iter(appstate.DEDUP_CACHE.values()))['offer'][0], 1298)
 
     def test_conditions_merge_but_explicit_title_variant_does_not(self):
         client = self.start()
-        source = next(iter(bot.SOURCE_IDS))
+        source = next(iter(appstate.SOURCE_IDS))
         self.dispatch(client, [
             (source, 1, self.TITLE + '\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi\nSatıcı: Mağaza A', True),
             (source, 2, self.TITLE + '\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi\nSatıcı: Mağaza B', False),
@@ -3016,16 +3019,16 @@ class RoundedOfferFlowTest(MainHarness, unittest.TestCase):
             (source, 4, self.TITLE + ' Siyah\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi', True),
         ])
         self.assertEqual(len(client.delivered), 2)
-        self.assertEqual(bot.STATS['deduped'], 2)
+        self.assertEqual(appstate.STATS['deduped'], 2)
 
     def test_same_source_identity_is_not_recounted_when_state_is_missing(self):
         # Kesin kaynak kimliği, yalnız başlık/fiyattan daha güçlü kanıttır.
         client = self.start()
-        source = next(iter(bot.SOURCE_IDS))
+        source = next(iter(appstate.SOURCE_IDS))
         self.dispatch(client, [
             (source, 11, self.TITLE + '\nFiyat: 13.485 TL\nİkinci El: Yeni Gibi', True),
             (source, 11, self.TITLE + '\nFiyat: 13.485 TL', False),
         ])
         self.assertEqual(len(client.delivered), 1)
-        self.assertEqual(bot.STATS['seen'], 1)
-        self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))['count'], 1)
+        self.assertEqual(appstate.STATS['seen'], 1)
+        self.assertEqual(next(iter(appstate.DEDUP_CACHE.values()))['count'], 1)

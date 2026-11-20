@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bot
+import appstate
 import commandtext
 import dedupbadge
 import dedupmatch
@@ -43,7 +44,7 @@ class NewPricePatterns(unittest.TestCase):
                     self.assertEqual((info.value, info.confidence), (value, confidence))
                     event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
                     reliable = confidence in {'high', 'medium'}
-                    with patch.object(bot, 'SMART_HEADER', True):
+                    with patch.object(appstate, 'SMART_HEADER', True):
                         composed = bot.compose_message(event)
                     output = composed['text']
                     first_line = output.splitlines()[0]

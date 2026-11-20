@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import bot
+import appstate
 import confutil
 import producttitle
 import sanitize
@@ -39,7 +40,7 @@ class ReportedExamples(unittest.TestCase):
         title, price = pf.analyze(TRUST)
         self.assertEqual(title, 'Trust GXT278 Dizüstü Bilgisayar İçin Soğutucu Fan')
         self.assertEqual((price.value, price.confidence), (512.05, 'high'))
-        with patch.object(bot, 'SMART_HEADER', True):
+        with patch.object(appstate, 'SMART_HEADER', True):
             self.assertTrue(bot.compose_message(message(TRUST))['text'].startswith(
                 '₺512 — Trust GXT278 Dizüstü Bilgisayar İçin Soğutucu Fan'))
         # Without a clearly marked used item, two unrelated prices remain ambiguous.
@@ -55,7 +56,7 @@ class ReportedExamples(unittest.TestCase):
     def test_button_link_in_notification_and_price_precision(self):
         button = SimpleNamespace(text='Fırsata Git', url='https://example.com/deal')
         msg = message(OTL, [button])
-        with patch.object(bot, 'SMART_HEADER', True):
+        with patch.object(appstate, 'SMART_HEADER', True):
             result = bot.compose_message(msg, link_kinds=confutil.link_kinds_for('smart', bot=True),
                                          message_link='https://t.me/depoindirim/88707')
         self.assertTrue(result['text'].startswith('₺953 — OTL Technologies - SUPER MARIO TWS KULAKLIK'), result['text'])

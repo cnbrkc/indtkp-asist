@@ -28,6 +28,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import botentities  # noqa: E402
 import confutil  # noqa: E402
 import constants  # noqa: E402
@@ -697,7 +698,7 @@ class LimitPressureTest(unittest.TestCase):
         Tam ölçüm (54.102 ileti, gerçek ``13ad981`` çıktısına karşı) ``tests/link_reach_audit.py`` iledir.
         """
         checked, with_product, closed, cut = 0, 0, [], []
-        with mock.patch.object(bot, "SMART_HEADER", True), audit.per_message_cache(bot) as cache:
+        with mock.patch.object(appstate, "SMART_HEADER", True), audit.per_message_cache(bot) as cache:
             for spec in audit.random_messages(audit.SEED, 120, long_urls=True):
                 obj = audit.build_message(types, spec)
                 for mode in ("smart", "all", "off"):
@@ -797,17 +798,17 @@ class BotApiWireTest(unittest.TestCase):
 
         def event(message_id: int) -> ti.FakeEvent:
             return ti.FakeEvent(
-                next(iter(bot.SOURCE_IDS)), 999, text, message_id=message_id, media=media,
+                next(iter(appstate.SOURCE_IDS)), 999, text, message_id=message_id, media=media,
                 entities=[rc.linked(text, label, url) for label, url in links],
                 reply_markup=ti.FakeMarkup([ti.FakeRow([ti.FakeButton(label, url=url)]) for label, url in buttons]))
 
         async def scenario(client, queue) -> None:
             handler = client.handlers[1][1]
             # Yalıtım: önceki test modüllerinden kalan "görüldü" kayıtları bu iletileri yutmasın.
-            for registry in (bot.DEDUP_CACHE, bot.LIVE_SEEN, bot.POLL_DISPATCHED, bot.SOURCE_IN_FLIGHT,
-                             bot.CURSOR_RAM):
+            for registry in (appstate.DEDUP_CACHE, appstate.LIVE_SEEN, appstate.POLL_DISPATCHED, appstate.SOURCE_IN_FLIGHT,
+                             appstate.CURSOR_RAM):
                 registry.clear()
-            with mock.patch.object(bot, "DEDUP_EDIT_MIN_INTERVAL", 0):
+            with mock.patch.object(appstate, "DEDUP_EDIT_MIN_INTERVAL", 0):
                 for message_id in (7, 8) if bot_up else (7,):
                     await handler(event(message_id))
                     await asyncio.sleep(0.05)

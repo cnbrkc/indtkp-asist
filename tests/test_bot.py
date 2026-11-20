@@ -23,6 +23,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import analysis as analysis_mod  # noqa: E402
 import botentities  # noqa: E402
 import commandtext  # noqa: E402
@@ -234,18 +235,18 @@ class RunCheckTest(unittest.TestCase):
 
 class StatusTextTest(unittest.TestCase):
     def test_status_and_source_text_render(self):
-        bot.SOURCES.clear()
-        bot.SOURCE_FAILURES.clear()
-        bot.SOURCES.append({"id": -1001, "name": "FırsatZ", "requested": "@firsatz", "joined": True})
-        bot.SOURCE_IDS.clear()
-        bot.SOURCE_IDS.add(-1001)
-        bot.SOURCE_FAILURES.append(("@olmayan", ValueError("yok")))
-        bot.STATS.update({"seen": 42, "matched": 3, "forwarded": 3, "failed": 0})
-        bot.CONTROL_IDS.clear()
-        bot.CONTROL_IDS.update({-5092968106})
-        bot.CONTROL_NAMES.clear()
-        bot.CONTROL_NAMES.append("Benim Grup [-5092968106]")
-        bot.DESTINATION_LABEL = "Benim Grup [-5092968106]"
+        appstate.SOURCES.clear()
+        appstate.SOURCE_FAILURES.clear()
+        appstate.SOURCES.append({"id": -1001, "name": "FırsatZ", "requested": "@firsatz", "joined": True})
+        appstate.SOURCE_IDS.clear()
+        appstate.SOURCE_IDS.add(-1001)
+        appstate.SOURCE_FAILURES.append(("@olmayan", ValueError("yok")))
+        appstate.STATS.update({"seen": 42, "matched": 3, "forwarded": 3, "failed": 0})
+        appstate.CONTROL_IDS.clear()
+        appstate.CONTROL_IDS.update({-5092968106})
+        appstate.CONTROL_NAMES.clear()
+        appstate.CONTROL_NAMES.append("Benim Grup [-5092968106]")
+        appstate.DESTINATION_LABEL = "Benim Grup [-5092968106]"
 
         status = bot.build_status_text({"include_keywords": ["çay"], "match_mode": "any", "source_chats": ["@firsatz"]})
         self.assertIn("Takipçi aktif", status)
@@ -325,11 +326,11 @@ class StatusTextTest(unittest.TestCase):
         self.assertEqual(tuple(command_menu.split(", ")), commands)
 
     def test_status_shows_both_filter_toggles(self):
-        bot.SOURCES.clear()
-        bot.SOURCE_FAILURES.clear()
-        bot.SOURCE_IDS.clear()
-        bot.CONTROL_NAMES.clear()
-        bot.CONTROL_IDS.clear()
+        appstate.SOURCES.clear()
+        appstate.SOURCE_FAILURES.clear()
+        appstate.SOURCE_IDS.clear()
+        appstate.CONTROL_NAMES.clear()
+        appstate.CONTROL_IDS.clear()
         closed = bot.build_status_text({"match_mode": "forward_all", "include_keywords": ["çay"]})
         self.assertIn("Telegram dahili filtre: KAPALI", closed)
         self.assertIn("kelimeler yok sayılıyor", closed)
@@ -341,9 +342,9 @@ class StatusTextTest(unittest.TestCase):
         self.assertIn("/tgfiltreac ve /tgfiltrekapat", opened)
 
     def test_status_shows_poll_telemetry_and_bot_api_metrics(self):
-        bot.POLL_TELEMETRY.update({"interval": 300.0, "last_elapsed": 4.2,
+        appstate.POLL_TELEMETRY.update({"interval": 300.0, "last_elapsed": 4.2,
                                    "flood_count": 2, "last_flood_wait": 181.0})
-        self.addCleanup(bot.POLL_TELEMETRY.update,
+        self.addCleanup(appstate.POLL_TELEMETRY.update,
                         {"interval": 3.0, "last_elapsed": 0.0, "flood_count": 0, "last_flood_wait": 0.0})
         status = bot.build_status_text({"include_keywords": ["çay"]})
         self.assertIn("Hızlı tarama: açık · aralık 300 sn", status)
@@ -1410,15 +1411,15 @@ class EnvOverrideTest(unittest.TestCase):
         self.assertEqual(config["match_mode"], "forward_all")
 
     def test_notify_bot_secret_is_the_only_token_source(self):
-        old_token = bot.NOTIFY_BOT_TOKEN
+        old_token = appstate.NOTIFY_BOT_TOKEN
         self.addCleanup(setattr, bot, "NOTIFY_BOT_TOKEN", old_token)
         with mock.patch.dict(os.environ, {"NOTIFY_BOT_TOKEN": "test-secret-token"}, clear=False):
             bot.apply_runtime_config({"notify_bot_token": "ignored-legacy-value"})
-        self.assertEqual(bot.NOTIFY_BOT_TOKEN, "test-secret-token")
+        self.assertEqual(appstate.NOTIFY_BOT_TOKEN, "test-secret-token")
 
         with mock.patch.dict(os.environ, {"NOTIFY_BOT_TOKEN": ""}, clear=False):
             bot.apply_runtime_config({"notify_bot_token": "ignored-legacy-value"})
-        self.assertEqual(bot.NOTIFY_BOT_TOKEN, "")
+        self.assertEqual(appstate.NOTIFY_BOT_TOKEN, "")
 
 
 # ---------------------------------------------------------------------------
@@ -2395,14 +2396,14 @@ class NoteCommandMessagesTest(unittest.TestCase):
     """Komut sohbeti kaydı: yalnızca son alışveriş tutulur, eskiler silinir."""
 
     def setUp(self):
-        bot.COMMAND_MESSAGES.clear()
+        appstate.COMMAND_MESSAGES.clear()
 
     def tearDown(self):
-        bot.COMMAND_MESSAGES.clear()
+        appstate.COMMAND_MESSAGES.clear()
 
     def test_first_exchange_has_nothing_to_delete(self):
         self.assertEqual(bot.note_command_messages(-100, [1, 2]), [])
-        self.assertEqual(bot.COMMAND_MESSAGES[-100], [1, 2])
+        self.assertEqual(appstate.COMMAND_MESSAGES[-100], [1, 2])
 
     def test_previous_exchange_is_returned_for_deletion(self):
         bot.note_command_messages(-100, [1, 2])
@@ -2419,7 +2420,7 @@ class NoteCommandMessagesTest(unittest.TestCase):
 
     def test_empty_and_zero_ids_are_ignored(self):
         self.assertEqual(bot.note_command_messages(-100, [0, None]), [])
-        self.assertEqual(bot.COMMAND_MESSAGES[-100], [])
+        self.assertEqual(appstate.COMMAND_MESSAGES[-100], [])
         self.assertEqual(bot.note_command_messages(-100, [7, 0]), [])
 
 
@@ -3123,7 +3124,7 @@ class PruneDedupCacheTest(unittest.TestCase):
         self.assertEqual(set(cache), {"yeni"})
 
     def test_stuck_reservations_are_released(self):
-        cache = {"takili": self._entry(bot.DEDUP_RESERVE_TTL + 1, pending=True)}
+        cache = {"takili": self._entry(appstate.DEDUP_RESERVE_TTL + 1, pending=True)}
         dropped = bot.prune_dedup_cache(cache, self.NOW, 12 * 3600, 300)
         self.assertEqual(dropped, 1)
         self.assertEqual(cache, {})
@@ -3266,22 +3267,22 @@ class DedupConfigTest(unittest.TestCase):
             self.assertTrue(any("dedup_scan_limit" in p for p in bot.check_environment(bad_scan)))
 
     def test_runtime_config_applies_dedup_settings(self):
-        saved = (bot.DEDUP_ENABLED, bot.DEDUP_WINDOW_SECONDS, bot.DEDUP_SCAN_LIMIT)
+        saved = (appstate.DEDUP_ENABLED, appstate.DEDUP_WINDOW_SECONDS, appstate.DEDUP_SCAN_LIMIT)
         self.addCleanup(setattr, bot, "DEDUP_ENABLED", saved[0])
         self.addCleanup(setattr, bot, "DEDUP_WINDOW_SECONDS", saved[1])
         self.addCleanup(setattr, bot, "DEDUP_SCAN_LIMIT", saved[2])
         bot.apply_runtime_config({})
-        self.assertTrue(bot.DEDUP_ENABLED)
-        self.assertEqual(bot.DEDUP_WINDOW_SECONDS, 12 * 3600)
-        self.assertEqual(bot.DEDUP_SCAN_LIMIT, 100)
+        self.assertTrue(appstate.DEDUP_ENABLED)
+        self.assertEqual(appstate.DEDUP_WINDOW_SECONDS, 12 * 3600)
+        self.assertEqual(appstate.DEDUP_SCAN_LIMIT, 100)
         bot.apply_runtime_config({"dedup_enabled": False, "dedup_window_hours": 6, "dedup_scan_limit": 10})
-        self.assertFalse(bot.DEDUP_ENABLED)
-        self.assertEqual(bot.DEDUP_WINDOW_SECONDS, 6 * 3600)
-        self.assertEqual(bot.DEDUP_SCAN_LIMIT, 10)
+        self.assertFalse(appstate.DEDUP_ENABLED)
+        self.assertEqual(appstate.DEDUP_WINDOW_SECONDS, 6 * 3600)
+        self.assertEqual(appstate.DEDUP_SCAN_LIMIT, 10)
         with self.assertLogs("telegram-filter", level="WARNING"):
             bot.apply_runtime_config({"dedup_window_hours": "bozuk", "dedup_scan_limit": "yok"})
-        self.assertEqual(bot.DEDUP_WINDOW_SECONDS, 12 * 3600)
-        self.assertEqual(bot.DEDUP_SCAN_LIMIT, 100)
+        self.assertEqual(appstate.DEDUP_WINDOW_SECONDS, 12 * 3600)
+        self.assertEqual(appstate.DEDUP_SCAN_LIMIT, 100)
 
     def test_env_overrides_are_loaded(self):
         handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")

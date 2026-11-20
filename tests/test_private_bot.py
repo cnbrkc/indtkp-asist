@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bot
+import appstate
 import commandtext
 import price_filter
 import private_bot as private
@@ -462,9 +463,9 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
         await self.client.handlers[0][1](event)
 
     async def offer(self, text, **kwargs):
-        self.offer_id = max(getattr(self, "offer_id", 0), max((mid for _, mid in bot.LIVE_SEEN), default=0)) + 1
+        self.offer_id = max(getattr(self, "offer_id", 0), max((mid for _, mid in appstate.LIVE_SEEN), default=0)) + 1
         kwargs.setdefault("message_id", self.offer_id)
-        event = FakeEvent(next(iter(bot.SOURCE_IDS)), 7, text, **kwargs)
+        event = FakeEvent(next(iter(appstate.SOURCE_IDS)), 7, text, **kwargs)
         await self.client.handlers[1][1](event)
         await asyncio.wait_for(self.queues[0].queue.join(), 3)
 
@@ -585,7 +586,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             await self.offer("TCL fırsat", media=False)
             await self.offer("TCL fırsat", media=False, message_id=2)
             self.assertEqual(len(self.api.offers), 1)
-            self.assertEqual(bot.STATS["deduped"], 1)
+            self.assertEqual(appstate.STATS["deduped"], 1)
         with mock.patch.object(bot, "edit_bot_text", new_callable=mock.AsyncMock, return_value=(True, "ok")):
             await self.run_scenario(scenario, dedup_enabled=True, dedup_scan_limit=0)
 
@@ -598,10 +599,10 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             await self.command("/kaydet")
             await self.offer("TCL", media=False)
             self.assertEqual(self.queues[0].failed, 1)
-            self.assertEqual(bot.STATS["forwarded"], 1)
-            self.assertEqual(bot.STATS["failed"], 0)
+            self.assertEqual(appstate.STATS["forwarded"], 1)
+            self.assertEqual(appstate.STATS["failed"], 0)
             await self.offer("LG", media=False)
-            self.assertEqual(bot.STATS["forwarded"], 2)
+            self.assertEqual(appstate.STATS["forwarded"], 2)
         await self.run_scenario(scenario)
 
     async def test_group_account_fallback_is_copied_without_deleting_group(self):
@@ -682,7 +683,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
 
     async def test_private_test_reports_missing_token(self):
         async def scenario():
-            with mock.patch.object(bot, "NOTIFY_BOT_TOKEN", ""):
+            with mock.patch.object(appstate, "NOTIFY_BOT_TOKEN", ""):
                 await self.command("/test")
             self.assertIn("NOTIFY_BOT_TOKEN tanımlı değil", self.replies())
         await self.run_scenario(scenario)
@@ -730,12 +731,12 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             await self.command("tcl")
             await self.command("/kaydet")
             # Queue a copy before the worker gets scheduled, then disable DM.
-            event = FakeEvent(next(iter(bot.SOURCE_IDS)), 7, "TCL fırsat", media=False)
+            event = FakeEvent(next(iter(appstate.SOURCE_IDS)), 7, "TCL fırsat", media=False)
             await self.client.handlers[1][1](event)
             await self.command("/dmfiltrekapat")
             await asyncio.wait_for(self.queues[0].queue.join(), 2)
             self.assertFalse(self.api.offers)
-            self.assertEqual(bot.STATS["forwarded"], 1)
+            self.assertEqual(appstate.STATS["forwarded"], 1)
         await self.run_scenario(scenario)
 
     async def test_authorized_other_admin_cannot_change_owners_dm(self):
@@ -997,7 +998,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
         async def scenario():
             await self.offer("Telefon X\n90 TL", media=False)
             self.assertFalse(self.api.offers)
-            self.assertEqual(bot.STATS["forwarded"], 1)
+            self.assertEqual(appstate.STATS["forwarded"], 1)
         await self.run_scenario(scenario, dm_enabled=False, dm_price_max=["100"],
                                 dm_exclude_keywords=["telefon"])
 
@@ -1011,30 +1012,30 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.api.offers), 2)
             self.assertEqual(self.api.offers[0][0], "sendMessage")
             self.assertEqual(self.api.offers[1][0], "copyMessage")
-            self.assertEqual(bot.STATS["forwarded"], 4)
+            self.assertEqual(appstate.STATS["forwarded"], 4)
         await self.run_scenario(scenario, dm_keywords=["tcl 65"], dm_enabled=True)
 
     async def test_dm_exclusion_wins_without_affecting_group_delivery(self):
         async def scenario():
             await self.offer("TCL 65T6D fırsat", media=False)
-            self.assertEqual(bot.STATS["forwarded"], 1)
+            self.assertEqual(appstate.STATS["forwarded"], 1)
             self.assertEqual(self.queues[0].queue.qsize(), 0)
             self.assertFalse(self.api.offers)
             await self.offer("TCL 65C805 fırsat", media=False)
             self.assertEqual(len(self.api.offers), 1)
-            self.assertEqual(bot.STATS["forwarded"], 2)
+            self.assertEqual(appstate.STATS["forwarded"], 2)
         await self.run_scenario(scenario, dm_keywords=["tcl 65"], dm_enabled=True,
                                 dm_exclude_keywords=["tcl 65t6"])
 
     async def test_new_exclusion_cancels_queued_copy_and_removal_allows_future_copy(self):
         async def scenario():
-            event = FakeEvent(next(iter(bot.SOURCE_IDS)), 7, "TCL 65T6D fırsat", media=False)
+            event = FakeEvent(next(iter(appstate.SOURCE_IDS)), 7, "TCL 65T6D fırsat", media=False)
             await self.client.handlers[1][1](event)
             self.assertEqual(self.queues[0].queue.qsize(), 1)
             await self.edit_list("add", "dmharic", "tcl 65t6")
             await asyncio.wait_for(self.queues[0].queue.join(), 2)
             self.assertFalse(self.api.offers)
-            self.assertEqual(bot.STATS["forwarded"], 1)
+            self.assertEqual(appstate.STATS["forwarded"], 1)
             await self.edit_list("remove", "dmharic", "1")
             self.assertEqual(json.loads(Path(self.path).read_text())["dm_exclude_keywords"], [])
             await self.offer("TCL 65T6D yeni fırsat", media=False)

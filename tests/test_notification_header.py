@@ -32,6 +32,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import botentities  # noqa: E402
 import constants  # noqa: E402
 import dedupmatch  # noqa: E402
@@ -93,8 +94,8 @@ class HeaderDesignTests(unittest.TestCase):
     """1) Tam metin eşitliğiyle üst satır tasarımı."""
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
-        bot.SMART_HEADER = True
+        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        appstate.SMART_HEADER = True
 
     def test_exact_requested_line(self):
         composed = bot.compose_message(event(), message_link="https://t.me/firsatz/1",
@@ -192,7 +193,7 @@ class HeaderDesignTests(unittest.TestCase):
                     self.assertEqual(composed["price"], header_mod.header_price_text(terms_price))
 
     def test_smart_header_off_is_unchanged(self):
-        bot.SMART_HEADER = False
+        appstate.SMART_HEADER = False
         composed = bot.compose_message(event())
         self.assertEqual(composed["header"], TITLE.replace("4lü Patik Çorap", "4lü Patik Çorap"))
         self.assertEqual(composed["price"], "")
@@ -307,8 +308,8 @@ class SearchChainTests(unittest.TestCase):
     """2b) Üç servisin GERÇEK buton üretim zinciri (yardımcı fonksiyon değil)."""
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
-        bot.SMART_HEADER = True
+        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        appstate.SMART_HEADER = True
 
     def test_three_services_search_exactly_the_price_free_name(self):
         queries = decoded_queries(searchbuttons.build_inline_keyboard(event()))
@@ -321,7 +322,7 @@ class SearchChainTests(unittest.TestCase):
 
     def test_query_identical_before_and_after_the_header_change(self):
         # Kaynak mesajdan temizleme davranışı bozulmadı: sorgu SMART_HEADER'dan bağımsız.
-        with patch.object(bot, "SMART_HEADER", False):
+        with patch.object(appstate, "SMART_HEADER", False):
             off = decoded_queries(searchbuttons.build_inline_keyboard(event()))
         on = decoded_queries(searchbuttons.build_inline_keyboard(event()))
         self.assertEqual(off, on)
@@ -369,8 +370,8 @@ class EntityAndLimitTests(unittest.TestCase):
     """4) Gerçek gönderim parametreleri: entity offset'leri ve sınırlar."""
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
-        bot.SMART_HEADER = True
+        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        appstate.SMART_HEADER = True
 
     def bot_payload_entities(self, composed):
         """notify_offer'ın Bot API'ye verdiği entity listesi (hesap yolu da aynı offset)."""
@@ -472,7 +473,7 @@ class NotificationHistoryFlowTests(MainHarness, unittest.TestCase):
 
     def dispatch(self, client, offers):
         async def run():
-            with mock.patch.object(bot, "DEDUP_EDIT_MIN_INTERVAL", 0):
+            with mock.patch.object(appstate, "DEDUP_EDIT_MIN_INTERVAL", 0):
                 for source_id, message_id, text, polled in offers:
                     ev = FakeEvent(source_id, 7, text, message_id=message_id, media=False)
                     ev._fast_poll = polled
@@ -488,7 +489,7 @@ class NotificationHistoryFlowTests(MainHarness, unittest.TestCase):
         self.addCleanup(reset_state)
         self.addCleanup(setattr, FakeClient, "default_history", [])
         client = self.start()
-        source = next(iter(bot.SOURCE_IDS))
+        source = next(iter(appstate.SOURCE_IDS))
         offer = f"{TITLE}\nFiyat: 56₺"
         self.dispatch(client, [(source, 101, offer, False)])
         delivered = self.delivered_text(client)
@@ -496,11 +497,11 @@ class NotificationHistoryFlowTests(MainHarness, unittest.TestCase):
 
         reset_state()
         restarted = self.start([(GROUP_ID, delivered, ADMIN_ID, None, None, [], 777)])
-        entry = next(iter(bot.DEDUP_CACHE.values()))
+        entry = next(iter(appstate.DEDUP_CACHE.values()))
         self.assertEqual(entry["title"], TITLE, "anahtar fiyatsız ad olmalı")
         self.dispatch(restarted, [(source, 102, offer, False)])
         self.assertEqual(len(restarted.delivered), 0, "aynı fırsat yeniden bildirilmemeli")
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_previous_title_plus_price_line_history_still_merges(self):
         reset_state()
@@ -508,12 +509,12 @@ class NotificationHistoryFlowTests(MainHarness, unittest.TestCase):
         self.addCleanup(setattr, FakeClient, "default_history", [])
         old = (f"{TITLE}\n\n💰 56 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1\n\nfirsatz")
         client = self.start([(GROUP_ID, old, ADMIN_ID, None, None, [], 888)])
-        self.assertEqual(len(bot.DEDUP_CACHE), 1)
-        self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))["title"], TITLE)
-        source = next(iter(bot.SOURCE_IDS))
+        self.assertEqual(len(appstate.DEDUP_CACHE), 1)
+        self.assertEqual(next(iter(appstate.DEDUP_CACHE.values()))["title"], TITLE)
+        source = next(iter(appstate.SOURCE_IDS))
         self.dispatch(client, [(source, 103, f"{TITLE}\nFiyat: 56₺", False)])
         self.assertEqual(len(client.delivered), 0, "eski biçimden gelen anahtar yeniyle eşleşmeli")
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_oldest_fixed_layout_price_line_still_merges(self):
         reset_state()
@@ -521,12 +522,12 @@ class NotificationHistoryFlowTests(MainHarness, unittest.TestCase):
         self.addCleanup(setattr, FakeClient, "default_history", [])
         old = (f"{TITLE}\n\n💰Fiyat: 56 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/2\n\nfirsatz")
         client = self.start([(GROUP_ID, old, ADMIN_ID, None, None, [], 999)])
-        self.assertEqual(len(bot.DEDUP_CACHE), 1)
-        self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))["title"], TITLE)
-        source = next(iter(bot.SOURCE_IDS))
+        self.assertEqual(len(appstate.DEDUP_CACHE), 1)
+        self.assertEqual(next(iter(appstate.DEDUP_CACHE.values()))["title"], TITLE)
+        source = next(iter(appstate.SOURCE_IDS))
         self.dispatch(client, [(source, 104, f"{TITLE}\nFiyat: 56 TL", False)])
         self.assertEqual(len(client.delivered), 0)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_truncated_or_mark_only_history_is_not_indexed_with_wrong_key(self):
         reset_state()
@@ -544,7 +545,7 @@ class NotificationHistoryFlowTests(MainHarness, unittest.TestCase):
                 self.start([(GROUP_ID, text, ADMIN_ID, None, None, [], 1200)])
                 # Güvenli ürün kimliği yok: gövdeden toplanan artıklanahtar
                 # ("Mesajı Gör" gibi) üretilmemeli.
-                self.assertEqual(bot.DEDUP_CACHE, {}, f"{name} yanlış anahtar üretti")
+                self.assertEqual(appstate.DEDUP_CACHE, {}, f"{name} yanlış anahtar üretti")
 
 
 class RealNotificationPayloadTests(unittest.TestCase):
@@ -647,8 +648,8 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
-        bot.SMART_HEADER = True
+        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        appstate.SMART_HEADER = True
 
     def header_of(self, text):
         return bot.compose_message(event(text), message_link=None, source_name=None)["header"]
@@ -739,8 +740,8 @@ class PresentationOnlyTests(unittest.TestCase):
            "🛒 https://amazon.com.tr/dp/B0X")
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
-        bot.SMART_HEADER = True
+        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        appstate.SMART_HEADER = True
 
     def test_header_agrees_with_the_selected_price(self):
         composed = bot.compose_message(event(self.SRC), message_link="https://t.me/x/1",
@@ -808,8 +809,8 @@ class Utf16LimitTests(unittest.TestCase):
     FANCY = "𝐆𝐔𝐂𝐂𝐈 Uzun Kollu Tişört Erkek Basic Pamuklu Forma Siyah Beden XL Çok Uzun"
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
-        bot.SMART_HEADER = True
+        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        appstate.SMART_HEADER = True
 
     def test_fancy_font_titles_really_do_carry_astral_chars(self):
         # Düzeltmenin gerekçesi: başlık ayıklayıcısı emojiyi düşürür ama süslü
@@ -906,8 +907,8 @@ class SendBoundaryTests(unittest.TestCase):
 
     def setUp(self):
         ti.DedupBotBadgeTest.setUp(self)     # sahte istemci + yakalanan gönderimler
-        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
-        bot.SMART_HEADER = True
+        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        appstate.SMART_HEADER = True
 
     def composed_for(self, path_label):
         hard = getattr(bot, path_label[1])

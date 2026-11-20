@@ -8,6 +8,8 @@ from typing import Any
 
 from telethon import events
 
+import appstate
+import time
 from botentities import bot_media_descriptor
 from constants import CAPTION_LIMIT, MESSAGE_LIMIT
 from controlbase import control_reply
@@ -35,9 +37,9 @@ async def test_source_access(rt: Runtime, event: events.NewMessage.Event, rest: 
     compose_message kuru çalıştırması ayrıca raporlanır.
     """
     requested = rest.strip().strip("'\"")
-    all_sources = list(rt.bot.SOURCES)
+    all_sources = list(appstate.SOURCES)
     targets = all_sources
-    unresolved: list[tuple[Any, Exception]] = list(rt.bot.SOURCE_FAILURES)
+    unresolved: list[tuple[Any, Exception]] = list(appstate.SOURCE_FAILURES)
     if requested:
         needle = requested.casefold()
         target = None
@@ -62,7 +64,7 @@ async def test_source_access(rt: Runtime, event: events.NewMessage.Event, rest: 
             targets = [target]
             unresolved = []
         else:
-            failed = next((entry for entry in rt.bot.SOURCE_FAILURES
+            failed = next((entry for entry in appstate.SOURCE_FAILURES
                            if needle in {str(entry[0]).strip().lstrip("@").casefold(),
                                          str(entry[0]).strip().casefold()}), None)
             if failed:
@@ -90,7 +92,7 @@ async def test_source_access(rt: Runtime, event: events.NewMessage.Event, rest: 
         "• Ham mesaj değiştirilmeden denetlenir; kullanım testi yalnızca yerel kuru çalıştırmadır.",
         "",
     ]
-    live_counts = rt.bot.STATS.get("source_seen", {})
+    live_counts = appstate.STATS.get("source_seen", {})
     if not isinstance(live_counts, dict):
         live_counts = {}
     for item in targets:
@@ -119,7 +121,7 @@ async def test_source_access(rt: Runtime, event: events.NewMessage.Event, rest: 
             age = ""
             try:
                 timestamp = date.timestamp() if hasattr(date, "timestamp") else float(date)
-                age = f" · {humanize(rt.bot.time.time() - timestamp)} önce"
+                age = f" · {humanize(time.time() - timestamp)} önce"
             except (TypeError, ValueError, OverflowError, OSError):
                 pass
 
@@ -152,8 +154,8 @@ async def test_source_access(rt: Runtime, event: events.NewMessage.Event, rest: 
             dry_run = rt.bot.compose_message(
                 latest,
                 limit=CAPTION_LIMIT - 24 if media else MESSAGE_LIMIT - 100,
-                link_kinds=rt.bot.LINK_KINDS,
-                source_name=name if rt.bot.SOURCE_FOOTER else None,
+                link_kinds=appstate.LINK_KINDS,
+                source_name=name if appstate.SOURCE_FOOTER else None,
             )
             layout_ok = bool(dry_run["text"] or media or links)
             if dry_run["header"]:
@@ -189,7 +191,7 @@ async def test_source_access(rt: Runtime, event: events.NewMessage.Event, rest: 
                 f" · entity {valid_entities}/{len(entities)} · link {len(links)} · medya {media_label}"
             )
             layout_note = f" · başlık {product_title or 'bulunamadı'}"
-            if rt.bot.SMART_HEADER:
+            if appstate.SMART_HEADER:
                 # Üst satır = "fiyat - ürün adı"; `başlık` fiyatsız hâlidir
                 # ve Google/Akakçe/Cimri aramaları ile dedup o değeri kullanır.
                 layout_note += f" · üst satır {(dry_run['header'] or 'yok')[:70]}"

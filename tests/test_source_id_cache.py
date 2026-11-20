@@ -29,6 +29,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import commandtext  # noqa: E402
 from telethon import errors, types, utils  # noqa: E402
 
@@ -37,17 +38,17 @@ GROUP_ID = -5092968106
 
 
 def _reset():
-    bot.SOURCES.clear()
-    bot.SOURCE_FAILURES.clear()
-    bot.SOURCE_IDS.clear()
-    bot.CONTROL_IDS.clear()
-    bot.CONTROL_NAMES.clear()
-    bot.DESTINATION_ID = None
+    appstate.SOURCES.clear()
+    appstate.SOURCE_FAILURES.clear()
+    appstate.SOURCE_IDS.clear()
+    appstate.CONTROL_IDS.clear()
+    appstate.CONTROL_NAMES.clear()
+    appstate.DESTINATION_ID = None
     commandtext.PENDING.clear()
-    bot.COMMAND_MESSAGES.clear()
-    bot.DEDUP_CACHE.clear()
-    bot.CURSOR_RAM.clear()
-    bot.STATS.update({"seen": 0, "matched": 0, "forwarded": 0, "failed": 0})
+    appstate.COMMAND_MESSAGES.clear()
+    appstate.DEDUP_CACHE.clear()
+    appstate.CURSOR_RAM.clear()
+    appstate.STATS.update({"seen": 0, "matched": 0, "forwarded": 0, "failed": 0})
 
 
 # ---------------------------------------------------------------------------
@@ -155,9 +156,9 @@ class SourceIdCacheTest(unittest.TestCase):
 
         notes = asyncio.run(bot.resolve_sources(client, config, quiet=True))
 
-        self.assertEqual(len(bot.SOURCES), n)
-        self.assertEqual(len(bot.SOURCE_IDS), n)
-        self.assertEqual(len(bot.SOURCE_FAILURES), 0, bot.SOURCE_FAILURES)
+        self.assertEqual(len(appstate.SOURCES), n)
+        self.assertEqual(len(appstate.SOURCE_IDS), n)
+        self.assertEqual(len(appstate.SOURCE_FAILURES), 0, appstate.SOURCE_FAILURES)
         # hiçbir username çağrısı olmamalı — tüm get_entity argümanları int
         username_calls = [v for kind, v in client.calls if kind == "get_entity" and isinstance(v, str)]
         self.assertEqual(username_calls, [], f"username çağrısı yapılmamalı, ama: {client.calls[:10]}")
@@ -176,8 +177,8 @@ class SourceIdCacheTest(unittest.TestCase):
         client = TrackingClient()  # default: her username channel döndürür
         notes = asyncio.run(bot.resolve_sources(client, config, quiet=True))
 
-        self.assertEqual(len(bot.SOURCES), 3)
-        self.assertEqual(len(bot.SOURCE_FAILURES), 0)
+        self.assertEqual(len(appstate.SOURCES), 3)
+        self.assertEqual(len(appstate.SOURCE_FAILURES), 0)
         # config'e yazılmış olmalı
         self.assertIn("source_chat_ids", config)
         self.assertEqual(set(config["source_chat_ids"].keys()), set(source_chats))
@@ -204,11 +205,11 @@ class SourceIdCacheTest(unittest.TestCase):
         client = TrackingClient(mapping)
         asyncio.run(bot.resolve_sources(client, config, quiet=True))
 
-        self.assertEqual(len(bot.SOURCES), 1)
-        self.assertEqual(bot.SOURCES[0]["requested"], "@a")
+        self.assertEqual(len(appstate.SOURCES), 1)
+        self.assertEqual(appstate.SOURCES[0]["requested"], "@a")
         # failures: @b gerçek FloodWait + @c/@d park edilmiş (aynı exc ile)
-        self.assertEqual(len(bot.SOURCE_FAILURES), 3)
-        parked = [v for v, e in bot.SOURCE_FAILURES if isinstance(e, errors.FloodWaitError)]
+        self.assertEqual(len(appstate.SOURCE_FAILURES), 3)
+        parked = [v for v, e in appstate.SOURCE_FAILURES if isinstance(e, errors.FloodWaitError)]
         self.assertEqual(len(parked), 3)
         # client.calls sadece @a ve @b için olmalı, @c/@d hiç çağrılmamalı
         called_usernames = [v for _, v in client.calls if isinstance(v, str)]
@@ -236,12 +237,12 @@ class SourceIdCacheTest(unittest.TestCase):
         asyncio.run(bot.resolve_sources(client, config, quiet=True))
 
         # known1 ve known2 çözülmeli, unknown1 ve unknown2 park
-        self.assertEqual(len(bot.SOURCES), 2)
-        ids = {item["requested"] for item in bot.SOURCES}
+        self.assertEqual(len(appstate.SOURCES), 2)
+        ids = {item["requested"] for item in appstate.SOURCES}
         self.assertEqual(ids, {"@known1", "@known2"})
-        self.assertIn(known1_id, bot.SOURCE_IDS)
-        self.assertIn(known2_id, bot.SOURCE_IDS)
-        parked = [v for v, e in bot.SOURCE_FAILURES if isinstance(e, errors.FloodWaitError)]
+        self.assertIn(known1_id, appstate.SOURCE_IDS)
+        self.assertIn(known2_id, appstate.SOURCE_IDS)
+        parked = [v for v, e in appstate.SOURCE_FAILURES if isinstance(e, errors.FloodWaitError)]
         self.assertEqual(len(parked), 2)
         # int çağrıları her iki known için yapılmış olmalı
         int_calls = [v for _, v in client.calls if isinstance(v, int)]
@@ -284,7 +285,7 @@ class SourceIdCacheTest(unittest.TestCase):
                 client2.mapping[name] = errors.FloodWaitError(request=None, capture=41509)
             reloaded_cfg = {"source_chats": source_chats, "source_chat_ids": dict(reloaded["source_chat_ids"])}
             asyncio.run(bot.resolve_sources(client2, reloaded_cfg, quiet=True))
-            self.assertEqual(len(bot.SOURCES), 2)
+            self.assertEqual(len(appstate.SOURCES), 2)
             str_calls2 = [v for _, v in client2.calls if isinstance(v, str)]
             self.assertEqual(str_calls2, [], "restart'ta username denenmemeli")
             int_calls2 = [v for _, v in client2.calls if isinstance(v, int)]
@@ -312,7 +313,7 @@ class SourceIdCacheTest(unittest.TestCase):
         client = TrackingClient(mapping)
         asyncio.run(bot.resolve_sources(client, config, quiet=True))
 
-        self.assertEqual(len(bot.SOURCES), 2)
+        self.assertEqual(len(appstate.SOURCES), 2)
         # @good eski ID ile kalmalı
         self.assertEqual(config["source_chat_ids"]["@good"], good_id)
         # @stale yeni ID ile güncellenmiş olmalı, eski silinmiş
@@ -347,7 +348,7 @@ class SourceIdCacheTest(unittest.TestCase):
         client2 = TrackingClient(mapping2)
         asyncio.run(bot.resolve_sources(client2, config2, quiet=True))
 
-        self.assertEqual(len(bot.SOURCES), 3)
+        self.assertEqual(len(appstate.SOURCES), 3)
         self.assertEqual(config2["source_chat_ids"]["@a"], existing_ids["@a"])
         self.assertEqual(config2["source_chat_ids"]["@b"], existing_ids["@b"])
         self.assertIn("@c", config2["source_chat_ids"])
@@ -455,7 +456,7 @@ class ParkedIdsPreservedTest(unittest.TestCase):
         client = TrackingClient(mapping)
         asyncio.run(bot.resolve_sources(client, config2, quiet=True))
         # FloodWait sonrası parked değil, keep+parked çözülmeli, new_unknown park
-        self.assertEqual(len(bot.SOURCES), 2)
+        self.assertEqual(len(appstate.SOURCES), 2)
         self.assertIn("@keep", config2["source_chat_ids"])
         self.assertIn("@parked", config2["source_chat_ids"])
         self.assertEqual(config2["source_chat_ids"]["@parked"], parked_id)
@@ -547,14 +548,14 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
                 client = TrackingClient(mapping)
                 asyncio.run(bot.resolve_sources(client, config, quiet=True))
                 # @good çözülmeli, @flaky transient — ID korunmalı, username denenmemeli
-                self.assertEqual(len(bot.SOURCES), 1)
-                self.assertEqual(bot.SOURCES[0]["requested"], "@good")
+                self.assertEqual(len(appstate.SOURCES), 1)
+                self.assertEqual(appstate.SOURCES[0]["requested"], "@good")
                 self.assertIn("@flaky", config["source_chat_ids"])
                 self.assertEqual(config["source_chat_ids"]["@flaky"], flaky_id, "geçici hatada ID silinmemeli")
                 # username çağrısı yapılmamalı
                 str_calls = [v for _, v in client.calls if isinstance(v, str) and "flaky" in str(v).lower()]
                 self.assertEqual(str_calls, [], f"{type(exc).__name__} için username fallback yapılmamalı")
-                self.assertTrue(any(isinstance(e, type(exc)) or e.args == exc.args for _, e in bot.SOURCE_FAILURES), "failure kaydedilmeli")
+                self.assertTrue(any(isinstance(e, type(exc)) or e.args == exc.args for _, e in appstate.SOURCE_FAILURES), "failure kaydedilmeli")
                 # diğer kaynak etkilenmemeli
                 self.assertEqual(config["source_chat_ids"]["@good"], good_id)
 
@@ -585,7 +586,7 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
                 }
                 client = TrackingClient(mapping)
                 asyncio.run(bot.resolve_sources(client, config, quiet=True))
-                self.assertEqual(len(bot.SOURCES), 1)
+                self.assertEqual(len(appstate.SOURCES), 1)
                 self.assertIn("@srv", config["source_chat_ids"])
                 self.assertEqual(config["source_chat_ids"]["@srv"], srv_id)
                 str_calls = [v for _, v in client.calls if isinstance(v, str) and "srv" in str(v).lower()]
@@ -615,7 +616,7 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
                 }
                 client = TrackingClient(mapping)
                 asyncio.run(bot.resolve_sources(client, config, quiet=True))
-                self.assertEqual(len(bot.SOURCES), 2, f"{label} için fallback çalışmalı")
+                self.assertEqual(len(appstate.SOURCES), 2, f"{label} için fallback çalışmalı")
                 self.assertNotEqual(config["source_chat_ids"]["@stale"], stale_id)
                 self.assertIn("@good", config["source_chat_ids"])
                 self.assertEqual(config["source_chat_ids"]["@good"], good_id, "diğer kayıt etkilenmemeli")
@@ -634,7 +635,7 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
         }
         client = TrackingClient(mapping)
         asyncio.run(bot.resolve_sources(client, config, quiet=True))
-        self.assertEqual(len(bot.SOURCES), 2)
+        self.assertEqual(len(appstate.SOURCES), 2)
         self.assertIn("@b", config["source_chat_ids"])
         self.assertEqual(config["source_chat_ids"]["@b"], ids["@b"])
         self.assertEqual(config["source_chat_ids"]["@a"], ids["@a"])
@@ -656,8 +657,8 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
         }
         client = TrackingClient(mapping)
         asyncio.run(bot.resolve_sources(client, config, quiet=True))
-        self.assertEqual(len(bot.SOURCES), 1)
-        self.assertEqual(bot.SOURCES[0]["requested"], "@good")
+        self.assertEqual(len(appstate.SOURCES), 1)
+        self.assertEqual(appstate.SOURCES[0]["requested"], "@good")
         self.assertIn("@priv", config["source_chat_ids"])
         self.assertEqual(config["source_chat_ids"]["@priv"], priv_id, "ChannelPrivateError'da ID silinmemeli")
         self.assertEqual(config["source_chat_ids"]["@good"], good_id)
@@ -698,7 +699,7 @@ class BulkDialogPrefillTest(unittest.TestCase):
         client = BulkClient()
 
         asyncio.run(bot.resolve_sources(client, config, quiet=True))
-        self.assertEqual(len(bot.SOURCES), 3, "dialoglardan doldurulan ID'lerle 3 kaynak çözülmeli")
+        self.assertEqual(len(appstate.SOURCES), 3, "dialoglardan doldurulan ID'lerle 3 kaynak çözülmeli")
         self.assertEqual(client.dialogs_calls, 1)
         # Hiç username çağrısı yapılmamalı — hepsi int üzerinden
         str_calls = [v for _, v in client.calls if isinstance(v, str)]
@@ -744,12 +745,12 @@ class BulkDialogPrefillTest(unittest.TestCase):
         # @a FloodWait park, invite denendi ve başarılı, @b park
         # Invite resolved -> 1, parked 2
         # Check: invite resolved count 1, failures 2
-        self.assertEqual(len(bot.SOURCES), 1)
-        self.assertEqual(bot.SOURCES[0]["requested"], "https://t.me/+RBuRoSBONSYyMTE8")
-        parked = [v for v, e in bot.SOURCE_FAILURES if isinstance(e, errors.FloodWaitError)]
+        self.assertEqual(len(appstate.SOURCES), 1)
+        self.assertEqual(appstate.SOURCES[0]["requested"], "https://t.me/+RBuRoSBONSYyMTE8")
+        parked = [v for v, e in appstate.SOURCE_FAILURES if isinstance(e, errors.FloodWaitError)]
         self.assertEqual(len(parked), 2)
-        self.assertIn("@a", [v for v, _ in bot.SOURCE_FAILURES])
-        self.assertIn("@b", [v for v, _ in bot.SOURCE_FAILURES])
+        self.assertIn("@a", [v for v, _ in appstate.SOURCE_FAILURES])
+        self.assertIn("@b", [v for v, _ in appstate.SOURCE_FAILURES])
 
 
 class ResolveChatGroupsIntegrationTest(unittest.TestCase):
@@ -782,8 +783,8 @@ class ResolveChatGroupsIntegrationTest(unittest.TestCase):
         async def run():
             notes, fatal = await bot.resolve_chat_groups(client, config, {"sources", "destination", "control"})
             self.assertIsNone(fatal)
-            self.assertEqual(len(bot.SOURCES), 1)
-            self.assertEqual(bot.DESTINATION_ID, GROUP_ID)
+            self.assertEqual(len(appstate.SOURCES), 1)
+            self.assertEqual(appstate.DESTINATION_ID, GROUP_ID)
 
         asyncio.run(run())
 

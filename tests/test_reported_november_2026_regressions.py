@@ -25,6 +25,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import confutil  # noqa: E402
 import constants  # noqa: E402
 import dedupbadge  # noqa: E402
@@ -89,8 +90,8 @@ def _message(text: str, entities=None) -> SimpleNamespace:
 
 
 def _compose_obj(obj: SimpleNamespace, *, clean: bool) -> dict:
-    with mock.patch.object(bot, "SMART_HEADER", True), \
-         mock.patch.object(bot, "CLEAN_QUOTE_DUPLICATES", clean):
+    with mock.patch.object(appstate, "SMART_HEADER", True), \
+         mock.patch.object(appstate, "CLEAN_QUOTE_DUPLICATES", clean):
         return bot.compose_message(
             obj,
             link_kinds=confutil.link_kinds_for("smart", bot=True),
@@ -286,12 +287,12 @@ class RuntimeConfigTest(unittest.TestCase):
     def test_flag_defaults_off_and_live_config_enables_it(self):
         config = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
         self.assertTrue(config["clean_quote_duplicates"])
-        snapshot = {name: getattr(bot, name, None) for name in self.GLOBALS}
-        with mock.patch.multiple(bot, create=True, **snapshot):
+        snapshot = {name: getattr(appstate, name, None) for name in self.GLOBALS}
+        with mock.patch.multiple(appstate, create=True, **snapshot):
             bot.apply_runtime_config({"clean_quote_duplicates": True})
-            self.assertTrue(bot.CLEAN_QUOTE_DUPLICATES)
+            self.assertTrue(appstate.CLEAN_QUOTE_DUPLICATES)
             bot.apply_runtime_config({})
-            self.assertFalse(bot.CLEAN_QUOTE_DUPLICATES)
+            self.assertFalse(appstate.CLEAN_QUOTE_DUPLICATES)
 
 
 if __name__ == "__main__":

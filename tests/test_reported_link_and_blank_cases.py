@@ -24,6 +24,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import botentities  # noqa: E402
 import confutil  # noqa: E402
 import dedupbadge  # noqa: E402
@@ -93,7 +94,7 @@ def only() -> SimpleNamespace:
 def compose(obj, mode: str = "smart", *, as_bot: bool = True, **extra):
     """Üretimdeki iki çağrı: bot bildirimi (inline klavyeli) ve hesap kopyası (klavyesiz)."""
     extra.setdefault("has_keyboard", as_bot)
-    with mock.patch.object(bot, "SMART_HEADER", True):
+    with mock.patch.object(appstate, "SMART_HEADER", True):
         return bot.compose_message(obj, link_kinds=confutil.link_kinds_for(mode, bot=as_bot),
                                    message_link=MESSAGE_LINK, source_name="Kaynak", **extra)
 
@@ -385,7 +386,7 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
             event.message.reply_to = types.MessageReplyHeader(reply_to_msg_id=reply_to)
 
         async def run():
-            with mock.patch.object(bot, "DEDUP_EDIT_MIN_INTERVAL", 0):
+            with mock.patch.object(appstate, "DEDUP_EDIT_MIN_INTERVAL", 0):
                 await client.handlers[1][1](event)
                 await asyncio.sleep(0.02)
         asyncio.run(run())
@@ -402,8 +403,8 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
         # Bildirilen örnek: aynı fırsata açıklamasız görselle yanıt.
         self.send(client, self.first_id, 47090, "", reply_to=47088, media=True)
         self.assertEqual(self.notifications, 1, "boş bildirim üretilmemeli")
-        self.assertEqual(bot.STATS["matched"], 1)
-        self.assertIn(47090, bot.CURSOR_RAM[self.first_id]["completed"] | {bot.CURSOR_RAM[self.first_id]["cursor"]},
+        self.assertEqual(appstate.STATS["matched"], 1)
+        self.assertIn(47090, appstate.CURSOR_RAM[self.first_id]["completed"] | {appstate.CURSOR_RAM[self.first_id]["cursor"]},
                       "elenen ileti işlenmiş sayılır; yeniden denenmez")
         # Kaynağın gerçek yazımı (emoji ile) ve salt emoji yanıtı da bildirim üretmez.
         self.send(client, self.first_id, 47061, "Yoğun ilgi görüyor 📣", reply_to=47088)
@@ -487,7 +488,7 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
             (destination, full, 123, None, None, [linked(full, LABEL, PLATINUM_URL)], 900),
         ]
         client = self.start(destination=destination)
-        self.assertEqual([entry["title"] for entry in bot.DEDUP_CACHE.values()], [PLATINUM_TITLE],
+        self.assertEqual([entry["title"] for entry in appstate.DEDUP_CACHE.values()], [PLATINUM_TITLE],
                          "başlıksız (yalnız link satırı) bildirim tekrar kaydı açmaz")
         self.send(client, cc.SECOND_CHANNEL_ID, 201, PLATINUM_TEXT, links=[("Google", PLATINUM_GOOGLE)],
                   buttons=[("✅ Satın Al ✅", PLATINUM_URL)])
@@ -508,7 +509,7 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
         self.send(client, self.first_id, 295990, COUPON_TEXT, links=[(COUPON_LINE, other)],
                   buttons=[("🛒 Ürüne Git", other)])
         self.assertEqual(len(self.ping_calls), 2, "ürün adı yokken slogan yüzünden birleştirilmemeli")
-        self.assertEqual(bot.STATS["deduped"], 0)
+        self.assertEqual(appstate.STATS["deduped"], 0)
         self.assertTrue(all(call["text"].startswith("₺99\n\n") for call in self.ping_calls))
 
     def test_last_resort_link_card_shows_the_product_address(self):
@@ -520,7 +521,7 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
 
         client.fail_modes.update({"forward", "copy", "media", "download"})
         with mock.patch.object(bot, "send_bot_ping", refuse), \
-                mock.patch.object(bot, "DELIVERY_CHAIN", ["link"]):
+                mock.patch.object(appstate, "DELIVERY_CHAIN", ["link"]):
             self.send(client, self.first_id, 8537, PLATINUM_TEXT, buttons=[("✅ Satın Al ✅", PLATINUM_URL)])
         delivered = str(client.sent[-1][1])
         self.assertIn(f"{LABEL}: {PLATINUM_URL}", delivered)
