@@ -33,6 +33,7 @@ aynı mesajların bir örneklemini her test çalıştırmasında, eski sürüme 
 """
 from __future__ import annotations
 
+import appstate
 import sanitize
 import argparse
 import contextlib
@@ -318,7 +319,7 @@ def run_tree(tree: Path, spec_path: Path, out_path: Path, both_limits: bool, use
     sys.path.insert(0, str(tree))
     import bot  # noqa: PLC0415 - sürüme göre içe aktarılır
     from telethon.tl import types  # noqa: PLC0415
-    bot.SMART_HEADER = True
+    appstate.SMART_HEADER = True
     with per_message_cache(bot, use_cache) as cache, \
             spec_path.open(encoding="utf-8") as source, out_path.open("w", encoding="utf-8") as target:
         for raw in source:

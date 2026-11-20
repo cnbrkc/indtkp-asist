@@ -10,6 +10,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import commandtext  # noqa: E402
 import header as header_mod  # noqa: E402
 import price_filter as pf  # noqa: E402
@@ -238,7 +239,7 @@ class SmartHeaderLayoutTests(unittest.TestCase):
     TEXT = "🔥 FIRSAT 🔥\nSamsung Galaxy S24 256 GB\nEski: 49.999 TL\nYeni: 41.999 TL\n500 TL kupon"
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", bot.SMART_HEADER)
+        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
 
     def event(self):
         start = self.TEXT.index("49.999")
@@ -248,14 +249,14 @@ class SmartHeaderLayoutTests(unittest.TestCase):
         )
 
     def test_default_layout_is_unchanged(self):
-        bot.SMART_HEADER = False
+        appstate.SMART_HEADER = False
         text = bot.compose_message(self.event(), message_link="https://t.me/c/1/2", source_name="Grup")["text"]
         self.assertNotIn("💰", text)
         self.assertTrue(text.startswith("Samsung Galaxy S24 256 GB\n\n🔥 FIRSAT"))
 
     def test_smart_layout_order(self):
         """Üst satır TEK satırdır: fiyat önce, " — " ayracı, sonra ürün adı."""
-        bot.SMART_HEADER = True
+        appstate.SMART_HEADER = True
         composed = bot.compose_message(self.event(), message_link="https://t.me/c/1/2", source_name="Grup")
         text = composed["text"]
         self.assertTrue(text.startswith("₺41.999 — Samsung Galaxy S24 256 GB\n\n🔥 FIRSAT"), text)
@@ -278,7 +279,7 @@ class SmartHeaderLayoutTests(unittest.TestCase):
 
     def test_price_not_found_is_visible(self):
         """Fiyat bulunamayınca uzun uyarı değil, yalnızca ❓ yazılır."""
-        bot.SMART_HEADER = True
+        appstate.SMART_HEADER = True
         event = SimpleNamespace(message="Güzel bir ürün var", raw_text="Güzel bir ürün var",
                                 reply_markup=None, media=None, entities=[])
         composed = bot.compose_message(event, message_link=None, source_name=None)
@@ -289,7 +290,7 @@ class SmartHeaderLayoutTests(unittest.TestCase):
 
     def test_header_fits_and_price_survives_truncation(self):
         """Dar kalıpta fiyat korunur, ürün adının kuyruğu "…" ile düşer."""
-        bot.SMART_HEADER = True
+        appstate.SMART_HEADER = True
         title = "Samsung Galaxy S24 Ultra 256 GB Titan Siyah Kılıflı model"
         event = SimpleNamespace(message=title + "\nFiyat: 41.999 TL",
                                 raw_text=title + "\nFiyat: 41.999 TL",
@@ -311,10 +312,10 @@ class SlowReportTests(unittest.IsolatedAsyncioTestCase):
             async def send_message(self, target, text):
                 sent.append((target, text))
 
-        old = (bot.SLOW_REPORT_SECONDS, bot._SLOW_REPORT_LAST)
-        self.addCleanup(lambda: (setattr(bot, "SLOW_REPORT_SECONDS", old[0]),
-                                 setattr(bot, "_SLOW_REPORT_LAST", old[1])))
-        bot.SLOW_REPORT_SECONDS, bot._SLOW_REPORT_LAST = 8.0, 0.0
+        old = (appstate.SLOW_REPORT_SECONDS, appstate._SLOW_REPORT_LAST)
+        self.addCleanup(lambda: (setattr(appstate, "SLOW_REPORT_SECONDS", old[0]),
+                                 setattr(appstate, "_SLOW_REPORT_LAST", old[1])))
+        appstate.SLOW_REPORT_SECONDS, appstate._SLOW_REPORT_LAST = 8.0, 0.0
         bot.maybe_report_slow(FakeClient(), "Grup A", 2.0, [("Bildirim", 12.0)])
         bot.maybe_report_slow(FakeClient(), "Grup A", 2.0, [("Bildirim", 12.0)])   # dakikada 1 sınırı
         bot.maybe_report_slow(FakeClient(), "Grup B", 0.1, [("Bildirim", 0.5)])    # hızlı → rapor yok
@@ -326,9 +327,9 @@ class SlowReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Telegram → bot: 2.0 sn", sent[0][1])
 
     async def test_disabled_when_zero(self):
-        old = bot.SLOW_REPORT_SECONDS
+        old = appstate.SLOW_REPORT_SECONDS
         self.addCleanup(setattr, bot, "SLOW_REPORT_SECONDS", old)
-        bot.SLOW_REPORT_SECONDS = 0
+        appstate.SLOW_REPORT_SECONDS = 0
         sent = []
         class FakeClient:
             async def send_message(self, *args):

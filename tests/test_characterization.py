@@ -50,6 +50,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import analysis  # noqa: E402
 import dedupmatch  # noqa: E402
 import keywords  # noqa: E402
@@ -714,17 +715,17 @@ COMPACT_BADGE = "📌 {} kere paylaşıldı: firsatz"
 
 async def offer(client: ti.FakeClient, message_id: int) -> None:
     """Aynı fırsat kaynak kanalda (yeni bir mesaj olarak) bir kez daha paylaşılır."""
-    chat = next(iter(bot.SOURCE_IDS))
+    chat = next(iter(appstate.SOURCE_IDS))
     await client.handlers[1][1](ti.FakeEvent(chat, 999, OFFER, message_id=message_id, media=False))
 
 
 def cached() -> dict[str, Any]:
-    (entry,) = bot.DEDUP_CACHE.values()
+    (entry,) = appstate.DEDUP_CACHE.values()
     return entry
 
 
 def stats(*names: str) -> tuple[int, ...]:
-    return tuple(bot.STATS[name] for name in names)
+    return tuple(appstate.STATS[name] for name in names)
 
 
 class EditRefusingBotApi(golden.BotApiWire):
@@ -891,15 +892,15 @@ class ReservationTakeoverTest(unittest.TestCase):
 
         async def scenario(client: ti.FakeClient) -> None:
             await offer(client, 1)
-            (key,) = bot.DEDUP_CACHE
+            (key,) = appstate.DEDUP_CACHE
             # İlk gönderimi yarıda kalmış gibi göster: kayıt "pending", sahibi yok ya da bitmiş.
             stale = dedupmatch.new_dedup_entry(cached()["title"], object(), "firsatz", "firsatz")
             stale["offer"] = cached()["offer"]
             if owner_state == "finished":
                 stale["owner"] = asyncio.ensure_future(asyncio.sleep(0))
                 await stale["owner"]
-            bot.DEDUP_CACHE[key] = stale
-            with mock.patch.object(bot, "DEDUP_RESERVE_TIMEOUT", 0.01):
+            appstate.DEDUP_CACHE[key] = stale
+            with mock.patch.object(appstate, "DEDUP_RESERVE_TIMEOUT", 0.01):
                 await offer(client, 2)
             seen.update(stale=stale, entry=cached(), stats=stats("forwarded", "deduped", "dedup_edits"))
 

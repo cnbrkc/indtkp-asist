@@ -4,9 +4,9 @@ Eskiden bu değerler ``main()`` içindeki iç işlevlerin kapanış (closure) de
 Şimdi işlevler modül düzeyinde durur ve ilk parametre olarak ``rt`` alır; böylece her
 işlev neye bağlı olduğunu açıkça gösterir ve tek başına incelenebilir.
 
-``bot``: çalışan ``bot`` modülü. Testlerin yamaladığı veya çalışma sırasında yeniden atanan
-modül düzeyi durum (ör. ``DESTINATION_ID``, ``RESTARTING``) buradan ``rt.bot.AD`` ile okunur;
-böylece davranış eski global okumayla birebir aynıdır.
+``bot``: çalışan ``bot`` modülü. Testlerin yamaladığı ``bot.py`` işlevleri (ör. ``compose_message``,
+``send_bot_media``) buradan ``rt.bot.AD`` ile çağrılır; böylece yama eskisi gibi etkili olur.
+Ayarlar, sayaçlar ve önbellekler ``appstate`` modülündedir.
 """
 
 from __future__ import annotations

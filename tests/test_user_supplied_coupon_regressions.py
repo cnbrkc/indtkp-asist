@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import bot
+import appstate
 import dedupbadge
 import dedupmatch
 import producttitle
@@ -24,7 +25,7 @@ class UserSuppliedCouponRegressions(unittest.TestCase):
         expected = "300 TL ve üzerine 50 TL indirim kodu — EFSOCUMA50"
         self.assertEqual(producttitle._coupon_campaign_title(text, 200, include_code=True), expected)
         self.assertEqual(smarttitle.smart_dedup_title(event(text)), "Kampanya hepsiburada EFSOCUMA50 300.00 50.00")
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             header = bot.compose_message(event(text))["text"].splitlines()[0]
         self.assertEqual(header, expected)
         self.assertIsNone(pf.extract_price(text).value)
@@ -75,7 +76,7 @@ class UserSuppliedCouponRegressions(unittest.TestCase):
         self.assertEqual([c.role for c in candidates], ["threshold", "discount_amount"])
         self.assertIsNone(pf.extract_price(text).value)
         self.assertIn("KOZMO500", smarttitle.smart_dedup_title(event(text)))
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             header = bot.compose_message(event(text))["text"].splitlines()[0]
         # Kupon duyurusunda ürün fiyatı YOKTUR; bu bir eksiklik değil iletinin
         # türüdür. Kullanıcı isteği: "indirim kuponu bildirimlerinde de [soru
@@ -111,7 +112,7 @@ class UserSuppliedCouponRegressions(unittest.TestCase):
         self.assertIn("ECAM322.70.SB", smarttitle.smart_dedup_title(event(appliance)))
         self.assertEqual(pf.extract_price(appliance).value, 30199)
         self.assertEqual(pf.extract_price(appliance).confidence, "high")
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             header = bot.compose_message(event(appliance))["text"].splitlines()[0]
         self.assertTrue(header.startswith("₺30.199 — Delonghi Magnifica Plus"), header)
 

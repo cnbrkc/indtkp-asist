@@ -23,6 +23,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import appstate  # noqa: E402
 import test_integration as ti  # noqa: E402
 from telethon import utils  # noqa: E402
 from telethon.tl import functions, types  # noqa: E402
@@ -83,9 +84,9 @@ class Harness:
     def start(self, **config_extra):
         client = self._run(fast_notify=True, include_keywords=[], smart_header=True,
                            source_footer=True, **config_extra)
-        first = next(iter(bot.SOURCE_IDS))
-        bot.SOURCE_IDS.add(SECOND_CHANNEL_ID)
-        bot.SOURCES[:] = [{"id": first, "name": FIRST_CHANNEL},
+        first = next(iter(appstate.SOURCE_IDS))
+        appstate.SOURCE_IDS.add(SECOND_CHANNEL_ID)
+        appstate.SOURCES[:] = [{"id": first, "name": FIRST_CHANNEL},
                           {"id": SECOND_CHANNEL_ID, "name": SECOND_CHANNEL}]
         self.first_id = first
         return client
@@ -93,7 +94,7 @@ class Harness:
     def offers(self, client, items):
         """``items``: (kanal_id, mesaj_id, metin[, buton_url'leri]) sırasıyla işlenir."""
         async def run():
-            with mock.patch.object(bot, "DEDUP_EDIT_MIN_INTERVAL", 0):
+            with mock.patch.object(appstate, "DEDUP_EDIT_MIN_INTERVAL", 0):
                 for item in items:
                     chat_id, message_id, text = item[:3]
                     buttons = item[3] if len(item) > 3 else None
@@ -128,7 +129,7 @@ class SameOfferTest(Harness, unittest.TestCase):
             (SECOND_CHANNEL_ID, 201, with_lines("Kaynak mesaj: https://t.me/firsattayfa/28513")),
         ])
         self.assertEqual(len(self.ping_calls), 1, "ikinci kanal yeni bildirim üretmemeli")
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
         text = self.edit_text_calls[-1]["text"]
         self.assertIn("2 kere paylaşıldı", text)
         self.assertIn(FIRST_CHANNEL, text)
@@ -144,7 +145,7 @@ class SameOfferTest(Harness, unittest.TestCase):
         second = ("✅ Homend Profashion 3023H Stand Mikser Antrasit\n\n"
                   "🏷 6.619 TL\n\n👉 FIRSATA GİT!\n\n🛍 Amazon")
         self.assertPings(first, second, 1, second_buttons=[second_url])
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_source_promo_search_and_utm_differences_one_notification(self):
         cases = {
@@ -193,7 +194,7 @@ class SameOfferTest(Harness, unittest.TestCase):
         self.offers(client, [(SECOND_CHANNEL_ID, 201, with_lines(
             "Kaynak mesaj: https://t.me/firsattayfa/28513"))])
         self.assertEqual(len(self.ping_calls), 0, "geçmiş kaydı ikinci kanalı yutmalı")
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
 
 class DifferentOfferTest(Harness, unittest.TestCase):
@@ -443,7 +444,7 @@ class ReportedMultibuyUpgradeTest(Harness, unittest.TestCase):
         self._patch('delete_bot_message', delete)
         title = 'Hayat Doğal Mineralli Su 6x1,5 L'
         self.offers(client, [(self.first_id, 101, title + '\n🏷 79 TL')])
-        entry = next(iter(bot.DEDUP_CACHE.values()))
+        entry = next(iter(appstate.DEDUP_CACHE.values()))
         entry['first_seen'] -= 181
         self.offers(client, [(SECOND_CHANNEL_ID, 201, f'{title}\nFiyat: 79 TL / 13 adet alımda 71 TL')])
         self.assertEqual(len(self.ping_calls), 2)
@@ -453,7 +454,7 @@ class ReportedMultibuyUpgradeTest(Harness, unittest.TestCase):
         client = self.start()
         title = 'Hayat Doğal Mineralli Su 6x1,5 L'
         self.offers(client, [(self.first_id, 101, title + '\n🏷 79 TL')])
-        old = next(iter(bot.DEDUP_CACHE.values()))
+        old = next(iter(appstate.DEDUP_CACHE.values()))
         async def fail_send(*args, **kwargs):
             return bot.BotSendResult(False, 'failed')
         deletes = []
@@ -463,7 +464,7 @@ class ReportedMultibuyUpgradeTest(Harness, unittest.TestCase):
         self._patch('delete_bot_message', delete)
         with mock.patch.object(bot, 'send_bot_ping', fail_send):
             self.offers(client, [(SECOND_CHANNEL_ID, 201, f'{title}\nFiyat: 79 TL / 13 adet alımda 71 TL')])
-        self.assertIs(next(iter(bot.DEDUP_CACHE.values())), old)
+        self.assertIs(next(iter(appstate.DEDUP_CACHE.values())), old)
         self.assertFalse(deletes)
 
     def test_non_content_teaser_skipped_but_media_and_links_retained(self):

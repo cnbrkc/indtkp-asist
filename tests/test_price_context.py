@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 
 import bot
+import appstate
 import botentities
 import commandtext
 import dedupmatch
@@ -125,7 +126,7 @@ class OfferContextTests(unittest.TestCase):
         from unittest.mock import patch
         text = 'Ürün: Chakra Waved Pamuk El Havlusu 30x40 Cm Bej\n\n🎯 99 TL 🚚 Kargo Bedava'
         event = SimpleNamespace(message=SimpleNamespace(message=text, entities=[], media=None), raw_text=text)
-        with patch.object(bot, 'SMART_HEADER', True):
+        with patch.object(appstate, 'SMART_HEADER', True):
             result = bot.compose_message(event, message_link='https://t.me/c/1/2', source_name='Kaynak')
         output = result['text']
         self.assertIn(text, output)
@@ -167,7 +168,7 @@ class OfferContextTests(unittest.TestCase):
                 _, info = smarttitle.smart_header_info(event, cleaned, body)
                 self.assertEqual((info.confidence, info.value), (confidence, value))
                 reliable = confidence in {'high', 'medium'}
-                with patch.object(bot, 'SMART_HEADER', True):
+                with patch.object(appstate, 'SMART_HEADER', True):
                     composed = bot.compose_message(event)
                 output = composed['text']
                 header = composed['header']
@@ -195,7 +196,7 @@ class OfferContextTests(unittest.TestCase):
         text = '🛍 Deneme Havlu\n🎯 200 TL'
         start = len(text[:text.index('200')].encode('utf-16-le')) // 2
         event = SimpleNamespace(message=text, raw_text=text, entities=[types.MessageEntityStrike(offset=start, length=6)], media=None)
-        with patch.object(bot, 'SMART_HEADER', True):
+        with patch.object(appstate, 'SMART_HEADER', True):
             struck_header = bot.compose_message(event)['header']
         price, _ = header_mod.split_header_line(struck_header)
         self.assertEqual(price, '❓')
@@ -227,7 +228,7 @@ class OfferContextTests(unittest.TestCase):
         for title, offer, expected, _ in self.CASES:
             text = 'Ürün: ' + title + '\n\n🎯 ' + offer
             event = SimpleNamespace(message=text, raw_text=text, media=None, entities=[])
-            with self.subTest(title=title), patch.object(bot, 'SMART_HEADER', True):
+            with self.subTest(title=title), patch.object(appstate, 'SMART_HEADER', True):
                 composed = bot.compose_message(event)
                 output = composed['text']
                 # Üst satır: "fiyat - ürün adı" (tek satır, fiyat en başta).

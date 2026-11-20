@@ -16,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot
+import appstate
 import dedupbadge
 import dedupmatch
 import keywords
@@ -290,12 +291,12 @@ class DeliveryRegressionTest(unittest.TestCase):
             (ti.GROUP_ID, "Çay\n\nÇay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9", 123, None, None, [], 83375),
         ]
         client = self._run(fast_notify=True)
-        self.assertTrue(bot.DEDUP_CACHE)
-        entry = next(iter(bot.DEDUP_CACHE.values()))
+        self.assertTrue(appstate.DEDUP_CACHE)
+        entry = next(iter(appstate.DEDUP_CACHE.values()))
         self.assertIsNone(entry["editable"])
         self.assertIsNone(entry["bot_message_id"])
         self._send(client, "Çay 5 TL", media=False)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
         self.assertEqual(len(self.ping_calls), 0)
         self.assertFalse(self.edit_text_calls)
 
@@ -314,7 +315,7 @@ class DeliveryRegressionTest(unittest.TestCase):
         client = self._basic_history_client()
         self._send(client, "Çay 5 TL\nPrime üyelerine özel", media=False)
         self.assertEqual(len(self.ping_calls), 0)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_basic_group_history_does_not_suppress_variant(self):
         self._assert_new_offer_after_basic_history("Çay Demlik Poşet 5 TL")
@@ -329,7 +330,7 @@ class DeliveryRegressionTest(unittest.TestCase):
         client = self._basic_history_client()
         self._send(client, "Çay 5 TL\nSatıcı: Başka Mağaza", media=False)
         self.assertEqual(len(self.ping_calls), 0)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_basic_group_history_different_link_still_suppresses(self):
         # Link ürün adı/fiyat kimliğini değiştirmez.
@@ -337,32 +338,32 @@ class DeliveryRegressionTest(unittest.TestCase):
             "Çay\n\nÇay 5 TL https://ornek.example/urun-a\n\n🔗 Mesajı Gör: https://t.me/firsatz/9")
         self._send(client, "Çay 5 TL https://ornek.example/urun-b", media=False)
         self.assertEqual(len(self.ping_calls), 0)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_basic_group_history_same_link_suppresses(self):
         client = self._basic_history_client(
             "Çay\n\nÇay 5 TL https://ornek.example/urun-a\n\n🔗 Mesajı Gör: https://t.me/firsatz/9")
         self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
         self.assertEqual(len(self.ping_calls), 0)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_basic_group_history_without_link_suppresses_linked_live(self):
         # Aynı ürün adı/fiyat geçmişte varsa canlı link farkı önemsizdir.
         client = self._basic_history_client()
         self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
         self.assertEqual(len(self.ping_calls), 0)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_preload_record_is_not_split_by_live_link(self):
         client = self._basic_history_client()
-        entry = next(iter(bot.DEDUP_CACHE.values()))
+        entry = next(iter(appstate.DEDUP_CACHE.values()))
         self.assertTrue(entry["preload"])
         self.assertNotIn("links", entry)
         self._send(client, "Çay 5 TL https://ornek.example/urun-a", media=False)
         self.assertEqual(len(self.ping_calls), 0)
         self._send(client, "Çay 5 TL https://ornek.example/urun-b", media=False)
         self.assertEqual(len(self.ping_calls), 0)
-        self.assertEqual(bot.STATS["deduped"], 2)
+        self.assertEqual(appstate.STATS["deduped"], 2)
 
     def test_failed_takeover_drops_preload_record_without_suppressing_retry(self):
         # Devralma gönderimi başarısızsa kayıt düşer: sonraki tekrar ne
@@ -372,7 +373,7 @@ class DeliveryRegressionTest(unittest.TestCase):
                                new=mock.AsyncMock(return_value=(False, "Forbidden"))):
             self._send(client, "Çay 4 TL https://ornek.example/urun-a", media=False)
         self.assertTrue(client.delivered, "hesap yedeği iletmiş olmalı")
-        self.assertFalse(bot.DEDUP_CACHE)
+        self.assertFalse(appstate.DEDUP_CACHE)
         self._send(client, "Çay 4 TL https://ornek.example/urun-a", media=False)
         self.assertEqual(len(self.ping_calls), 1)
 
@@ -384,13 +385,13 @@ class DeliveryRegressionTest(unittest.TestCase):
         self.assertEqual(len(self.ping_calls), 1)
         self._send(client, "Çay 5 TL https://magaza-b.example/urun", media=False)
         self.assertEqual(len(self.ping_calls), 1)
-        self.assertEqual(bot.STATS["deduped"], 2)
+        self.assertEqual(appstate.STATS["deduped"], 2)
 
     def test_basic_group_history_ignores_new_coupon(self):
         client = self._basic_history_client()
         self._send(client, "Çay 5 TL\nKupon: CAY10", media=False)
         self.assertEqual(len(self.ping_calls), 0)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_basic_group_history_with_unknown_price_does_not_suppress_known_price(self):
         # Geçmiş kaydın fiyatı güvenilir çıkarılamıyorsa (None) canlı mesajın
@@ -418,7 +419,7 @@ class DeliveryRegressionTest(unittest.TestCase):
 
         async def scenario():
             handler = client.handlers[1][1]
-            chat = next(iter(bot.SOURCE_IDS))
+            chat = next(iter(appstate.SOURCE_IDS))
             await asyncio.gather(
                 handler(ti.FakeEvent(chat, 7, "Çay 5 TL", message_id=41)),
                 handler(ti.FakeEvent(chat, 7, "Çay Demlik 9 TL", message_id=42)),
@@ -451,7 +452,7 @@ class DeliveryRegressionTest(unittest.TestCase):
             (ti.GROUP_ID, "Çay 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/9", ti.ADMIN_ID, None, None, [], 83375),
         ]
         client = self._run(fast_notify=True)
-        self.assertFalse(bot.DEDUP_CACHE)
+        self.assertFalse(appstate.DEDUP_CACHE)
         self._send(client, "Çay 5 TL", media=False)
         self.assertEqual(len(self.ping_calls), 1)
 
@@ -462,7 +463,7 @@ class DeliveryRegressionTest(unittest.TestCase):
             self._send(client, "Çay 5 TL", media=False)
         self.assertEqual(edit.await_count, 1, "shorter badge cannot repair a missing message")
         self.assertEqual(len(self.ping_calls), 2)
-        self.assertEqual(bot.STATS["deduped"], 0)
+        self.assertEqual(appstate.STATS["deduped"], 0)
         self._send(client, "Çay 5 TL", media=False)
         self.assertEqual(len(self.ping_calls), 2)
         self.assertEqual(self.edit_text_calls[-1]["message_id"], self.ping_calls[-1]["message_id"])
@@ -472,7 +473,7 @@ class DeliveryRegressionTest(unittest.TestCase):
         with mock.patch.object(bot, "send_bot_ping", new=mock.AsyncMock(return_value=(False, "Forbidden"))):
             self._send(client, "Çay 5 TL", media=False)
         self.assertTrue(client.delivered, "account fallback remains available")
-        self.assertFalse(bot.DEDUP_CACHE, "account copy is not a bot notification")
+        self.assertFalse(appstate.DEDUP_CACHE, "account copy is not a bot notification")
         self._send(client, "Çay 5 TL", media=False)
         self.assertEqual(len(self.ping_calls), 1)
 
@@ -490,7 +491,7 @@ class DeliveryRegressionTest(unittest.TestCase):
 
         async def scenario():
             handler = client.handlers[1][1]
-            chat = next(iter(bot.SOURCE_IDS))
+            chat = next(iter(appstate.SOURCE_IDS))
             live = ti.FakeEvent(chat, 7, "Çay 5 TL", message_id=127346, media=False)
             poll = ti.FakeEvent(chat, 7, "Çay 5 TL", message_id=127346, media=False)
             poll._fast_poll = True
@@ -498,10 +499,10 @@ class DeliveryRegressionTest(unittest.TestCase):
 
         asyncio.run(scenario())
         self.assertEqual(len(self.ping_calls), 1)
-        self.assertEqual(bot.STATS["seen"], 1)
-        self.assertEqual(bot.STATS["deduped"], 0)
-        self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))["count"], 1)
-        self.assertFalse(bot.SOURCE_IN_FLIGHT)
+        self.assertEqual(appstate.STATS["seen"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 0)
+        self.assertEqual(next(iter(appstate.DEDUP_CACHE.values()))["count"], 1)
+        self.assertFalse(appstate.SOURCE_IN_FLIGHT)
 
     def test_active_send_is_not_stolen_during_long_cooldown(self):
         client = self._run(fast_notify=True)
@@ -517,10 +518,10 @@ class DeliveryRegressionTest(unittest.TestCase):
                 return bot.BotSendResult(True, "sent", 900)
 
             handler = client.handlers[1][1]
-            chat = next(iter(bot.SOURCE_IDS))
+            chat = next(iter(appstate.SOURCE_IDS))
             with mock.patch.object(bot, "send_bot_ping", slow_send), \
-                 mock.patch.object(bot, "DEDUP_RESERVE_TIMEOUT", 0.001), \
-                 mock.patch.object(bot, "DEDUP_RESERVE_TTL", 0):
+                 mock.patch.object(appstate, "DEDUP_RESERVE_TIMEOUT", 0.001), \
+                 mock.patch.object(appstate, "DEDUP_RESERVE_TTL", 0):
                 first = asyncio.create_task(handler(ti.FakeEvent(chat, 7, "Çay 5 TL", message_id=1, media=False)))
                 await started.wait()
                 second = asyncio.create_task(handler(ti.FakeEvent(chat, 7, "Çay 5 TL", message_id=2, media=False)))
@@ -531,29 +532,29 @@ class DeliveryRegressionTest(unittest.TestCase):
 
         asyncio.run(scenario())
         self.assertEqual(sent.await_count, 1)
-        self.assertEqual(bot.STATS["deduped"], 1)
+        self.assertEqual(appstate.STATS["deduped"], 1)
 
     def test_simultaneous_badges_are_coalesced(self):
         client = self._run(fast_notify=True)
 
         async def scenario():
             handler = client.handlers[1][1]
-            chat = next(iter(bot.SOURCE_IDS))
-            with mock.patch.object(bot, "DEDUP_EDIT_MIN_INTERVAL", 0.01):
+            chat = next(iter(appstate.SOURCE_IDS))
+            with mock.patch.object(appstate, "DEDUP_EDIT_MIN_INTERVAL", 0.01):
                 await handler(ti.FakeEvent(chat, 7, "Çay 5 TL", message_id=1, media=False))
-                next(iter(bot.DEDUP_CACHE.values()))["last_edit"] = bot.time.time()
+                next(iter(appstate.DEDUP_CACHE.values()))["last_edit"] = bot.time.time()
                 await asyncio.gather(*(handler(ti.FakeEvent(chat, 7, "Çay 5 TL", message_id=i, media=False)) for i in range(2, 12)))
 
         asyncio.run(scenario())
         self.assertEqual(len(self.edit_text_calls), 1)
         self.assertIn("11 kere paylaşıldı: firsatz", self.edit_text_calls[0]["text"])
-        self.assertEqual(next(iter(bot.DEDUP_CACHE.values()))["sources"], ["firsatz"])
+        self.assertEqual(next(iter(appstate.DEDUP_CACHE.values()))["sources"], ["firsatz"])
 
     def test_badge_edits_are_spaced_for_coalescing_by_default(self):
         # P2: varsayılan rozet aralığı, art arda gelen tekrarların ayrı ayrı
         # düzenlemeye dönüşmesini engelleyecek genişliktedir; yeni bildirim
         # yolu bu aralığı beklemez (aralık yalnızca rozet görevindedir).
-        self.assertGreaterEqual(bot.DEDUP_EDIT_MIN_INTERVAL, 5.0)
+        self.assertGreaterEqual(appstate.DEDUP_EDIT_MIN_INTERVAL, 5.0)
 
     def test_onual_429_keeps_media_notification_instead_of_account_fallback(self):
         real_media = bot.send_bot_media
@@ -578,7 +579,7 @@ class DeliveryRegressionTest(unittest.TestCase):
         self.assertEqual(methods, ["sendPhoto", "sendPhoto"])
         self.assertFalse(self.ping_calls, "429 is not a reason to drop to text")
         self.assertFalse(client.delivered, "429 is not an account-only success")
-        entry = next(iter(bot.DEDUP_CACHE.values()))
+        entry = next(iter(appstate.DEDUP_CACHE.values()))
         self.assertEqual(entry["bot_message_id"], 36892)
         self.assertEqual(entry["editable"], "bot")
 
@@ -592,16 +593,16 @@ class DeliveryRegressionTest(unittest.TestCase):
                 started.set()
                 await asyncio.Event().wait()
 
-            chat = next(iter(bot.SOURCE_IDS))
+            chat = next(iter(appstate.SOURCE_IDS))
             with mock.patch.object(bot, "send_bot_ping", waiting):
                 task = asyncio.create_task(client.handlers[1][1](ti.FakeEvent(chat, 7, "Çay 5 TL", media=False)))
                 await started.wait()
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await task
-            self.assertFalse(bot.DEDUP_CACHE)
-            self.assertNotIn((chat, 1), bot.LIVE_SEEN)
-            self.assertFalse(bot.SOURCE_IN_FLIGHT)
+            self.assertFalse(appstate.DEDUP_CACHE)
+            self.assertNotIn((chat, 1), appstate.LIVE_SEEN)
+            self.assertFalse(appstate.SOURCE_IN_FLIGHT)
 
         asyncio.run(scenario())
 
@@ -626,8 +627,8 @@ class DeliveryRegressionTest(unittest.TestCase):
         self.assertEqual(requests[0], requests[1])
         self.assertIn(mock.call(81), sleep.await_args_list)
         self.assertEqual(len(self.ping_calls), 1)
-        self.assertEqual(bot.STATS["forwarded"], 1)
-        self.assertEqual(bot.STATS["failed"], 0)
+        self.assertEqual(appstate.STATS["forwarded"], 1)
+        self.assertEqual(appstate.STATS["failed"], 0)
 
     def test_failed_cleanup_is_not_reported_as_deleted(self):
         client = self._run(fast_notify=False, dm_enabled=True, dm_keywords=["çay"])
@@ -635,7 +636,7 @@ class DeliveryRegressionTest(unittest.TestCase):
         with mock.patch.object(bot.PrivateOfferQueue, "submit", return_value=True) as submit:
             self._send(client, "Çay 5 TL", media=False)
             submit.assert_called_once()
-        self.assertEqual(bot.STATS["cleaned"], 0)
+        self.assertEqual(appstate.STATS["cleaned"], 0)
         self.assertTrue(client.delivered)
         self.assertEqual(len(self.ping_calls), 1)
         # Bot delivery still wins; deletion failure must not cause a second send.
@@ -647,8 +648,8 @@ class DeliveryRegressionTest(unittest.TestCase):
         for condition in ["2 adet alımda", "3 adet alımda", "2 adet alımda", "3 adet alımda"]:
             self._send(client, f"Çay\n{condition} 50 TL", media=False)
         self.assertEqual(len(self.ping_calls), 1)
-        self.assertEqual(bot.STATS["deduped"], 3)
-        self.assertEqual(len(bot.DEDUP_CACHE), 1)
+        self.assertEqual(appstate.STATS["deduped"], 3)
+        self.assertEqual(len(appstate.DEDUP_CACHE), 1)
 
 
     def test_supergroup_preload_restores_lower_price_notification(self):

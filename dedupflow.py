@@ -9,6 +9,8 @@ from typing import Any
 from telethon import errors
 from telethon.tl import types
 
+import appstate
+import time
 from analysis import message_title
 from botentities import bot_api_entity
 from constants import CAPTION_LIMIT, MESSAGE_LIMIT, MESSAGE_LINK_LABEL, PRODUCT_LINK_TEXT
@@ -68,25 +70,25 @@ async def dedup_before_send(rt: Runtime,
     """
     token: Any = object()
     while True:
-        async with rt.bot.DEDUP_LOCK:
-            rt.bot.prune_dedup_cache(rt.bot.DEDUP_CACHE, rt.bot.time.time(), rt.bot.DEDUP_WINDOW_SECONDS, rt.bot.DEDUP_MAX_ENTRIES)
+        async with appstate.DEDUP_LOCK:
+            rt.bot.prune_dedup_cache(appstate.DEDUP_CACHE, time.time(), appstate.DEDUP_WINDOW_SECONDS, appstate.DEDUP_MAX_ENTRIES)
             active_key = (
-                key if key in rt.bot.DEDUP_CACHE
+                key if key in appstate.DEDUP_CACHE
                 else (_find_matching_dedup_key(
-                    rt.bot.DEDUP_CACHE, title,
+                    appstate.DEDUP_CACHE, title,
                     product_asins(event) if event is not None else (),
                     product_link_ids(event) if event is not None else (),
                 ) or key)
             )
-            entry = rt.bot.DEDUP_CACHE.get(active_key)
+            entry = appstate.DEDUP_CACHE.get(active_key)
             if entry is None or entry.get("failed") or (
                 not entry.get("pending")
                 and better_or_different_offer(entry.get("offer"), offer)
             ):
                 target_key = active_key
                 previous = entry if entry and event is not None and (
-                    is_referenced_multibuy_upgrade(entry, title, event, offer, rt.bot.time.time())
-                    or is_referenced_product_price_drop(entry, title, event, offer, rt.bot.time.time())
+                    is_referenced_multibuy_upgrade(entry, title, event, offer, time.time())
+                    or is_referenced_product_price_drop(entry, title, event, offer, time.time())
                 ) else None
                 entry = new_dedup_entry(title, token, source_name, footer_name)
                 note_dedup_source(entry, source_name, source_link)
@@ -105,7 +107,7 @@ async def dedup_before_send(rt: Runtime,
                     if isinstance(old_links, dict) and old_links:
                         entry["links"] = dict(old_links)
                     note_dedup_source(entry, source_name, source_link)
-                rt.bot.DEDUP_CACHE[target_key] = entry
+                appstate.DEDUP_CACHE[target_key] = entry
                 return "send", token, target_key
             if not entry.get("pending"):
                 _keep_detailed_prefix_title(entry, title)
@@ -115,7 +117,7 @@ async def dedup_before_send(rt: Runtime,
                     if link_ids:
                         entry.setdefault("product_link_ids", set()).update(link_ids)
                 entry["count"] += 1
-                entry["last_seen"] = rt.bot.time.time()
+                entry["last_seen"] = time.time()
                 note_dedup_source(entry, source_name, source_link)
                 waiter_event = None
             else:
@@ -127,26 +129,26 @@ async def dedup_before_send(rt: Runtime,
                 continue
             return "dup", None, active_key
         try:
-            await asyncio.wait_for(waiter_event.wait(), timeout=rt.bot.DEDUP_RESERVE_TIMEOUT)
+            await asyncio.wait_for(waiter_event.wait(), timeout=appstate.DEDUP_RESERVE_TIMEOUT)
         except TimeoutError:
-            async with rt.bot.DEDUP_LOCK:
-                current = rt.bot.DEDUP_CACHE.get(active_key)
+            async with appstate.DEDUP_LOCK:
+                current = appstate.DEDUP_CACHE.get(active_key)
                 if current is entry and current.get("pending"):
                     owner = current.get("owner")
                     if owner is not None and not owner.done():
                         continue  # still sending / waiting for retry_after
                     log.warning("Tekrar rezervasyonu %ss'de bitmedi, devralınıyor (başlık: %.40s).",
-                                int(rt.bot.DEDUP_RESERVE_TIMEOUT), title)
+                                int(appstate.DEDUP_RESERVE_TIMEOUT), title)
                     current["failed"] = True
                     current["ready"].set()
                     token = object()
-                    rt.bot.DEDUP_CACHE[active_key] = new_dedup_entry(
+                    appstate.DEDUP_CACHE[active_key] = new_dedup_entry(
                         title, token, source_name, footer_name,
                     )
-                    note_dedup_source(rt.bot.DEDUP_CACHE[active_key], source_name, source_link)
-                    rt.bot.DEDUP_CACHE[active_key]["owner"] = asyncio.current_task()
-                    rt.bot.DEDUP_CACHE[active_key]["offer"] = offer
-                    rt.bot.DEDUP_CACHE[active_key]["plain_offer"] = plain_offer_for_upgrade(event, offer) if event is not None else False
+                    note_dedup_source(appstate.DEDUP_CACHE[active_key], source_name, source_link)
+                    appstate.DEDUP_CACHE[active_key]["owner"] = asyncio.current_task()
+                    appstate.DEDUP_CACHE[active_key]["offer"] = offer
+                    appstate.DEDUP_CACHE[active_key]["plain_offer"] = plain_offer_for_upgrade(event, offer) if event is not None else False
                     return "send", token, active_key
 
 
@@ -154,19 +156,19 @@ async def dedup_after_send(rt: Runtime,
     key: str, token: Any, success: bool, info: dict[str, Any] | None,
 ) -> None:
     """Rezervasyonu sonuçlandır: başarılıysa rozet bilgisini yaz, değilse düşür."""
-    async with rt.bot.DEDUP_LOCK:
-        entry = rt.bot.DEDUP_CACHE.get(key)
+    async with appstate.DEDUP_LOCK:
+        entry = appstate.DEDUP_CACHE.get(key)
         if entry is None or entry.get("token") is not token:
             return  # devralınmış ya da budanmış; güncel kayda dokunma
-        if not success or (rt.bot.NOTIFY_BOT_TOKEN and not (info or {}).get("bot")):
+        if not success or (appstate.NOTIFY_BOT_TOKEN and not (info or {}).get("bot")):
             entry["failed"] = True
             entry["ready"].set()
-            if rt.bot.DEDUP_CACHE.get(key) is entry:
+            if appstate.DEDUP_CACHE.get(key) is entry:
                 previous = entry.get("upgrade_previous")
                 if previous:
-                    rt.bot.DEDUP_CACHE[key] = previous
+                    appstate.DEDUP_CACHE[key] = previous
                 else:
-                    del rt.bot.DEDUP_CACHE[key]
+                    del appstate.DEDUP_CACHE[key]
             return
         info = info or {}
         bot_info = info.get("bot") or {}
@@ -201,16 +203,16 @@ async def dedup_after_send(rt: Runtime,
         # Send first, then badge; only delete the old message after both
         # operations succeeded. A failure leaves two recoverable messages.
         await dedup_apply_badge(rt, key)
-        async with rt.bot.DEDUP_LOCK:
-            can_delete = (rt.bot.DEDUP_CACHE.get(key) is entry
+        async with appstate.DEDUP_LOCK:
+            can_delete = (appstate.DEDUP_CACHE.get(key) is entry
                           and entry.get("badge_count") == entry.get("count")
                           and not entry.get("failed"))
         if can_delete:
             async with previous["edit_lock"]:
                 try:
-                    if previous.get("editable") == "bot" and rt.bot.DESTINATION_ID is not None:
+                    if previous.get("editable") == "bot" and appstate.DESTINATION_ID is not None:
                         deleted, detail = await rt.bot.delete_bot_message(
-                            rt.bot.NOTIFY_BOT_TOKEN, rt.bot.DESTINATION_ID, previous["bot_message_id"])
+                            appstate.NOTIFY_BOT_TOKEN, appstate.DESTINATION_ID, previous["bot_message_id"])
                         if not deleted:
                             log.warning("Eski fırsat silinemedi: %s", detail)
                     elif previous.get("editable") == "account":
@@ -228,14 +230,14 @@ async def dedup_apply_badge(rt: Runtime, key: str) -> None:
 
 
 async def _dedup_apply_badge(rt: Runtime, key: str) -> None:
-    async with rt.bot.DEDUP_LOCK:
-        entry = rt.bot.DEDUP_CACHE.get(key)
+    async with appstate.DEDUP_LOCK:
+        entry = appstate.DEDUP_CACHE.get(key)
         if entry is None or entry.get("pending") or not entry.get("editable"):
             return
         edit_lock = entry["edit_lock"]
     async with edit_lock:
-        async with rt.bot.DEDUP_LOCK:
-            if rt.bot.DEDUP_CACHE.get(key) is not entry or entry.get("pending") or not entry.get("editable"):
+        async with appstate.DEDUP_LOCK:
+            if appstate.DEDUP_CACHE.get(key) is not entry or entry.get("pending") or not entry.get("editable"):
                 return
             if entry.get("badge_count") == entry.get("count"):
                 return
@@ -249,7 +251,7 @@ async def _dedup_apply_badge(rt: Runtime, key: str) -> None:
             bot_message_id = entry.get("bot_message_id")
             account_message_id = entry.get("account_message_id")
             footer_name = (entry.get("footer_name") or "").strip()
-            wait = rt.bot.DEDUP_EDIT_MIN_INTERVAL - (rt.bot.time.time() - float(entry.get("last_edit", 0.0)))
+            wait = appstate.DEDUP_EDIT_MIN_INTERVAL - (time.time() - float(entry.get("last_edit", 0.0)))
         if count < 2 or not current_text:
             return
         if wait > 0:
@@ -330,28 +332,28 @@ async def _dedup_apply_badge(rt: Runtime, key: str) -> None:
                     *dedup_badge_entities(badge, bot_api=True, offset=badge_offset,
                                           links=name_links, names=names),
                 ], key=lambda entity: int(entity.get("offset", 0)))
-                if rt.bot.DESTINATION_ID is None or not isinstance(bot_message_id, int):
+                if appstate.DESTINATION_ID is None or not isinstance(bot_message_id, int):
                     break
                 if kind == "media":
                     ok, detail = await rt.bot.edit_bot_caption(
-                        rt.bot.NOTIFY_BOT_TOKEN, rt.bot.DESTINATION_ID, bot_message_id, new_text,
+                        appstate.NOTIFY_BOT_TOKEN, appstate.DESTINATION_ID, bot_message_id, new_text,
                         entities=new_entities, keyboard=keyboard,
                     )
                 else:
                     ok, detail = await rt.bot.edit_bot_text(
-                        rt.bot.NOTIFY_BOT_TOKEN, rt.bot.DESTINATION_ID, bot_message_id, new_text,
+                        appstate.NOTIFY_BOT_TOKEN, appstate.DESTINATION_ID, bot_message_id, new_text,
                         entities=new_entities, keyboard=keyboard, link_preview=False,
                     )
                 if ok:
-                    async with rt.bot.DEDUP_LOCK:
-                        live = rt.bot.DEDUP_CACHE.get(key)
+                    async with appstate.DEDUP_LOCK:
+                        live = appstate.DEDUP_CACHE.get(key)
                         if live is entry:
                             live["text"] = new_text
                             live["entities_bot"] = new_entities
-                            live["last_edit"] = rt.bot.time.time()
+                            live["last_edit"] = time.time()
                             live["edit_fails"] = 0
                             live["badge_count"] = count
-                    rt.bot.STATS["dedup_edits"] += 1
+                    appstate.STATS["dedup_edits"] += 1
                     log.info("Rozet güncellendi (%s paylaşım, %s farklı kaynak, bot iletisi %s).",
                              count, len(entry.get("sources") or []), bot_message_id)
                     return
@@ -374,46 +376,46 @@ async def _dedup_apply_badge(rt: Runtime, key: str) -> None:
                 ], key=lambda entity: int(getattr(entity, "offset", 0) or 0))
                 try:
                     await rt.client.edit_message(
-                        rt.bot.DESTINATION, account_message_id, new_text,
+                        appstate.DESTINATION, account_message_id, new_text,
                         formatting_entities=new_tl, link_preview=False,
                     )
                 except errors.FloodWaitError as exc:
                     log.warning("Rozet FloodWait (%s sn); kısa rozet denenmeden bırakılıyor.", exc.seconds)
-                    entry["last_edit"] = rt.bot.time.time() + exc.seconds
+                    entry["last_edit"] = time.time() + exc.seconds
                     return
                 except (errors.MessageIdInvalidError, errors.MessageAuthorRequiredError):
                     entry["failed"] = True
                     entry["editable"] = None
                     return
                 except errors.MessageNotModifiedError:
-                    async with rt.bot.DEDUP_LOCK:
-                        live = rt.bot.DEDUP_CACHE.get(key)
+                    async with appstate.DEDUP_LOCK:
+                        live = appstate.DEDUP_CACHE.get(key)
                         if live is entry:
                             live["text"] = new_text
                             live["entities_tl"] = new_tl
-                            live["last_edit"] = rt.bot.time.time()
+                            live["last_edit"] = time.time()
                             live["badge_count"] = count
                     return
                 except Exception as exc:  # noqa: BLE001 - rozet hatası fırsatı öldürmez
                     log.info("Rozet hesap iletisine işlenemedi (%s: %s); kısa rozet deneniyor.",
                              type(exc).__name__, exc)
                     continue
-                async with rt.bot.DEDUP_LOCK:
-                    live = rt.bot.DEDUP_CACHE.get(key)
+                async with appstate.DEDUP_LOCK:
+                    live = appstate.DEDUP_CACHE.get(key)
                     if live is entry:
                         live["text"] = new_text
                         live["entities_tl"] = new_tl
-                        live["last_edit"] = rt.bot.time.time()
+                        live["last_edit"] = time.time()
                         live["edit_fails"] = 0
                         live["badge_count"] = count
-                rt.bot.STATS["dedup_edits"] += 1
+                appstate.STATS["dedup_edits"] += 1
                 log.info("Rozet güncellendi (%s paylaşım, %s farklı kaynak, hesap iletisi %s).",
                          count, len(entry.get("sources") or []), account_message_id)
                 return
         # Buraya düşüldüyse rozet işlenemedi; iki üst üste hatada bu
         # başlık için düzenlemeyi bırak (birleştirme sürer).
-        async with rt.bot.DEDUP_LOCK:
-            live = rt.bot.DEDUP_CACHE.get(key)
+        async with appstate.DEDUP_LOCK:
+            live = appstate.DEDUP_CACHE.get(key)
             if live is entry:
                 live["edit_fails"] = int(live.get("edit_fails", 0)) + 1
                 if live["edit_fails"] >= 2:
@@ -431,17 +433,17 @@ async def dedup_preload(rt: Runtime) -> None:
     Kayda alınmayan bir ileti en fazla fazladan bir bildirime yol açar;
     yanlış kayıt ise fırsat kaybettirirdi — temkinli taraf seçildi.
     """
-    if not rt.bot.DEDUP_ENABLED or rt.bot.DEDUP_SCAN_LIMIT <= 0 or rt.bot.DESTINATION_ID is None:
+    if not appstate.DEDUP_ENABLED or appstate.DEDUP_SCAN_LIMIT <= 0 or appstate.DESTINATION_ID is None:
         return
     try:
         recent: list[Any] = []
-        async for message in rt.client.iter_messages(rt.bot.DESTINATION, limit=rt.bot.DEDUP_SCAN_LIMIT):
+        async for message in rt.client.iter_messages(appstate.DESTINATION, limit=appstate.DEDUP_SCAN_LIMIT):
             recent.append(message)
     except Exception as exc:  # noqa: BLE001 - tarama açılışı öldürmemeli
         log.warning("Tekrar önbelleği ısıtılamadı (%s: %s); boş başlanıyor.",
                     type(exc).__name__, exc)
         return
-    if rt.bot.NOTIFY_BOT_TOKEN and not bot_history_ids_shared(rt.bot.DESTINATION_ID):
+    if appstate.NOTIFY_BOT_TOKEN and not bot_history_ids_shared(appstate.DESTINATION_ID):
         # Temel grupta MTProto ve Bot API mesaj ID uzayları ayrıdır: eski
         # bot iletisi düzenlenemez ama kimliği (başlık+fiyat/koşul) yine de
         # güvenle kayda alınabilir. Kayıt editable=None olur; böylece
@@ -449,7 +451,7 @@ async def dedup_preload(rt: Runtime) -> None:
         # düzenleme de denenmez. (P4)
         log.info("Normal grupta eski bot mesajları düzenlenemez; "
                  "yalnızca tekrar bastırma için kayda alınacak.")
-    now = rt.bot.time.time()
+    now = time.time()
     added = 0
     failed = 0
     first_error = ""
@@ -470,25 +472,25 @@ async def dedup_preload(rt: Runtime) -> None:
                 or any(is_price_line(line)      # eski sabit düzen (💰Fiyat: …)
                        for line in text.splitlines())
             )
-            if sender == rt.bot.SELF_ID:
-                if rt.bot.NOTIFY_BOT_TOKEN:
+            if sender == appstate.SELF_ID:
+                if appstate.NOTIFY_BOT_TOKEN:
                     continue  # account-only history is NOT a delivered notification
                 editable: str | None = "account"
             elif looks_like_deal:
-                if rt.bot.NOTIFY_BOT_TOKEN:
-                    bot_id = rt.bot.NOTIFY_BOT_TOKEN.split(":", 1)[0]
+                if appstate.NOTIFY_BOT_TOKEN:
+                    bot_id = appstate.NOTIFY_BOT_TOKEN.split(":", 1)[0]
                     if str(sender) != bot_id:
                         continue  # another bot/human is not editable by this bot
                     # Temel grupta ID uzayları ayrı: kayıt bastırma amaçlı
                     # tutulur (editable=None), bot ID'si düzenleme için
                     # KESİNLİKLE kullanılmaz.
-                    editable = "bot" if bot_history_ids_shared(rt.bot.DESTINATION_ID) else None
+                    editable = "bot" if bot_history_ids_shared(appstate.DESTINATION_ID) else None
                 else:
                     editable = None
             else:
                 continue  # insan sohbeti: kayda alma
             title = _search_query(base) or message_title(base)
-            if rt.bot.SMART_HEADER:
+            if appstate.SMART_HEADER:
                 first_line = next((ln.strip() for ln in base.splitlines() if ln.strip()), "")
                 if first_line.endswith("…"):
                     continue  # truncated history header is not a safe product identity
@@ -521,7 +523,7 @@ async def dedup_preload(rt: Runtime) -> None:
                         else float(sent_date)
                 except (TypeError, ValueError):
                     seen_at = now
-            if now - seen_at > rt.bot.DEDUP_WINDOW_SECONDS:
+            if now - seen_at > appstate.DEDUP_WINDOW_SECONDS:
                 continue
             message_id = getattr(message, "id", None)
             if not isinstance(message_id, int) or isinstance(message_id, bool):
@@ -529,12 +531,12 @@ async def dedup_preload(rt: Runtime) -> None:
             media = getattr(message, "media", None)
             is_media = bool(media) and not isinstance(media, types.MessageMediaWebPage)
             raw_entities = list(getattr(message, "entities", None) or [])
-            async with rt.bot.DEDUP_LOCK:
+            async with appstate.DEDUP_LOCK:
                 target_key = (
-                    key if key in rt.bot.DEDUP_CACHE
-                    else (_find_matching_dedup_key(rt.bot.DEDUP_CACHE, title) or key)
+                    key if key in appstate.DEDUP_CACHE
+                    else (_find_matching_dedup_key(appstate.DEDUP_CACHE, title) or key)
                 )
-                existing = rt.bot.DEDUP_CACHE.get(target_key)
+                existing = appstate.DEDUP_CACHE.get(target_key)
                 if existing is None or better_or_different_offer(existing.get("offer"), terms):
                     # A newer/lower-price notification supersedes the old one;
                     # do not restore the expensive message after a restart.
@@ -571,7 +573,7 @@ async def dedup_preload(rt: Runtime) -> None:
                         ]
                     elif editable == "account":
                         record["account_message_id"] = message_id
-                    rt.bot.DEDUP_CACHE[target_key] = record
+                    appstate.DEDUP_CACHE[target_key] = record
                     added += 1
                 elif not existing.get("pending"):
                     if badge_count > 1:

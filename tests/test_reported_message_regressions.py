@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bot
+import appstate
 import commandtext
 import dedupbadge
 import dedupmatch
@@ -185,7 +186,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertEqual(producttitle._search_query(SLEEPY), title)
         event = SimpleNamespace(message=SLEEPY, raw_text=SLEEPY, entities=[], media=None)
         self.assertEqual(smarttitle.smart_dedup_title(event), title)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺75 — {title}")
 
     def test_payment_stage_discount_selects_explicit_final_price(self):
@@ -200,7 +201,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertFalse(pf.price_matches(PHILIPS, 13499)[0])
         self.assertEqual(dedupmatch.offer_terms(PHILIPS)[0], 13500)
         event = SimpleNamespace(message=PHILIPS, raw_text=PHILIPS, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺13.500 — {title}")
         variant = "Fiyat: 1000 TL / ödeme aşamasında 100 TL indirim ile 900 TL"
         self.assertEqual(pf.extract_price(variant).value, 900)
@@ -219,7 +220,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertEqual(producttitle._search_query(KOTON), title)
         event = SimpleNamespace(message=KOTON, raw_text=KOTON, entities=[], media=None)
         self.assertEqual(smarttitle.smart_dedup_title(event), title)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺889 — {title}")
         markdown = KOTON.replace(
             "✅ Kapüşonlu Uzun Kollu Cepli Fermuarlı Şişme",
@@ -233,7 +234,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertEqual(pf.extract_title(ADIDAS), title)
         self.assertEqual(pf.extract_price(ADIDAS).value, 1577)
         event = SimpleNamespace(message=ADIDAS, raw_text=ADIDAS, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺1.577 — {title}")
 
     def test_dreame_care_bundle_quantity_is_not_price(self):
@@ -256,7 +257,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         fallback = producttitle._search_query(AMAZON_PROMO)
         self.assertTrue(pf.is_generic_title(fallback), fallback)
         event = SimpleNamespace(message=AMAZON_PROMO, raw_text=AMAZON_PROMO, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], "")
         self.assertEqual(smarttitle.smart_dedup_title(event), "")
 
@@ -298,9 +299,9 @@ class ReportedMessageRegressions(unittest.TestCase):
                 self.assertEqual(pf.extract_price(text).value, price)
                 event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
                 self.assertEqual(smarttitle.smart_dedup_title(event), pf.extract_title(text))
-                with patch.object(bot, "SMART_HEADER", True):
+                with patch.object(appstate, "SMART_HEADER", True):
                     self.assertEqual(bot.compose_message(event)["header"], f"{shown} — {title}")
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             event = SimpleNamespace(message=TEFAL, raw_text=TEFAL, entities=[], media=None)
             self.assertIn("5.649 TL - 2 set alımda", bot.compose_message(event)["text"])
         shortened = pf.extract_title(SONGMICS, limit=80)
@@ -318,7 +319,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertIsNone(pf.extract_price("750 TL sepette indirim").value)
         self.assertEqual(pf.extract_price("43.728 TL sepette").value, 43728)
         event = SimpleNamespace(message=SAMSUNG, raw_text=SAMSUNG, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺43.728 — {title}")
 
     def test_haustier_explicit_payment_discount_selects_final_price(self):
@@ -331,7 +332,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertEqual([(c.value, c.role) for c in pf.find_candidates(HAUSTIER)],
                          [(1344, "normal"), (134, "discount_amount"), (1209, "discounted")])
         event = SimpleNamespace(message=HAUSTIER, raw_text=HAUSTIER, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺1.209 — {title}")
 
     def test_n11_store_prefix_and_currency_less_coupon_final_price(self):
@@ -344,7 +345,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertEqual(producttitle._search_query(DREAME_N11), title)
         event = SimpleNamespace(message=DREAME_N11, raw_text=DREAME_N11, entities=[], media=None)
         self.assertEqual(smarttitle.smart_dedup_title(event), title)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺50.499 — {title}")
         self.assertIsNone(pf.extract_price("Kuponla 2 al 1 öde").value)
 
@@ -356,7 +357,7 @@ class ReportedMessageRegressions(unittest.TestCase):
                          ["normal", "condition_price"])
         self.assertEqual(dedupmatch.offer_terms(THRUSTMASTER_USED)[0], 12539)
         event = SimpleNamespace(message=THRUSTMASTER_USED, raw_text=THRUSTMASTER_USED, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺12.539 — {title}")
         ambiguous = THRUSTMASTER_USED + "\n♻️ İkinci El (Çok İyi) : 12499 TL"
         self.assertEqual(pf.extract_price(ambiguous).confidence, "low")
@@ -378,7 +379,7 @@ class ReportedMessageRegressions(unittest.TestCase):
                 self.assertEqual([c.role for c in pf.find_candidates(text)], roles)
                 self.assertEqual(pf.extract_title(text), title)
                 event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
-                with patch.object(bot, "SMART_HEADER", True):
+                with patch.object(appstate, "SMART_HEADER", True):
                     self.assertEqual(bot.compose_message(event)["header"], f"{shown} — {title}")
         self.assertIsNone(pf.extract_price("Sepette 250 TL kupon").value)
         self.assertIsNone(pf.extract_price("Sepette 250 TL kupon ile").value)
@@ -398,7 +399,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertEqual(pf.extract_price(LOGITECH_CHAT).value, 2300)
         event = SimpleNamespace(message=LOGITECH_CHAT, raw_text=LOGITECH_CHAT, entities=[], media=None)
         self.assertEqual(smarttitle.smart_dedup_title(event), title)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺2.300 — {title}")
 
     def test_buy_pay_unit_price_overrides_pack_total_only_with_explicit_campaign(self):
@@ -409,7 +410,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertTrue(pf.price_matches(EVEREST_MULTI, 124)[0])
         self.assertFalse(pf.price_matches(EVEREST_MULTI, 123)[0])
         event = SimpleNamespace(message=EVEREST_MULTI, raw_text=EVEREST_MULTI, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺124 — {title}")
         plain_breakdown = "Everest Mouse\n249 TL (Tanesi 124 TL)"
         self.assertEqual(pf.extract_price(plain_breakdown).value, 249)
@@ -425,7 +426,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertEqual(pf.extract_price(with_base_price).value, 49)
         self.assertEqual([c.role for c in pf.find_candidates(with_base_price)], ["normal", "campaign"])
         event = SimpleNamespace(message=TRIOMOVE_SECOND, raw_text=TRIOMOVE_SECOND, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertTrue("❓" in bot.compose_message(event)["header"])
 
     def test_bogo_free_campaign_is_not_zero_product_price(self):
@@ -435,7 +436,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertIsNone(dedupmatch.offer_terms(BOYNER_BOGO)[0])
         self.assertFalse(pf.price_matches(BOYNER_BOGO, 1000)[0])
         event = SimpleNamespace(message=BOYNER_BOGO, raw_text=BOYNER_BOGO, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], "")
         self.assertEqual(smarttitle.smart_dedup_title(event), "")
         real_free = pf.extract_price("Kalem Seti bedava")
@@ -457,7 +458,7 @@ class ReportedMessageRegressions(unittest.TestCase):
             dedupmatch.dedup_offer_key(smarttitle.smart_dedup_title(history), history_terms),
         )
         self.assertFalse(dedupmatch.better_or_different_offer(history_terms, dedupmatch.offer_terms(live)))
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(live)["header"], f"₺440 — {LENOVO_TITLE}")
 
     def test_payment_stage_price_without_discount_amount_selects_final_price(self):
@@ -469,7 +470,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertFalse(pf.price_matches(MAYI_PAYMENT, 453)[0])
         self.assertNotEqual(pf.extract_price("600 TL / ödeme aşamasında 454 TL kargo").value, 454)
         event = SimpleNamespace(message=MAYI_PAYMENT, raw_text=MAYI_PAYMENT, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺454 — {title}")
 
     def test_explicit_plus_member_price_wins_without_relaxing_plain_ambiguity(self):
@@ -481,7 +482,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertFalse(pf.price_matches(COLINS_PLUS, 210)[0])
         self.assertNotEqual(pf.extract_price("222 TL / Plus Üyelere Özel 211 TL kargo").value, 211)
         event = SimpleNamespace(message=COLINS_PLUS, raw_text=COLINS_PLUS, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺211 — {title}")
         plain = "Colin's Yeşil Erkek Sweatshirt\n222 TL / 211 TL"
         self.assertEqual(pf.extract_price(plain).confidence, "low")
@@ -497,7 +498,7 @@ class ReportedMessageRegressions(unittest.TestCase):
         self.assertTrue(pf.price_matches(SUDOCREM_SHIPPING, 217)[0])
         self.assertFalse(pf.price_matches(SUDOCREM_SHIPPING, 216)[0])
         event = SimpleNamespace(message=SUDOCREM_SHIPPING, raw_text=SUDOCREM_SHIPPING, entities=[], media=None)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], f"₺217 — {title}")
         self.assertIsNone(pf.extract_price("Sudocrem Bebek Bakım Kremi\nKargo: 30 TL").value)
 
@@ -507,7 +508,7 @@ class ReportedMessageRegressions(unittest.TestCase):
             (AUHMA, "AUHMA AMG38 Boyun ve Omuz Masaj Aleti ❓"),
             (SHIPPING_PACK, "₺199"),
         ]
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             for text, wanted in expected:
                 event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
                 with self.subTest(wanted=wanted):
@@ -528,7 +529,7 @@ class UserCouponAndTitleRegressionTests(unittest.TestCase):
             "https://app.hb.biz/SFe9QmyXtI1F"
         )
         event = self.event(text)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             header = bot.compose_message(event)["header"]
         self.assertIn("%60", header)
         self.assertIn("100 TL Kupon", header)
@@ -541,7 +542,7 @@ class UserCouponAndTitleRegressionTests(unittest.TestCase):
             "https://app.hb.biz/qRfGv2CV4hZm"
         )
         event = self.event(text)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             header = bot.compose_message(event)["header"]
         self.assertIn("%10", header)
         self.assertIn("100 TL kupon", header)
@@ -557,7 +558,7 @@ class UserCouponAndTitleRegressionTests(unittest.TestCase):
             "📱 Yalnızca Amazon mobil uygulamasında geçerlidir."
         )
         event = self.event(text)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             header = bot.compose_message(event)["header"]
         self.assertIn("12000 TL", header)
         self.assertIn("1000 TL", header)
@@ -582,7 +583,7 @@ class UserCouponAndTitleRegressionTests(unittest.TestCase):
             "sepette alt limitsiz 75 TL kupon\nhttps://app.hb.biz/2hBnJLGLSGII"
         )
         event = self.event(text)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             header = bot.compose_message(event)["header"]
         self.assertIn("Sofra Mutfak", header)
         self.assertIn("75 TL", header)
@@ -597,7 +598,7 @@ class UserCouponAndTitleRegressionTests(unittest.TestCase):
         )
         other = text.replace("Philips 5000", "Philips 7000")
         event = self.event(text)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             header = bot.compose_message(event)["header"]
         self.assertIn("JJXX JJXX JXPOPPY SUMMER HW", header)
         self.assertIn("Philips 5000 Serisi Tıraş Makinesi", header)
@@ -621,7 +622,7 @@ class UserCouponAndTitleRegressionTests(unittest.TestCase):
         info = pf.extract_price(text)
         self.assertEqual((info.value, info.confidence), (1074, "high"))
         event = self.event(text)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"], "₺1.074 — Reebok Unıc Run I")
 
     def test_new_warehouse_label_is_not_the_product_title(self):
@@ -633,7 +634,7 @@ class UserCouponAndTitleRegressionTests(unittest.TestCase):
         expected = "STANLEY The Aerolight Transit Mug 16oz Termos 0.47 Litre - Goldenrod Coral"
         self.assertEqual(pf.extract_title(text), expected)
         event = self.event(text)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertIn(expected, bot.compose_message(event)["header"])
 
     def test_same_amazon_asin_bridges_short_and_detailed_product_titles(self):
@@ -651,7 +652,7 @@ class UserCouponAndTitleRegressionTests(unittest.TestCase):
         )
         self.assertEqual(pf.extract_price(text).value, 89.69)
         event = self.event(text)
-        with patch.object(bot, "SMART_HEADER", True):
+        with patch.object(appstate, "SMART_HEADER", True):
             self.assertEqual(bot.compose_message(event)["header"],
                              "₺89 — EMOTION DETOX FLORAL Deodorant, 150 Ml")
 
