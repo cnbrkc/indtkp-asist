@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bot
+import composer
 import appstate
 import commandtext
 import price_filter as pf
@@ -129,7 +130,7 @@ class PriceEngineRegressions(unittest.TestCase):
         text = "1. ürün: Televizyon 13.999 TL\n2. ürün: Kulaklık kuponla 8.499 TL"
         event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
         with patch.object(appstate, "SMART_HEADER", True):
-            header = bot.compose_message(event)["header"]
+            header = composer.compose_message(event)["header"]
         self.assertEqual(header, "Birden fazla ürün ❓", header)
         self.assertFalse(pf.price_matches(text, 20000)[0])
         self.assertFalse(commandtext.dm_should_send({"dm_price_max": ["20000"]}, text))

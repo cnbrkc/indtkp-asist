@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextvars
+import time
 from typing import Any
+
 
 # Yalnızca çalışma sırasında (apply_runtime_config) atanan ayarlar; başlangıç değeri yok:
 #   LINK_KINDS, BOT_LINK_KINDS
@@ -184,3 +186,6 @@ DEDUP_RESERVE_TIMEOUT = 60.0
 
 # Yarım kalmış rezervasyonun önbellekten atılma süresi (temizlik).
 DEDUP_RESERVE_TTL = 300.0
+
+
+STARTED_AT = time.time()

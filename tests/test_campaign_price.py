@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bot
+import composer
 import appstate
 import analysis
 import dedupmatch
@@ -25,7 +26,7 @@ def _event(text: str):
 
 def _first_line(text: str) -> str:
     with patch.object(appstate, "SMART_HEADER", True):
-        return bot.compose_message(_event(text))["text"].splitlines()[0]
+        return composer.compose_message(_event(text))["text"].splitlines()[0]
 
 
 class CampaignOnlyPriceTest(unittest.TestCase):

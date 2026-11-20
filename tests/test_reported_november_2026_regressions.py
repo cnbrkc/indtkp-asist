@@ -25,6 +25,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import runtimecfg  # noqa: E402
+import composer  # noqa: E402
 import appstate  # noqa: E402
 import confutil  # noqa: E402
 import constants  # noqa: E402
@@ -92,7 +94,7 @@ def _message(text: str, entities=None) -> SimpleNamespace:
 def _compose_obj(obj: SimpleNamespace, *, clean: bool) -> dict:
     with mock.patch.object(appstate, "SMART_HEADER", True), \
          mock.patch.object(appstate, "CLEAN_QUOTE_DUPLICATES", clean):
-        return bot.compose_message(
+        return composer.compose_message(
             obj,
             link_kinds=confutil.link_kinds_for("smart", bot=True),
             message_link="https://t.me/kaynak/101",
@@ -195,7 +197,7 @@ class BadgeExactNameLinkTest(unittest.TestCase):
         event.chat = SimpleNamespace(username=None)
         source = {"id": event.chat_id, "name": "FırsatlarCo",
                   "username": None, "requested": "@firsatlarco"}
-        self.assertEqual(bot.build_message_link(event, source),
+        self.assertEqual(composer.build_message_link(event, source),
                          "https://t.me/firsatlarco/101")
 
 
@@ -289,9 +291,9 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertTrue(config["clean_quote_duplicates"])
         snapshot = {name: getattr(appstate, name, None) for name in self.GLOBALS}
         with mock.patch.multiple(appstate, create=True, **snapshot):
-            bot.apply_runtime_config({"clean_quote_duplicates": True})
+            runtimecfg.apply_runtime_config({"clean_quote_duplicates": True})
             self.assertTrue(appstate.CLEAN_QUOTE_DUPLICATES)
-            bot.apply_runtime_config({})
+            runtimecfg.apply_runtime_config({})
             self.assertFalse(appstate.CLEAN_QUOTE_DUPLICATES)
 
 

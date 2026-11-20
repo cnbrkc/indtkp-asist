@@ -32,6 +32,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import composer  # noqa: E402
 import appstate  # noqa: E402
 import botentities  # noqa: E402
 import constants  # noqa: E402
@@ -94,11 +95,11 @@ class HeaderDesignTests(unittest.TestCase):
     """1) Tam metin eşitliğiyle üst satır tasarımı."""
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        self.addCleanup(setattr, appstate, "SMART_HEADER", appstate.SMART_HEADER)
         appstate.SMART_HEADER = True
 
     def test_exact_requested_line(self):
-        composed = bot.compose_message(event(), message_link="https://t.me/firsatz/1",
+        composed = composer.compose_message(event(), message_link="https://t.me/firsatz/1",
                                        source_name="FırsatZ")
         self.assertEqual(composed["header"], f"₺56 — {TITLE}")
         self.assertEqual(composed["text"].splitlines()[0], f"₺56 — {TITLE}")
@@ -111,7 +112,7 @@ class HeaderDesignTests(unittest.TestCase):
 
     def test_missing_price_is_only_the_mark(self):
         text = f"{TITLE}\n\n🎯 Sepete özel indirim başladı, linkte"
-        composed = bot.compose_message(event(text))
+        composed = composer.compose_message(event(text))
         self.assertEqual(composed["header"], f"{TITLE} ❓")
         self.assertEqual(composed["price"], "❓")
         self.assertNotIn("Fiyat tespit edilemedi", composed["text"])
@@ -119,7 +120,7 @@ class HeaderDesignTests(unittest.TestCase):
         self.assertNotIn("💰", composed["text"].splitlines()[0])
 
     def test_lower_cases_keep_the_body_untouched(self):
-        composed = bot.compose_message(event(), message_link="https://t.me/firsatz/1",
+        composed = composer.compose_message(event(), message_link="https://t.me/firsatz/1",
                                        source_name="FırsatZ")
         body = sanitize.message_text(sanitize.sanitize_message(event()))
         self.assertIn(body, composed["text"], "gövde olduğu gibi (kampanya açıklaması dahil)")
@@ -139,7 +140,7 @@ class HeaderDesignTests(unittest.TestCase):
             ("Philips Airfryer XXL 6.2L\nFiyat: ₺56", "₺56"),
         ]:
             with self.subTest(source=source):
-                composed = bot.compose_message(event(source))
+                composed = composer.compose_message(event(source))
                 self.assertTrue(composed["header"].startswith(expected + " — "), composed["header"])
                 self.assertEqual(composed["price"], expected)
 
@@ -155,12 +156,12 @@ class HeaderDesignTests(unittest.TestCase):
             ("1.234.567,89 TL", "₺1.234.567 — Çay"),
         ]:
             with self.subTest(source_price=source_price):
-                composed = bot.compose_message(event(f"Çay\nFiyat: {source_price}"))
+                composed = composer.compose_message(event(f"Çay\nFiyat: {source_price}"))
                 self.assertEqual(composed["header"], expected_line)
                 self.assertTrue(composed["header"].startswith("₺"))
                 self.assertNotIn(",", composed["header"], "kuruş gösterilmez")
         # Bilinmeyen fiyat: ₺ yazılmaz, yalnızca ❓ (mevcut davranış).
-        composed = bot.compose_message(event("Çay\nFiyat belli değil"))
+        composed = composer.compose_message(event("Çay\nFiyat belli değil"))
         self.assertTrue(composed["header"].endswith(" ❓"), composed["header"])
         self.assertNotIn("₺", composed["header"])
 
@@ -174,7 +175,7 @@ class HeaderDesignTests(unittest.TestCase):
                 if confidence:
                     self.assertEqual(info.confidence, confidence)
                 self.assertNotIn(info.confidence, {"medium", "high"})
-                composed = bot.compose_message(event(source))
+                composed = composer.compose_message(event(source))
                 self.assertEqual(composed["price"], "❓")
                 for number in ("50", "100", "200"):
                     self.assertNotIn(number + "₺", composed["header"], "düşük güven tutar üst satıra taşınmaz")
@@ -185,7 +186,7 @@ class HeaderDesignTests(unittest.TestCase):
                        "Xiaomi Redmi Note 13 Pro 256GB\nFiyat: 18.499 TL\nEski: 24.999 TL",
                        "Philips Airfryer XXL 6.2L\n💰 Fiyat: 12.299 TL / 2 adet alımda 11.999 TL"]:
             with self.subTest(source=source.splitlines()[0]):
-                composed = bot.compose_message(event(source))
+                composed = composer.compose_message(event(source))
                 terms_price, _ = dedupmatch.offer_terms(event(source))
                 if terms_price is None:
                     self.assertEqual(composed["price"], "❓")
@@ -194,7 +195,7 @@ class HeaderDesignTests(unittest.TestCase):
 
     def test_smart_header_off_is_unchanged(self):
         appstate.SMART_HEADER = False
-        composed = bot.compose_message(event())
+        composed = composer.compose_message(event())
         self.assertEqual(composed["header"], TITLE.replace("4lü Patik Çorap", "4lü Patik Çorap"))
         self.assertEqual(composed["price"], "")
         self.assertNotIn("❓", composed["text"])
@@ -202,13 +203,13 @@ class HeaderDesignTests(unittest.TestCase):
 
     def test_lone_mark_without_title_is_not_printed(self):
         # Ne fiyat ne ad: havada kalan tek ❓ satırı kurulmaz, gövde yine gider.
-        composed = bot.compose_message(event("🎯 İŞBİRLİĞİ"))
+        composed = composer.compose_message(event("🎯 İŞBİRLİĞİ"))
         self.assertEqual(composed["header"], "")
         self.assertEqual(composed["price"], "")
         self.assertNotIn("❓", composed["text"])
 
     def test_price_only_header_without_title(self):
-        composed = bot.compose_message(event("Fiyat: 1.299 TL\n\n#firsat #amazon"))
+        composed = composer.compose_message(event("Fiyat: 1.299 TL\n\n#firsat #amazon"))
         self.assertEqual(composed["header"], "₺1.299")
         self.assertIsNone(composed["product_title"])
         self.assertTrue(botentities.composed_has_content(composed), "salt fiyatlı üst satır içeriktir")
@@ -308,7 +309,7 @@ class SearchChainTests(unittest.TestCase):
     """2b) Üç servisin GERÇEK buton üretim zinciri (yardımcı fonksiyon değil)."""
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        self.addCleanup(setattr, appstate, "SMART_HEADER", appstate.SMART_HEADER)
         appstate.SMART_HEADER = True
 
     def test_three_services_search_exactly_the_price_free_name(self):
@@ -339,7 +340,7 @@ class SearchChainTests(unittest.TestCase):
     def test_composed_notification_as_input_never_leaks_price_or_mark(self):
         # Kablolama hatası senaryosu: bildirim metni arama zincirine girse bile
         # fiyat/para birimi/ayraç/❓ sorguya taşınmaz.
-        header = bot.compose_message(event())["header"]
+        header = composer.compose_message(event())["header"]
         self.assertIn("₺56", header)
         expected = producttitle._search_query(event())
         for service, _ in constants.PRICE_SEARCH_BUTTONS:
@@ -370,7 +371,7 @@ class EntityAndLimitTests(unittest.TestCase):
     """4) Gerçek gönderim parametreleri: entity offset'leri ve sınırlar."""
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        self.addCleanup(setattr, appstate, "SMART_HEADER", appstate.SMART_HEADER)
         appstate.SMART_HEADER = True
 
     def bot_payload_entities(self, composed):
@@ -382,7 +383,7 @@ class EntityAndLimitTests(unittest.TestCase):
         # Türkçe karakter + sayı + tire + kesme işareti: UTF-16 birimiyle karakter
         # sayısı farklı olsaydı bu test patlardı.
         text = "Pentı Gi̇yim 4’lü - Patik Çorap 56cm\nFiyat: 56₺"
-        composed = bot.compose_message(event(text), source_name="Grup")
+        composed = composer.compose_message(event(text), source_name="Grup")
         bold = next(e for e in self.bot_payload_entities(composed) if e["type"] == "bold")
         self.assertEqual(utf16_slice(composed["text"], bold["offset"], bold["length"]),
                          composed["header"])
@@ -395,7 +396,7 @@ class EntityAndLimitTests(unittest.TestCase):
         start = len(body[:body.index(word)].encode("utf-16-le")) // 2
         entities = [types.MessageEntityTextUrl(offset=start, length=len(word),
                                                url="https://t.me/go")]
-        composed = bot.compose_message(event(body, entities=entities))
+        composed = composer.compose_message(event(body, entities=entities))
         links = [e for e in self.bot_payload_entities(composed) if e["type"] == "text_link"]
         self.assertEqual(len(links), 1)
         sliced = utf16_slice(composed["text"], links[0]["offset"], links[0]["length"])
@@ -406,7 +407,7 @@ class EntityAndLimitTests(unittest.TestCase):
         word = "Alışveriş"
         start = len(body[:body.index(word)].encode("utf-16-le")) // 2
         entities = [types.MessageEntityBold(offset=start, length=len(word))]
-        composed = bot.compose_message(event(body, entities=entities))
+        composed = composer.compose_message(event(body, entities=entities))
         text_links = [e for e in self.bot_payload_entities(composed) if e["type"] == "bold"]
         # 0. index kaynak gövdedeki bold; kaydırılmış hâli sonradan gelir.
         sliced = [utf16_slice(composed["text"], e["offset"], e["length"]) for e in text_links]
@@ -416,12 +417,12 @@ class EntityAndLimitTests(unittest.TestCase):
         long_title = "Ürün " * 60
         for limit in (constants.CAPTION_LIMIT - 24, constants.MESSAGE_LIMIT - 200, 2000, 120, 40, 12):
             with self.subTest(limit=limit):
-                composed = bot.compose_message(event(long_title + "\nFiyat: 56₺"), limit=limit)
+                composed = composer.compose_message(event(long_title + "\nFiyat: 56₺"), limit=limit)
                 self.assertLessEqual(sanitize.utf16_length(composed["text"]), limit)
                 self.assertTrue(composed["header"] in composed["text"] or not composed["header"])
 
     def test_truncation_keeps_price_and_the_distinguishing_name_prefix(self):
-        composed = bot.compose_message(event(SOURCE), limit=45)
+        composed = composer.compose_message(event(SOURCE), limit=45)
         self.assertTrue(composed["header"].startswith("₺56 — "), composed["header"])
         self.assertLessEqual(sanitize.utf16_length(composed["header"]), 45)
         self.assertTrue(composed["header"].endswith("…"), composed["header"])
@@ -430,7 +431,7 @@ class EntityAndLimitTests(unittest.TestCase):
 
     def test_only_mark_when_nothing_fits(self):
         # Fiyat yoksa ve ad sığmıyorsa satır ❓ ile açılır/kapanır.
-        composed = bot.compose_message(event(f"{TITLE}\n🎯 kupon var"), limit=18)
+        composed = composer.compose_message(event(f"{TITLE}\n🎯 kupon var"), limit=18)
         self.assertIn("❓", composed["header"])
         self.assertLessEqual(sanitize.utf16_length(composed["header"]), 18)
 
@@ -440,7 +441,7 @@ class DedupCompatibilityTests(unittest.TestCase):
 
     def test_history_key_equals_live_key(self):
         live = smarttitle.smart_dedup_title(event())
-        header = bot.compose_message(event())["header"]
+        header = composer.compose_message(event())["header"]
         from_header = header_mod.split_header_line(header)[1]
         terms = dedupmatch.offer_terms(event())
         self.assertEqual(dedupmatch.dedup_offer_key(from_header, terms), dedupmatch.dedup_offer_key(live, terms))
@@ -453,10 +454,10 @@ class DedupCompatibilityTests(unittest.TestCase):
         other_price = event(SOURCE.replace("🎯 56₺", "🎯 49₺"))
         other_name = event(SOURCE.replace(TITLE, TITLE + " Siyah"))
         self.assertNotEqual(terms_56[0], dedupmatch.offer_terms(other_price)[0])
-        self.assertEqual(header_mod.split_header_line(bot.compose_message(event())["header"])[1],
-                         header_mod.split_header_line(bot.compose_message(other_price)["header"])[1],
+        self.assertEqual(header_mod.split_header_line(composer.compose_message(event())["header"])[1],
+                         header_mod.split_header_line(composer.compose_message(other_price)["header"])[1],
                          "fiyat değişince ad değişmez")
-        self.assertNotEqual(header_mod.split_header_line(bot.compose_message(other_name)["header"])[1],
+        self.assertNotEqual(header_mod.split_header_line(composer.compose_message(other_name)["header"])[1],
                             TITLE, "ad değişince anahtar değişir")
         self.assertNotEqual(dedupmatch.dedup_offer_key(TITLE + " Siyah", terms_56),
                             dedupmatch.dedup_offer_key(TITLE, terms_56))
@@ -648,11 +649,11 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        self.addCleanup(setattr, appstate, "SMART_HEADER", appstate.SMART_HEADER)
         appstate.SMART_HEADER = True
 
     def header_of(self, text):
-        return bot.compose_message(event(text), message_link=None, source_name=None)["header"]
+        return composer.compose_message(event(text), message_link=None, source_name=None)["header"]
 
     def test_zero_is_a_supported_price_not_an_error(self):
         info = pf.extract_price("Samsung Kulaklık\nFiyat: 0 TL")
@@ -709,7 +710,7 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
                 "Ürün A 100 TL\nÜrün B 200 TL"]
         for text in junk:
             with self.subTest(text=text):
-                composed = bot.compose_message(event(text), message_link=None, source_name=None)
+                composed = composer.compose_message(event(text), message_link=None, source_name=None)
                 if composed["header"]:
                     price, _ = header_mod.split_header_line(composed["header"])
                     self.assertEqual(price, "❓", composed["header"])
@@ -717,7 +718,7 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
                 self.assertNotIn("₺", composed["header"].replace("❓", ""))
         # Ne ad ne fiyat: üst satır da içerik de yok → boş bildirim gönderilmez.
         for blank in ("", "   \n  \n "):
-            composed = bot.compose_message(event(blank), message_link=None, source_name=None)
+            composed = composer.compose_message(event(blank), message_link=None, source_name=None)
             with self.subTest(blank=repr(blank)):
                 self.assertEqual(composed["header"], "")
                 self.assertEqual(composed["text"], "")
@@ -725,7 +726,7 @@ class ZeroAndInvalidPriceTests(unittest.TestCase):
 
     def test_low_confidence_amount_stays_in_the_body(self):
         # "Eski: 19.999 TL" tek başına düşük güven → üst satıra TAŞINMAZ, gövde kalır.
-        composed = bot.compose_message(event("Ürün X\nEski: 19.999 TL"),
+        composed = composer.compose_message(event("Ürün X\nEski: 19.999 TL"),
                                        message_link=None, source_name=None)
         self.assertEqual(composed["header"], "Ürün X ❓")
         self.assertIn("19.999", composed["body"])
@@ -740,11 +741,11 @@ class PresentationOnlyTests(unittest.TestCase):
            "🛒 https://amazon.com.tr/dp/B0X")
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        self.addCleanup(setattr, appstate, "SMART_HEADER", appstate.SMART_HEADER)
         appstate.SMART_HEADER = True
 
     def test_header_agrees_with_the_selected_price(self):
-        composed = bot.compose_message(event(self.SRC), message_link="https://t.me/x/1",
+        composed = composer.compose_message(event(self.SRC), message_link="https://t.me/x/1",
                                        source_name="Kaynak")
         _title, info = smarttitle.smart_header_info(event(self.SRC), sanitize.sanitize_message(event(self.SRC)),
                                             composed["body"])
@@ -753,7 +754,7 @@ class PresentationOnlyTests(unittest.TestCase):
         self.assertEqual(pf.parse_threshold(composed["price"]), info.value)
 
     def test_body_links_and_source_name_are_untouched(self):
-        composed = bot.compose_message(event(self.SRC), message_link="https://t.me/x/1",
+        composed = composer.compose_message(event(self.SRC), message_link="https://t.me/x/1",
                                        source_name="Kaynak")
         self.assertEqual(composed["body"], sanitize.message_text(sanitize.sanitize_message(event(self.SRC))))
         for line in ("Eski fiyat: 19.999 TL", "💰 Fiyat: 12.299 TL",
@@ -777,7 +778,7 @@ class PresentationOnlyTests(unittest.TestCase):
         matched, _info = pf.price_matches(self.SRC, 13000)
         self.assertTrue(matched, "DM eşiği görüntü biçiminden etkilenmez")
         # Bildirimin kendisi okunduğunda da aynı sayı bulunur (kopya/dedup yolu).
-        composed = bot.compose_message(event(self.SRC), message_link=None, source_name=None)
+        composed = composer.compose_message(event(self.SRC), message_link=None, source_name=None)
         self.assertEqual(pf.extract_price(composed["text"]).value, 12299.0)
 
     def test_every_formatted_amount_round_trips_through_the_header(self):
@@ -796,7 +797,7 @@ class PresentationOnlyTests(unittest.TestCase):
                 self.assertEqual(pf.parse_threshold(disp), int(float(value)))
 
     def test_mark_is_never_a_price_for_consumers(self):
-        composed = bot.compose_message(event(f"{TITLE}\n🎯 sepete özel fırsat"),
+        composed = composer.compose_message(event(f"{TITLE}\n🎯 sepete özel fırsat"),
                                        message_link=None, source_name=None)
         self.assertEqual(composed["price"], header_mod.PRICE_MISSING_MARK)
         self.assertIsNone(pf.parse_threshold(composed["price"]))
@@ -809,7 +810,7 @@ class Utf16LimitTests(unittest.TestCase):
     FANCY = "𝐆𝐔𝐂𝐂𝐈 Uzun Kollu Tişört Erkek Basic Pamuklu Forma Siyah Beden XL Çok Uzun"
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        self.addCleanup(setattr, appstate, "SMART_HEADER", appstate.SMART_HEADER)
         appstate.SMART_HEADER = True
 
     def test_fancy_font_titles_really_do_carry_astral_chars(self):
@@ -847,7 +848,7 @@ class Utf16LimitTests(unittest.TestCase):
         heavy = "🔥 " + self.FANCY + "\n" + ("🚀 𝐅𝐈𝐑𝐒𝐀𝐓 " * 60)
         for limit in (200, 400, 1000, constants.CAPTION_LIMIT - 24, constants.MESSAGE_LIMIT - 200):
             with self.subTest(limit=limit):
-                composed = bot.compose_message(
+                composed = composer.compose_message(
                     event(self.FANCY + "\nFiyat: 1.299 TL\n" + heavy), limit=limit,
                     message_link="https://t.me/x/1", source_name="İndirimde Al 🚀")
                 text = composed["text"]
@@ -867,7 +868,7 @@ class Utf16LimitTests(unittest.TestCase):
         word = "𝐅𝐈𝐑𝐒𝐀𝐓"
         start = sanitize.utf16_length(body[:body.index(word)])
         entities = [types.MessageEntityBold(offset=start, length=len(word))]
-        composed = bot.compose_message(event(body, entities=entities), limit=260)
+        composed = composer.compose_message(event(body, entities=entities), limit=260)
         payload = botentities.bot_api_entities(composed["message"], composed["content"])
         self.assertTrue(payload, "entity listesi boş kalmamalı")
         for item in payload:
@@ -907,12 +908,12 @@ class SendBoundaryTests(unittest.TestCase):
 
     def setUp(self):
         ti.DedupBotBadgeTest.setUp(self)     # sahte istemci + yakalanan gönderimler
-        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        self.addCleanup(setattr, appstate, "SMART_HEADER", appstate.SMART_HEADER)
         appstate.SMART_HEADER = True
 
     def composed_for(self, path_label):
-        hard = getattr(bot, path_label[1])
-        composed = bot.compose_message(
+        hard = getattr(constants, path_label[1])
+        composed = composer.compose_message(
             event(astral_heavy_source()), limit=hard + path_label[2],
             message_link="https://t.me/x/1", source_name="İndirimde Al 🚀",
         )

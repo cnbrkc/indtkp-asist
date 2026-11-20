@@ -28,6 +28,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import botapi  # noqa: E402
+import composer  # noqa: E402
 import appstate  # noqa: E402
 import botentities  # noqa: E402
 import confutil  # noqa: E402
@@ -568,7 +570,7 @@ class LimitPressureTest(unittest.TestCase):
         # gövde metninden alır: gövde, ürün satırı hiç yazılmasaydı olacağı yerden
         # tam olarak satır + ayraç kadar kısalır (kaynak adı/mesaj linki bütçesi
         # sabit tutulduğu için fazladan bir kayıp yok).
-        with mock.patch.object(bot, "product_links", return_value=[]):
+        with mock.patch.object(composer, "product_links", return_value=[]):
             without = view(obj, as_bot=False, limit=CAPTION)
         drop = sanitize.utf16_length(without["composed"]["body"]) - sanitize.utf16_length(result["composed"]["body"])
         self.assertEqual(drop, sanitize.utf16_length(LABEL) + 1, "ürün satırı yerini gövdeden alır (satır + ayraç)")
@@ -683,7 +685,7 @@ class LimitPressureTest(unittest.TestCase):
                 self.assertEqual(result["keyboard"], [*([] if written else [BUY[0]]), COUPON[0], *rc.SEARCH_ROW])
                 # Ürün satırı yazıldıysa yerini gövde metninden alır (satır + ayraç);
                 # yazılmadıysa gövde, ürün satırsız düzenle aynı yerde biter.
-                with mock.patch.object(bot, "product_links", return_value=[]):
+                with mock.patch.object(composer, "product_links", return_value=[]):
                     without = view(obj, limit=CAPTION)
                 self.assertEqual(sanitize.utf16_length(without["composed"]["body"])
                                  - sanitize.utf16_length(result["composed"]["body"]),
@@ -716,7 +718,7 @@ class LimitPressureTest(unittest.TestCase):
                         if "👉" not in result["appendix"]:
                             continue
                         with_product += 1
-                        with mock.patch.object(bot, "product_links", return_value=[]):  # aynı ileti, ürün satırsız
+                        with mock.patch.object(composer, "product_links", return_value=[]):  # aynı ileti, ürün satırsız
                             body = view(obj, mode, as_bot=as_bot, limit=limit)["composed"]["body"]
                         hidden = botentities.entities_for_text(sanitize.sanitize_message(obj), body)
                         opened = sanitize.visible_urls(body) | {key(entity.url) for entity in hidden if getattr(entity, "url", None)}
@@ -791,7 +793,7 @@ class BotApiWireTest(unittest.TestCase):
         ``main()`` → ``on_new_message`` → ``notify_offer`` → ``send_bot_*`` üretim kodudur.
         """
         for name in ("send_bot_ping", "send_bot_media", "edit_bot_text", "edit_bot_caption"):
-            self.assertEqual(getattr(bot, name).__qualname__, name, "önceki bir test sahte göndericiyi geri almamış")
+            self.assertEqual(getattr(botapi, name).__qualname__, name, "önceki bir test sahte göndericiyi geri almamış")
         wire = golden.BotApiWire(ok=bot_up)
         records: list[dict] = []
         account: dict = {}

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bot
+import composer
 import appstate
 import commandtext
 import dedupbadge
@@ -45,7 +46,7 @@ class NewPricePatterns(unittest.TestCase):
                     event = SimpleNamespace(message=text, raw_text=text, entities=[], media=None)
                     reliable = confidence in {'high', 'medium'}
                     with patch.object(appstate, 'SMART_HEADER', True):
-                        composed = bot.compose_message(event)
+                        composed = composer.compose_message(event)
                     output = composed['text']
                     first_line = output.splitlines()[0]
                     if reliable:
@@ -159,7 +160,7 @@ class DedupIdentityRegressions(unittest.TestCase):
     def test_history_source_name_is_not_product_condition(self):
         title = self.TITLE
         raw = title + '\nFiyat: 13.485 TL'
-        notice = bot.compose_message(raw, message_link='https://t.me/c/1/2', source_name='Amazon Depo - İkinci El Fırsatlar')['text']
+        notice = composer.compose_message(raw, message_link='https://t.me/c/1/2', source_name='Amazon Depo - İkinci El Fırsatlar')['text']
         self.assertEqual(dedupmatch.offer_terms(raw), dedupmatch.offer_terms(notice))
         badge_notice = notice.rsplit('\n\n', 1)[0] + '\n\n📌 4 kere paylaşıldı: Amazon Depo - İkinci El Fırsatlar'
         self.assertEqual(dedupmatch.offer_terms(raw), dedupmatch.offer_terms(badge_notice))

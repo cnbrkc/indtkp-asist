@@ -4,6 +4,7 @@ Regresyon: GitHub Actions runner'ları UTC çalıştığı için ``time.strftime
 ile yazılan "Son kontrol: 10:44" aslında TSİ 13:44'ü gösteriyordu ve üç saat
 geride kalmış gibi okunuyordu.
 """
+import statusreport
 import appstate
 import os
 import subprocess
@@ -88,7 +89,7 @@ class StatusTextTimezoneTests(unittest.TestCase):
         appstate.SOURCE_IDS.clear()
         appstate.CONTROL_NAMES.clear()
         appstate.CONTROL_IDS.clear()
-        status = bot.build_status_text({'include_keywords': ['çay']})
+        status = statusreport.build_status_text({'include_keywords': ['çay']})
         line = next(text for text in status.splitlines() if 'Çalışma süresi' in text)
         self.assertIn('başlangıç', line)
         self.assertIn('TSİ', line)

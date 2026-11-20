@@ -15,6 +15,9 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 import bot  # noqa: E402
+import time  # noqa: E402
+import runtimecfg  # noqa: E402
+import pollcursor  # noqa: E402
 import appstate  # noqa: E402
 import listener  # noqa: E402
 import dedupmatch  # noqa: E402
@@ -72,8 +75,8 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         chat_id = sorted(appstate.SOURCE_IDS)[0]
         # Aynı mesaj sonradan canlı olayla gelirse tekrar işlenmemeli
         late_live = SimpleNamespace(chat_id=chat_id, id=11)
-        self.assertTrue(bot.live_event_should_skip(late_live))
-        self.assertFalse(bot.live_event_should_skip(SimpleNamespace(chat_id=chat_id, id=12)))
+        self.assertTrue(pollcursor.live_event_should_skip(late_live))
+        self.assertFalse(pollcursor.live_event_should_skip(SimpleNamespace(chat_id=chat_id, id=12)))
 
     def test_source_entity_flood_wait_isolated_and_retried_after_deadline(self):
         from telethon import errors
@@ -450,7 +453,7 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
         real_sleep = asyncio.sleep
         sleeps, calls = [], []
         now = [100.0]
-        clock = mock.Mock(wraps=bot.time)
+        clock = mock.Mock(wraps=time)
         clock.monotonic.side_effect = lambda: now[0]
 
         async def sleep(delay):
@@ -627,15 +630,15 @@ class FastPollEndToEndTest(ti.MainHarness, unittest.TestCase):
 
     def test_backfill_window_is_configurable_and_defaults_to_fifteen_minutes(self):
         original = appstate.FAST_POLL_BACKFILL_MAX_AGE
-        self.addCleanup(setattr, bot, "FAST_POLL_BACKFILL_MAX_AGE", original)
+        self.addCleanup(setattr, appstate, "FAST_POLL_BACKFILL_MAX_AGE", original)
         self.assertEqual(original, 900.0)
-        bot.apply_runtime_config({})
+        runtimecfg.apply_runtime_config({})
         self.assertEqual(appstate.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
-        bot.apply_runtime_config({"fast_poll_backfill_minutes": 5})
+        runtimecfg.apply_runtime_config({"fast_poll_backfill_minutes": 5})
         self.assertEqual(appstate.FAST_POLL_BACKFILL_MAX_AGE, 300.0)
-        bot.apply_runtime_config({"fast_poll_backfill_minutes": 9999})
+        runtimecfg.apply_runtime_config({"fast_poll_backfill_minutes": 9999})
         self.assertEqual(appstate.FAST_POLL_BACKFILL_MAX_AGE, 7200.0)
-        bot.apply_runtime_config({"fast_poll_backfill_minutes": "bozuk"})
+        runtimecfg.apply_runtime_config({"fast_poll_backfill_minutes": "bozuk"})
         self.assertEqual(appstate.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
 
     def test_fast_poll_can_be_disabled(self):
@@ -666,16 +669,16 @@ class LiveVsPollDedupTest(unittest.TestCase):
 
     def test_live_first_then_poll_is_skipped_by_poller_check(self):
         event = SimpleNamespace(chat_id=-1001, id=5)
-        self.assertFalse(bot.live_event_should_skip(event))
+        self.assertFalse(pollcursor.live_event_should_skip(event))
         self.assertIn((-1001, 5), appstate.LIVE_SEEN)       # tarama bunu görüp atlayacak
 
     def test_poll_first_then_live_is_skipped(self):
-        bot._remember(appstate.POLL_DISPATCHED, -1001, 7)
-        self.assertTrue(bot.live_event_should_skip(SimpleNamespace(chat_id=-1001, id=7)))
+        pollcursor._remember(appstate.POLL_DISPATCHED, -1001, 7)
+        self.assertTrue(pollcursor.live_event_should_skip(SimpleNamespace(chat_id=-1001, id=7)))
 
     def test_poll_event_itself_is_not_skipped(self):
-        bot._remember(appstate.POLL_DISPATCHED, -1001, 9)
-        self.assertFalse(bot.live_event_should_skip(SimpleNamespace(chat_id=-1001, id=9, _fast_poll=True)))
+        pollcursor._remember(appstate.POLL_DISPATCHED, -1001, 9)
+        self.assertFalse(pollcursor.live_event_should_skip(SimpleNamespace(chat_id=-1001, id=9, _fast_poll=True)))
 
     def test_real_event_object_accepts_fast_poll_flag(self):
         message = types.Message(id=3, peer_id=types.PeerChannel(1001), post=True,

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from typing import Any
 
 from telethon import events
 
 import appstate
-import time
+import composer
 from botentities import bot_media_descriptor
 from constants import CAPTION_LIMIT, MESSAGE_LIMIT
 from controlbase import control_reply
@@ -151,7 +152,7 @@ async def test_source_access(rt: Runtime, event: events.NewMessage.Event, rest: 
             )
             links = extract_links(latest)
             product_title = _search_query(latest)
-            dry_run = rt.bot.compose_message(
+            dry_run = composer.compose_message(
                 latest,
                 limit=CAPTION_LIMIT - 24 if media else MESSAGE_LIMIT - 100,
                 link_kinds=appstate.LINK_KINDS,

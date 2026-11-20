@@ -1,6 +1,6 @@
 """Kaynak çözümleme regresyon testleri — source_chat_ids cache + FloodWait breaker.
 
-Bu testler bot.resolve_sources / resolve_chat / resolve_chat_groups'un gerçek
+Bu testler chatresolve.resolve_sources / resolve_chat / resolve_chat_groups'un gerçek
 akışını çalıştırır; inspect/getsource taklidi yok.
 
 Senaryolar:
@@ -29,6 +29,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import gitops  # noqa: E402
+import chatresolve  # noqa: E402
 import appstate  # noqa: E402
 import commandtext  # noqa: E402
 from telethon import errors, types, utils  # noqa: E402
@@ -52,7 +54,7 @@ def _reset():
 
 
 # ---------------------------------------------------------------------------
-# Sahte Telethon client — bot.resolve_chat'in gerçek yolunu test eder
+# Sahte Telethon client — chatresolve.resolve_chat'in gerçek yolunu test eder
 # ---------------------------------------------------------------------------
 
 class TrackingClient:
@@ -154,7 +156,7 @@ class SourceIdCacheTest(unittest.TestCase):
             mapping[name.lstrip("@")] = errors.FloodWaitError(request=None, capture=41509)
         client = TrackingClient(mapping)
 
-        notes = asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        notes = asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
 
         self.assertEqual(len(appstate.SOURCES), n)
         self.assertEqual(len(appstate.SOURCE_IDS), n)
@@ -175,7 +177,7 @@ class SourceIdCacheTest(unittest.TestCase):
         source_chats = ["@alpha", "@beta", "@gamma"]
         config = {"source_chats": source_chats}
         client = TrackingClient()  # default: her username channel döndürür
-        notes = asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        notes = asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
 
         self.assertEqual(len(appstate.SOURCES), 3)
         self.assertEqual(len(appstate.SOURCE_FAILURES), 0)
@@ -203,7 +205,7 @@ class SourceIdCacheTest(unittest.TestCase):
             "@d": _chan("d", 1004),
         }
         client = TrackingClient(mapping)
-        asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
 
         self.assertEqual(len(appstate.SOURCES), 1)
         self.assertEqual(appstate.SOURCES[0]["requested"], "@a")
@@ -234,7 +236,7 @@ class SourceIdCacheTest(unittest.TestCase):
             "@unknown2": _chan("unknown2", 9999),  # çağrılmamalı
         }
         client = TrackingClient(mapping)
-        asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
 
         # known1 ve known2 çözülmeli, unknown1 ve unknown2 park
         self.assertEqual(len(appstate.SOURCES), 2)
@@ -259,7 +261,7 @@ class SourceIdCacheTest(unittest.TestCase):
         source_chats = ["@x", "@y"]
         config = {"source_chats": source_chats}
         client1 = TrackingClient()
-        asyncio.run(bot.resolve_sources(client1, config, quiet=True))
+        asyncio.run(chatresolve.resolve_sources(client1, config, quiet=True))
         self.assertIn("source_chat_ids", config)
         saved_ids = dict(config["source_chat_ids"])
         self.assertEqual(len(saved_ids), 2)
@@ -271,7 +273,7 @@ class SourceIdCacheTest(unittest.TestCase):
         try:
             # bot'un yaptığı gibi config'e IDs ekleyip atomic yaz
             data = {"source_chats": source_chats, "source_chat_ids": saved_ids}
-            bot.atomic_write_json(path, data)
+            gitops.atomic_write_json(path, data)
             reloaded = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(reloaded["source_chat_ids"], saved_ids)
 
@@ -284,7 +286,7 @@ class SourceIdCacheTest(unittest.TestCase):
             for name in source_chats:
                 client2.mapping[name] = errors.FloodWaitError(request=None, capture=41509)
             reloaded_cfg = {"source_chats": source_chats, "source_chat_ids": dict(reloaded["source_chat_ids"])}
-            asyncio.run(bot.resolve_sources(client2, reloaded_cfg, quiet=True))
+            asyncio.run(chatresolve.resolve_sources(client2, reloaded_cfg, quiet=True))
             self.assertEqual(len(appstate.SOURCES), 2)
             str_calls2 = [v for _, v in client2.calls if isinstance(v, str)]
             self.assertEqual(str_calls2, [], "restart'ta username denenmemeli")
@@ -311,7 +313,7 @@ class SourceIdCacheTest(unittest.TestCase):
             "@stale": _chan("stale", 1005555555555),  # fallback username başarılı
         }
         client = TrackingClient(mapping)
-        asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
 
         self.assertEqual(len(appstate.SOURCES), 2)
         # @good eski ID ile kalmalı
@@ -332,7 +334,7 @@ class SourceIdCacheTest(unittest.TestCase):
         existing_ids = {"@a": -1006666666666, "@b": -1007777777777}
         config = {"source_chats": existing, "source_chat_ids": dict(existing_ids)}
         client1 = TrackingClient({v: _chat(v) for v in existing_ids.values()})
-        asyncio.run(bot.resolve_sources(client1, config, quiet=True))
+        asyncio.run(chatresolve.resolve_sources(client1, config, quiet=True))
         self.assertEqual(config["source_chat_ids"], existing_ids)
 
         # yeni kaynak ekle
@@ -346,7 +348,7 @@ class SourceIdCacheTest(unittest.TestCase):
             "@c": _chan("c", 1009999999999),
         }
         client2 = TrackingClient(mapping2)
-        asyncio.run(bot.resolve_sources(client2, config2, quiet=True))
+        asyncio.run(chatresolve.resolve_sources(client2, config2, quiet=True))
 
         self.assertEqual(len(appstate.SOURCES), 3)
         self.assertEqual(config2["source_chat_ids"]["@a"], existing_ids["@a"])
@@ -375,7 +377,7 @@ class ResolveChatNumericFallbackTest(unittest.TestCase):
                     return []
 
             client = C()
-            peer_id, name, entity = await bot.resolve_chat(client, -100999)
+            peer_id, name, entity = await chatresolve.resolve_chat(client, -100999)
             self.assertEqual(peer_id, -100999)
             self.assertEqual(calls, [-100999, "get_dialogs", -100999])
 
@@ -396,7 +398,7 @@ class ResolveChatNumericFallbackTest(unittest.TestCase):
 
             client = C()
             with self.assertRaises(ValueError):
-                await bot.resolve_chat(client, "@olmayan")
+                await chatresolve.resolve_chat(client, "@olmayan")
             self.assertNotIn("get_dialogs", calls)
 
         asyncio.run(run())
@@ -415,7 +417,7 @@ class ResolveChatNumericFallbackTest(unittest.TestCase):
                 async def get_dialogs(self):
                     raise AssertionError("get_dialogs çağrılmamalı")
 
-            await bot.resolve_chat(C(), -1001234567890)
+            await chatresolve.resolve_chat(C(), -1001234567890)
             self.assertIsInstance(seen["value"], int)
             self.assertEqual(seen["type"], "int")
 
@@ -454,7 +456,7 @@ class ParkedIdsPreservedTest(unittest.TestCase):
             "@new_unknown": errors.FloodWaitError(request=None, capture=41509),
         }
         client = TrackingClient(mapping)
-        asyncio.run(bot.resolve_sources(client, config2, quiet=True))
+        asyncio.run(chatresolve.resolve_sources(client, config2, quiet=True))
         # FloodWait sonrası parked değil, keep+parked çözülmeli, new_unknown park
         self.assertEqual(len(appstate.SOURCES), 2)
         self.assertIn("@keep", config2["source_chat_ids"])
@@ -469,7 +471,7 @@ class AtomicAndPushGatingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "config.json"
             p.write_text(json.dumps({"a": 1}), encoding="utf-8")
-            bot.atomic_write_json(p, {"a": 2, "notify_bot_token": "secret"})
+            gitops.atomic_write_json(p, {"a": 2, "notify_bot_token": "secret"})
             data = json.loads(p.read_text(encoding="utf-8"))
             self.assertEqual(data["a"], 2)
             self.assertNotIn("notify_bot_token", data)
@@ -480,17 +482,17 @@ class AtomicAndPushGatingTest(unittest.TestCase):
             outside = Path(td) / "config.json"
             outside.write_text("{}", encoding="utf-8")
             # tmp dışı repo değil -> git_repo_root None dönmeli (veya en azından push gating)
-            root = bot.git_repo_root(Path(td))
+            root = gitops.git_repo_root(Path(td))
             self.assertIsNone(root, "tmp dizini git repo değil, None dönmeli")
             # main'in yaptığı kontrolü simüle et
-            with mock.patch.object(bot, "push_token", return_value="tok"), \
-                 mock.patch.object(bot, "commit_and_push") as mcp:
+            with mock.patch.object(gitops, "push_token", return_value="tok"), \
+                 mock.patch.object(gitops, "commit_and_push") as mcp:
                 _orig = {}
                 _new = {"@x": -1001}
                 # gating koşulu
                 if _new != _orig:
-                    if bot.push_token() and bot.git_repo_root(outside.parent) is not None:
-                        bot.commit_and_push(outside, "kaynak ID'leri güncellendi")
+                    if gitops.push_token() and gitops.git_repo_root(outside.parent) is not None:
+                        gitops.commit_and_push(outside, "kaynak ID'leri güncellendi")
                 mcp.assert_not_called()
 
     def test_no_push_when_ids_unchanged(self):
@@ -546,7 +548,7 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
                     "@flaky": _chan("flaky", 9999),
                 }
                 client = TrackingClient(mapping)
-                asyncio.run(bot.resolve_sources(client, config, quiet=True))
+                asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
                 # @good çözülmeli, @flaky transient — ID korunmalı, username denenmemeli
                 self.assertEqual(len(appstate.SOURCES), 1)
                 self.assertEqual(appstate.SOURCES[0]["requested"], "@good")
@@ -585,7 +587,7 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
                     "@srv": _chan("srv", 9999),
                 }
                 client = TrackingClient(mapping)
-                asyncio.run(bot.resolve_sources(client, config, quiet=True))
+                asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
                 self.assertEqual(len(appstate.SOURCES), 1)
                 self.assertIn("@srv", config["source_chat_ids"])
                 self.assertEqual(config["source_chat_ids"]["@srv"], srv_id)
@@ -615,7 +617,7 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
                     "@stale": _chan("stale_new", abs(new_id)),
                 }
                 client = TrackingClient(mapping)
-                asyncio.run(bot.resolve_sources(client, config, quiet=True))
+                asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
                 self.assertEqual(len(appstate.SOURCES), 2, f"{label} için fallback çalışmalı")
                 self.assertNotEqual(config["source_chat_ids"]["@stale"], stale_id)
                 self.assertIn("@good", config["source_chat_ids"])
@@ -634,7 +636,7 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
             ids["@c"]: _chat(ids["@c"]),
         }
         client = TrackingClient(mapping)
-        asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
         self.assertEqual(len(appstate.SOURCES), 2)
         self.assertIn("@b", config["source_chat_ids"])
         self.assertEqual(config["source_chat_ids"]["@b"], ids["@b"])
@@ -656,7 +658,7 @@ class StaleVsTransientDiscriminationTest(unittest.TestCase):
             "@priv": _chan("priv", 9999),
         }
         client = TrackingClient(mapping)
-        asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
         self.assertEqual(len(appstate.SOURCES), 1)
         self.assertEqual(appstate.SOURCES[0]["requested"], "@good")
         self.assertIn("@priv", config["source_chat_ids"])
@@ -698,7 +700,7 @@ class BulkDialogPrefillTest(unittest.TestCase):
 
         client = BulkClient()
 
-        asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
         self.assertEqual(len(appstate.SOURCES), 3, "dialoglardan doldurulan ID'lerle 3 kaynak çözülmeli")
         self.assertEqual(client.dialogs_calls, 1)
         # Hiç username çağrısı yapılmamalı — hepsi int üzerinden
@@ -741,7 +743,7 @@ class BulkDialogPrefillTest(unittest.TestCase):
 
         client = InviteClient(mapping)
         # Invite için ayrıca get_dialogs boş dönsün
-        asyncio.run(bot.resolve_sources(client, config, quiet=True))
+        asyncio.run(chatresolve.resolve_sources(client, config, quiet=True))
         # @a FloodWait park, invite denendi ve başarılı, @b park
         # Invite resolved -> 1, parked 2
         # Check: invite resolved count 1, failures 2
@@ -781,7 +783,7 @@ class ResolveChatGroupsIntegrationTest(unittest.TestCase):
         # TrackingClient int fallback'u zaten Chat döndürüyor, yeterli
 
         async def run():
-            notes, fatal = await bot.resolve_chat_groups(client, config, {"sources", "destination", "control"})
+            notes, fatal = await chatresolve.resolve_chat_groups(client, config, {"sources", "destination", "control"})
             self.assertIsNone(fatal)
             self.assertEqual(len(appstate.SOURCES), 1)
             self.assertEqual(appstate.DESTINATION_ID, GROUP_ID)

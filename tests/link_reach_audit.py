@@ -238,32 +238,57 @@ def build_message(types, spec: dict) -> SimpleNamespace:
                   for offset, length, url in spec["entities"]])
 
 
+
+def _tree_attr(bot, name: str):
+    """Eski ağaçta ad ``bot`` içindedir; yeni ağaçta ilgili modüle taşınmıştır (aynı ağaçtan aranır)."""
+    if hasattr(bot, name):
+        return getattr(bot, name)
+    import importlib  # noqa: PLC0415 - sürüme göre içe aktarılır
+    for module_name in ("composer", "sanitize", "constants", "appstate", "dedupbadge", "header", "producttitle",
+                        "searchbuttons", "botapi"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        if hasattr(module, name):
+            return getattr(module, name)
+    raise AttributeError(name)
+
+
+def _compose_owner(bot):
+    """compose_message'ın ad aradığı ad alanı: eski ağaçta ``bot``, yeni ağaçta ``composer``."""
+    if hasattr(bot, "compose_message"):
+        return bot
+    import importlib  # noqa: PLC0415
+    return importlib.import_module("composer")
+
+
 def deliveries(bot, types, spec: dict, both_limits: bool) -> list[dict]:
     """Üretimdeki çağrılarla kurulan iletiler ve her birinden açılabilen adresler."""
     def key(url) -> str:
         return sanitize.clean_url(url).rstrip("/").lower()
 
     obj = build_message(types, spec)
-    cleaned = bot.sanitize_message(obj)
-    source = {key(item["url"]): item["kind"] for item in reversed(bot.extract_links(cleaned))}
-    full_body = bot.utf16_length(bot.message_text(cleaned))
-    accepts_keyboard = "has_keyboard" in inspect.signature(bot.compose_message).parameters
+    cleaned = _tree_attr(bot, "sanitize_message")(obj)
+    source = {key(item["url"]): item["kind"] for item in reversed(_tree_attr(bot, "extract_links")(cleaned))}
+    full_body = _tree_attr(bot, "utf16_length")(_tree_attr(bot, "message_text")(cleaned))
+    accepts_keyboard = "has_keyboard" in inspect.signature(_tree_attr(bot, "compose_message")).parameters
     found = []
     for mode in MODES:
         for as_bot in (True, False):
-            text_limit = bot.MESSAGE_LIMIT - (200 if as_bot else 100)
-            for name, limit in ((("text", text_limit), ("caption", bot.CAPTION_LIMIT - 24)) if both_limits
+            text_limit = _tree_attr(bot, "MESSAGE_LIMIT") - (200 if as_bot else 100)
+            for name, limit in ((("text", text_limit), ("caption", _tree_attr(bot, "CAPTION_LIMIT") - 24)) if both_limits
                                 else (("text", text_limit),)):
                 extra = {"has_keyboard": True} if as_bot and accepts_keyboard else {}
-                composed = bot.compose_message(
-                    obj, limit=limit, link_kinds=bot.link_kinds_for(mode, bot=as_bot),
+                composed = _tree_attr(bot, "compose_message")(
+                    obj, limit=limit, link_kinds=_tree_attr(bot, "link_kinds_for")(mode, bot=as_bot),
                     message_link=MESSAGE_LINK, source_name=SOURCE_NAME, **extra)
                 reach = {key(url) for url in sanitize.visible_urls(composed["text"])}
                 keyboard: list[str] = []
                 if as_bot:
-                    entities = (bot.bot_api_entities(composed["message"], composed["content"])
-                                + bot.source_name_entity(composed))
-                    markup = bot.build_inline_keyboard(obj, body_text=composed["text"], body_entities=entities)
+                    entities = (_tree_attr(bot, "bot_api_entities")(composed["message"], composed["content"])
+                                + _tree_attr(bot, "source_name_entity")(composed))
+                    markup = _tree_attr(bot, "build_inline_keyboard")(obj, body_text=composed["text"], body_entities=entities)
                     keyboard = [key(button["url"]) for row in (markup or {}).get("inline_keyboard", []) for button in row]
                     reach |= {key(item["url"]) for item in entities if item.get("type") == "text_link"}
                     reach |= set(keyboard)
@@ -272,9 +297,9 @@ def deliveries(bot, types, spec: dict, both_limits: bool) -> list[dict]:
                 appendix = composed["appendix"].split("\n") if composed["appendix"] else []
                 found.append({
                     "id": spec["id"], "cell": f"{mode}/{'bot' if as_bot else 'hesap'}/{name}", "limit": limit,
-                    "length": bot.utf16_length(composed["text"]), "reach": sorted(reach & set(source)),
+                    "length": _tree_attr(bot, "utf16_length")(composed["text"]), "reach": sorted(reach & set(source)),
                     "source": source, "keyboard": keyboard, "appendix": appendix,
-                    "body": bot.utf16_length(composed["body"]), "full_body": full_body,
+                    "body": _tree_attr(bot, "utf16_length")(composed["body"]), "full_body": full_body,
                     "product_lines": sum(1 for text in appendix if text.startswith("👉")),
                     "source_line": bool(composed["source_line"]),
                     # Yeni düzende mesaj adresi kaynak adına gömülüdür; eski sürümde
@@ -294,7 +319,8 @@ def per_message_cache(bot, enabled: bool = True):
     bloktan çıkınca ``bot`` işlevleri eski hâline döner.
     """
     cache: dict = {}
-    originals = {name: getattr(bot, name)
+    owner = _compose_owner(bot)
+    originals = {name: getattr(owner, name)
                  for name in (("sanitize_message", "_search_query", "_compose_resolve_header") if enabled else ())}
 
     def cached(name: str):
@@ -307,12 +333,12 @@ def per_message_cache(bot, enabled: bool = True):
         return call
 
     for name in originals:
-        setattr(bot, name, cached(name))
+        setattr(owner, name, cached(name))
     try:
         yield cache
     finally:
         for name, original in originals.items():
-            setattr(bot, name, original)
+            setattr(owner, name, original)
 
 
 def run_tree(tree: Path, spec_path: Path, out_path: Path, both_limits: bool, use_cache: bool = True) -> None:

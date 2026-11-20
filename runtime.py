@@ -4,9 +4,8 @@ Eskiden bu değerler ``main()`` içindeki iç işlevlerin kapanış (closure) de
 Şimdi işlevler modül düzeyinde durur ve ilk parametre olarak ``rt`` alır; böylece her
 işlev neye bağlı olduğunu açıkça gösterir ve tek başına incelenebilir.
 
-``bot``: çalışan ``bot`` modülü. Testlerin yamaladığı ``bot.py`` işlevleri (ör. ``compose_message``,
-``send_bot_media``) buradan ``rt.bot.AD`` ile çağrılır; böylece yama eskisi gibi etkili olur.
-Ayarlar, sayaçlar ve önbellekler ``appstate`` modülündedir.
+Ayarlar, sayaçlar ve önbellekler ``appstate`` modülündedir; ``rt`` yalnızca ``main()`` içinde
+kurulan nesneleri taşır.
 """
 
 from __future__ import annotations
@@ -17,8 +16,7 @@ from typing import Any
 class Runtime:
     """Çalışan sürecin paylaşılan nesneleri (``main()`` doldurur)."""
 
-    def __init__(self, bot: Any) -> None:
-        self.bot = bot
+    def __init__(self) -> None:
         self.client: Any = None                # Telethon istemcisi (kullanıcı hesabı)
         self.store: Any = None                 # ConfigStore: config.json okuma/yazma
         self.tracker: Any = None               # Akakçe ürün izleyicisi (yoksa None)

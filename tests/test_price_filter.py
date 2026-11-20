@@ -10,6 +10,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import delivery  # noqa: E402
+import composer  # noqa: E402
 import appstate  # noqa: E402
 import commandtext  # noqa: E402
 import header as header_mod  # noqa: E402
@@ -239,7 +241,7 @@ class SmartHeaderLayoutTests(unittest.TestCase):
     TEXT = "🔥 FIRSAT 🔥\nSamsung Galaxy S24 256 GB\nEski: 49.999 TL\nYeni: 41.999 TL\n500 TL kupon"
 
     def setUp(self):
-        self.addCleanup(setattr, bot, "SMART_HEADER", appstate.SMART_HEADER)
+        self.addCleanup(setattr, appstate, "SMART_HEADER", appstate.SMART_HEADER)
 
     def event(self):
         start = self.TEXT.index("49.999")
@@ -250,14 +252,14 @@ class SmartHeaderLayoutTests(unittest.TestCase):
 
     def test_default_layout_is_unchanged(self):
         appstate.SMART_HEADER = False
-        text = bot.compose_message(self.event(), message_link="https://t.me/c/1/2", source_name="Grup")["text"]
+        text = composer.compose_message(self.event(), message_link="https://t.me/c/1/2", source_name="Grup")["text"]
         self.assertNotIn("💰", text)
         self.assertTrue(text.startswith("Samsung Galaxy S24 256 GB\n\n🔥 FIRSAT"))
 
     def test_smart_layout_order(self):
         """Üst satır TEK satırdır: fiyat önce, " — " ayracı, sonra ürün adı."""
         appstate.SMART_HEADER = True
-        composed = bot.compose_message(self.event(), message_link="https://t.me/c/1/2", source_name="Grup")
+        composed = composer.compose_message(self.event(), message_link="https://t.me/c/1/2", source_name="Grup")
         text = composed["text"]
         self.assertTrue(text.startswith("₺41.999 — Samsung Galaxy S24 256 GB\n\n🔥 FIRSAT"), text)
         self.assertEqual(composed["header"], "₺41.999 — Samsung Galaxy S24 256 GB")
@@ -282,7 +284,7 @@ class SmartHeaderLayoutTests(unittest.TestCase):
         appstate.SMART_HEADER = True
         event = SimpleNamespace(message="Güzel bir ürün var", raw_text="Güzel bir ürün var",
                                 reply_markup=None, media=None, entities=[])
-        composed = bot.compose_message(event, message_link=None, source_name=None)
+        composed = composer.compose_message(event, message_link=None, source_name=None)
         self.assertEqual(composed["header"], "Güzel bir ürün var ❓")
         self.assertIn("❓", composed["text"])
         self.assertNotIn("Fiyat tespit", composed["text"])
@@ -295,7 +297,7 @@ class SmartHeaderLayoutTests(unittest.TestCase):
         event = SimpleNamespace(message=title + "\nFiyat: 41.999 TL",
                                 raw_text=title + "\nFiyat: 41.999 TL",
                                 reply_markup=None, media=None, entities=[])
-        header = bot.compose_message(event, limit=45)["header"]
+        header = composer.compose_message(event, limit=45)["header"]
         self.assertTrue(header.startswith("₺41.999 — "), header)
         self.assertLessEqual(len(header), 45)
         self.assertTrue(header.endswith("…"), header)
@@ -316,9 +318,9 @@ class SlowReportTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(lambda: (setattr(appstate, "SLOW_REPORT_SECONDS", old[0]),
                                  setattr(appstate, "_SLOW_REPORT_LAST", old[1])))
         appstate.SLOW_REPORT_SECONDS, appstate._SLOW_REPORT_LAST = 8.0, 0.0
-        bot.maybe_report_slow(FakeClient(), "Grup A", 2.0, [("Bildirim", 12.0)])
-        bot.maybe_report_slow(FakeClient(), "Grup A", 2.0, [("Bildirim", 12.0)])   # dakikada 1 sınırı
-        bot.maybe_report_slow(FakeClient(), "Grup B", 0.1, [("Bildirim", 0.5)])    # hızlı → rapor yok
+        delivery.maybe_report_slow(FakeClient(), "Grup A", 2.0, [("Bildirim", 12.0)])
+        delivery.maybe_report_slow(FakeClient(), "Grup A", 2.0, [("Bildirim", 12.0)])   # dakikada 1 sınırı
+        delivery.maybe_report_slow(FakeClient(), "Grup B", 0.1, [("Bildirim", 0.5)])    # hızlı → rapor yok
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         self.assertEqual(len(sent), 1)
@@ -328,13 +330,13 @@ class SlowReportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_disabled_when_zero(self):
         old = appstate.SLOW_REPORT_SECONDS
-        self.addCleanup(setattr, bot, "SLOW_REPORT_SECONDS", old)
+        self.addCleanup(setattr, appstate, "SLOW_REPORT_SECONDS", old)
         appstate.SLOW_REPORT_SECONDS = 0
         sent = []
         class FakeClient:
             async def send_message(self, *args):
                 sent.append(args)
-        bot.maybe_report_slow(FakeClient(), "G", 50.0, [("Bildirim", 50.0)])
+        delivery.maybe_report_slow(FakeClient(), "G", 50.0, [("Bildirim", 50.0)])
         await asyncio.sleep(0)
         self.assertEqual(sent, [])
 

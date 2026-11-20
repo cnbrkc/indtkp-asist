@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import bot
+import composer
 import appstate
 import dedupbadge
 import dedupmatch
@@ -26,7 +27,7 @@ class UserSuppliedCouponRegressions(unittest.TestCase):
         self.assertEqual(producttitle._coupon_campaign_title(text, 200, include_code=True), expected)
         self.assertEqual(smarttitle.smart_dedup_title(event(text)), "Kampanya hepsiburada EFSOCUMA50 300.00 50.00")
         with patch.object(appstate, "SMART_HEADER", True):
-            header = bot.compose_message(event(text))["text"].splitlines()[0]
+            header = composer.compose_message(event(text))["text"].splitlines()[0]
         self.assertEqual(header, expected)
         self.assertIsNone(pf.extract_price(text).value)
 
@@ -77,7 +78,7 @@ class UserSuppliedCouponRegressions(unittest.TestCase):
         self.assertIsNone(pf.extract_price(text).value)
         self.assertIn("KOZMO500", smarttitle.smart_dedup_title(event(text)))
         with patch.object(appstate, "SMART_HEADER", True):
-            header = bot.compose_message(event(text))["text"].splitlines()[0]
+            header = composer.compose_message(event(text))["text"].splitlines()[0]
         # Kupon duyurusunda ürün fiyatı YOKTUR; bu bir eksiklik değil iletinin
         # türüdür. Kullanıcı isteği: "indirim kuponu bildirimlerinde de [soru
         # işareti] koymayalım". Ürün fiyatı taşıyan iletilerde davranış aynı
@@ -113,7 +114,7 @@ class UserSuppliedCouponRegressions(unittest.TestCase):
         self.assertEqual(pf.extract_price(appliance).value, 30199)
         self.assertEqual(pf.extract_price(appliance).confidence, "high")
         with patch.object(appstate, "SMART_HEADER", True):
-            header = bot.compose_message(event(appliance))["text"].splitlines()[0]
+            header = composer.compose_message(event(appliance))["text"].splitlines()[0]
         self.assertTrue(header.startswith("₺30.199 — Delonghi Magnifica Plus"), header)
 
 

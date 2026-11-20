@@ -73,7 +73,21 @@ async def control_reply(rt: Runtime, event: events.NewMessage.Event, text: str, 
         return sent_ids
     chat_id = int(getattr(event, "chat_id", 0) or 0)
     current = [int(getattr(event, "id", 0) or 0), *sent_ids]
-    outdated = rt.bot.note_command_messages(chat_id, current)
+    outdated = note_command_messages(chat_id, current)
     outdated += [int(item) for item in stale if item]
     await delete_command_messages(rt, chat_id, outdated)
     return sent_ids
+
+
+def note_command_messages(chat_id: int, message_ids: Sequence[int]) -> list[int]:
+    """Son komut alışverişinin mesaj ID'lerini kaydet; silinecek eskileri döndür.
+
+    Yalnızca komut diyaloğuna ait mesajlar (kullanıcının komutu + botun yanıtı)
+    buraya yazılır. İndirim bildirimleri bu kayda hiç girmediği için temizlikten
+    etkilenmez; böylece yanlışlıkla fırsat mesajı silinmez.
+    """
+    chat = int(chat_id or 0)
+    current = [int(item) for item in message_ids if item]
+    previous = appstate.COMMAND_MESSAGES.get(chat, [])
+    appstate.COMMAND_MESSAGES[chat] = current
+    return [item for item in previous if item not in current]

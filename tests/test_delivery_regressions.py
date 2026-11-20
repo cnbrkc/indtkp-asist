@@ -16,6 +16,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot
+import time
+import botapi
 import appstate
 import dedupbadge
 import dedupmatch
@@ -133,7 +135,7 @@ class RateLimitRegressionTest(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(bot.urllib.request, "urlopen", side_effect=urlopen), \
              mock.patch.object(telegram_retry.asyncio, "sleep", new_callable=mock.AsyncMock) as sleep:
-            result = await bot.send_bot_media("123:ABC", -5569562901, kind="photo",
+            result = await botapi.send_bot_media("123:ABC", -5569562901, kind="photo",
                                               filename="deal.jpg", mime_type="image/jpeg", data=b"image")
         self.assertTrue(result.ok)
         self.assertEqual(result.message_id, 36892)
@@ -151,7 +153,7 @@ class RateLimitRegressionTest(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(api, "_request", return_value={"ok": True, "result": {}}), \
              mock.patch.object(bot.urllib.request, "urlopen", return_value=response):
             await api.call("sendMessage", {"chat_id": 1, "text": "hello"})
-            await bot.edit_bot_text(api.token, -5569562901, 10, "updated")
+            await botapi.edit_bot_text(api.token, -5569562901, 10, "updated")
         self.assertEqual(sleep.await_count, 2)
         self.assertTrue(all(call.args[0] >= 29 for call in sleep.await_args_list))
 
@@ -263,14 +265,14 @@ class RateLimitRegressionTest(unittest.IsolatedAsyncioTestCase):
             b'{"description":"Bad Request: message is not modified"}'))
         with mock.patch.object(bot.urllib.request, "urlopen", side_effect=exc) as request, \
              mock.patch.object(bot.log, "error") as error:
-            ok, _ = await bot.edit_bot_text("123:ABC", -1, 1, "unchanged")
+            ok, _ = await botapi.edit_bot_text("123:ABC", -1, 1, "unchanged")
         self.assertTrue(ok)
         self.assertEqual(request.call_count, 1)
         error.assert_not_called()
 
     async def test_ambiguous_transport_failure_is_not_replayed(self):
         with mock.patch.object(bot.urllib.request, "urlopen", side_effect=TimeoutError) as request:
-            ok, _ = await bot.send_bot_ping("123:ABC", -1, "offer")
+            ok, _ = await botapi.send_bot_ping("123:ABC", -1, "offer")
         self.assertFalse(ok)
         self.assertEqual(request.call_count, 1)
 
@@ -369,7 +371,7 @@ class DeliveryRegressionTest(unittest.TestCase):
         # Devralma gönderimi başarısızsa kayıt düşer: sonraki tekrar ne
         # yanlışlıkla bastırılır ne de kayıt hayalet gibi yaşamaya devam eder.
         client = self._basic_history_client()
-        with mock.patch.object(bot, "send_bot_ping",
+        with mock.patch.object(botapi, "send_bot_ping",
                                new=mock.AsyncMock(return_value=(False, "Forbidden"))):
             self._send(client, "Çay 4 TL https://ornek.example/urun-a", media=False)
         self.assertTrue(client.delivered, "hesap yedeği iletmiş olmalı")
@@ -459,7 +461,7 @@ class DeliveryRegressionTest(unittest.TestCase):
     def test_missing_bot_message_is_replaced_on_current_occurrence(self):
         client = self._run(fast_notify=True)
         self._send(client, "Çay 5 TL", media=False)
-        with mock.patch.object(bot, "edit_bot_text", new=mock.AsyncMock(return_value=(False, "Bad Request: message to edit not found"))) as edit:
+        with mock.patch.object(botapi, "edit_bot_text", new=mock.AsyncMock(return_value=(False, "Bad Request: message to edit not found"))) as edit:
             self._send(client, "Çay 5 TL", media=False)
         self.assertEqual(edit.await_count, 1, "shorter badge cannot repair a missing message")
         self.assertEqual(len(self.ping_calls), 2)
@@ -470,7 +472,7 @@ class DeliveryRegressionTest(unittest.TestCase):
 
     def test_failed_bot_fallback_is_not_a_successful_dedup_entry(self):
         client = self._run(fast_notify=True)
-        with mock.patch.object(bot, "send_bot_ping", new=mock.AsyncMock(return_value=(False, "Forbidden"))):
+        with mock.patch.object(botapi, "send_bot_ping", new=mock.AsyncMock(return_value=(False, "Forbidden"))):
             self._send(client, "Çay 5 TL", media=False)
         self.assertTrue(client.delivered, "account fallback remains available")
         self.assertFalse(appstate.DEDUP_CACHE, "account copy is not a bot notification")
@@ -515,11 +517,11 @@ class DeliveryRegressionTest(unittest.TestCase):
                 await sent()
                 started.set()
                 await release.wait()
-                return bot.BotSendResult(True, "sent", 900)
+                return botapi.BotSendResult(True, "sent", 900)
 
             handler = client.handlers[1][1]
             chat = next(iter(appstate.SOURCE_IDS))
-            with mock.patch.object(bot, "send_bot_ping", slow_send), \
+            with mock.patch.object(botapi, "send_bot_ping", slow_send), \
                  mock.patch.object(appstate, "DEDUP_RESERVE_TIMEOUT", 0.001), \
                  mock.patch.object(appstate, "DEDUP_RESERVE_TTL", 0):
                 first = asyncio.create_task(handler(ti.FakeEvent(chat, 7, "Çay 5 TL", message_id=1, media=False)))
@@ -542,7 +544,7 @@ class DeliveryRegressionTest(unittest.TestCase):
             chat = next(iter(appstate.SOURCE_IDS))
             with mock.patch.object(appstate, "DEDUP_EDIT_MIN_INTERVAL", 0.01):
                 await handler(ti.FakeEvent(chat, 7, "Çay 5 TL", message_id=1, media=False))
-                next(iter(appstate.DEDUP_CACHE.values()))["last_edit"] = bot.time.time()
+                next(iter(appstate.DEDUP_CACHE.values()))["last_edit"] = time.time()
                 await asyncio.gather(*(handler(ti.FakeEvent(chat, 7, "Çay 5 TL", message_id=i, media=False)) for i in range(2, 12)))
 
         asyncio.run(scenario())
@@ -557,7 +559,7 @@ class DeliveryRegressionTest(unittest.TestCase):
         self.assertGreaterEqual(appstate.DEDUP_EDIT_MIN_INTERVAL, 5.0)
 
     def test_onual_429_keeps_media_notification_instead_of_account_fallback(self):
-        real_media = bot.send_bot_media
+        real_media = botapi.send_bot_media
         client = self._run(fast_notify=True, include_keywords=[])
         responses = [
             {"ok": False, "error_code": 429, "parameters": {"retry_after": 16}},
@@ -572,7 +574,7 @@ class DeliveryRegressionTest(unittest.TestCase):
                 raise urllib.error.HTTPError("redacted", 429, "Too Many Requests", {}, io.BytesIO(json.dumps(body).encode()))
             return io.BytesIO(json.dumps(body).encode())
 
-        with mock.patch.object(bot, "send_bot_media", real_media), \
+        with mock.patch.object(botapi, "send_bot_media", real_media), \
              mock.patch.object(bot.urllib.request, "urlopen", side_effect=urlopen), \
              mock.patch.object(telegram_retry.RetryGate, "wait", new_callable=mock.AsyncMock):
             self._send(client, "Karaca Multichef Rose Gold Mutfak Şefi\n2999 TL", message_id=127346)
@@ -594,7 +596,7 @@ class DeliveryRegressionTest(unittest.TestCase):
                 await asyncio.Event().wait()
 
             chat = next(iter(appstate.SOURCE_IDS))
-            with mock.patch.object(bot, "send_bot_ping", waiting):
+            with mock.patch.object(botapi, "send_bot_ping", waiting):
                 task = asyncio.create_task(client.handlers[1][1](ti.FakeEvent(chat, 7, "Çay 5 TL", media=False)))
                 await started.wait()
                 task.cancel()

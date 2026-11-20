@@ -6,18 +6,25 @@ import asyncio
 import copy
 import logging
 import re
+import time
 from typing import Any
 
 from telethon import events
 
 import appstate
+import botapi
+import chatresolve
 import dm_filters
-import time
+import gitops
+import pollcursor
+import runtimecfg
+import statusreport
 import timefmt
 from analysis import (
     ANALYSIS_QUERY_MAX_LINES,
     analysis_query_pattern,
     analysis_status_id,
+    analyze_titles,
     build_analysis_report,
     build_query_lines,
     message_title,
@@ -26,6 +33,12 @@ from analysis import (
     update_analysis_scan,
 )
 from commandtext import (
+    _webtakip_count,
+    build_filter_toggle_prompt,
+    build_list_category_prompt,
+    build_list_change_confirmation,
+    build_list_value_prompt,
+    build_main_menu_text,
     CMD_ANALYZE,
     CMD_DM_COMMANDS,
     CMD_SETTINGS_ADD,
@@ -49,31 +62,25 @@ from commandtext import (
     DM_LIST_FIELDS,
     DM_PRICE_FIELD,
     DM_PRODUCT_PRICE_FIELD,
+    drop_pending,
     FILTER_TARGET_META,
     HELP_TEXT,
-    PendingKey,
-    SETTINGS_COMMANDS,
-    TELEGRAM_LIST_FIELDS,
-    TELEGRAM_LIST_META,
-    WEBTAKIP_FIELD,
-    _webtakip_count,
-    build_filter_toggle_prompt,
-    build_list_category_prompt,
-    build_list_change_confirmation,
-    build_list_value_prompt,
-    build_main_menu_text,
-    drop_pending,
     new_filter_edit,
     new_telegram_edit,
     peek_pending,
     pending_key,
+    PendingKey,
     resolve_confirmation_choice,
     resolve_filter_target,
     resolve_telegram_list,
     set_pending,
+    SETTINGS_COMMANDS,
     stage_filter_toggle,
     stage_telegram_list_change,
+    TELEGRAM_LIST_FIELDS,
     telegram_list_items,
+    TELEGRAM_LIST_META,
+    WEBTAKIP_FIELD,
 )
 from confutil import config_flag
 from controlbase import control_reply, is_admin_event, is_control_event
@@ -96,9 +103,9 @@ async def apply_setting_change(rt: Runtime, before: dict,
     karşılaştırılarak bulunur. Dönen ikinci değer doluysa değişiklik
     geçersiz sayılır ve çağıran taraf geri alır.
     """
-    notes = rt.bot.apply_runtime_config(rt.store.config)
-    targets = groups if groups is not None else rt.bot.changed_groups(before, rt.store.config)
-    resolved, fatal = await rt.bot.resolve_chat_groups(rt.client, rt.store.config, targets, strict=bool(targets))
+    notes = runtimecfg.apply_runtime_config(rt.store.config)
+    targets = groups if groups is not None else runtimecfg.changed_groups(before, rt.store.config)
+    resolved, fatal = await chatresolve.resolve_chat_groups(rt.client, rt.store.config, targets, strict=bool(targets))
     return notes + resolved, fatal
 
 
@@ -154,14 +161,14 @@ async def save_pending_change(rt: Runtime, event: events.NewMessage.Event,
             candidate["dm_enabled"] = bool(candidate[field]) and (
                 pending.get("action") == "add" or config_flag(before.get("dm_enabled"), False)
             )
-        groups = rt.bot.changed_groups(before, candidate)
+        groups = runtimecfg.changed_groups(before, candidate)
         rt.store.config = candidate
         notes, fatal = await apply_setting_change(rt, before)
         if fatal:
             rt.store.restore(before)
-            rt.bot.apply_runtime_config(rt.store.config)
+            runtimecfg.apply_runtime_config(rt.store.config)
             if groups:
-                await rt.bot.resolve_chat_groups(rt.client, rt.store.config, groups, strict=False)
+                await chatresolve.resolve_chat_groups(rt.client, rt.store.config, groups, strict=False)
             drop_pending(key)
             await control_reply(rt, event,
                 f"❌ Değişiklik uygulanamadı: {fatal}\n"
@@ -169,12 +176,12 @@ async def save_pending_change(rt: Runtime, event: events.NewMessage.Event,
             )
             return
 
-        ok, save_note = await rt.bot.save_config(rt.store, f"{TELEGRAM_LIST_META[field]['title']} güncellendi")
+        ok, save_note = await gitops.save_config(rt.store, f"{TELEGRAM_LIST_META[field]['title']} güncellendi")
         if not ok:
             rt.store.restore(before)
-            rt.bot.apply_runtime_config(rt.store.config)
+            runtimecfg.apply_runtime_config(rt.store.config)
             if groups:
-                await rt.bot.resolve_chat_groups(rt.client, rt.store.config, groups, strict=False)
+                await chatresolve.resolve_chat_groups(rt.client, rt.store.config, groups, strict=False)
             set_pending(key, **pending)
             await control_reply(rt, event, "\n".join([
                 "❌ Değişiklik dosyaya yazılamadı; çalışan ayarlar geri yüklendi.",
@@ -209,14 +216,14 @@ async def apply_filter_toggle(rt: Runtime, event: events.NewMessage.Event, actio
             return
 
         rt.store.config = candidate
-        rt.bot.apply_runtime_config(rt.store.config)
+        runtimecfg.apply_runtime_config(rt.store.config)
         what = "Filtreler" if target == "both" else FILTER_TARGET_META[target]["title"] + " filtresi"
-        ok_save, save_note = await rt.bot.save_config(
+        ok_save, save_note = await gitops.save_config(
             rt.store, f"{what} {'açıldı' if action == 'open' else 'kapatıldı'}",
         )
         if not ok_save:
             rt.store.restore(before)
-            rt.bot.apply_runtime_config(rt.store.config)
+            runtimecfg.apply_runtime_config(rt.store.config)
             await control_reply(rt, event, "❌ Filtre değişikliği kaydedilemedi; önceki durum geri yüklendi.\n" + save_note)
             return
 
@@ -356,7 +363,7 @@ async def analyze_history(rt: Runtime, event: events.NewMessage.Event, rest: str
             log.warning("Geçmiş okunamadı (%s): %s: %s", item["name"], type(exc).__name__, exc)
         await update_analysis_scan(status, index, len(targets), f"{len(titles)} başlık")
 
-    analysis = rt.bot.analyze_titles(titles, keep_everything=keep_everything)
+    analysis = analyze_titles(titles, keep_everything=keep_everything)
     log.info("Kelime analizi: %d başlık, %d tekil, %d kaynak, %s.",
              analysis["counts"]["titles"], analysis["counts"]["unique"], len(targets),
              "tüm kelimeler" if keep_everything else "filtreli")
@@ -535,9 +542,9 @@ async def handle_pending_message(rt: Runtime, event: events.NewMessage.Event,
             resolved_values = []
             for value in values:
                 try:
-                    peer_id, _, _ = await rt.bot.resolve_chat(rt.client, value)
+                    peer_id, _, _ = await chatresolve.resolve_chat(rt.client, value)
                     # Never persist a private invite token in config/Git history.
-                    resolved_values.append(peer_id if isinstance(value, str) and rt.bot._INVITE_LINK_RE.fullmatch(value.strip()) else value)
+                    resolved_values.append(peer_id if isinstance(value, str) and chatresolve._INVITE_LINK_RE.fullmatch(value.strip()) else value)
                 except Exception as exc:  # noqa: BLE001 - geçersiz kaynak taslağa alınmasın
                     set_pending(key, **item)
                     await control_reply(rt, event, "\n".join([
@@ -653,7 +660,7 @@ async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> Non
     elif command in CMD_DM_COMMANDS:
         await handle_dm_command(rt, event, command, rest)
     elif command == COMMAND_STATUS:
-        text = rt.bot.build_status_text(rt.store.config, connected=rt.client.is_connected())
+        text = statusreport.build_status_text(rt.store.config, connected=rt.client.is_connected())
         dm_on = dm_filters.has_active_rules(rt.store.config)
         text += f"\n• 📩 Kişisel DM fırsat motoru: {'ETKİN' if dm_on else 'KAPALI'}"
         if rt.tracker is not None:
@@ -675,7 +682,7 @@ async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> Non
             await control_reply(rt, event, f"❌ Deneme mesajı gönderilemedi: {type(exc).__name__}: {exc}")
             return
         if appstate.NOTIFY_BOT_TOKEN and appstate.DESTINATION_ID is not None:
-            ok, detail = await rt.bot.send_bot_ping(
+            ok, detail = await botapi.send_bot_ping(
                 appstate.NOTIFY_BOT_TOKEN, appstate.DESTINATION_ID,
                 "🔔 Bildirim denemesi\n\n(Bildirimlerde mesajın kopyası + '🔗 Mesajı Gör' linki gelir.)",
             )
@@ -690,7 +697,7 @@ async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> Non
         reply += "\n\n" + await private_channel_health(rt)
         await control_reply(rt, event, reply)
     elif command == COMMAND_SOURCES:
-        await control_reply(rt, event, rt.bot.build_source_text())
+        await control_reply(rt, event, statusreport.build_source_text())
     elif command in CMD_SOURCE_TEST:
         await test_source_access(rt, event, rest)
     elif command == COMMAND_ID:
@@ -725,13 +732,13 @@ async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> Non
             log.warning("Restart drain %ss doldu — %s uçuş + %s poll görevi kaldı; mevcut ardışık cursor ile yedek alınıyor.",
                         6, len(appstate.SOURCE_IN_FLIGHT), len(rt.poll_delivery_tasks))
         # 2) Tek toplu persist (mevcut atomic_write_json + GIT_WRITE_LOCK yolunu kullan)
-        ok_save, save_note = await rt.bot.cursor_persist_for_restart(rt.store)
+        ok_save, save_note = await pollcursor.cursor_persist_for_restart(rt.store)
         if not ok_save:
             appstate.RESTARTING = False
             await control_reply(rt, event, "✗ Restart iptal — cursor kalıcılaştırılamadı: " + save_note)
             return
         # 3) Dispatch yalnızca persist başarıyla bittiyse
-        ok, message = await rt.bot.dispatch_next_run(rt.gh_pat)
+        ok, message = await gitops.dispatch_next_run(rt.gh_pat)
         if ok:
             await control_reply(rt, event, "🔄 " + message + "\n" + save_note)
         else:

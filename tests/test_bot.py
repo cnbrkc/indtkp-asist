@@ -23,6 +23,14 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import statusreport  # noqa: E402
+import runtimecfg  # noqa: E402
+import preflight  # noqa: E402
+import gitops  # noqa: E402
+import dedupflow  # noqa: E402
+import controlbase  # noqa: E402
+import composer  # noqa: E402
+import botapi  # noqa: E402
 import appstate  # noqa: E402
 import analysis as analysis_mod  # noqa: E402
 import botentities  # noqa: E402
@@ -144,12 +152,12 @@ class CheckEnvironmentTest(unittest.TestCase):
 
     def test_healthy_setup_has_no_problems(self):
         with mock.patch.dict(os.environ, self.good_env, clear=False):
-            self.assertEqual(bot.check_environment(dict(self.base_config)), [])
+            self.assertEqual(preflight.check_environment(dict(self.base_config)), [])
 
     def test_missing_secrets_are_reported(self):
         env = {"API_ID": "", "API_HASH": "", "SESSION_STRING": "", "GH_PAT": ""}
         with mock.patch.dict(os.environ, env, clear=False):
-            problems = bot.check_environment(dict(self.base_config))
+            problems = preflight.check_environment(dict(self.base_config))
         joined = " ".join(problems)
         self.assertIn("API_ID", joined)
         self.assertIn("API_HASH", joined)
@@ -158,30 +166,30 @@ class CheckEnvironmentTest(unittest.TestCase):
     def test_bad_api_hash_length_reported(self):
         env = dict(self.good_env, API_HASH="kisa")
         with mock.patch.dict(os.environ, env, clear=False):
-            problems = bot.check_environment(dict(self.base_config))
+            problems = preflight.check_environment(dict(self.base_config))
         self.assertTrue(any("32 karakter" in p for p in problems), problems)
 
     def test_group_control_without_admin_is_a_problem(self):
         config = dict(self.base_config, control_chat=-5092968106, admin_user_id=None)
         with mock.patch.dict(os.environ, self.good_env, clear=False):
-            problems = bot.check_environment(config)
+            problems = preflight.check_environment(config)
         self.assertTrue(any("admin_user_id" in p for p in problems), problems)
 
     def test_group_control_with_admin_is_fine(self):
         config = dict(self.base_config, control_chat="-5092968106", admin_user_id="1143378073")
         with mock.patch.dict(os.environ, self.good_env, clear=False):
-            self.assertEqual(bot.check_environment(config), [])
+            self.assertEqual(preflight.check_environment(config), [])
 
     def test_empty_sources_reported(self):
         config = dict(self.base_config, source_chats=[])
         with mock.patch.dict(os.environ, self.good_env, clear=False):
-            problems = bot.check_environment(config)
+            problems = preflight.check_environment(config)
         self.assertTrue(any("source_chats" in p for p in problems), problems)
 
     def test_invalid_modes_reported(self):
         config = dict(self.base_config, match_mode="bazen", copy_mode="ucur")
         with mock.patch.dict(os.environ, self.good_env, clear=False):
-            problems = bot.check_environment(config)
+            problems = preflight.check_environment(config)
         self.assertTrue(any("match_mode" in p for p in problems), problems)
         self.assertTrue(any("copy_mode" in p for p in problems), problems)
 
@@ -248,12 +256,12 @@ class StatusTextTest(unittest.TestCase):
         appstate.CONTROL_NAMES.append("Benim Grup [-5092968106]")
         appstate.DESTINATION_LABEL = "Benim Grup [-5092968106]"
 
-        status = bot.build_status_text({"include_keywords": ["çay"], "match_mode": "any", "source_chats": ["@firsatz"]})
+        status = statusreport.build_status_text({"include_keywords": ["çay"], "match_mode": "any", "source_chats": ["@firsatz"]})
         self.assertIn("Takipçi aktif", status)
         self.assertIn("Görülen: 42", status)
         self.assertIn("Benim Grup", status)
 
-        sources = bot.build_source_text()
+        sources = statusreport.build_source_text()
         self.assertIn("FırsatZ", sources)
         self.assertIn("çözülemedi", sources)
 
@@ -331,10 +339,10 @@ class StatusTextTest(unittest.TestCase):
         appstate.SOURCE_IDS.clear()
         appstate.CONTROL_NAMES.clear()
         appstate.CONTROL_IDS.clear()
-        closed = bot.build_status_text({"match_mode": "forward_all", "include_keywords": ["çay"]})
+        closed = statusreport.build_status_text({"match_mode": "forward_all", "include_keywords": ["çay"]})
         self.assertIn("Telegram dahili filtre: KAPALI", closed)
         self.assertIn("kelimeler yok sayılıyor", closed)
-        opened = bot.build_status_text({"include_keywords": ["çay"], "exclude_keywords": ["çekiliş"]})
+        opened = statusreport.build_status_text({"include_keywords": ["çay"], "exclude_keywords": ["çekiliş"]})
         self.assertIn("Telegram dahili filtre: AÇIK", opened)
         self.assertIn("çay (any)", opened)
         self.assertIn("Telegram harici filtre: AÇIK", opened)
@@ -346,13 +354,13 @@ class StatusTextTest(unittest.TestCase):
                                    "flood_count": 2, "last_flood_wait": 181.0})
         self.addCleanup(appstate.POLL_TELEMETRY.update,
                         {"interval": 3.0, "last_elapsed": 0.0, "flood_count": 0, "last_flood_wait": 0.0})
-        status = bot.build_status_text({"include_keywords": ["çay"]})
+        status = statusreport.build_status_text({"include_keywords": ["çay"]})
         self.assertIn("Hızlı tarama: açık · aralık 300 sn", status)
         self.assertIn("FloodWait 2 (son 181 sn)", status)
         self.assertIn("Bot API hız sınırı:", status)
 
     def test_status_marks_disabled_exclude_filter(self):
-        status = bot.build_status_text({"exclude_keywords": ["çekiliş"], "exclude_enabled": False})
+        status = statusreport.build_status_text({"exclude_keywords": ["çekiliş"], "exclude_enabled": False})
         self.assertIn("Telegram harici filtre: KAPALI", status)
         self.assertIn("engelleme yapılmıyor", status)
 
@@ -413,7 +421,7 @@ class MatchModeTest(unittest.TestCase):
     def test_check_environment_accepts_forward_all(self):
         config = dict(CheckEnvironmentTest.base_config, match_mode="forward_all")
         with mock.patch.dict(os.environ, CheckEnvironmentTest.good_env, clear=False):
-            self.assertEqual(bot.check_environment(config), [])
+            self.assertEqual(preflight.check_environment(config), [])
 
     def test_filter_state_defaults_to_both_enabled(self):
         self.assertEqual(keywords.filter_state_of({}), {"include": True, "exclude": True})
@@ -436,7 +444,7 @@ class MatchModeTest(unittest.TestCase):
     def test_check_environment_rejects_unknown_mode(self):
         config = dict(CheckEnvironmentTest.base_config, match_mode="uzay")
         with mock.patch.dict(os.environ, CheckEnvironmentTest.good_env, clear=False):
-            problems = bot.check_environment(config)
+            problems = preflight.check_environment(config)
         self.assertTrue(any("match_mode" in p for p in problems), problems)
         self.assertTrue(any("forward_all" in p for p in problems), problems)
 
@@ -927,7 +935,7 @@ class WordAnalysisTest(unittest.TestCase):
             "Bebek bezi 2 al 1 öde",
             "Oyuncak araba fırsatı",
         ]
-        result = bot.analyze_titles(titles)
+        result = analysis_mod.analyze_titles(titles)
         self.assertEqual(result["counts"]["titles"], 3)
         self.assertEqual(result["counts"]["unique"], 3)
         self.assertEqual(result["words"]["bebek"], 2)
@@ -938,7 +946,7 @@ class WordAnalysisTest(unittest.TestCase):
         self.assertNotIn("fırsatı", result["words"])
 
     def test_duplicate_titles_are_merged(self):
-        result = bot.analyze_titles(["Bebek bezi", "BEBEK BEZİ", "Oyuncak"])
+        result = analysis_mod.analyze_titles(["Bebek bezi", "BEBEK BEZİ", "Oyuncak"])
         self.assertEqual(result["counts"]["titles"], 3)
         self.assertEqual(result["counts"]["unique"], 2)
         self.assertEqual(result["counts"]["duplicates"], 1)
@@ -946,10 +954,10 @@ class WordAnalysisTest(unittest.TestCase):
 
     def test_keep_everything_counts_stop_words_and_numbers(self):
         title = "Bebek bezi 2 al 1 öde"
-        filtered = bot.analyze_titles([title])
+        filtered = analysis_mod.analyze_titles([title])
         self.assertNotIn("2", filtered["words"])
         self.assertEqual(filtered["counts"]["filtered"], 2)
-        everything = bot.analyze_titles([title], keep_everything=True)
+        everything = analysis_mod.analyze_titles([title], keep_everything=True)
         self.assertIn("2", everything["words"])
         self.assertEqual(everything["counts"]["filtered"], 0)
 
@@ -1066,7 +1074,7 @@ class WordAnalysisTest(unittest.TestCase):
         self.assertNotIn("🚫", lines[2])
 
     def test_report_has_both_statistics(self):
-        analysis = bot.analyze_titles(["Bebek bezi indirim", "Bebek battaniye"])
+        analysis = analysis_mod.analyze_titles(["Bebek bezi indirim", "Bebek battaniye"])
         report = analysis_mod.build_analysis_report(
             analysis, config={"exclude_keywords": ["bebek"], "include_keywords": []},
             sources=16, per_source=300, elapsed=12.0,
@@ -1082,7 +1090,7 @@ class WordAnalysisTest(unittest.TestCase):
 
     def test_report_notes_unreadable_sources_and_empty_result(self):
         report = analysis_mod.build_analysis_report(
-            bot.analyze_titles([]), config={}, sources=2, per_source=50,
+            analysis_mod.analyze_titles([]), config={}, sources=2, per_source=50,
             failures=["Kanal (FloodWaitError)"],
         )
         self.assertIn("Okunamayan kaynak", report)
@@ -1101,9 +1109,9 @@ class ConfigStoreTest(unittest.TestCase):
 
     def test_only_source_list_changes_require_chat_resolution(self):
         before = {"source_chats": ["@eski"], "destination": 1, "match_mode": "any"}
-        self.assertEqual(bot.changed_groups(before, {**before, "match_mode": "forward_all"}), set())
-        self.assertEqual(bot.changed_groups(before, {**before, "destination": 2}), set())
-        self.assertEqual(bot.changed_groups(before, {**before, "source_chats": ["@yeni"]}), {"sources"})
+        self.assertEqual(runtimecfg.changed_groups(before, {**before, "match_mode": "forward_all"}), set())
+        self.assertEqual(runtimecfg.changed_groups(before, {**before, "destination": 2}), set())
+        self.assertEqual(runtimecfg.changed_groups(before, {**before, "source_chats": ["@yeni"]}), {"sources"})
 
 
 class AtomicWriteTest(unittest.TestCase):
@@ -1116,22 +1124,22 @@ class AtomicWriteTest(unittest.TestCase):
 
     def test_writes_valid_utf8_json(self):
         data = {"include_keywords": ["çay", "kahve"], "match_mode": "forward_all"}
-        bot.atomic_write_json(self.path, data)
+        gitops.atomic_write_json(self.path, data)
         self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), data)
         self.assertIn("çay", self.path.read_text(encoding="utf-8"), "Türkçe karakter bozulmamalı")
 
     def test_leaves_no_temp_files_behind(self):
-        bot.atomic_write_json(self.path, {"a": 1})
+        gitops.atomic_write_json(self.path, {"a": 1})
         leftovers = [p.name for p in Path(self.tmp.name).iterdir() if p.name.endswith(".tmp")]
         self.assertEqual(leftovers, [], "geçici dosya temizlenmedi")
 
     def test_overwrites_existing_file(self):
         self.path.write_text('{"eski": true}', encoding="utf-8")
-        bot.atomic_write_json(self.path, {"yeni": True})
+        gitops.atomic_write_json(self.path, {"yeni": True})
         self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"yeni": True})
 
     def test_legacy_token_is_never_persisted(self):
-        bot.atomic_write_json(self.path, {"notify_bot_token": "legacy-test-value", "setting": True})
+        gitops.atomic_write_json(self.path, {"notify_bot_token": "legacy-test-value", "setting": True})
         written = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertNotIn("notify_bot_token", written)
         self.assertEqual(written["setting"], True)
@@ -1140,7 +1148,7 @@ class AtomicWriteTest(unittest.TestCase):
         self.path.write_text('{"eski": true}', encoding="utf-8")
         with mock.patch.object(bot.json, "dumps", side_effect=ValueError("boom")):
             with self.assertRaises(ValueError):
-                bot.atomic_write_json(self.path, {"yeni": True})
+                gitops.atomic_write_json(self.path, {"yeni": True})
         self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"eski": True})
         leftovers = [p.name for p in Path(self.tmp.name).iterdir() if p.name.endswith(".tmp")]
         self.assertEqual(leftovers, [])
@@ -1148,16 +1156,16 @@ class AtomicWriteTest(unittest.TestCase):
     def test_save_config_reports_push_status(self):
         store = commandtext.ConfigStore(self.path, {"match_mode": "any"})
         store.config["match_mode"] = "forward_all"
-        with mock.patch.object(bot, "commit_and_push", lambda *a, **k: ("pushed", "origin/main")):
-            ok, note = asyncio.run(bot.save_config(store, "test"))
+        with mock.patch.object(gitops, "commit_and_push", lambda *a, **k: ("pushed", "origin/main")):
+            ok, note = asyncio.run(gitops.save_config(store, "test"))
         self.assertTrue(ok)
         self.assertIn("repo'ya işlendi", note)
         self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["match_mode"], "forward_all")
 
     def test_save_config_reports_unwritable_file(self):
         store = commandtext.ConfigStore(self.path, {"match_mode": "any"})
-        with mock.patch.object(bot, "atomic_write_json", side_effect=OSError("disk dolu")):
-            ok, note = asyncio.run(bot.save_config(store, "test"))
+        with mock.patch.object(gitops, "atomic_write_json", side_effect=OSError("disk dolu")):
+            ok, note = asyncio.run(gitops.save_config(store, "test"))
         self.assertFalse(ok)
         self.assertIn("yazılamadı", note)
 
@@ -1222,13 +1230,13 @@ class GitPersistTest(unittest.TestCase):
     def test_change_is_committed_and_pushed(self):
         self._change(match_mode="forward_all")
         with mock.patch.dict(os.environ, {"CONFIG_PUSH_TOKEN": "dummy"}, clear=False):
-            status, detail = bot.commit_and_push(self.config_path, "match_mode değişti")
+            status, detail = gitops.commit_and_push(self.config_path, "match_mode değişti")
         self.assertEqual(status, "pushed", detail)
         self.assertIn("forward_all", self._remote_config())
 
     def test_unchanged_file_is_not_committed(self):
         with mock.patch.dict(os.environ, {"CONFIG_PUSH_TOKEN": "dummy"}, clear=False):
-            status, detail = bot.commit_and_push(self.config_path, "deneme")
+            status, detail = gitops.commit_and_push(self.config_path, "deneme")
         self.assertEqual(status, "clean", detail)
 
     def test_push_uses_the_local_branch_not_the_ci_merge_ref(self):
@@ -1240,7 +1248,7 @@ class GitPersistTest(unittest.TestCase):
         env = {"CONFIG_PUSH_TOKEN": "dummy", "GITHUB_REF_NAME": "4/merge",
                "GITHUB_EVENT_NAME": "pull_request"}
         with mock.patch.dict(os.environ, env, clear=False):
-            status, detail = bot.commit_and_push(self.config_path, "deneme")
+            status, detail = gitops.commit_and_push(self.config_path, "deneme")
         self.assertEqual(status, "pushed", detail)
         self.assertIn("forward_all", self._remote_config(), "değişiklik main dalına gitmeli")
         refs = self._git(["show-ref"], cwd=self.origin)
@@ -1255,7 +1263,7 @@ class GitPersistTest(unittest.TestCase):
                   cwd=self.work)
         cleared = {"CONFIG_PUSH_TOKEN": "", "GITHUB_TOKEN": "", "GH_PAT": ""}
         with mock.patch.dict(os.environ, cleared, clear=False):
-            status, detail = bot.commit_and_push(self.config_path, "deneme")
+            status, detail = gitops.commit_and_push(self.config_path, "deneme")
         self.assertEqual(status, "local", detail)
         self.assertIn("config: deneme", self._git(["log", "--oneline"], cwd=self.work))
 
@@ -1268,8 +1276,8 @@ class GitPersistTest(unittest.TestCase):
             calls.append(list(args))
             return 0, ""
 
-        with mock.patch.object(bot, "_run_git", fake_run_git):
-            code, _ = bot.push_branch(self.work, "main", "dummy")
+        with mock.patch.object(gitops, "_run_git", fake_run_git):
+            code, _ = gitops.push_branch(self.work, "main", "dummy")
         self.assertEqual(code, 0)
         self.assertEqual(calls, [["push", "origin", "HEAD:main"]], calls)
         self.assertNotIn("extraheader", " ".join(calls[0]))
@@ -1282,8 +1290,8 @@ class GitPersistTest(unittest.TestCase):
             calls.append(list(args))
             return (1, "Permission denied") if len(calls) == 1 else (0, "")
 
-        with mock.patch.object(bot, "_run_git", fake_run_git):
-            code, _ = bot.push_branch(self.work, "main", "dummy")
+        with mock.patch.object(gitops, "_run_git", fake_run_git):
+            code, _ = gitops.push_branch(self.work, "main", "dummy")
         self.assertEqual(code, 0)
         self.assertEqual(len(calls), 2, calls)
         joined = " ".join(calls[1])
@@ -1297,8 +1305,8 @@ class GitPersistTest(unittest.TestCase):
             calls.append(list(args))
             return 1, "Permission denied"
 
-        with mock.patch.object(bot, "_run_git", fake_run_git):
-            code, out = bot.push_branch(self.work, "main", "")
+        with mock.patch.object(gitops, "_run_git", fake_run_git):
+            code, out = gitops.push_branch(self.work, "main", "")
         self.assertEqual(code, 1)
         self.assertEqual(len(calls), 1, "token yoksa ikinci deneme yapılmamalı")
 
@@ -1308,14 +1316,14 @@ class GitPersistTest(unittest.TestCase):
         cleared = {"CONFIG_PUSH_TOKEN": "", "GITHUB_TOKEN": "", "GH_PAT": "",
                    "GITHUB_REPOSITORY": ""}
         with mock.patch.dict(os.environ, cleared, clear=False):
-            status, detail = bot.commit_and_push(outside, "deneme")
+            status, detail = gitops.commit_and_push(outside, "deneme")
         self.assertEqual(status, "no-repo", detail)
 
     def test_save_config_end_to_end(self):
         store = commandtext.ConfigStore(self.config_path, {"match_mode": "any", "include_keywords": ["çay"]})
         store.config["match_mode"] = "forward_all"
         with mock.patch.dict(os.environ, {"CONFIG_PUSH_TOKEN": "dummy"}, clear=False):
-            ok, note = asyncio.run(bot.save_config(store, "tüm mesajlar açıldı"))
+            ok, note = asyncio.run(gitops.save_config(store, "tüm mesajlar açıldı"))
         self.assertTrue(ok, note)
         self.assertIn("repo'ya işlendi", note)
         written = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -1335,7 +1343,7 @@ class RealConfigTest(unittest.TestCase):
         self.assertEqual(confutil.parse_admin_ids(config["admin_user_id"]), {1143378073})
         self.assertNotIn("notify_bot_token", config)
         with mock.patch.dict(os.environ, CheckEnvironmentTest.good_env, clear=False):
-            self.assertEqual(bot.check_environment(config), [])
+            self.assertEqual(preflight.check_environment(config), [])
 
 
 if __name__ == "__main__":
@@ -1347,7 +1355,7 @@ class BotPingTest(unittest.TestCase):
 
     def test_no_token_returns_false_without_calling_api(self):
         with mock.patch("bot.urllib.request.urlopen") as urlopen:
-            ok, detail = asyncio.run(bot.send_bot_ping("", -5092968106, "selam"))
+            ok, detail = asyncio.run(botapi.send_bot_ping("", -5092968106, "selam"))
         self.assertFalse(ok)
         self.assertIn("tanımlı değil", detail)
         urlopen.assert_not_called()
@@ -1357,7 +1365,7 @@ class BotPingTest(unittest.TestCase):
         fake_response.__enter__ = lambda self: self
         fake_response.__exit__ = lambda self, *a: False
         with mock.patch("bot.urllib.request.urlopen", return_value=fake_response) as urlopen:
-            ok, detail = asyncio.run(bot.send_bot_ping("123:ABC", -5092968106, "🔔 deneme"))
+            ok, detail = asyncio.run(botapi.send_bot_ping("123:ABC", -5092968106, "🔔 deneme"))
         self.assertTrue(ok, detail)
         request = urlopen.call_args[0][0]
         self.assertEqual(request.full_url, "https://api.telegram.org/bot123:ABC/sendMessage")
@@ -1368,7 +1376,7 @@ class BotPingTest(unittest.TestCase):
                         side_effect=urllib.error.HTTPError(
                             "u", 400, "Bad Request", {}, io.BytesIO(b'{"description":"chat not found"}'))):
             with self.assertLogs("telegram-filter", level="ERROR"):
-                ok, detail = asyncio.run(bot.send_bot_ping("123:ABC", -1, "x"))
+                ok, detail = asyncio.run(botapi.send_bot_ping("123:ABC", -1, "x"))
         self.assertFalse(ok)
         self.assertIn("400", detail)
 
@@ -1387,7 +1395,7 @@ class EnvOverrideTest(unittest.TestCase):
             config = confutil.load_config(self._config_file())
         self.assertEqual(config["delivery_modes"], ["copy", "forward", "media"])
         self.assertEqual(config["max_media_mb"], "10")
-        self.assertEqual(bot.build_delivery_chain(config)[:3], ["copy", "forward", "media"])
+        self.assertEqual(composer.build_delivery_chain(config)[:3], ["copy", "forward", "media"])
 
     def test_absent_env_leaves_config_alone(self):
         env = {"DELIVERY_MODES": "", "MAX_MEDIA_MB": ""}
@@ -1412,13 +1420,13 @@ class EnvOverrideTest(unittest.TestCase):
 
     def test_notify_bot_secret_is_the_only_token_source(self):
         old_token = appstate.NOTIFY_BOT_TOKEN
-        self.addCleanup(setattr, bot, "NOTIFY_BOT_TOKEN", old_token)
+        self.addCleanup(setattr, appstate, "NOTIFY_BOT_TOKEN", old_token)
         with mock.patch.dict(os.environ, {"NOTIFY_BOT_TOKEN": "test-secret-token"}, clear=False):
-            bot.apply_runtime_config({"notify_bot_token": "ignored-legacy-value"})
+            runtimecfg.apply_runtime_config({"notify_bot_token": "ignored-legacy-value"})
         self.assertEqual(appstate.NOTIFY_BOT_TOKEN, "test-secret-token")
 
         with mock.patch.dict(os.environ, {"NOTIFY_BOT_TOKEN": ""}, clear=False):
-            bot.apply_runtime_config({"notify_bot_token": "ignored-legacy-value"})
+            runtimecfg.apply_runtime_config({"notify_bot_token": "ignored-legacy-value"})
         self.assertEqual(appstate.NOTIFY_BOT_TOKEN, "")
 
 
@@ -1683,11 +1691,11 @@ class MessageSanitizationTest(unittest.TestCase):
             offset=sanitize.utf16_length("🔥 "), length=sanitize.utf16_length("#reklam"),
             url="https://example.com/campaign",
         )
-        composed = bot.compose_message(make_message(text, entities=[entity], media=False))
+        composed = composer.compose_message(make_message(text, entities=[entity], media=False))
         self.assertNotIn("#reklam", composed["text"])
         self.assertEqual(product_link_urls(composed), ["https://example.com/campaign"],
                          "temizlenen etiketin başka domaine giden gizli URL'si korunmalı")
-        with_links_disabled = bot.compose_message(
+        with_links_disabled = composer.compose_message(
             make_message(text, entities=[entity], media=False), link_kinds=(),
         )
         self.assertIn("https://example.com/campaign", with_links_disabled["text"],
@@ -1696,7 +1704,7 @@ class MessageSanitizationTest(unittest.TestCase):
     @staticmethod
     def _links_reaching_notification(message):
         """Bildirimde okuyucuya ulaşan bağlantılar: görünür etiketli gizli bağlantılar ve yazılı URL'ler."""
-        composed = bot.compose_message(message, link_kinds=())
+        composed = composer.compose_message(message, link_kinds=())
         text = composed["text"]
         hidden = [
             entity.url for entity in composed["entities"]
@@ -1882,7 +1890,7 @@ class MessageSanitizationTest(unittest.TestCase):
         keyboard = searchbuttons.build_inline_keyboard(message)
         buttons = [button for row in keyboard["inline_keyboard"] for button in row]
         self.assertEqual([button["text"] for button in buttons], ["Google Alışveriş", "Cimri'de ara"])
-        composed = bot.compose_message(message)
+        composed = composer.compose_message(message)
         self.assertEqual(composed["body"], text, "mesaj olduğu gibi korunur")
         self.assertNotIn("Cimri", composed["text"], "inline düğmeler gövdeye karakter eklememeli")
 
@@ -2111,7 +2119,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
     def test_composed_message_has_one_blank_line_between_sections(self):
         """Basit düzen: başlık en üstte, mesaj olduğu gibi altında, bloklar tek boş satırla ayrılır."""
         text = "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n\n\n129,90 TL\n\n\n\nStoklarla sınırlı"
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message(text, media=False, webpage="https://example.com/urun"),
             message_link="https://t.me/firsatz/123",
             source_name="FırsatZ",
@@ -2146,7 +2154,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
             "🔥 A101 Çamaşır Deterjanı 4 Lt\n\n129,90 TL",
             media=False, webpage="https://example.com/urun",
         )
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             message,
             message_link="https://t.me/firsatz/123",
             source_name="FırsatZ",
@@ -2161,7 +2169,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
         ))
         self.assertNotIn("https://example.com/urun", composed["text"])
         self.assertEqual(product_link_urls(composed), ["https://example.com/urun"])
-        account = bot.compose_message(
+        account = composer.compose_message(
             message,
             message_link="https://t.me/firsatz/123",
             source_name="FırsatZ",
@@ -2172,7 +2180,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
     def test_bot_notification_keeps_visible_product_link_once(self):
         """Alıntıdaki görünür ürün linki aynen kalır ve ikinci kez yazılmaz."""
         text = "Çay fırsatı 5 TL\n\n🛒 https://amzn.to/urun"
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message(text, media=False),
             message_link="https://t.me/firsatz/123",
             source_name="FırsatZ",
@@ -2186,7 +2194,7 @@ class BlankLineNormalizationTest(unittest.TestCase):
 
     def test_bot_notification_without_link_or_body_has_no_stray_lines(self):
         """Link yok / alıntı boş varyantlarında boş blok ya da kırık satır üretilmez."""
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message("", media=False),
             message_link="https://t.me/firsatz/123",
             source_name="FırsatZ",
@@ -2402,33 +2410,33 @@ class NoteCommandMessagesTest(unittest.TestCase):
         appstate.COMMAND_MESSAGES.clear()
 
     def test_first_exchange_has_nothing_to_delete(self):
-        self.assertEqual(bot.note_command_messages(-100, [1, 2]), [])
+        self.assertEqual(controlbase.note_command_messages(-100, [1, 2]), [])
         self.assertEqual(appstate.COMMAND_MESSAGES[-100], [1, 2])
 
     def test_previous_exchange_is_returned_for_deletion(self):
-        bot.note_command_messages(-100, [1, 2])
-        self.assertEqual(bot.note_command_messages(-100, [3, 4]), [1, 2])
+        controlbase.note_command_messages(-100, [1, 2])
+        self.assertEqual(controlbase.note_command_messages(-100, [3, 4]), [1, 2])
 
     def test_current_ids_are_never_marked_for_deletion(self):
-        bot.note_command_messages(-100, [1, 2])
-        self.assertEqual(bot.note_command_messages(-100, [2, 3]), [1])
+        controlbase.note_command_messages(-100, [1, 2])
+        self.assertEqual(controlbase.note_command_messages(-100, [2, 3]), [1])
 
     def test_chats_are_kept_apart(self):
-        bot.note_command_messages(-100, [1])
-        self.assertEqual(bot.note_command_messages(-200, [9]), [])
-        self.assertEqual(bot.note_command_messages(-100, [5]), [1])
+        controlbase.note_command_messages(-100, [1])
+        self.assertEqual(controlbase.note_command_messages(-200, [9]), [])
+        self.assertEqual(controlbase.note_command_messages(-100, [5]), [1])
 
     def test_empty_and_zero_ids_are_ignored(self):
-        self.assertEqual(bot.note_command_messages(-100, [0, None]), [])
+        self.assertEqual(controlbase.note_command_messages(-100, [0, None]), [])
         self.assertEqual(appstate.COMMAND_MESSAGES[-100], [])
-        self.assertEqual(bot.note_command_messages(-100, [7, 0]), [])
+        self.assertEqual(controlbase.note_command_messages(-100, [7, 0]), [])
 
 
 class ComposeMessageTest(unittest.TestCase):
     def test_title_on_top_then_message_verbatim(self):
         """Kullanıcı isteği: ürün başlığı en üstte, altında mesaj OLDUĞU GİBİ."""
         text = "1.299 TL\n%50 indirim\n🛍️ Philips Airfryer XXL 6.2L\nFırsata Git"
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message(text),
             message_link="https://t.me/firsatz/9",
             source_name="FırsatZ",
@@ -2460,7 +2468,7 @@ class ComposeMessageTest(unittest.TestCase):
             "🗓️ 365 Günün En Düşük Fiyatı\n\n"
             "🛒 https://link.amazon/B02W5SjPe"
         )
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message(text, media=False),
             message_link="https://t.me/indirimdeal/50953",
             source_name="İndirimde Al",
@@ -2488,7 +2496,7 @@ class ComposeMessageTest(unittest.TestCase):
         """
         button = SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)
         original = "çay 5 TL"
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message(original, buttons=[button]),
             message_link="https://t.me/FirsatZ/31543",
         )
@@ -2505,7 +2513,7 @@ class ComposeMessageTest(unittest.TestCase):
     def test_product_line_sits_between_the_header_and_the_quote(self):
         """Kullanıcı isteği: fiyat-ad → ürün linki → alıntı → grup adı (adres adın içinde)."""
         button = SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message("çay 5 TL", buttons=[button], media=False),
             message_link="https://t.me/FirsatZ/31543",
             source_name="FirsatZ",
@@ -2531,7 +2539,7 @@ class ComposeMessageTest(unittest.TestCase):
             "Kod: HOPI50\n\n"
             "Son kullanım: 31 Ekim"
         )
-        composed = bot.compose_message(make_message(text, media=False))
+        composed = composer.compose_message(make_message(text, media=False))
         self.assertIn(text, composed["text"], "kupon mesajı olduğu gibi iletilir")
         self.assertEqual(composed["body"], text)
         self.assertNotIn(searchbuttons.PRICE_LINE_LABEL, composed["text"])
@@ -2539,7 +2547,7 @@ class ComposeMessageTest(unittest.TestCase):
     def test_titleless_message_has_no_title_block(self):
         """Ürün başlığı bulunamazsa gövde en üstte, olduğu gibi iletilir."""
         text = "Fırsata Git 👉"
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message(text, media=False),
             message_link="https://t.me/FirsatZ/31543",
         )
@@ -2556,7 +2564,7 @@ class ComposeMessageTest(unittest.TestCase):
             offset=sanitize.utf16_length(text[:text.index(label)]),
             length=sanitize.utf16_length(label),
         )
-        composed = bot.compose_message(make_message(text, entities=[entity], media=False))
+        composed = composer.compose_message(make_message(text, entities=[entity], media=False))
         self.assertEqual(composed["text"], (
             "Çay Bardağı 6'lı Set"
             "\n\n🛍️ Çay Bardağı 6'lı Set\n129,90 TL Stoklarla sınırlı"
@@ -2572,7 +2580,7 @@ class ComposeMessageTest(unittest.TestCase):
         entity = tl_types.MessageEntityTextUrl(
             offset=0, length=sanitize.utf16_length("Fırsata Git"), url="https://amzn.to/gizli",
         )
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message(text, entities=[entity], media=False),
             message_link="https://t.me/FirsatZ/31543",
         )
@@ -2584,7 +2592,7 @@ class ComposeMessageTest(unittest.TestCase):
     def test_button_links_are_written_into_the_appendix(self):
         """Buton linkleri kullanıcı hesabından gönderilemez; alta ``👉 Ürün Linki 👈`` olarak yazılır."""
         button = SimpleNamespace(text="Fırsata Git", url="https://amzn.to/btn", type=None)
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message("çay 5 TL", buttons=[button], media=False),
             message_link="https://t.me/FirsatZ/9",
         )
@@ -2607,7 +2615,7 @@ class ComposeMessageTest(unittest.TestCase):
         ``Mesajı Gör`` satırı kaldırıldı: orijinal mesajın adresi artık en
         alttaki grup adına gömülüdür (URL metinde görünmez, ad tıklanabilir).
         """
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message("ÇAY 5 TL"),
             message_link="https://t.me/firsatz/9",
             source_name="FırsatZ",
@@ -2634,12 +2642,12 @@ class ComposeMessageTest(unittest.TestCase):
         )
 
     def test_source_name_entity_is_empty_without_a_name(self):
-        composed = bot.compose_message(make_message("ÇAY 5 TL"))
+        composed = composer.compose_message(make_message("ÇAY 5 TL"))
         self.assertEqual(botentities.source_name_entity(composed), [])
         self.assertEqual(botentities.source_name_entity({"source_name_offset": -1, "source_name_length": 0}), [])
 
     def test_source_name_survives_truncation_and_stays_bold(self):
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message("Çay Makinesi\n" + "a" * 5000), limit=120,
             link_kinds=("entity",),
             message_link="https://t.me/firsatz/1", source_name="FırsatZ",
@@ -2652,12 +2660,12 @@ class ComposeMessageTest(unittest.TestCase):
         self.assertTrue(composed["text"].startswith("Çay Makinesi"), "başlık en üstte kalır")
 
     def test_empty_source_name_is_ignored(self):
-        composed = bot.compose_message(make_message("çay"), source_name="   ")
+        composed = composer.compose_message(make_message("çay"), source_name="   ")
         self.assertIsNone(composed["source_name"])
         self.assertEqual(botentities.source_name_entity(composed), [])
 
     def test_source_line_is_dropped_when_it_cannot_fit(self):
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message("a" * 500), limit=30,
             link_kinds=("entity",), message_link="https://t.me/firsatz/1",
         )
@@ -2667,7 +2675,7 @@ class ComposeMessageTest(unittest.TestCase):
         self.assertLessEqual(len(composed["text"]), 30)
 
     def test_long_body_is_truncated_but_message_link_survives(self):
-        composed = bot.compose_message(
+        composed = composer.compose_message(
             make_message("Çay Makinesi\n" + "a" * 5000), limit=200,
             message_link="https://t.me/firsatz/1",
         )
@@ -2773,7 +2781,7 @@ class MediaNamingTest(unittest.TestCase):
 
 class MultipartTest(unittest.TestCase):
     def test_body_contains_fields_and_file(self):
-        body, content_type = bot.encode_multipart(
+        body, content_type = botapi.encode_multipart(
             {"chat_id": -100, "caption": "çay"},
             [("photo", "firsat.jpg", "image/jpeg", b"JPEGVERISI")],
         )
@@ -2787,7 +2795,7 @@ class MultipartTest(unittest.TestCase):
         self.assertTrue(body.endswith(b"--" + boundary + b"--\r\n"))
 
     def test_none_and_empty_fields_are_skipped(self):
-        body, _ = bot.encode_multipart({"a": None, "b": "", "c": "x"}, [])
+        body, _ = botapi.encode_multipart({"a": None, "b": "", "c": "x"}, [])
         self.assertNotIn(b'name="a"', body)
         self.assertNotIn(b'name="b"', body)
         self.assertIn(b'name="c"', body)
@@ -2805,7 +2813,7 @@ class BotApiSendTest(unittest.TestCase):
 
     def test_ping_sends_entities_and_keyboard(self):
         with mock.patch("bot.urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
-            ok, _ = asyncio.run(bot.send_bot_ping(
+            ok, _ = asyncio.run(botapi.send_bot_ping(
                 "123:ABC", -100, "ÇAY 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1",
                 entities=[{"type": "text_link", "offset": 5, "length": 3, "url": "https://t.me/x/1"}],
                 keyboard={"inline_keyboard": [[{"text": "Fırsata Git", "url": "https://amzn.to/b"}]]},
@@ -2823,7 +2831,7 @@ class BotApiSendTest(unittest.TestCase):
 
     def test_ping_can_disable_link_preview_without_removing_the_link(self):
         with mock.patch("bot.urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
-            ok, _ = asyncio.run(bot.send_bot_ping(
+            ok, _ = asyncio.run(botapi.send_bot_ping(
                 "123:ABC", -100, "Amazon'da gör",
                 entities=[{"type": "text_link", "offset": 0, "length": 13,
                            "url": "https://www.amazon.com.tr/dp/B123"}],
@@ -2839,7 +2847,7 @@ class BotApiSendTest(unittest.TestCase):
 
     def test_media_posts_multipart_to_sendphoto(self):
         with mock.patch("bot.urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
-            ok, detail = asyncio.run(bot.send_bot_media(
+            ok, detail = asyncio.run(botapi.send_bot_media(
                 "123:ABC", -100, kind="photo", filename="firsat_1.jpg", mime_type="image/jpeg",
                 data=b"JPEG", caption="çay", entities=[{"type": "bold", "offset": 0, "length": 3}],
             ))
@@ -2852,7 +2860,7 @@ class BotApiSendTest(unittest.TestCase):
 
     def test_document_kind_uses_senddocument(self):
         with mock.patch("bot.urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
-            asyncio.run(bot.send_bot_media(
+            asyncio.run(botapi.send_bot_media(
                 "123:ABC", -100, kind="document", filename="kupon.pdf",
                 mime_type="application/pdf", data=b"PDF",
             ))
@@ -3119,19 +3127,19 @@ class PruneDedupCacheTest(unittest.TestCase):
 
     def test_expired_entries_are_dropped(self):
         cache = {"eski": self._entry(13 * 3600), "yeni": self._entry(60)}
-        dropped = bot.prune_dedup_cache(cache, self.NOW, 12 * 3600, 300)
+        dropped = dedupflow.prune_dedup_cache(cache, self.NOW, 12 * 3600, 300)
         self.assertEqual(dropped, 1)
         self.assertEqual(set(cache), {"yeni"})
 
     def test_stuck_reservations_are_released(self):
         cache = {"takili": self._entry(appstate.DEDUP_RESERVE_TTL + 1, pending=True)}
-        dropped = bot.prune_dedup_cache(cache, self.NOW, 12 * 3600, 300)
+        dropped = dedupflow.prune_dedup_cache(cache, self.NOW, 12 * 3600, 300)
         self.assertEqual(dropped, 1)
         self.assertEqual(cache, {})
 
     def test_young_pending_entries_survive(self):
         cache = {"bekleyen": self._entry(5, pending=True)}
-        self.assertEqual(bot.prune_dedup_cache(cache, self.NOW, 12 * 3600, 300), 0)
+        self.assertEqual(dedupflow.prune_dedup_cache(cache, self.NOW, 12 * 3600, 300), 0)
         self.assertIn("bekleyen", cache)
 
     def test_overflow_evicts_oldest_ready_first(self):
@@ -3141,7 +3149,7 @@ class PruneDedupCacheTest(unittest.TestCase):
             "bekleyen": self._entry(250, pending=True),
             "en-yeni": self._entry(100),
         }
-        dropped = bot.prune_dedup_cache(cache, self.NOW, 12 * 3600, 2)
+        dropped = dedupflow.prune_dedup_cache(cache, self.NOW, 12 * 3600, 2)
         self.assertEqual(dropped, 2)
         self.assertIn("bekleyen", cache, "rezervasyon kapasite için düşürülmemeli")
         self.assertIn("en-yeni", cache)
@@ -3161,25 +3169,25 @@ class NewDedupEntryTest(unittest.TestCase):
 
 class BotSendResultTest(unittest.TestCase):
     def test_unpacks_like_the_old_two_tuple(self):
-        ok, detail = bot.BotSendResult(True, "gönderildi", 4242)
+        ok, detail = botapi.BotSendResult(True, "gönderildi", 4242)
         self.assertTrue(ok)
         self.assertEqual(detail, "gönderildi")
 
     def test_carries_message_id(self):
-        result = bot.BotSendResult(True, "ok", 4242)
+        result = botapi.BotSendResult(True, "ok", 4242)
         self.assertEqual(result.message_id, 4242)
-        self.assertIsNone(bot.BotSendResult(False, "hata").message_id)
+        self.assertIsNone(botapi.BotSendResult(False, "hata").message_id)
 
     def test_plain_tuples_still_work_via_getattr(self):
         """Eski fake'ler düz 2'li döner; üretim kodu getattr ile okur."""
         self.assertIsNone(getattr((True, "ok"), "message_id", None))
 
     def test_message_id_from_result(self):
-        self.assertEqual(bot.message_id_from_result({"message_id": 7}), 7)
-        self.assertIsNone(bot.message_id_from_result({"message_id": True}))
-        self.assertIsNone(bot.message_id_from_result({}))
-        self.assertIsNone(bot.message_id_from_result(None))
-        self.assertIsNone(bot.message_id_from_result("bozuk"))
+        self.assertEqual(botapi.message_id_from_result({"message_id": 7}), 7)
+        self.assertIsNone(botapi.message_id_from_result({"message_id": True}))
+        self.assertIsNone(botapi.message_id_from_result({}))
+        self.assertIsNone(botapi.message_id_from_result(None))
+        self.assertIsNone(botapi.message_id_from_result("bozuk"))
 
 
 class FirstSentHelpersTest(unittest.TestCase):
@@ -3203,7 +3211,7 @@ class EditBotHelpersTest(unittest.TestCase):
     def test_send_ping_returns_message_id(self):
         with mock.patch("bot.urllib.request.urlopen",
                         return_value=self._response({"ok": True, "result": {"message_id": 4242}})):
-            result = asyncio.run(bot.send_bot_ping("123:ABC", -5092968106, "selam"))
+            result = asyncio.run(botapi.send_bot_ping("123:ABC", -5092968106, "selam"))
         ok, _ = result
         self.assertTrue(ok)
         self.assertEqual(result.message_id, 4242)
@@ -3211,7 +3219,7 @@ class EditBotHelpersTest(unittest.TestCase):
     def test_edit_text_posts_entities_and_keyboard(self):
         with mock.patch("bot.urllib.request.urlopen",
                         return_value=self._response({"ok": True, "result": True})) as urlopen:
-            ok, _ = asyncio.run(bot.edit_bot_text(
+            ok, _ = asyncio.run(botapi.edit_bot_text(
                 "123:ABC", -5092968106, 9, "yeni",
                 entities=[{"type": "bold", "offset": 0, "length": 4}],
                 keyboard={"inline_keyboard": []},
@@ -3227,7 +3235,7 @@ class EditBotHelpersTest(unittest.TestCase):
     def test_edit_caption_posts_to_caption_method(self):
         with mock.patch("bot.urllib.request.urlopen",
                         return_value=self._response({"ok": True, "result": True})) as urlopen:
-            ok, _ = asyncio.run(bot.edit_bot_caption("123:ABC", -5092968106, 9, "açıklama"))
+            ok, _ = asyncio.run(botapi.edit_bot_caption("123:ABC", -5092968106, 9, "açıklama"))
         self.assertTrue(ok)
         request = urlopen.call_args[0][0]
         self.assertTrue(request.full_url.endswith("/editMessageCaption"))
@@ -3236,13 +3244,13 @@ class EditBotHelpersTest(unittest.TestCase):
     def test_not_modified_counts_as_success(self):
         with mock.patch("bot.urllib.request.urlopen",
                         return_value=self._response({"ok": False, "description": "message is not modified"})):
-            ok, detail = asyncio.run(bot.edit_bot_text("t", 1, 2, "aynı"))
+            ok, detail = asyncio.run(botapi.edit_bot_text("t", 1, 2, "aynı"))
         self.assertTrue(ok)
         self.assertIn("güncel", detail)
 
     def test_edit_without_token_does_not_call_api(self):
         with mock.patch("bot.urllib.request.urlopen") as urlopen:
-            ok, detail = asyncio.run(bot.edit_bot_text("", 1, 2, "x"))
+            ok, detail = asyncio.run(botapi.edit_bot_text("", 1, 2, "x"))
         self.assertFalse(ok)
         self.assertIn("tanımlı değil", detail)
         urlopen.assert_not_called()
@@ -3260,27 +3268,27 @@ class DedupConfigTest(unittest.TestCase):
         }
         env = dict(CheckEnvironmentTest.good_env)
         with mock.patch.dict(os.environ, env, clear=False):
-            self.assertEqual(bot.check_environment(dict(base)), [])
+            self.assertEqual(preflight.check_environment(dict(base)), [])
             bad_window = dict(base, dedup_window_hours=99)
-            self.assertTrue(any("dedup_window_hours" in p for p in bot.check_environment(bad_window)))
+            self.assertTrue(any("dedup_window_hours" in p for p in preflight.check_environment(bad_window)))
             bad_scan = dict(base, dedup_scan_limit="çok")
-            self.assertTrue(any("dedup_scan_limit" in p for p in bot.check_environment(bad_scan)))
+            self.assertTrue(any("dedup_scan_limit" in p for p in preflight.check_environment(bad_scan)))
 
     def test_runtime_config_applies_dedup_settings(self):
         saved = (appstate.DEDUP_ENABLED, appstate.DEDUP_WINDOW_SECONDS, appstate.DEDUP_SCAN_LIMIT)
-        self.addCleanup(setattr, bot, "DEDUP_ENABLED", saved[0])
-        self.addCleanup(setattr, bot, "DEDUP_WINDOW_SECONDS", saved[1])
-        self.addCleanup(setattr, bot, "DEDUP_SCAN_LIMIT", saved[2])
-        bot.apply_runtime_config({})
+        self.addCleanup(setattr, appstate, "DEDUP_ENABLED", saved[0])
+        self.addCleanup(setattr, appstate, "DEDUP_WINDOW_SECONDS", saved[1])
+        self.addCleanup(setattr, appstate, "DEDUP_SCAN_LIMIT", saved[2])
+        runtimecfg.apply_runtime_config({})
         self.assertTrue(appstate.DEDUP_ENABLED)
         self.assertEqual(appstate.DEDUP_WINDOW_SECONDS, 12 * 3600)
         self.assertEqual(appstate.DEDUP_SCAN_LIMIT, 100)
-        bot.apply_runtime_config({"dedup_enabled": False, "dedup_window_hours": 6, "dedup_scan_limit": 10})
+        runtimecfg.apply_runtime_config({"dedup_enabled": False, "dedup_window_hours": 6, "dedup_scan_limit": 10})
         self.assertFalse(appstate.DEDUP_ENABLED)
         self.assertEqual(appstate.DEDUP_WINDOW_SECONDS, 6 * 3600)
         self.assertEqual(appstate.DEDUP_SCAN_LIMIT, 10)
         with self.assertLogs("telegram-filter", level="WARNING"):
-            bot.apply_runtime_config({"dedup_window_hours": "bozuk", "dedup_scan_limit": "yok"})
+            runtimecfg.apply_runtime_config({"dedup_window_hours": "bozuk", "dedup_scan_limit": "yok"})
         self.assertEqual(appstate.DEDUP_WINDOW_SECONDS, 12 * 3600)
         self.assertEqual(appstate.DEDUP_SCAN_LIMIT, 100)
 

@@ -9,6 +9,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import preflight  # noqa: E402
 import commandtext  # noqa: E402
 import dm_filters  # noqa: E402
 import price_filter  # noqa: E402
@@ -272,7 +273,7 @@ class DMDecisionTests(unittest.TestCase):
         for config in (old, {**old, "dm_product_price_rules": []}):
             with self.subTest(config=config):
                 problems = []
-                bot._check_config_flags_and_dm(config, problems)
+                preflight._check_config_flags_and_dm(config, problems)
                 self.assertEqual(problems, [])
 
     def test_config_rejects_malformed_and_duplicate_product_price_rules(self):
@@ -283,7 +284,7 @@ class DMDecisionTests(unittest.TestCase):
         for config in invalid_configs:
             with self.subTest(config=config):
                 problems = []
-                bot._check_config_flags_and_dm(config, problems)
+                preflight._check_config_flags_and_dm(config, problems)
                 self.assertTrue(any("dm_product_price_rules" in item for item in problems))
 
 

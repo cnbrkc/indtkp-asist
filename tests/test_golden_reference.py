@@ -68,6 +68,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bot  # noqa: E402
+import private_bot  # noqa: E402
 import appstate  # noqa: E402
 import price_filter  # noqa: E402
 from telethon.tl import types  # noqa: E402
@@ -483,7 +484,7 @@ async def private_copy(queue: CapturingQueue, item: dict[str, Any]) -> dict[str,
         return summary
     try:
         request = await queue.prepare(item)
-    except bot.BotAPIError as exc:
+    except private_bot.BotAPIError as exc:
         summary["refused"] = str(exc)
     else:
         summary["request"] = request and {"method": request[0], "payload": plain(request[1])}

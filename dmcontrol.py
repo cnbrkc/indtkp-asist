@@ -8,18 +8,19 @@ from telethon.tl import types
 
 import appstate
 import dm_filters
+import gitops
 import price_filter
 from botentities import bot_api_entities, entities_for_text
 from commandtext import (
+    _log_dm_decision,
     COMMAND_DM_FILTER_CLOSE,
     COMMAND_DM_FILTER_OPEN,
     COMMAND_DM_STATUS,
-    HELP_TEXT,
-    _log_dm_decision,
     dm_decision,
     dm_price_threshold,
     drop_pending,
     format_value_preview,
+    HELP_TEXT,
     peek_pending,
     pending_key,
     telegram_list_items,
@@ -29,10 +30,10 @@ from controlbase import control_reply
 from dedupmatch import bot_history_ids_shared
 from private_bot import (
     BotAPIError,
-    PrivateControlEvent,
     edit_dm_keywords,
     poll_health,
     private_copy_request,
+    PrivateControlEvent,
 )
 from runtime import Runtime
 from sanitize import message_text, sanitize_message
@@ -186,7 +187,7 @@ async def save_dm_setting(rt: Runtime, event, *, action=None, raw="", enabled=Tr
             # filter and switches it off when the last keyword is removed.
             enabled = bool(words) and (action == "add" or config_flag(before.get("dm_enabled"), False))
         rt.store.config["dm_enabled"] = enabled
-        ok, note = await rt.bot.save_config(rt.store, "Kişisel bildirim ayarı güncellendi")
+        ok, note = await gitops.save_config(rt.store, "Kişisel bildirim ayarı güncellendi")
         if not ok:
             rt.store.restore(before)
             await control_reply(rt, event, "❌ Kaydedilemedi; önceki ayar korundu.\n" + note)
