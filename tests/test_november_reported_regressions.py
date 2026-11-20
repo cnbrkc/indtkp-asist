@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import bot
+import composer
+import chatresolve
 import appstate
 import confutil
 import producttitle
@@ -41,7 +43,7 @@ class ReportedExamples(unittest.TestCase):
         self.assertEqual(title, 'Trust GXT278 Dizüstü Bilgisayar İçin Soğutucu Fan')
         self.assertEqual((price.value, price.confidence), (512.05, 'high'))
         with patch.object(appstate, 'SMART_HEADER', True):
-            self.assertTrue(bot.compose_message(message(TRUST))['text'].startswith(
+            self.assertTrue(composer.compose_message(message(TRUST))['text'].startswith(
                 '₺512 — Trust GXT278 Dizüstü Bilgisayar İçin Soğutucu Fan'))
         # Without a clearly marked used item, two unrelated prices remain ambiguous.
         self.assertEqual(pf.extract_price('Ürün\n🏷️ 512,05 TL\n🆕 Yeni Fiyatı: 699 TL').confidence, 'low')
@@ -57,7 +59,7 @@ class ReportedExamples(unittest.TestCase):
         button = SimpleNamespace(text='Fırsata Git', url='https://example.com/deal')
         msg = message(OTL, [button])
         with patch.object(appstate, 'SMART_HEADER', True):
-            result = bot.compose_message(msg, link_kinds=confutil.link_kinds_for('smart', bot=True),
+            result = composer.compose_message(msg, link_kinds=confutil.link_kinds_for('smart', bot=True),
                                          message_link='https://t.me/depoindirim/88707')
         self.assertTrue(result['text'].startswith('₺953 — OTL Technologies - SUPER MARIO TWS KULAKLIK'), result['text'])
         self.assertEqual(pf.extract_price(OTL).value, 953.42)
@@ -77,7 +79,7 @@ class InviteResolution(unittest.IsolatedAsyncioTestCase):
         chat = types.Channel(id=1234567890, title='Özel', photo=types.ChatPhotoEmpty(), date=0)
         client = AsyncMock(return_value=types.ChatInviteAlready(chat=chat))
         for url in ('https://t.me/+Ab_C-12', 'https://t.me/joinchat/Ab_C-12'):
-            peer_id, name, entity = await bot.resolve_chat(client, url)
+            peer_id, name, entity = await chatresolve.resolve_chat(client, url)
             self.assertEqual((peer_id, name, entity), (-1001234567890, 'Özel', chat))
             self.assertIsInstance(client.call_args.args[0], functions.messages.CheckChatInviteRequest)
             self.assertEqual(client.call_args.args[0].hash, 'Ab_C-12')
@@ -90,7 +92,7 @@ class InviteResolution(unittest.IsolatedAsyncioTestCase):
                        types.ChatInvitePeek(chat=chat, expires=None)):
             client = AsyncMock(return_value=answer)
             with self.assertRaises(ValueError):
-                await bot.resolve_chat(client, 'https://t.me/+private')
+                await chatresolve.resolve_chat(client, 'https://t.me/+private')
             self.assertEqual(client.await_count, 1)
             self.assertIsInstance(client.call_args.args[0], functions.messages.CheckChatInviteRequest)
 
@@ -98,6 +100,6 @@ class InviteResolution(unittest.IsolatedAsyncioTestCase):
         chat = types.Channel(id=1234567890, title='Özel', photo=types.ChatPhotoEmpty(), date=0)
         client = SimpleNamespace(get_entity=AsyncMock(side_effect=[ValueError('uncached'), chat]),
                                  get_dialogs=AsyncMock())
-        self.assertEqual((await bot.resolve_chat(client, -1001234567890))[0], -1001234567890)
+        self.assertEqual((await chatresolve.resolve_chat(client, -1001234567890))[0], -1001234567890)
         client.get_dialogs.assert_awaited_once()
         self.assertEqual(client.get_entity.await_count, 2)

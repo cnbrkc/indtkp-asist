@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -11,7 +12,8 @@ from telethon import errors, events
 from telethon.tl import types
 
 import appstate
-import time
+import botapi
+import composer
 from botentities import (
     bot_api_entities,
     bot_media_descriptor,
@@ -59,7 +61,7 @@ def source_of(rt: Runtime, event: events.NewMessage.Event) -> dict[str, Any] | N
 
 
 def offer_link(rt: Runtime, event: events.NewMessage.Event) -> str | None:
-    return rt.bot.build_message_link(event, source_of(rt, event)) if appstate.MESSAGE_LINK_LINE else None
+    return composer.build_message_link(event, source_of(rt, event)) if appstate.MESSAGE_LINK_LINE else None
 
 
 async def send_forward(rt: Runtime, event: events.NewMessage.Event) -> Any:
@@ -82,7 +84,7 @@ async def send_copy(rt: Runtime, event: events.NewMessage.Event) -> Any:
     source_record = source_of(rt, event)
     footer_name = (source_record or {}).get("name") if appstate.SOURCE_FOOTER else None
     if media and not is_webpage:
-        composed = rt.bot.compose_message(
+        composed = composer.compose_message(
             event, limit=CAPTION_LIMIT - 24, link_kinds=appstate.LINK_KINDS,
             message_link=link, source_name=footer_name,
         )
@@ -93,7 +95,7 @@ async def send_copy(rt: Runtime, event: events.NewMessage.Event) -> Any:
             formatting_entities=composed["entities"],
             force_document=False,
         )
-    composed = rt.bot.compose_message(
+    composed = composer.compose_message(
         event, limit=MESSAGE_LIMIT - 100, link_kinds=appstate.LINK_KINDS,
         message_link=link, source_name=footer_name,
     )
@@ -132,7 +134,7 @@ async def send_media(rt: Runtime, event: events.NewMessage.Event) -> Any:
             pass
     source_record = source_of(rt, event)
     footer_name = (source_record or {}).get("name") if appstate.SOURCE_FOOTER else None
-    composed = rt.bot.compose_message(
+    composed = composer.compose_message(
         event, limit=CAPTION_LIMIT - 24, link_kinds=appstate.LINK_KINDS,
         message_link=offer_link(rt, event), source_name=footer_name,
     )
@@ -152,7 +154,7 @@ async def send_text_only(rt: Runtime, event: events.NewMessage.Event) -> Any:
     # ulaşılır (ad yazılamazsa "🔗 Mesajı Gör" satırı geri gelir).
     source_record = source_of(rt, event)
     footer_name = (source_record or {}).get("name") if appstate.SOURCE_FOOTER else None
-    composed = rt.bot.compose_message(
+    composed = composer.compose_message(
         event, limit=MESSAGE_LIMIT - 400, link_kinds=appstate.LINK_KINDS,
         message_link=offer_link(rt, event), source_name=footer_name,
     )
@@ -170,12 +172,12 @@ async def send_text_only(rt: Runtime, event: events.NewMessage.Event) -> Any:
 
 async def send_link_card(rt: Runtime, event: events.NewMessage.Event) -> Any:
     """Son çare: kaynak adı + t.me bağlantısı. Ekranda görülebilir tek şey budur."""
-    link = rt.bot.build_message_link(event, source_of(rt, event))
+    link = composer.build_message_link(event, source_of(rt, event))
     if not link:
         raise ValueError("bu sohbet türü için t.me bağlantısı üretilemiyor")
     source_record = source_of(rt, event)
     footer_name = (source_record or {}).get("name") if appstate.SOURCE_FOOTER else None
-    composed = rt.bot.compose_message(
+    composed = composer.compose_message(
         event, limit=2000, link_kinds=appstate.LINK_KINDS,
         message_link=link, source_name=footer_name,
         hidden_links=False,  # bu ileti biçimsiz gider; URL metinde görünmeli
@@ -245,7 +247,7 @@ async def notify_offer(rt: Runtime,
             descriptor = None
 
     if descriptor is not None:
-        composed = rt.bot.compose_message(
+        composed = composer.compose_message(
             event, limit=CAPTION_LIMIT - 24, link_kinds=appstate.BOT_LINK_KINDS,
             message_link=message_link, source_name=footer_name, has_keyboard=True,
             source_name_url=message_link,
@@ -274,7 +276,7 @@ async def notify_offer(rt: Runtime,
                      descriptor["kind"], len(data) / (1024 * 1024), t_downloaded - t_media)
             appstate.MEDIA_TIMING.set({"kind": descriptor["kind"], "mb": len(data) / (1024 * 1024),
                               "download": t_downloaded - t_media, "upload": 0.0})
-            send_result = await rt.bot.send_bot_media(
+            send_result = await botapi.send_bot_media(
                 appstate.NOTIFY_BOT_TOKEN, appstate.DESTINATION_ID,
                 kind=descriptor["kind"], filename=descriptor["filename"],
                 mime_type=descriptor["mime"], data=data,
@@ -297,7 +299,7 @@ async def notify_offer(rt: Runtime,
                 }, ""
             log.warning("Bildirim medyası gönderilemedi (%s) → metne düşülüyor.", detail)
 
-    composed = rt.bot.compose_message(
+    composed = composer.compose_message(
         event, limit=MESSAGE_LIMIT - 200, link_kinds=appstate.BOT_LINK_KINDS,
         message_link=message_link, source_name=footer_name, has_keyboard=True,
         source_name_url=message_link,
@@ -305,7 +307,7 @@ async def notify_offer(rt: Runtime,
     entities = bot_api_entities(composed["message"], composed["content"]) + source_name_entity(composed)
     text = composed["text"] or f"🔔 Yeni fırsat – {source_name}"
     keyboard = build_inline_keyboard(event, body_text=text, body_entities=entities)
-    send_result = await rt.bot.send_bot_ping(
+    send_result = await botapi.send_bot_ping(
         appstate.NOTIFY_BOT_TOKEN, appstate.DESTINATION_ID, text,
         entities=entities, keyboard=keyboard, link_preview=False,
     )
@@ -390,7 +392,7 @@ async def deliver(rt: Runtime,
                 log.warning("Özel kopya kuyruğa alınamadı; grup korunuyor: %s", type(exc).__name__)
             log.info("⏱ %s | telegram→bot %.1f sn | bildirim (hızlı yol) %.1f sn",
                      source_name, received_lag, time.perf_counter() - t_begin)
-            rt.bot.maybe_report_slow(rt.client, source_name, received_lag, [("Bildirim (hızlı yol)", time.perf_counter() - t_begin)])
+            maybe_report_slow(rt.client, source_name, received_lag, [("Bildirim (hızlı yol)", time.perf_counter() - t_begin)])
             return True, "bot", info
         note_notification_failure(bot_error)
         skip_bot = True
@@ -435,7 +437,7 @@ async def deliver(rt: Runtime,
         log.info("⏱ %s | telegram→bot %.1f sn | hesap kopyası %.1f sn | bildirim %.1f sn | silme %.1f sn | toplam %.1f sn",
                  source_name, received_lag, t_account - t_begin, t_notified - t_account,
                  time.perf_counter() - t_notified, time.perf_counter() - t_begin)
-        rt.bot.maybe_report_slow(rt.client, source_name, received_lag, [
+        maybe_report_slow(rt.client, source_name, received_lag, [
             ("Hesap kopyası", t_account - t_begin), ("Bildirim", t_notified - t_account),
             ("Silme", time.perf_counter() - t_notified),
         ])
@@ -457,3 +459,37 @@ async def deliver(rt: Runtime,
     log.error("Hiçbir iletim yolu çalışmadı (kaynak=%s, mesaj=%s). Son hata: %s",
               source_name, getattr(event, "id", "?"), last_error)
     return False, last_error, {}
+
+
+def maybe_report_slow(tg_client: Any, source_name: str, lag: float, steps: list[tuple[str, float]]) -> None:
+    """Toplam süre eşiği aşarsa Kayıtlı Mesajlar'a süre dökümü gönder (arka planda; en fazla dakikada 1)."""
+    processing = sum(seconds for _, seconds in steps)
+    total = processing + max(lag, 0.0)
+    if appstate.SLOW_REPORT_SECONDS <= 0 or total < appstate.SLOW_REPORT_SECONDS:
+        return
+    now = time.time()
+    if now - appstate._SLOW_REPORT_LAST < 60:
+        return
+    appstate._SLOW_REPORT_LAST = now
+    lines = [f"⏱ Yavaş bildirim ({total:.0f} sn) — {source_name}"]
+    if lag >= 0:
+        lines.append(f"• Telegram → bot: {lag:.1f} sn")
+    lines += [f"• {name}: {seconds:.1f} sn" for name, seconds in steps]
+    media = appstate.MEDIA_TIMING.get()
+    if media:
+        lines.append(
+            f"• Medya: {media.get('kind')}, {media.get('mb', 0):.1f} MB, "
+            f"indirme {media.get('download', 0):.1f} sn, yükleme {media.get('upload', 0):.1f} sn"
+        )
+    text = "\n".join(lines)
+
+    async def _send() -> None:
+        try:
+            await tg_client.send_message("me", text)
+        except Exception as exc:  # noqa: BLE001 - rapor gönderilemese de akış sürsün
+            log.warning("Yavaş bildirim raporu gönderilemedi: %s", type(exc).__name__)
+
+    try:
+        asyncio.get_running_loop().create_task(_send())
+    except RuntimeError:
+        pass

@@ -24,6 +24,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import composer  # noqa: E402
+import botapi  # noqa: E402
 import appstate  # noqa: E402
 import botentities  # noqa: E402
 import confutil  # noqa: E402
@@ -95,7 +97,7 @@ def compose(obj, mode: str = "smart", *, as_bot: bool = True, **extra):
     """Üretimdeki iki çağrı: bot bildirimi (inline klavyeli) ve hesap kopyası (klavyesiz)."""
     extra.setdefault("has_keyboard", as_bot)
     with mock.patch.object(appstate, "SMART_HEADER", True):
-        return bot.compose_message(obj, link_kinds=confutil.link_kinds_for(mode, bot=as_bot),
+        return composer.compose_message(obj, link_kinds=confutil.link_kinds_for(mode, bot=as_bot),
                                    message_link=MESSAGE_LINK, source_name="Kaynak", **extra)
 
 
@@ -517,10 +519,10 @@ class DeliveryTest(cc.Harness, unittest.TestCase):
         client = self.start()
 
         async def refuse(*args, **kwargs):
-            return bot.BotSendResult(False, "Forbidden")
+            return botapi.BotSendResult(False, "Forbidden")
 
         client.fail_modes.update({"forward", "copy", "media", "download"})
-        with mock.patch.object(bot, "send_bot_ping", refuse), \
+        with mock.patch.object(botapi, "send_bot_ping", refuse), \
                 mock.patch.object(appstate, "DELIVERY_CHAIN", ["link"]):
             self.send(client, self.first_id, 8537, PLATINUM_TEXT, buttons=[("✅ Satın Al ✅", PLATINUM_URL)])
         delivered = str(client.sent[-1][1])

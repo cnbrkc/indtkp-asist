@@ -4,19 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from telethon import errors, events, utils
 from telethon.tl import functions, types
 
 import appstate
-import time
+import composer
+import pollcursor
 from dedupflow import dedup_after_send, dedup_before_send
 from dedupmatch import dedup_offer_key, next_poll_interval, offer_terms, recover_poll_interval
 from delivery import deliver
 from keywords import matches, normalize
 from runtime import Runtime
-from sanitize import WORD_TOKEN_RE, _as_message, extract_links, is_blank_reply
+from sanitize import _as_message, extract_links, is_blank_reply, WORD_TOKEN_RE
 from smarttitle import smart_dedup_title
 
 log = logging.getLogger("telegram-filter")
@@ -29,7 +31,7 @@ async def on_new_message(rt: Runtime, event: events.NewMessage.Event) -> None:
         return  # hedefe kendi gönderdiğimiz mesajı tekrar iletmeyelim
     if appstate.RESTARTING:
         return  # bilinçli restart drain — mesaj cursor ile kurtarılır
-    if rt.bot.live_event_should_skip(event):
+    if pollcursor.live_event_should_skip(event):
         return  # aynı mesaj hızlı taramayla zaten işlendi
     # cursor ilk katman — ID bazlı tekrar engeli (yalnızca RAM, persist’siz)
     # Yeni grup & ilk poll öncesi race: RAM’de yoksa bootstrap (patlama yok)
@@ -49,13 +51,13 @@ async def on_new_message(rt: Runtime, event: events.NewMessage.Event) -> None:
         pass
     key = (event.chat_id, event.id)
     appstate.SOURCE_IN_FLIGHT.add(key)
-    rt.bot._cursor_mark_pending(int(event.chat_id), int(event.id))
+    pollcursor._cursor_mark_pending(int(event.chat_id), int(event.id))
     try:
         await process_source_event(rt, event)
     except BaseException:
         appstate.LIVE_SEEN.pop(key, None)
         appstate.POLL_DISPATCHED.pop(key, None)
-        rt.bot._cursor_mark_failed(int(event.chat_id), int(event.id))
+        pollcursor._cursor_mark_failed(int(event.chat_id), int(event.id))
         raise
     finally:
         appstate.SOURCE_IN_FLIGHT.discard(key)
@@ -80,13 +82,13 @@ async def process_source_event(rt: Runtime, event: Any) -> None:
     if teaser or is_blank_reply(event):
         log.info("İçeriksiz mesaj elendi (chat=%s id=%s): ürün, fiyat ya da bağlantı yok.",
                  event.chat_id, event.id)
-        rt.bot._cursor_mark_success(int(event.chat_id), int(event.id))
+        pollcursor._cursor_mark_success(int(event.chat_id), int(event.id))
         return
     if not matches(text, appstate.FILTER_INCLUDE, appstate.FILTER_EXCLUDE, appstate.FILTER_MODE,
                    include_enabled=appstate.FILTER_INCLUDE_ENABLED,
                    exclude_enabled=appstate.FILTER_EXCLUDE_ENABLED):
         log.debug("Eşleşmedi (chat=%s id=%s): %.80s", event.chat_id, event.id, text)
-        rt.bot._cursor_mark_success(int(event.chat_id), int(event.id))
+        pollcursor._cursor_mark_success(int(event.chat_id), int(event.id))
         return
 
     appstate.STATS["matched"] += 1
@@ -107,21 +109,21 @@ async def process_source_event(rt: Runtime, event: Any) -> None:
         if not ok:
             appstate.LIVE_SEEN.pop((event.chat_id, event.id), None)
             appstate.POLL_DISPATCHED.pop((event.chat_id, event.id), None)
-            rt.bot._cursor_mark_failed(int(event.chat_id), int(event.id))
+            pollcursor._cursor_mark_failed(int(event.chat_id), int(event.id))
         else:
-            rt.bot._cursor_mark_success(int(event.chat_id), int(event.id))
+            pollcursor._cursor_mark_success(int(event.chat_id), int(event.id))
         return
     decision, token, effective_dedup_id = await dedup_before_send(rt, 
         dedup_id, dedup_title, source_name,
         footer_name=source_name if appstate.SOURCE_FOOTER else None,
         offer=terms, event=event,
-        source_link=rt.bot.build_message_link(
+        source_link=composer.build_message_link(
             event, next((item for item in appstate.SOURCES if item["id"] == event.chat_id), None)),
     )
     if decision == "dup":
         appstate.STATS["deduped"] += 1
         log.info("Tekrar birleştirildi (kaynak=%s): %.60s", source_name, dedup_title)
-        rt.bot._cursor_mark_success(int(event.chat_id), int(event.id))
+        pollcursor._cursor_mark_success(int(event.chat_id), int(event.id))
         return
     ok, info = False, None
     try:
@@ -131,9 +133,9 @@ async def process_source_event(rt: Runtime, event: Any) -> None:
         if not ok:
             appstate.LIVE_SEEN.pop((event.chat_id, event.id), None)
             appstate.POLL_DISPATCHED.pop((event.chat_id, event.id), None)
-            rt.bot._cursor_mark_failed(int(event.chat_id), int(event.id))
+            pollcursor._cursor_mark_failed(int(event.chat_id), int(event.id))
         else:
-            rt.bot._cursor_mark_success(int(event.chat_id), int(event.id))
+            pollcursor._cursor_mark_success(int(event.chat_id), int(event.id))
 
 
 async def fast_poll_loop(rt: Runtime) -> None:
@@ -258,14 +260,14 @@ async def fast_poll_loop(rt: Runtime) -> None:
                         if stamp >= cutoff:
                             recent.append(message)
                     recent.sort(key=lambda message: int(message.id))
-                    st = rt.bot._cursor_ensure(chat_id)
+                    st = pollcursor._cursor_ensure(chat_id)
                     known_ids = set(st["pending"]) | set(st["failed"]) | set(st["completed"])
                     known_ids = {int(mid) for mid in known_ids if int(mid) > 0}
                     if not recent:
                         st["cursor"] = max(saved_cursor, min(int(top), min(known_ids) - 1) if known_ids else int(top))
                         st["initialized"] = True
                         st.pop("resume_check", None)
-                        rt.bot._cursor_advance(chat_id)
+                        pollcursor._cursor_advance(chat_id)
                         log.info("Yeni kaynak için cursor bootstrap: %s → %s (son %d ileti içinde son %.0f dk'da ileti yok).",
                                  chat_id, st["cursor"], appstate.FAST_POLL_BACKFILL_LIMIT, appstate.FAST_POLL_BACKFILL_MAX_AGE / 60)
                         continue
@@ -282,7 +284,7 @@ async def fast_poll_loop(rt: Runtime) -> None:
                     for stale_message in messages:
                         stale_id = int(getattr(stale_message, "id", 0) or 0)
                         if stale_id > st["cursor"] and stale_id not in recent_ids:
-                            rt.bot._cursor_mark_success(chat_id, stale_id)
+                            pollcursor._cursor_mark_success(chat_id, stale_id)
                     messages = recent
                     log.info("%s için sınırlı kurtarma: %s → cursor=%s, %d ileti (son %.0f dk).",
                              "Kayıtlı cursor" if saved_cursor else "Yeni kaynak", chat_id, st["cursor"], len(messages),
@@ -331,20 +333,20 @@ async def fast_poll_loop(rt: Runtime) -> None:
                 fetched_ids = {int(getattr(m, "id", 0) or 0) for m in messages if getattr(m, "id", None)}
                 if fetched_ids:
                     max_fetched = max(fetched_ids)
-                    st = rt.bot._cursor_ensure(chat_id)
+                    st = pollcursor._cursor_ensure(chat_id)
                     for gid in range(int(st["cursor"]) + 1, max_fetched + 1):
                         if gid in fetched_ids:
                             break
                         if gid in st["pending"] or gid in st["failed"]:
                             break
                         st["cursor"] = gid
-                    rt.bot._cursor_advance(chat_id)
+                    pollcursor._cursor_advance(chat_id)
                     cur = int(st["cursor"])
                 for message in messages:
                     mid = int(getattr(message, "id", 0) or 0)
                     if mid <= cur or (chat_id, mid) in appstate.LIVE_SEEN:
                         continue
-                    rt.bot._remember(appstate.POLL_DISPATCHED, chat_id, mid)
+                    pollcursor._remember(appstate.POLL_DISPATCHED, chat_id, mid)
                     event = events.NewMessage.Event(message)
                     try:
                         event._set_client(rt.client)

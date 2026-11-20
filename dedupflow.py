@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from telethon import errors
 from telethon.tl import types
 
 import appstate
-import time
+import botapi
 from analysis import message_title
 from botentities import bot_api_entity
 from constants import CAPTION_LIMIT, MESSAGE_LIMIT, MESSAGE_LINK_LABEL, PRODUCT_LINK_TEXT
@@ -46,7 +47,7 @@ from header import split_header_line
 from producttitle import _campaign_title_if_clipped, _search_query
 from runtime import Runtime
 from sanitize import utf16_length
-from searchbuttons import PRODUCT_LINK_LABEL, is_price_line
+from searchbuttons import is_price_line, PRODUCT_LINK_LABEL
 
 log = logging.getLogger("telegram-filter")
 
@@ -71,7 +72,7 @@ async def dedup_before_send(rt: Runtime,
     token: Any = object()
     while True:
         async with appstate.DEDUP_LOCK:
-            rt.bot.prune_dedup_cache(appstate.DEDUP_CACHE, time.time(), appstate.DEDUP_WINDOW_SECONDS, appstate.DEDUP_MAX_ENTRIES)
+            prune_dedup_cache(appstate.DEDUP_CACHE, time.time(), appstate.DEDUP_WINDOW_SECONDS, appstate.DEDUP_MAX_ENTRIES)
             active_key = (
                 key if key in appstate.DEDUP_CACHE
                 else (_find_matching_dedup_key(
@@ -211,7 +212,7 @@ async def dedup_after_send(rt: Runtime,
             async with previous["edit_lock"]:
                 try:
                     if previous.get("editable") == "bot" and appstate.DESTINATION_ID is not None:
-                        deleted, detail = await rt.bot.delete_bot_message(
+                        deleted, detail = await botapi.delete_bot_message(
                             appstate.NOTIFY_BOT_TOKEN, appstate.DESTINATION_ID, previous["bot_message_id"])
                         if not deleted:
                             log.warning("Eski fırsat silinemedi: %s", detail)
@@ -335,12 +336,12 @@ async def _dedup_apply_badge(rt: Runtime, key: str) -> None:
                 if appstate.DESTINATION_ID is None or not isinstance(bot_message_id, int):
                     break
                 if kind == "media":
-                    ok, detail = await rt.bot.edit_bot_caption(
+                    ok, detail = await botapi.edit_bot_caption(
                         appstate.NOTIFY_BOT_TOKEN, appstate.DESTINATION_ID, bot_message_id, new_text,
                         entities=new_entities, keyboard=keyboard,
                     )
                 else:
-                    ok, detail = await rt.bot.edit_bot_text(
+                    ok, detail = await botapi.edit_bot_text(
                         appstate.NOTIFY_BOT_TOKEN, appstate.DESTINATION_ID, bot_message_id, new_text,
                         entities=new_entities, keyboard=keyboard, link_preview=False,
                     )
@@ -593,3 +594,53 @@ async def dedup_preload(rt: Runtime) -> None:
     if added:
         log.info("Tekrar önbelleği ısıtıldı: %d başlık (son %d ileti tarandı).",
                  added, len(recent))
+
+
+def prune_dedup_cache(
+    cache: dict[str, dict[str, Any]], now: float, window_seconds: float, max_entries: int,
+) -> int:
+    """Süresi dolmuş ve yarım kalmış kayıtları at; fazlaysa en eskileri düşür.
+
+    Dönen değer atılan kayıt sayısıdır. Bekleyen (``pending``) kayıtlar
+    ``DEDUP_RESERVE_TTL`` dolmadan atılmaz; kapasite aşımında önce hazır
+    kayıtlar elenir.
+    """
+    dropped = 0
+    for key in list(cache):
+        entry = cache.get(key) or {}
+        age = now - float(entry.get("first_seen", now))
+        if entry.get("pending"):
+            owner = entry.get("owner")
+            if age > appstate.DEDUP_RESERVE_TTL and (owner is None or owner.done()):
+                entry["failed"] = True
+                try:
+                    entry["ready"].set()
+                except Exception:  # noqa: BLE001 - temizlik akışı durdurmaz
+                    pass
+                del cache[key]
+                dropped += 1
+        elif age > window_seconds:
+            del cache[key]
+            dropped += 1
+    overflow = len(cache) - max(1, int(max_entries))
+    if overflow > 0:
+        ordered = sorted(cache.items(), key=lambda item: float(item[1].get("first_seen", now)))
+        for key, entry in ordered:
+            if overflow <= 0:
+                break
+            if entry.get("pending"):
+                continue
+            del cache[key]
+            overflow -= 1
+            dropped += 1
+        for key, entry in ordered:
+            if overflow <= 0:
+                break
+            owner = entry.get("owner")
+            if owner is not None and not owner.done():
+                continue
+            if key in cache:
+                del cache[key]
+                overflow -= 1
+                dropped += 1
+    return dropped

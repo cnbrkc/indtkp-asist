@@ -22,6 +22,11 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import preflight  # noqa: E402
+import gitops  # noqa: E402
+import composer  # noqa: E402
+import chatresolve  # noqa: E402
+import botapi  # noqa: E402
 import appstate  # noqa: E402
 import analysis  # noqa: E402
 import commandtext  # noqa: E402
@@ -293,6 +298,19 @@ BASE_ENV = {
     "NOTIFY_BOT_TOKEN": "",
     "RESTART_AFTER_MINUTES": "330",
 }
+
+
+
+def patch_owner(name: str):
+    """Yamalanacak adın tanımlı olduğu modül (ayar/önbellek appstate'te, işlevler kendi modülünde)."""
+    import importlib
+    for module_name in ("appstate", "botapi", "gitops", "composer", "chatresolve", "runtimecfg", "pollcursor",
+                        "statusreport", "preflight", "delivery", "dedupflow", "controlbase", "lifecycle",
+                        "analysis", "listener", "controlcmds", "bot"):
+        module = importlib.import_module(module_name)
+        if name in vars(module) and getattr(vars(module)[name], "__module__", module_name) in (module_name, "builtins"):
+            return module
+    return bot
 
 
 def reset_state():
@@ -574,7 +592,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
             self.command_log.append((str(path), message))
             return "no-repo", "test ortamı"
 
-        patcher = mock.patch.object(bot, "commit_and_push", fake_commit)
+        patcher = mock.patch.object(gitops, "commit_and_push", fake_commit)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.config_path = self._write_config()
@@ -697,7 +715,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self._reply("/ekle")
         self._say("1")
         self._say("kahve")
-        with mock.patch.object(bot, "atomic_write_json", side_effect=OSError("disk dolu")):
+        with mock.patch.object(gitops, "atomic_write_json", side_effect=OSError("disk dolu")):
             reply = self._reply("/kaydet")
         self.assertIn("çalışan ayarlar geri yüklendi", reply)
         self.assertEqual(self._config(), original)
@@ -778,12 +796,12 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
     def test_joined_invite_is_staged_and_saved_as_id_not_secret(self):
         self._reply("/ekle")
         self._say("3")
-        original = bot.resolve_chat
+        original = chatresolve.resolve_chat
         async def resolve(client, value):
             if value == "https://t.me/+PrivateSecret":
                 return -12345, "Özel", None
             return await original(client, value)
-        with mock.patch.object(bot, "resolve_chat", side_effect=resolve):
+        with mock.patch.object(chatresolve, "resolve_chat", side_effect=resolve):
             draft = self._say("https://t.me/+PrivateSecret")
             self.assertIn("-12345", draft)
             self.assertNotIn("PrivateSecret", draft)
@@ -797,12 +815,12 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
     def test_invite_failure_does_not_stage_any_source_or_expose_secret(self):
         self._reply("/ekle")
         self._say("3")
-        original = bot.resolve_chat
+        original = chatresolve.resolve_chat
         async def resolve(client, value):
             if value == "https://t.me/+PrivateSecret":
                 raise ValueError("not joined")
             return await original(client, value)
-        with mock.patch.object(bot, "resolve_chat", side_effect=resolve):
+        with mock.patch.object(chatresolve, "resolve_chat", side_effect=resolve):
             reply = self._say("@yenikanal, https://t.me/+PrivateSecret")
         self.assertIn("önce katıl", reply)
         self.assertNotIn("PrivateSecret", reply)
@@ -931,7 +949,7 @@ class TelegramSettingsFlowTest(MainHarness, unittest.TestCase):
         self.assertEqual(self.command_log, [])
 
     def test_filter_write_failure_restores_previous_state(self):
-        with mock.patch.object(bot, "atomic_write_json", side_effect=OSError("disk dolu")):
+        with mock.patch.object(gitops, "atomic_write_json", side_effect=OSError("disk dolu")):
             reply = self._reply("/tgfiltrekapat dahili")
         self.assertIn("önceki durum geri yüklendi", reply)
         self.assertTrue(appstate.FILTER_INCLUDE_ENABLED)
@@ -1078,7 +1096,7 @@ class CommandCleanupTest(MainHarness, unittest.TestCase):
             self.command_log.append((str(path), message))
             return "no-repo", "test ortamı"
 
-        patcher = mock.patch.object(bot, "commit_and_push", fake_commit)
+        patcher = mock.patch.object(gitops, "commit_and_push", fake_commit)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.config_path = self._write_config()
@@ -1231,8 +1249,7 @@ class NotificationTest(unittest.TestCase):
 
     def _patch(self, target, replacement):
         """Handler'lar main() döndükten SONRA çağrıldığı için yamalar açık kalmalı."""
-        owner = appstate if hasattr(appstate, target) else bot   # ayar/önbellek appstate'te, işlevler bot'ta
-        patcher = mock.patch.object(owner, target, replacement)
+        patcher = mock.patch.object(patch_owner(target), target, replacement)
         patcher.start()
         self._patchers.append(patcher)
 
@@ -1704,7 +1721,7 @@ class DeliveryChainTest(unittest.TestCase):
         self.client = self._run_main(path)
         self.source_id = next(iter(appstate.SOURCE_IDS))
         self.client.fail_modes.update({"forward", "copy", "media", "download"})
-        with mock.patch.object(bot, "build_message_link", lambda *a, **k: None):
+        with mock.patch.object(composer, "build_message_link", lambda *a, **k: None):
             self._send("")
         self.assertEqual(appstate.STATS["forwarded"], 0)
         self.assertEqual(appstate.STATS["failed"], 1)
@@ -1729,46 +1746,46 @@ class DeliveryChainTest(unittest.TestCase):
         config = {"source_chats": ["@firsatz"], "control_chat": "me",
                   "delivery_modes": ["forward", "ekrangoruntusu"]}
         with mock.patch.dict(os.environ, BASE_ENV, clear=False):
-            problems = bot.check_environment(config)
+            problems = preflight.check_environment(config)
         self.assertTrue(any("delivery_modes" in p for p in problems), problems)
 
 
 class BuildDeliveryChainTest(unittest.TestCase):
     def test_defaults_to_full_chain(self):
         self.assertEqual(
-            bot.build_delivery_chain({}),
+            composer.build_delivery_chain({}),
             ["forward", "copy", "media", "text", "link"],
         )
 
     def test_copy_mode_copy_puts_copy_first(self):
-        self.assertEqual(bot.build_delivery_chain({"copy_mode": "copy"})[0], "copy")
+        self.assertEqual(composer.build_delivery_chain({"copy_mode": "copy"})[0], "copy")
 
     def test_explicit_list_is_completed_with_fallbacks(self):
         self.assertEqual(
-            bot.build_delivery_chain({"delivery_modes": ["media"]}),
+            composer.build_delivery_chain({"delivery_modes": ["media"]}),
             ["media", "forward", "copy", "text", "link"],
         )
 
     def test_duplicates_and_junk_are_cleaned(self):
         with self.assertLogs("telegram-filter", level="WARNING"):
-            chain = bot.build_delivery_chain({"delivery_modes": ["copy", "copy", "saçma", "text"]})
+            chain = composer.build_delivery_chain({"delivery_modes": ["copy", "copy", "saçma", "text"]})
         self.assertEqual(chain, ["copy", "text", "forward", "media", "link"])
 
 
 class MessageLinkTest(unittest.TestCase):
     def test_public_channel_link(self):
         event = FakeEvent(-1001234567890, 1, "x", message_id=42)
-        link = bot.build_message_link(event, {"username": "firsatz"})
+        link = composer.build_message_link(event, {"username": "firsatz"})
         self.assertEqual(link, "https://t.me/firsatz/42")
 
     def test_private_channel_link(self):
         event = FakeEvent(-1001234567890, 1, "x", message_id=7)
-        link = bot.build_message_link(event, {"username": None})
+        link = composer.build_message_link(event, {"username": None})
         self.assertEqual(link, "https://t.me/c/1234567890/7")
 
     def test_basic_group_has_no_link(self):
         event = FakeEvent(-5092968106, 1, "x", message_id=9)
-        self.assertIsNone(bot.build_message_link(event, {"username": None}))
+        self.assertIsNone(composer.build_message_link(event, {"username": None}))
 
 
 class IdCommandTest(unittest.TestCase):
@@ -2073,7 +2090,7 @@ class SingleMessageTest(unittest.TestCase):
             return True, "bildirim medyası gönderildi"
 
         for target, replacement in (("send_bot_ping", fake_ping), ("send_bot_media", fake_media)):
-            patcher = mock.patch.object(bot, target, replacement)
+            patcher = mock.patch.object(botapi, target, replacement)
             patcher.start()
             self._patchers.append(patcher)
 
@@ -2226,7 +2243,7 @@ class SingleMessageTest(unittest.TestCase):
         async def failed_ping(token, chat_id, text, **kwargs):
             return False, "simulated Bot API rejection"
 
-        patcher = mock.patch.object(bot, "send_bot_ping", failed_ping)
+        patcher = mock.patch.object(botapi, "send_bot_ping", failed_ping)
         patcher.start()
         self._patchers.append(patcher)
         client = self._run(fast_notify=True)
@@ -2248,7 +2265,7 @@ class SingleMessageTest(unittest.TestCase):
                 return False, "HTTP 503: upstream unavailable"
             return True, "sent"
 
-        ping = mock.patch.object(bot, "send_bot_ping", flaky_ping)
+        ping = mock.patch.object(botapi, "send_bot_ping", flaky_ping)
         ping.start()
         self._patchers.append(ping)
         client = self._run(fast_notify=True)
@@ -2728,8 +2745,7 @@ class DedupBotBadgeTest(unittest.TestCase):
         reset_state()
 
     def _patch(self, target, replacement):
-        owner = appstate if hasattr(appstate, target) else bot   # ayar/önbellek appstate'te, işlevler bot'ta
-        patcher = mock.patch.object(owner, target, replacement)
+        patcher = mock.patch.object(patch_owner(target), target, replacement)
         patcher.start()
         self._patchers.append(patcher)
 
@@ -2758,13 +2774,13 @@ class DedupBotBadgeTest(unittest.TestCase):
             self._next_bot_id += 1
             self.ping_calls.append({"token": token, "chat_id": chat_id, "text": text,
                                     "message_id": self._next_bot_id, **kwargs})
-            return bot.BotSendResult(True, "bildirim gönderildi", self._next_bot_id)
+            return botapi.BotSendResult(True, "bildirim gönderildi", self._next_bot_id)
 
         async def fake_media(token, chat_id, **kwargs):
             self._next_bot_id += 1
             self.media_calls.append({"token": token, "chat_id": chat_id,
                                      "message_id": self._next_bot_id, **kwargs})
-            return bot.BotSendResult(True, "bildirim medyası gönderildi", self._next_bot_id)
+            return botapi.BotSendResult(True, "bildirim medyası gönderildi", self._next_bot_id)
 
         async def fake_edit_text(token, chat_id, message_id, text, **kwargs):
             self.edit_text_calls.append({"token": token, "chat_id": chat_id,

@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import logging
-import price_filter
 import re
+from collections import Counter
 from collections.abc import Iterable, Sequence
+from typing import Any
+
+import price_filter
 from commandtext import telegram_list_items
 from keywords import normalize
 from producttitle import _SEARCH_PRICE_RE, _search_query
-from sanitize import WORD_TOKEN_RE, sent_message_ids
+from sanitize import sent_message_ids, WORD_TOKEN_RE
 from textutil import humanize
-from typing import Any
 
 log = logging.getLogger("telegram-filter")
 
@@ -402,3 +404,34 @@ def build_query_lines(texts: Iterable[str], pattern: Any) -> list[str]:
             seen.add(line)
             lines.append(line)
     return lines
+
+
+def analyze_titles(titles: Iterable[str], *, keep_everything: bool = False) -> dict[str, Any]:
+    """Başlıkları tara; kelime ve ilk kelime frekanslarını çıkar.
+
+    Aynı başlık birden çok kanaldan gelmişse bir kez sayılır (tekrar
+    birleştirme); böylece tek bir kampanya tüm istatistiği bozmaz.
+    """
+    words: Counter[str] = Counter()
+    first_words: Counter[str] = Counter()
+    seen: set[str] = set()
+    counts = {"titles": 0, "unique": 0, "duplicates": 0, "filtered": 0}
+    for title in titles:
+        text = (title or "").strip()
+        if not text:
+            continue
+        counts["titles"] += 1
+        key = normalize(text)
+        if key in seen:
+            counts["duplicates"] += 1
+            continue
+        seen.add(key)
+        counts["unique"] += 1
+        # Sayılar ve işlevsiz kelimeler "elenen" sayılır: kapsam notu bunu gösterir.
+        tokens = title_tokens(text, keep_everything=True)
+        kept = content_tokens(tokens, keep_everything=keep_everything)
+        counts["filtered"] += len(tokens) - len(kept)
+        words.update(kept)
+        if kept:
+            first_words[kept[0]] += 1
+    return {"counts": counts, "words": words, "first_words": first_words}

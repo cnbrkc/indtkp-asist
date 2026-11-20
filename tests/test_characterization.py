@@ -50,6 +50,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bot  # noqa: E402
+import gitops  # noqa: E402
 import appstate  # noqa: E402
 import analysis  # noqa: E402
 import dedupmatch  # noqa: E402
@@ -148,7 +149,7 @@ class DispatchNextRunTest(unittest.TestCase):
     def dispatch(self, pat: str, *answers: Any, **env: str) -> tuple[tuple[bool, str], Wire]:
         wire = Wire(*answers)
         with github_env(**env), quiet_logs(), mock.patch.object(urllib.request, "urlopen", wire):
-            return asyncio.run(bot.dispatch_next_run(pat)), wire
+            return asyncio.run(gitops.dispatch_next_run(pat)), wire
 
     def test_without_pat_nothing_is_requested(self) -> None:
         result, wire = self.dispatch("", GITHUB_REPOSITORY="cnbrkc/ornek")
@@ -204,7 +205,7 @@ class GithubApiTest(unittest.TestCase):
     def call(self, *args: Any, answer: Any) -> tuple[tuple[bool, Any, str], Wire]:
         wire = Wire(answer)
         with mock.patch.object(urllib.request, "urlopen", wire):
-            return bot._github_api(*args), wire
+            return gitops._github_api(*args), wire
 
     def test_request_shape_and_json_answer(self) -> None:
         result, wire = self.call("PUT", "https://api.github.com/x", "gizli", {"mesaj": "çay"},
@@ -249,7 +250,7 @@ class ContentsApiPushTest(unittest.TestCase):
     def push(self, *answers: Any, path: Path | None = None, **env: str) -> tuple[tuple[str, str], Wire]:
         wire = Wire(*answers)
         with github_env(**env), mock.patch.object(urllib.request, "urlopen", wire):
-            return bot._push_via_api(path or self.path, "config: deneme"), wire
+            return gitops._push_via_api(path or self.path, "config: deneme"), wire
 
     def test_without_repository_or_token_nothing_is_requested(self) -> None:
         for env in ({"GH_PAT": "pat"}, {"GITHUB_REPOSITORY": "cnbrkc/ornek"},
@@ -316,7 +317,7 @@ class ContentsApiPushTest(unittest.TestCase):
         ]
         for env, expected in cases:
             with self.subTest(env=env), github_env(**env):
-                self.assertEqual(bot.push_token(), expected)
+                self.assertEqual(gitops.push_token(), expected)
 
     def test_commit_and_push_outside_a_repository_goes_through_the_contents_api(self) -> None:
         for note, message in (("match_mode değişti", "config: match_mode değişti"), ("", "config: güncelleme")):
@@ -324,8 +325,8 @@ class ContentsApiPushTest(unittest.TestCase):
                 wire = Wire({"sha": "eski-sha"}, {})
                 with github_env(GITHUB_REPOSITORY="cnbrkc/ornek", CONFIG_PUSH_TOKEN="pat"), \
                      mock.patch.object(urllib.request, "urlopen", wire), \
-                     mock.patch.object(bot, "_run_git", return_value=(128, "fatal: not a git repository")):
-                    result = bot.commit_and_push(self.path, note)
+                     mock.patch.object(gitops, "_run_git", return_value=(128, "fatal: not a git repository")):
+                    result = gitops.commit_and_push(self.path, note)
                 self.assertEqual(result, ("pushed", "cnbrkc/ornek@main (API)"))
                 self.assertEqual([call["method"] for call in wire.calls], ["GET", "PUT"])
                 self.assertEqual(wire.calls[1]["body"]["message"], message)
@@ -444,7 +445,7 @@ class PersistProductsTest(unittest.TestCase):
         no_repository = (128, "fatal: not a git repository")
 
         async def scenario(chat: PrivateChat) -> None:
-            with github_env(**env), mock.patch.object(bot, "_run_git", git or (lambda *a, **k: no_repository)):
+            with github_env(**env), mock.patch.object(gitops, "_run_git", git or (lambda *a, **k: no_repository)):
                 outcome.append(chat.tracker.persist(chat.tracker.path, WATCHES))
 
         run_private(scenario, wire=wire)

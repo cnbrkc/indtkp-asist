@@ -12,6 +12,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bot
+import preflight
+import lifecycle
+import gitops
+import botapi
 import appstate
 import commandtext
 import price_filter
@@ -155,7 +159,7 @@ class PrivatePureTests(unittest.TestCase):
                       {"dm_exclude_keywords": ["a"] * 101}]:
             config = {"source_chats": ["@firsatz"], "destination": GROUP_ID, **extra}
             with mock.patch.dict(os.environ, BASE_ENV):
-                self.assertTrue(bot.check_environment(config))
+                self.assertTrue(preflight.check_environment(config))
 
     def test_api_error_carries_code(self):
         self.assertEqual(private.BotAPIError("hata", code=403).code, 403)
@@ -166,13 +170,13 @@ class PrivatePureTests(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.dict(os.environ, {**BASE_ENV, "NOTIFY_BOT_TOKEN": "123:ABC"}):
             with contextlib.redirect_stdout(out):
-                bot.print_report(config, [])
+                preflight.print_report(config, [])
         self.assertIn("NOTIFY_BOT_TOKEN=var", out.getvalue())
         self.assertNotIn("123:ABC", out.getvalue())
         out = io.StringIO()
         with mock.patch.dict(os.environ, {**BASE_ENV, "NOTIFY_BOT_TOKEN": ""}):
             with contextlib.redirect_stdout(out):
-                bot.print_report(config, [])
+                preflight.print_report(config, [])
         self.assertIn("NOTIFY_BOT_TOKEN=YOK", out.getvalue())
 
 
@@ -428,14 +432,14 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             return queue
         async def save(store, note=""):
             if self.persist_ok:
-                bot.atomic_write_json(store.path, store.config)
+                gitops.atomic_write_json(store.path, store.config)
             return self.persist_ok, "test persistence"
         async def ping(token, chat_id, text, **kwargs):
             self.group_text.append({"chat_id": chat_id, "text": text, **kwargs})
-            return bot.BotSendResult(True, "ok", 700)
+            return botapi.BotSendResult(True, "ok", 700)
         async def media(token, chat_id, **kwargs):
             self.group_media.append({"chat_id": chat_id, **kwargs})
-            return bot.BotSendResult(True, "ok", 701)
+            return botapi.BotSendResult(True, "ok", 701)
         async def poll(api, allowed, handler, on_status=None, **kwargs):
             # Gerçek poller gibi: hazır olduğunu bildirir, sonra bekler.
             self.poll_on_status = on_status
@@ -451,9 +455,9 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
              mock.patch.object(bot, "StringSession", return_value=object()), \
              mock.patch.object(bot, "BotAPI", return_value=self.api), \
              mock.patch.object(bot, "PrivateOfferQueue", side_effect=queue_factory), \
-             mock.patch.object(bot, "save_config", side_effect=save), \
-             mock.patch.object(bot, "send_bot_ping", side_effect=ping), \
-             mock.patch.object(bot, "send_bot_media", side_effect=media), \
+             mock.patch.object(gitops, "save_config", side_effect=save), \
+             mock.patch.object(botapi, "send_bot_ping", side_effect=ping), \
+             mock.patch.object(botapi, "send_bot_media", side_effect=media), \
              mock.patch.object(bot, "poll_private_commands", side_effect=poll), \
              mock.patch.object(self.client, "run_until_disconnected", side_effect=run):
             await bot.main(["--config", self.path])
@@ -587,7 +591,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             await self.offer("TCL fırsat", media=False, message_id=2)
             self.assertEqual(len(self.api.offers), 1)
             self.assertEqual(appstate.STATS["deduped"], 1)
-        with mock.patch.object(bot, "edit_bot_text", new_callable=mock.AsyncMock, return_value=(True, "ok")):
+        with mock.patch.object(botapi, "edit_bot_text", new_callable=mock.AsyncMock, return_value=(True, "ok")):
             await self.run_scenario(scenario, dedup_enabled=True, dedup_scan_limit=0)
 
     async def test_dm_failure_never_removes_or_blocks_group(self):
@@ -612,7 +616,7 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             await self.command("tcl")
             await self.command("/kaydet")
             group_message = FakeMessage(101, media=False, text="TCL fallback")
-            with mock.patch.object(bot, "send_bot_ping", new_callable=mock.AsyncMock, return_value=(False, "error")), \
+            with mock.patch.object(botapi, "send_bot_ping", new_callable=mock.AsyncMock, return_value=(False, "error")), \
                  mock.patch.object(self.client, "get_messages", new_callable=mock.AsyncMock,
                                    return_value=group_message, create=True):
                 await self.offer("TCL fallback", media=False)
@@ -627,8 +631,8 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             await self.command("tcl")
             await self.command("/kaydet")
             message = FakeMessage(83375, media=True, text="TCL medya fırsatı")
-            with mock.patch.object(bot, "send_bot_ping", new_callable=mock.AsyncMock, return_value=(False, "error")), \
-                 mock.patch.object(bot, "send_bot_media", new_callable=mock.AsyncMock, return_value=(False, "error")), \
+            with mock.patch.object(botapi, "send_bot_ping", new_callable=mock.AsyncMock, return_value=(False, "error")), \
+                 mock.patch.object(botapi, "send_bot_media", new_callable=mock.AsyncMock, return_value=(False, "error")), \
                  mock.patch.object(self.client, "get_messages", new_callable=mock.AsyncMock,
                                    return_value=message, create=True):
                 await self.offer("TCL medya fırsatı")
@@ -1142,8 +1146,8 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
             return True, "started"
 
         with mock.patch.object(bot.asyncio, "sleep", new_callable=mock.AsyncMock) as sleep, \
-             mock.patch.object(bot, "dispatch_next_run", side_effect=dispatch) as mocked_dispatch:
-            await bot.auto_restart_scheduler(
+             mock.patch.object(gitops, "dispatch_next_run", side_effect=dispatch) as mocked_dispatch:
+            await lifecycle.auto_restart_scheduler(
                 client, GROUP_ID, "test-pat", 3600, prepare_restart=prepare,
             )
         sleep.assert_awaited_once_with(3600)
@@ -1155,8 +1159,8 @@ class PrivateIntegrationTests(MainHarness, unittest.IsolatedAsyncioTestCase):
         client = mock.Mock(send_message=mock.AsyncMock())
         prepare = mock.AsyncMock(return_value=False)
         with mock.patch.object(bot.asyncio, "sleep", new_callable=mock.AsyncMock), \
-             mock.patch.object(bot, "dispatch_next_run", new_callable=mock.AsyncMock) as dispatch:
-            await bot.auto_restart_scheduler(client, GROUP_ID, "test-pat", 60,
+             mock.patch.object(gitops, "dispatch_next_run", new_callable=mock.AsyncMock) as dispatch:
+            await lifecycle.auto_restart_scheduler(client, GROUP_ID, "test-pat", 60,
                                             prepare_restart=prepare)
         prepare.assert_awaited_once()
         dispatch.assert_not_awaited()

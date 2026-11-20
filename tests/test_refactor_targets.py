@@ -3,6 +3,8 @@
 Her test tek bir kritik dalı izole eder; refactoring öncesi/sonrası
 davranış eşdeğerliğini golden + mevcut testlere ek olarak güvenceye alır.
 """
+import commandtext
+import preflight
 import unittest
 import sys
 from pathlib import Path
@@ -209,14 +211,14 @@ class TestCheckEnvironmentEquivalence(unittest.TestCase):
         os.environ["API_HASH"]="a"*32
         os.environ["SESSION_STRING"]="x"
         cfg = None
-        probs = bot.check_environment(cfg)
+        probs = preflight.check_environment(cfg)
         # should contain no config errors, only secrets if missing
         self.assertIsInstance(probs, list)
 
     def test_empty_list_vs_none(self):
         import bot
         cfg = {"source_chats": [], "dm_price_max": [], "match_mode":"any", "copy_mode":"forward", "max_media_mb":25, "dedup_window_hours":12, "dedup_scan_limit":100, "destination":"me", "control_chat":"me", "private_control":False, "dm_enabled":False}
-        probs = bot.check_environment(cfg)
+        probs = preflight.check_environment(cfg)
         self.assertIn("source_chats boş", "".join(probs))
 
     def test_zero_price_distinction(self):
@@ -231,10 +233,10 @@ class TestCheckEnvironmentEquivalence(unittest.TestCase):
     def test_stage_add_remove_distinction(self):
         import bot, copy
         cfg = {"include_keywords":[],"exclude_keywords":[],"source_chats":["@a"],"dm_keywords":[],"dm_exclude_keywords":[],"dm_price_max":[]}
-        ok1, cand1, vals1, note1 = bot.stage_telegram_list_change(copy.deepcopy(cfg), "include_keywords","add","")
+        ok1, cand1, vals1, note1 = commandtext.stage_telegram_list_change(copy.deepcopy(cfg), "include_keywords","add","")
         self.assertFalse(ok1)
         self.assertEqual(vals1, [])
-        ok2, cand2, vals2, note2 = bot.stage_telegram_list_change(copy.deepcopy(cfg), "include_keywords","add","test")
+        ok2, cand2, vals2, note2 = commandtext.stage_telegram_list_change(copy.deepcopy(cfg), "include_keywords","add","test")
         self.assertTrue(ok2)
         self.assertNotEqual(vals2, [])
 

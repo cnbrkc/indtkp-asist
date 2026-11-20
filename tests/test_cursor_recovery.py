@@ -14,6 +14,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 import bot  # noqa: E402
+import pollcursor  # noqa: E402
+import gitops  # noqa: E402
 import appstate  # noqa: E402
 import test_integration as ti  # noqa: E402
 from telethon import utils  # noqa: E402
@@ -27,57 +29,57 @@ class CursorMechanismTest(unittest.TestCase):
         self.addCleanup(lambda: (appstate.CURSOR_RAM.clear(), ti.reset_state()))
 
     def test_single_cursor_per_group(self):
-        bot._cursor_ensure(-1001)["cursor"] = 100
-        bot._cursor_mark_pending(-1001, 101)
-        bot._cursor_mark_pending(-1002, 50)
+        pollcursor._cursor_ensure(-1001)["cursor"] = 100
+        pollcursor._cursor_mark_pending(-1001, 101)
+        pollcursor._cursor_mark_pending(-1002, 50)
         self.assertEqual(len(appstate.CURSOR_RAM), 2)
         self.assertEqual(appstate.CURSOR_RAM[-1001]["cursor"], 100)
         self.assertIn(101, appstate.CURSOR_RAM[-1001]["pending"])
 
     def test_cursor_advances_only_contiguously(self):
         cid = -1001
-        bot._cursor_ensure(cid)["cursor"] = 1520
+        pollcursor._cursor_ensure(cid)["cursor"] = 1520
         # 1521 success
-        bot._cursor_mark_pending(cid, 1521)
-        bot._cursor_mark_success(cid, 1521)
+        pollcursor._cursor_mark_pending(cid, 1521)
+        pollcursor._cursor_mark_success(cid, 1521)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1521)
         # 1522 fail
-        bot._cursor_mark_pending(cid, 1522)
-        bot._cursor_mark_failed(cid, 1522)
+        pollcursor._cursor_mark_pending(cid, 1522)
+        pollcursor._cursor_mark_failed(cid, 1522)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1521)
         # 1523 success but gap at 1522 → cursor stays 1521
-        bot._cursor_mark_pending(cid, 1523)
-        bot._cursor_mark_success(cid, 1523)
+        pollcursor._cursor_mark_pending(cid, 1523)
+        pollcursor._cursor_mark_success(cid, 1523)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1521)
         self.assertIn(1523, appstate.CURSOR_RAM[cid]["completed"])
         # 1522 now success → both advance to 1523
-        bot._cursor_mark_pending(cid, 1522)
-        bot._cursor_mark_success(cid, 1522)
+        pollcursor._cursor_mark_pending(cid, 1522)
+        pollcursor._cursor_mark_success(cid, 1522)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1523)
 
     def test_pending_blocks_advance(self):
         cid = -1002
-        bot._cursor_ensure(cid)["cursor"] = 10
-        bot._cursor_mark_pending(cid, 11)
-        bot._cursor_mark_pending(cid, 12)
+        pollcursor._cursor_ensure(cid)["cursor"] = 10
+        pollcursor._cursor_mark_pending(cid, 11)
+        pollcursor._cursor_mark_pending(cid, 12)
         # 12 completes before 11 → still blocked
-        bot._cursor_mark_success(cid, 12)
+        pollcursor._cursor_mark_success(cid, 12)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 10)
-        bot._cursor_mark_success(cid, 11)
+        pollcursor._cursor_mark_success(cid, 11)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 12)
 
     def test_load_and_collect(self):
         config = {"source_cursors": {"-1001": 1521, "-1002": 870}}
-        bot.cursor_load_from_config(config)
+        pollcursor.cursor_load_from_config(config)
         self.assertEqual(appstate.CURSOR_RAM[-1001]["cursor"], 1521)
-        collected = bot.cursor_collect_for_persist()
+        collected = pollcursor.cursor_collect_for_persist()
         self.assertEqual(collected, {"-1001": 1521, "-1002": 870})
 
     def test_uninitialized_live_cursor_is_not_persisted(self):
         appstate.CURSOR_RAM[-1001] = {"cursor": 0, "pending": {17}, "completed": set(),
                                  "failed": set(), "failed_at": {}, "initialized": False}
-        bot._cursor_ensure(-1002)["cursor"] = 44
-        self.assertEqual(bot.cursor_collect_for_persist(), {"-1002": 44},
+        pollcursor._cursor_ensure(-1002)["cursor"] = 44
+        self.assertEqual(pollcursor.cursor_collect_for_persist(), {"-1002": 44},
                          "ilk live ID tek başına restart cursor'ı olarak kaydedilmemeli")
 
     def test_fast_poll_backfill_age_is_fifteen_minutes(self):
@@ -86,11 +88,11 @@ class CursorMechanismTest(unittest.TestCase):
         self.assertEqual(appstate.FAST_POLL_BACKFILL_MAX_AGE, 900.0)
 
     def test_loaded_cursor_is_marked_for_age_check(self):
-        bot.cursor_load_from_config({"source_cursors": {"-1001": 42}})
+        pollcursor.cursor_load_from_config({"source_cursors": {"-1001": 42}})
         entry = appstate.CURSOR_RAM[-1001]
         self.assertEqual(entry["cursor"], 42)
         self.assertTrue(entry["resume_check"], "önceki oturumdan kalan imleç ilk taramada yaş sınırından geçmeli")
-        self.assertNotIn("resume_check", bot._cursor_ensure(-2002))
+        self.assertNotIn("resume_check", pollcursor._cursor_ensure(-2002))
 
 
 class CursorIntegrationTest(ti.MainHarness, unittest.TestCase):
@@ -166,20 +168,20 @@ class CursorGapAndBloatTest(unittest.TestCase):
     def test_telegram_id_gap_skipped(self):
         """Silinmiş ID (1522 yok) — live tek başına atlamaz, cursor 1521’de kalır."""
         cid = -1001
-        bot._cursor_ensure(cid)["cursor"] = 1521
-        bot._cursor_mark_pending(cid, 1523)
-        bot._cursor_mark_success(cid, 1523)
+        pollcursor._cursor_ensure(cid)["cursor"] = 1521
+        pollcursor._cursor_mark_pending(cid, 1523)
+        pollcursor._cursor_mark_success(cid, 1523)
         # poll onayı olmadan gap atlanmaz — güvenli davranış
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1521)
         self.assertNotIn(1522, appstate.CURSOR_RAM[cid]["completed"])
 
     def test_failed_blocks_then_gap_timeout(self):
         cid = -1002
-        bot._cursor_ensure(cid)["cursor"] = 10
-        bot._cursor_mark_pending(cid, 11)
-        bot._cursor_mark_failed(cid, 11)
-        bot._cursor_mark_pending(cid, 12)
-        bot._cursor_mark_success(cid, 12)
+        pollcursor._cursor_ensure(cid)["cursor"] = 10
+        pollcursor._cursor_mark_pending(cid, 11)
+        pollcursor._cursor_mark_failed(cid, 11)
+        pollcursor._cursor_mark_pending(cid, 12)
+        pollcursor._cursor_mark_success(cid, 12)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 10)  # fail blokluyor
         # failed timeout yok — hatayı gizlemeden bloklar
         # poll retry ile failed tekrar denenir (fast_poll_loop)
@@ -189,31 +191,31 @@ class CursorGapAndBloatTest(unittest.TestCase):
 
     def test_completed_pruned_at_200(self):
         cid = -1003
-        bot._cursor_ensure(cid)["cursor"] = 1
+        pollcursor._cursor_ensure(cid)["cursor"] = 1
         # 2 fail, 3..250 success → completed 248 birikir
-        bot._cursor_mark_pending(cid, 2)
-        bot._cursor_mark_failed(cid, 2)
+        pollcursor._cursor_mark_pending(cid, 2)
+        pollcursor._cursor_mark_failed(cid, 2)
         for i in range(3, 251):
-            bot._cursor_mark_pending(cid, i)
-            bot._cursor_mark_success(cid, i)
+            pollcursor._cursor_mark_pending(cid, i)
+            pollcursor._cursor_mark_success(cid, i)
         # fail 2 blokluyor, completed 3..250 birikti → 248
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 1)
         self.assertGreater(len(appstate.CURSOR_RAM[cid]["completed"]), 200)
         # poll 2’nin silindiğini gösterince (failed’dan çıkar) cursor 250’ye ilerler
         appstate.CURSOR_RAM[cid]["failed"].discard(2)
         appstate.CURSOR_RAM[cid]["completed"].add(2)
-        bot._cursor_advance(cid)
+        pollcursor._cursor_advance(cid)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 250)
 
     def test_completed_not_lost_behind_failed_on_prune(self):
         """101 fail, 102-400 done: budama 102-250'yi silmemeli; 101 düzelince 400'e ilerlemeli."""
         cid = -1004
-        bot._cursor_ensure(cid)["cursor"] = 100
-        bot._cursor_mark_pending(cid, 101)
-        bot._cursor_mark_failed(cid, 101)
+        pollcursor._cursor_ensure(cid)["cursor"] = 100
+        pollcursor._cursor_mark_pending(cid, 101)
+        pollcursor._cursor_mark_failed(cid, 101)
         for i in range(102, 401):
-            bot._cursor_mark_pending(cid, i)
-            bot._cursor_mark_success(cid, i)
+            pollcursor._cursor_mark_pending(cid, i)
+            pollcursor._cursor_mark_success(cid, i)
         # Cursor 100'de takılı, completed 102-400 birikti (299)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 100)
         self.assertIn(102, appstate.CURSOR_RAM[cid]["completed"])
@@ -222,29 +224,29 @@ class CursorGapAndBloatTest(unittest.TestCase):
         self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 299)
         # Prune tetiklenmemeli — failed varken completed korunmalı
         # Manuel _cursor_advance çağrısı prune etmemeli
-        bot._cursor_advance(cid)
+        pollcursor._cursor_advance(cid)
         self.assertIn(102, appstate.CURSOR_RAM[cid]["completed"], "failed varken completed silinmemeli")
         self.assertIn(250, appstate.CURSOR_RAM[cid]["completed"])
         # 101 düzelince cursor zinciri 400'e kadar ilerlemeli
-        bot._cursor_mark_pending(cid, 101)
-        bot._cursor_mark_success(cid, 101)
+        pollcursor._cursor_mark_pending(cid, 101)
+        pollcursor._cursor_mark_success(cid, 101)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 400)
         self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 0)
 
     def test_poll_gap_advances_completed_chain(self):
         """Poll 101'in silindiğini doğrulayınca 102,103 completed zinciri ilerlemeli."""
         cid = -1005
-        bot._cursor_ensure(cid)["cursor"] = 100
+        pollcursor._cursor_ensure(cid)["cursor"] = 100
         # 102 ve 103 işlendi, completed içinde; 101 silinmiş
-        bot._cursor_mark_pending(cid, 102)
-        bot._cursor_mark_success(cid, 102)
-        bot._cursor_mark_pending(cid, 103)
-        bot._cursor_mark_success(cid, 103)
+        pollcursor._cursor_mark_pending(cid, 102)
+        pollcursor._cursor_mark_success(cid, 102)
+        pollcursor._cursor_mark_pending(cid, 103)
+        pollcursor._cursor_mark_success(cid, 103)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 100)
         self.assertIn(102, appstate.CURSOR_RAM[cid]["completed"])
         self.assertIn(103, appstate.CURSOR_RAM[cid]["completed"])
         # Poll gap: 101 silinmiş → gap skip 101 + completed zinciri 102,103
-        st = bot._cursor_ensure(cid)
+        st = pollcursor._cursor_ensure(cid)
         fetched_ids = {102, 103}
         max_fetched = 103
         for gid in range(int(st["cursor"]) + 1, max_fetched + 1):
@@ -253,7 +255,7 @@ class CursorGapAndBloatTest(unittest.TestCase):
             if gid in st["pending"] or gid in st["failed"]:
                 break
             st["cursor"] = gid
-        bot._cursor_advance(cid)
+        pollcursor._cursor_advance(cid)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 103)
         self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 0)
 
@@ -261,11 +263,11 @@ class CursorGapAndBloatTest(unittest.TestCase):
     def test_unverified_gap_with_mass_completed_not_pruned(self):
         """cursor=100, 101 henüz doğrulanmamış, 102-700 başarılı: budama tetiklense bile 101 poll ile silinmiş olarak doğrulanınca cursor 700'e ilerlemeli."""
         cid = -1007
-        bot._cursor_ensure(cid)["cursor"] = 100
+        pollcursor._cursor_ensure(cid)["cursor"] = 100
         # 102-700 başarılı → 599 kayıt, eski koşulda budanırdı
         for i in range(102, 701):
-            bot._cursor_mark_pending(cid, i)
-            bot._cursor_mark_success(cid, i)
+            pollcursor._cursor_mark_pending(cid, i)
+            pollcursor._cursor_mark_success(cid, i)
         self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 599)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 100)
         # Budama olmamalı — kayıtlar korunmalı
@@ -274,7 +276,7 @@ class CursorGapAndBloatTest(unittest.TestCase):
         self.assertIn(700, appstate.CURSOR_RAM[cid]["completed"])
         # Poll 101'in silinmiş olduğunu doğrulayana kadar cursor ilerleyemez
         # (poll akışı gibi gap skip + _cursor_advance)
-        st = bot._cursor_ensure(cid)
+        st = pollcursor._cursor_ensure(cid)
         fetched_ids = set(range(102, 701))  # poll 102-700 döndürdü, 101 yok
         # Gap skip mantığı — 101 silinmiş
         for gid in range(int(st["cursor"]) + 1, max(fetched_ids) + 1):
@@ -283,7 +285,7 @@ class CursorGapAndBloatTest(unittest.TestCase):
             if gid in st["pending"] or gid in st["failed"]:
                 break
             st["cursor"] = gid
-        bot._cursor_advance(cid)
+        pollcursor._cursor_advance(cid)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 700, "101 silinmiş doğrulayınca completed zinciri 700'e kadar ilerlemeli")
         self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 0)
 
@@ -324,8 +326,8 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
             cid = sorted(appstate.SOURCE_IDS)[0]
             # Bootstrap sonrası cursor=100, 102-700 completed biriktir (599 kayıt, budama tetiklenirdi)
             for mid in range(102, 701):
-                bot._cursor_mark_pending(cid, mid)
-                bot._cursor_mark_success(cid, mid)
+                pollcursor._cursor_mark_pending(cid, mid)
+                pollcursor._cursor_mark_success(cid, mid)
             self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 100)
             self.assertEqual(len(appstate.CURSOR_RAM[cid]["completed"]), 599)
             await asyncio.sleep(3.0)
@@ -377,10 +379,10 @@ class PollGapChainBehaviorTest(ti.MainHarness, unittest.TestCase):
             # Poll öncesi completed hazırla
             cid = sorted(appstate.SOURCE_IDS)[0]
             # Bootstrap sonrası cursor=100, şimdi 102,103 completed ekle
-            bot._cursor_mark_pending(cid, 102)
-            bot._cursor_mark_success(cid, 102)
-            bot._cursor_mark_pending(cid, 103)
-            bot._cursor_mark_success(cid, 103)
+            pollcursor._cursor_mark_pending(cid, 102)
+            pollcursor._cursor_mark_success(cid, 102)
+            pollcursor._cursor_mark_pending(cid, 103)
+            pollcursor._cursor_mark_success(cid, 103)
             # Poll tetiklensin
             await asyncio.sleep(3.0)
 
@@ -592,8 +594,8 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
             control_id = next(iter(appstate.CONTROL_IDS)) if appstate.CONTROL_IDS else -5092968106
             admin_id = next(iter(appstate.ADMIN_IDS)) if hasattr(bot, "ADMIN_IDS") and appstate.ADMIN_IDS else 1143378073
             ev = ti.FakeEvent(control_id, admin_id, "/restart", message_id=99)
-            with mock.patch.object(bot, "cursor_persist_for_restart", fake_persist), \
-                 mock.patch.object(bot, "dispatch_next_run", fake_dispatch):
+            with mock.patch.object(pollcursor, "cursor_persist_for_restart", fake_persist), \
+                 mock.patch.object(gitops, "dispatch_next_run", fake_dispatch):
                 await handler(ev)
                 self.assertEqual(len(persist_calls), 1, "gerçek handler persist çağırmalı")
                 self.assertEqual(len(dispatch_calls), 0, "persist başarısızsa gerçek handler dispatch çağırmamalı")
@@ -623,8 +625,8 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
             control_id = next(iter(appstate.CONTROL_IDS)) if appstate.CONTROL_IDS else -5092968106
             admin_id = next(iter(appstate.ADMIN_IDS)) if hasattr(bot, "ADMIN_IDS") and appstate.ADMIN_IDS else 1143378073
             ev = ti.FakeEvent(control_id, admin_id, "/restart", message_id=99)
-            with mock.patch.object(bot, "cursor_persist_for_restart", fake_persist), \
-                 mock.patch.object(bot, "dispatch_next_run", fake_dispatch):
+            with mock.patch.object(pollcursor, "cursor_persist_for_restart", fake_persist), \
+                 mock.patch.object(gitops, "dispatch_next_run", fake_dispatch):
                 await handler(ev)
                 self.assertEqual(len(persist_calls), 1)
                 self.assertEqual(len(dispatch_calls), 1, "persist başarılıysa gerçek handler dispatch etmeli")
@@ -639,15 +641,15 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
     def test_drain_timeout_no_data_loss_next_run_reprocesses(self):
         """6s sonunda drain dolmamışsa bile persist edilen cursor ardışık son noktadır; pending mesaj kaybolmaz, sonraki run min_id ile yeniden alınır."""
         cid = -1008
-        bot._cursor_ensure(cid)["cursor"] = 100
-        bot._cursor_mark_pending(cid, 101)
+        pollcursor._cursor_ensure(cid)["cursor"] = 100
+        pollcursor._cursor_mark_pending(cid, 101)
         appstate.SOURCE_IN_FLIGHT.add((cid, 101))
         for mid in range(102, 201):
-            bot._cursor_mark_pending(cid, mid)
-            bot._cursor_mark_success(cid, mid)
+            pollcursor._cursor_mark_pending(cid, mid)
+            pollcursor._cursor_mark_success(cid, mid)
         # Drain timeout senaryosu: hâlâ SOURCE_IN_FLIGHT dolu, poll task dolu olsa bile
         # mevcut ardışık cursor 100 olarak persist edilir
-        collected = bot.cursor_collect_for_persist()
+        collected = pollcursor.cursor_collect_for_persist()
         self.assertEqual(collected[str(cid)], 100, "pending 101 varken cursor 100 kalmalı")
         # Sonraki run cursor 100'den sayfalı kurtarma yapar — 101 yeniden gelir (kayıp yok)
         # Bu, poll'un get_messages(min_id=100) ile 101'i tekrar döndürmesiyle kanıtlanır
@@ -656,7 +658,7 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
         self.assertIn((cid, 101), appstate.SOURCE_IN_FLIGHT)
         # Temizlik: pending işlenince cursor 200'e kadar ilerler
         appstate.SOURCE_IN_FLIGHT.discard((cid, 101))
-        bot._cursor_mark_success(cid, 101)
+        pollcursor._cursor_mark_success(cid, 101)
         self.assertEqual(appstate.CURSOR_RAM[cid]["cursor"], 200)
 
     def test_restart_drain_waits_for_inflight_and_poll_tasks(self):
@@ -702,8 +704,8 @@ class RestartBehaviorTest(ti.MainHarness, unittest.TestCase):
                     pass
             clearer = asyncio.create_task(clear_after())
             start = asyncio.get_event_loop().time()
-            with mock.patch.object(bot, "cursor_persist_for_restart", mock.AsyncMock(return_value=(True, "yedek ok"))), \
-                 mock.patch.object(bot, "dispatch_next_run", mock.AsyncMock(return_value=(True, "başlatıldı"))):
+            with mock.patch.object(pollcursor, "cursor_persist_for_restart", mock.AsyncMock(return_value=(True, "yedek ok"))), \
+                 mock.patch.object(gitops, "dispatch_next_run", mock.AsyncMock(return_value=(True, "başlatıldı"))):
                 await handler(ev)
             elapsed = asyncio.get_event_loop().time() - start
             self.assertGreaterEqual(elapsed, 0.3, "drain SOURCE_IN_FLIGHT ve poll_delivery_tasks için beklemeli")

@@ -33,6 +33,7 @@ from types import SimpleNamespace
 import unittest
 
 import bot
+import composer
 import appstate
 import dedupbadge
 import dedupmatch
@@ -58,7 +59,7 @@ def event(text):
 
 
 def composed(text, name=None):
-    return bot.compose_message(event(text), source_name=name)
+    return composer.compose_message(event(text), source_name=name)
 
 
 ASK = """36 adet askı 274 TL (7,6 TL adet)
@@ -212,7 +213,7 @@ class ReportedPriceTests(unittest.TestCase):
         # Üst satır gövde cümlesini taşır; orada "200₺" geçmesi doğaldır
         # (indirim tutarı kaynağın kendi metnidir), önemli olan FİYAT olarak
         # yorumlanmaması: ayrı fiyat alanı boş kalır.
-        composed = bot.compose_message(event(CK_PARFUM), source_name="İndirim Kılavuzu")
+        composed = composer.compose_message(event(CK_PARFUM), source_name="İndirim Kılavuzu")
         self.assertEqual(composed["price"], "")
         self.assertNotIn("❓", composed["header"])
 
@@ -379,7 +380,7 @@ class HeaderPriceAccuracyTests(unittest.TestCase):
         obj = SimpleNamespace(
             message=text, raw_text=text, entities=[], media=None, reply_markup=None,
         )
-        return bot.compose_message(obj, source_name="Test Grubu", has_keyboard=False, **kwargs)
+        return composer.compose_message(obj, source_name="Test Grubu", has_keyboard=False, **kwargs)
 
     def test_old_price_beside_the_real_price_does_not_make_it_unknown(self):
         """"Piyasası 27.897TL" eski fiyat, başlık havuzuna girmemeli.

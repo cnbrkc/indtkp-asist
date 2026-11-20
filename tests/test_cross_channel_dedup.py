@@ -23,6 +23,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import bot  # noqa: E402
+import botapi  # noqa: E402
 import appstate  # noqa: E402
 import test_integration as ti  # noqa: E402
 from telethon import utils  # noqa: E402
@@ -429,7 +430,7 @@ class ReportedMultibuyUpgradeTest(Harness, unittest.TestCase):
             return False, 'unavailable'
         self._patch('delete_bot_message', delete)
         title = 'Hayat Doğal Mineralli Su 6x1,5 L'
-        with mock.patch.object(bot, 'edit_bot_text', fail_edit):
+        with mock.patch.object(botapi, 'edit_bot_text', fail_edit):
             self.offers(client, [(self.first_id, 101, title + '\n🏷 79 TL'),
                                  (SECOND_CHANNEL_ID, 201, f'{title}\nFiyat: 79 TL / 13 adet alımda 71 TL')])
         self.assertEqual(len(self.ping_calls), 2)
@@ -456,13 +457,13 @@ class ReportedMultibuyUpgradeTest(Harness, unittest.TestCase):
         self.offers(client, [(self.first_id, 101, title + '\n🏷 79 TL')])
         old = next(iter(appstate.DEDUP_CACHE.values()))
         async def fail_send(*args, **kwargs):
-            return bot.BotSendResult(False, 'failed')
+            return botapi.BotSendResult(False, 'failed')
         deletes = []
         async def delete(*args):
             deletes.append(args)
             return True, 'ok'
         self._patch('delete_bot_message', delete)
-        with mock.patch.object(bot, 'send_bot_ping', fail_send):
+        with mock.patch.object(botapi, 'send_bot_ping', fail_send):
             self.offers(client, [(SECOND_CHANNEL_ID, 201, f'{title}\nFiyat: 79 TL / 13 adet alımda 71 TL')])
         self.assertIs(next(iter(appstate.DEDUP_CACHE.values())), old)
         self.assertFalse(deletes)

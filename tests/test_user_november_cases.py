@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from telethon.tl import types
 import bot
+import composer
 import appstate
 import dedupmatch
 import producttitle
@@ -51,7 +52,7 @@ class ParsingTests(unittest.TestCase):
         self.assertTrue(producttitle._search_query(obj).startswith('GIGABYTE GAMING A18'))
         self.assertTrue(smarttitle.smart_dedup_title(obj).startswith('GIGABYTE GAMING A18'))
         with patch.object(appstate, 'SMART_HEADER', True):
-            out = bot.compose_message(obj)
+            out = composer.compose_message(obj)
         self.assertTrue(out['header'].startswith('₺87.500 — GIGABYTE GAMING A18'), out['header'])
         self.assertTrue(pf.extract_title(GIGABYTE).startswith('GIGABYTE GAMING A18'))
         self.assertEqual(pf.extract_price(GIGABYTE).value, 87500)

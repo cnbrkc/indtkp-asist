@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bot
+import composer
 import appstate
 import commandtext
 import dedupmatch
@@ -23,7 +24,7 @@ class IncompletePriceTests(unittest.TestCase):
         self.assertFalse(commandtext.dm_should_send({'dm_price_max': ['99999']}, text))
         self.assertIsNone(dedupmatch.offer_terms(event)[0])
         with patch.object(appstate, 'SMART_HEADER', True):
-            header = bot.compose_message(event)['header']
+            header = composer.compose_message(event)['header']
         # Güvenilir fiyat yok: üst satırda uzun uyarı değil yalnızca ❓ (başlık sonda).
         price, _ = header_mod.split_header_line(header)
         self.assertEqual(price, '❓')
