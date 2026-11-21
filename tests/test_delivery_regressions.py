@@ -4,6 +4,7 @@ No Telegram access: real HTTP adapter and main handlers run with fake I/O.
 """
 from __future__ import annotations
 
+import urllib.request
 import asyncio
 import io
 import json
@@ -133,7 +134,7 @@ class RateLimitRegressionTest(unittest.IsolatedAsyncioTestCase):
                 raise urllib.error.HTTPError("redacted", 429, "Too Many Requests", {}, io.BytesIO(raw))
             return io.BytesIO(raw)
 
-        with mock.patch.object(bot.urllib.request, "urlopen", side_effect=urlopen), \
+        with mock.patch.object(urllib.request, "urlopen", side_effect=urlopen), \
              mock.patch.object(telegram_retry.asyncio, "sleep", new_callable=mock.AsyncMock) as sleep:
             result = await botapi.send_bot_media("123:ABC", -5569562901, kind="photo",
                                               filename="deal.jpg", mime_type="image/jpeg", data=b"image")
@@ -151,7 +152,7 @@ class RateLimitRegressionTest(unittest.IsolatedAsyncioTestCase):
         response = io.BytesIO(b'{"ok":true,"result":{"message_id":10}}')
         with mock.patch.object(telegram_retry.asyncio, "sleep", new_callable=mock.AsyncMock) as sleep, \
              mock.patch.object(api, "_request", return_value={"ok": True, "result": {}}), \
-             mock.patch.object(bot.urllib.request, "urlopen", return_value=response):
+             mock.patch.object(urllib.request, "urlopen", return_value=response):
             await api.call("sendMessage", {"chat_id": 1, "text": "hello"})
             await botapi.edit_bot_text(api.token, -5569562901, 10, "updated")
         self.assertEqual(sleep.await_count, 2)
@@ -263,7 +264,7 @@ class RateLimitRegressionTest(unittest.IsolatedAsyncioTestCase):
     async def test_not_modified_is_success_without_error_log(self):
         exc = urllib.error.HTTPError("redacted", 400, "Bad Request", {}, io.BytesIO(
             b'{"description":"Bad Request: message is not modified"}'))
-        with mock.patch.object(bot.urllib.request, "urlopen", side_effect=exc) as request, \
+        with mock.patch.object(urllib.request, "urlopen", side_effect=exc) as request, \
              mock.patch.object(bot.log, "error") as error:
             ok, _ = await botapi.edit_bot_text("123:ABC", -1, 1, "unchanged")
         self.assertTrue(ok)
@@ -271,7 +272,7 @@ class RateLimitRegressionTest(unittest.IsolatedAsyncioTestCase):
         error.assert_not_called()
 
     async def test_ambiguous_transport_failure_is_not_replayed(self):
-        with mock.patch.object(bot.urllib.request, "urlopen", side_effect=TimeoutError) as request:
+        with mock.patch.object(urllib.request, "urlopen", side_effect=TimeoutError) as request:
             ok, _ = await botapi.send_bot_ping("123:ABC", -1, "offer")
         self.assertFalse(ok)
         self.assertEqual(request.call_count, 1)
@@ -575,7 +576,7 @@ class DeliveryRegressionTest(unittest.TestCase):
             return io.BytesIO(json.dumps(body).encode())
 
         with mock.patch.object(botapi, "send_bot_media", real_media), \
-             mock.patch.object(bot.urllib.request, "urlopen", side_effect=urlopen), \
+             mock.patch.object(urllib.request, "urlopen", side_effect=urlopen), \
              mock.patch.object(telegram_retry.RetryGate, "wait", new_callable=mock.AsyncMock):
             self._send(client, "Karaca Multichef Rose Gold Mutfak Şefi\n2999 TL", message_id=127346)
         self.assertEqual(methods, ["sendPhoto", "sendPhoto"])

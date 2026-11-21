@@ -94,6 +94,7 @@ def atomic_write_json(path: Path, data: dict) -> None:
 
 
 def _run_git(args: Sequence[str], cwd: str, timeout: int = 30) -> tuple[int, str]:
+    """git komutunu çalıştırır; (çıkış kodu, çıktı) döner (git yoksa 127, zaman aşımında 124)."""
     try:
         proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
                               timeout=timeout, check=False)
@@ -122,6 +123,7 @@ def push_token() -> str:
 
 
 def current_branch(repo: Path) -> str:
+    """Depodaki geçerli dalın adı (detached HEAD durumunda GITHUB_REF_NAME)."""
     code, out = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=str(repo))
     branch = out.splitlines()[0].strip() if code == 0 and out else ""
     if not branch or branch == "HEAD":  # detached HEAD
@@ -133,6 +135,7 @@ GIT_WRITE_LOCK = threading.RLock()
 
 
 def commit_and_push(path: Path, message: str) -> tuple[str, str]:
+    """Dosyayı commit edip push eder (yazma kilidi altında); (durum, ayrıntı) döner."""
     with GIT_WRITE_LOCK:
         return _commit_and_push_locked(path, message)
 
@@ -216,6 +219,7 @@ def push_branch(repo: Path, branch: str, token: str = "") -> tuple[int, str]:
 
 
 def _github_api(method: str, url: str, token: str, payload: dict | None = None) -> tuple[bool, Any, str]:
+    """GitHub REST çağrısı yapar; (başarılı_mı, gövde, ayrıntı) döner."""
     data = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(
         url, data=data, method=method,

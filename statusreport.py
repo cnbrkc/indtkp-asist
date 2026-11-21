@@ -14,6 +14,7 @@ from textutil import humanize
 
 
 def build_status_text(config: dict, *, connected: bool = True) -> str:
+    """/durum metni: bağlantı, sayaçlar, son eşleşme, filtre ve mod özeti."""
     last = appstate.STATS["last_match"]
     last_line = "henüz eşleşme yok"
     if last:
@@ -87,6 +88,7 @@ def build_status_text(config: dict, *, connected: bool = True) -> str:
 
 
 def build_source_text() -> str:
+    """İzlenen kaynakların listesi (üye olunmayan ve çözülemeyenler uyarılı)."""
     lines = [f"İzlenen {len(appstate.SOURCES)} kaynak:"]
     lines += [f"• {item['name']}  [{item['id']}]" + ("" if item["joined"] else "  ⚠️ ÜYE DEĞİLSİN")
               for item in appstate.SOURCES]

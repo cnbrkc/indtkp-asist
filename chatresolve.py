@@ -46,6 +46,7 @@ async def resolve_chat(client: TelegramClient, value: int | str) -> tuple[int, s
 
 
 def _lookup_source_id(source_id_map: dict[str, Any], value: Any) -> Any | None:
+    """Kayıtlı kaynak ID haritasında değeri (ve @'siz biçimini) arar."""
     key = str(value).strip()
     if key in source_id_map:
         return source_id_map[key]
@@ -98,6 +99,7 @@ def _is_stale_id_error(exc: Exception) -> bool:
 
 
 def _is_invite_link(value: Any) -> bool:
+    """Değer bir Telegram davet bağlantısı mı?"""
     return isinstance(value, str) and bool(_INVITE_LINK_RE.fullmatch(value.strip()))
 
 

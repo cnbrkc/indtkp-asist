@@ -110,6 +110,7 @@ async def apply_setting_change(rt: Runtime, before: dict,
 
 
 async def can_edit_list(rt: Runtime, event, field):
+    """Kişisel (DM) listeleri yalnızca hesap sahibi özel sohbetten düzenleyebilir; değilse uyarıp False döner."""
     if (field in DM_LIST_FIELDS or field in {DM_PRICE_FIELD, DM_PRODUCT_PRICE_FIELD}) and (
         not isinstance(event, PrivateControlEvent) or event.sender_id != appstate.SELF_ID
     ):
@@ -593,6 +594,7 @@ async def handle_pending_message(rt: Runtime, event: events.NewMessage.Event,
 
 
 async def on_control_message(rt: Runtime, event: events.NewMessage.Event) -> None:
+    """Kontrol sohbetine ve özel sohbete gelen her mesajı yorumlar: komutları (/durum, /ekle, /kaydet, /analiz, /kaynaktest ...) ve taslak yanıtlarını ilgili işleyiciye dağıtır."""
     if not is_control_event(rt, event):
         return
     raw = (event.raw_text or "").strip()

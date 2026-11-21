@@ -16,6 +16,7 @@ log = logging.getLogger("telegram-filter")
 
 
 def _check_env_secrets(problems: list[str]) -> None:
+    """API_ID, API_HASH ve SESSION_STRING secret'larını doğrular; sorunları `problems` listesine ekler."""
     api_id = os.getenv("API_ID", "").strip()
     api_hash = os.getenv("API_HASH", "").strip()
     session_string = os.getenv("SESSION_STRING", "").strip()
@@ -37,6 +38,7 @@ def _check_env_secrets(problems: list[str]) -> None:
 
 
 def _check_config_flags_and_dm(config: dict, problems: list[str]) -> None:
+    """config.json bayraklarını ve kişisel (DM) ayarlarını doğrular."""
     if not isinstance(config.get("private_control", False), bool):
         problems.append("config.json → private_control true/false olmalı.")
     if not isinstance(config.get("dm_enabled", False), bool):
@@ -78,6 +80,7 @@ def _check_config_flags_and_dm(config: dict, problems: list[str]) -> None:
 
 
 def _check_sources_and_modes(config: dict, problems: list[str]) -> None:
+    """Kaynak listesini, eşleşme modunu ve iletim modlarını doğrular."""
     sources = chat_values(config.get("source_chats"))
     if not sources:
         problems.append("config.json → source_chats boş. En az bir kanal/grup eklenmeli.")
@@ -102,6 +105,7 @@ def _check_sources_and_modes(config: dict, problems: list[str]) -> None:
 
 
 def _check_limits_and_destination(config: dict, problems: list[str]) -> bool:
+    """Sayısal sınırları, hedefi ve kontrol sohbetini doğrular; kontrol sohbeti bir grup mu (True) döner."""
     try:
         if int(config.get("max_media_mb", 25)) < 0:
             problems.append("config.json → max_media_mb negatif olamaz.")

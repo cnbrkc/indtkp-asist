@@ -1,5 +1,6 @@
 """Offline synthetic fixtures: these do not certify live Akakçe access."""
 import asyncio
+import header
 import copy
 import json
 import tempfile
@@ -221,11 +222,10 @@ class ReaderTests(unittest.TestCase):
                          '₺6.839 — Philips\n\nAkakçe Takip Bildirimi\n\n' + URL)
 
     def test_notification_reuses_existing_channel_header_format(self):
-        import bot
         result = {'price': 683905, 'title': 'Philips'}
         text = notification_text(result, URL,
-                                 lambda cents, title: bot.build_header_line(bot.header_price_text(cents / 100), title))
-        self.assertEqual(text.split('\n')[0], bot.build_header_line(bot.header_price_text(6839.05), 'Philips'))
+                                 lambda cents, title: header.build_header_line(header.header_price_text(cents / 100), title))
+        self.assertEqual(text.split('\n')[0], header.build_header_line(header.header_price_text(6839.05), 'Philips'))
 
 
     def test_tracking_menu_is_complete_short_and_copy_only(self):

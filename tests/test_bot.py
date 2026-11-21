@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import urllib.request
 import io
 import json
 import os
@@ -1354,7 +1355,7 @@ class BotPingTest(unittest.TestCase):
     """NOTIFY_BOT_TOKEN secret'ıyla gönderilen bildirim ping'i."""
 
     def test_no_token_returns_false_without_calling_api(self):
-        with mock.patch("bot.urllib.request.urlopen") as urlopen:
+        with mock.patch("urllib.request.urlopen") as urlopen:
             ok, detail = asyncio.run(botapi.send_bot_ping("", -5092968106, "selam"))
         self.assertFalse(ok)
         self.assertIn("tanımlı değil", detail)
@@ -1364,7 +1365,7 @@ class BotPingTest(unittest.TestCase):
         fake_response = io.BytesIO(json.dumps({"ok": True, "result": {}}).encode())
         fake_response.__enter__ = lambda self: self
         fake_response.__exit__ = lambda self, *a: False
-        with mock.patch("bot.urllib.request.urlopen", return_value=fake_response) as urlopen:
+        with mock.patch("urllib.request.urlopen", return_value=fake_response) as urlopen:
             ok, detail = asyncio.run(botapi.send_bot_ping("123:ABC", -5092968106, "🔔 deneme"))
         self.assertTrue(ok, detail)
         request = urlopen.call_args[0][0]
@@ -1372,7 +1373,7 @@ class BotPingTest(unittest.TestCase):
         self.assertEqual(json.loads(request.data.decode())["chat_id"], -5092968106)
 
     def test_api_error_is_reported_not_raised(self):
-        with mock.patch("bot.urllib.request.urlopen",
+        with mock.patch("urllib.request.urlopen",
                         side_effect=urllib.error.HTTPError(
                             "u", 400, "Bad Request", {}, io.BytesIO(b'{"description":"chat not found"}'))):
             with self.assertLogs("telegram-filter", level="ERROR"):
@@ -2812,7 +2813,7 @@ class BotApiSendTest(unittest.TestCase):
         return response
 
     def test_ping_sends_entities_and_keyboard(self):
-        with mock.patch("bot.urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
+        with mock.patch("urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
             ok, _ = asyncio.run(botapi.send_bot_ping(
                 "123:ABC", -100, "ÇAY 5 TL\n\n🔗 Mesajı Gör: https://t.me/firsatz/1",
                 entities=[{"type": "text_link", "offset": 5, "length": 3, "url": "https://t.me/x/1"}],
@@ -2830,7 +2831,7 @@ class BotApiSendTest(unittest.TestCase):
         self.assertEqual(keyboard["inline_keyboard"][0][0]["url"], "https://amzn.to/b")
 
     def test_ping_can_disable_link_preview_without_removing_the_link(self):
-        with mock.patch("bot.urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
+        with mock.patch("urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
             ok, _ = asyncio.run(botapi.send_bot_ping(
                 "123:ABC", -100, "Amazon'da gör",
                 entities=[{"type": "text_link", "offset": 0, "length": 13,
@@ -2846,7 +2847,7 @@ class BotApiSendTest(unittest.TestCase):
         )
 
     def test_media_posts_multipart_to_sendphoto(self):
-        with mock.patch("bot.urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
+        with mock.patch("urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
             ok, detail = asyncio.run(botapi.send_bot_media(
                 "123:ABC", -100, kind="photo", filename="firsat_1.jpg", mime_type="image/jpeg",
                 data=b"JPEG", caption="çay", entities=[{"type": "bold", "offset": 0, "length": 3}],
@@ -2859,7 +2860,7 @@ class BotApiSendTest(unittest.TestCase):
         self.assertIn(b'name="caption_entities"', request.data)
 
     def test_document_kind_uses_senddocument(self):
-        with mock.patch("bot.urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
+        with mock.patch("urllib.request.urlopen", return_value=self._fake_response()) as urlopen:
             asyncio.run(botapi.send_bot_media(
                 "123:ABC", -100, kind="document", filename="kupon.pdf",
                 mime_type="application/pdf", data=b"PDF",
@@ -3209,7 +3210,7 @@ class EditBotHelpersTest(unittest.TestCase):
         return fake
 
     def test_send_ping_returns_message_id(self):
-        with mock.patch("bot.urllib.request.urlopen",
+        with mock.patch("urllib.request.urlopen",
                         return_value=self._response({"ok": True, "result": {"message_id": 4242}})):
             result = asyncio.run(botapi.send_bot_ping("123:ABC", -5092968106, "selam"))
         ok, _ = result
@@ -3217,7 +3218,7 @@ class EditBotHelpersTest(unittest.TestCase):
         self.assertEqual(result.message_id, 4242)
 
     def test_edit_text_posts_entities_and_keyboard(self):
-        with mock.patch("bot.urllib.request.urlopen",
+        with mock.patch("urllib.request.urlopen",
                         return_value=self._response({"ok": True, "result": True})) as urlopen:
             ok, _ = asyncio.run(botapi.edit_bot_text(
                 "123:ABC", -5092968106, 9, "yeni",
@@ -3233,7 +3234,7 @@ class EditBotHelpersTest(unittest.TestCase):
         self.assertIn("reply_markup", payload)
 
     def test_edit_caption_posts_to_caption_method(self):
-        with mock.patch("bot.urllib.request.urlopen",
+        with mock.patch("urllib.request.urlopen",
                         return_value=self._response({"ok": True, "result": True})) as urlopen:
             ok, _ = asyncio.run(botapi.edit_bot_caption("123:ABC", -5092968106, 9, "açıklama"))
         self.assertTrue(ok)
@@ -3242,14 +3243,14 @@ class EditBotHelpersTest(unittest.TestCase):
         self.assertEqual(json.loads(request.data.decode())["caption"], "açıklama")
 
     def test_not_modified_counts_as_success(self):
-        with mock.patch("bot.urllib.request.urlopen",
+        with mock.patch("urllib.request.urlopen",
                         return_value=self._response({"ok": False, "description": "message is not modified"})):
             ok, detail = asyncio.run(botapi.edit_bot_text("t", 1, 2, "aynı"))
         self.assertTrue(ok)
         self.assertIn("güncel", detail)
 
     def test_edit_without_token_does_not_call_api(self):
-        with mock.patch("bot.urllib.request.urlopen") as urlopen:
+        with mock.patch("urllib.request.urlopen") as urlopen:
             ok, detail = asyncio.run(botapi.edit_bot_text("", 1, 2, "x"))
         self.assertFalse(ok)
         self.assertIn("tanımlı değil", detail)

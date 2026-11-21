@@ -25,6 +25,7 @@ log = logging.getLogger("telegram-filter")
 
 
 async def on_new_message(rt: Runtime, event: events.NewMessage.Event) -> None:
+    """Canlı gelen kaynak mesajını süzer (kaynak değilse, hedef/kontrol sohbetiyse, restart sırasında veya hızlı taramada zaten işlenmişse atlar) ve işlenmek üzere process_source_event'e iletir."""
     if event.chat_id not in appstate.SOURCE_IDS or event.chat_id in appstate.CONTROL_IDS:
         return
     if appstate.DESTINATION_ID is not None and event.chat_id == appstate.DESTINATION_ID:
@@ -64,6 +65,7 @@ async def on_new_message(rt: Runtime, event: events.NewMessage.Event) -> None:
 
 
 async def process_source_event(rt: Runtime, event: Any) -> None:
+    """Bir kaynak mesajı için eşleştirme ve teslim akışı: sayaçlar, kelime/fiyat filtreleri, tekrar birleştirme, teslim ve bildirim."""
     appstate.STATS["seen"] += 1
     source_seen = appstate.STATS.setdefault("source_seen", {})
     if isinstance(source_seen, dict):

@@ -43,6 +43,7 @@ log = logging.getLogger("telegram-filter")
 
 
 async def prepare_private_offer(rt: Runtime, item):
+    """Kuyruktaki kişisel fırsatı göndermeden hemen önce DM filtresiyle yeniden değerlendirir; artık geçerli değilse None döner."""
     # Turning off/changing the filter also cancels queued, unsent copies.
     decision = dm_decision(
         rt.store.config, item["match_text"], item.get("strike") or (),
@@ -77,6 +78,7 @@ async def prepare_private_offer(rt: Runtime, item):
 
 
 def enqueue_private_offer(rt: Runtime, event, info):
+    """Eşleşen mesajı DM kurallarına göre değerlendirir; uygunsa özel sohbet fırsat kuyruğuna ekler."""
     if not rt.private_api or not dm_filters.has_active_rules(rt.store.config):
         return
     sanitized = sanitize_message(event)
@@ -94,6 +96,7 @@ def enqueue_private_offer(rt: Runtime, event, info):
 
 
 def dm_status(rt: Runtime):
+    """/dm durum metni: kişisel (DM) kelime, fiyat ve ürün fiyat kurallarının açık/kapalı özeti."""
     words = [str(value) for value in telegram_list_items(rt.store.config, "dm_keywords")]
     excluded = [str(value) for value in telegram_list_items(rt.store.config, "dm_exclude_keywords")]
     enabled = config_flag(rt.store.config.get("dm_enabled"), False)
@@ -167,6 +170,7 @@ async def private_channel_health(rt: Runtime) -> str:
 
 
 async def save_dm_setting(rt: Runtime, event, *, action=None, raw="", enabled=True):
+    """DM kelime listesini düzenler veya DM bildirimlerini açıp kapatır; ayar kilidi altında kaydeder ve sonucu yanıtlar."""
     async with rt.settings_lock:
         before = rt.store.snapshot()
         if action is not None:
@@ -199,6 +203,7 @@ async def save_dm_setting(rt: Runtime, event, *, action=None, raw="", enabled=Tr
 
 
 async def handle_dm_command(rt: Runtime, event, command, rest):
+    """DM komutlarını yalnızca hesap sahibinin botla özel sohbetinde işler; başka yerde uyarı verir."""
     if not isinstance(event, PrivateControlEvent) or event.sender_id != appstate.SELF_ID:
         await control_reply(rt, event, "🎯 Kişisel ayarlar yalnızca hesap sahibinin botla özel sohbetinden yönetilir.")
         return
