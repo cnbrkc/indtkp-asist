@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from collections.abc import Callable
@@ -48,6 +49,7 @@ async def private_status_changed(rt: Runtime, status: str, detail: str) -> None:
 
 
 async def prepare_scheduled_restart(rt: Runtime) -> bool:
+    """Planlı yenilemeden önce yeni mesaj almayı durdurur (RESTARTING), uçuştaki işleri kısa süre bekler ve imleçleri kaydeder."""
     appstate.RESTARTING = True
     drain_deadline = time.time() + 6
     while time.time() < drain_deadline and (appstate.SOURCE_IN_FLIGHT or rt.poll_delivery_tasks):
@@ -65,6 +67,7 @@ async def prepare_scheduled_restart(rt: Runtime) -> bool:
 
 
 async def resume_after_scheduled_restart_failure(rt: Runtime) -> None:
+    """Yeni çalışma başlatılamazsa mevcut süreçte dinlemeye devam eder (RESTARTING kapatılır)."""
     appstate.RESTARTING = False
     log.warning("Yeni çalışma başlatılamadı; mevcut süreç kaynakları dinlemeye devam edecek.")
 
@@ -108,3 +111,16 @@ async def heartbeat() -> None:
             gate_stats(appstate.NOTIFY_BOT_TOKEN)["retry_wait_seconds"],
             gate_stats(appstate.NOTIFY_BOT_TOKEN)["lock_wait_seconds"],
         )
+
+
+def start_background_tasks(rt: Runtime, auto_restart: bool, restart_minutes: int) -> None:
+    """Otomatik yenileme zamanlayıcısını (GH_PAT varsa) ve nabız görevini başlatır."""
+    if auto_restart and rt.gh_pat:
+        asyncio.create_task(auto_restart_scheduler(
+            rt.client, appstate.DESTINATION, rt.gh_pat, max(60, restart_minutes * 60),
+            prepare_restart=functools.partial(prepare_scheduled_restart, rt),
+            resume_after_failure=functools.partial(resume_after_scheduled_restart_failure, rt),
+        ))
+    elif auto_restart:
+        log.warning("auto_restart açık ama GH_PAT yok; oturum Actions süresi bitince kapanacak.")
+    asyncio.create_task(heartbeat())

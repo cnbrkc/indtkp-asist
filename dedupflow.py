@@ -231,6 +231,7 @@ async def dedup_apply_badge(rt: Runtime, key: str) -> None:
 
 
 async def _dedup_apply_badge(rt: Runtime, key: str) -> None:
+    """Tekrar birleştirme rozetini/çoklu paylaşım notunu hedefteki mesaja düzenleyerek yazar; ürün kilidi altında çalışır ve eşzamanlı düzenlemeleri sıraya sokar."""
     async with appstate.DEDUP_LOCK:
         entry = appstate.DEDUP_CACHE.get(key)
         if entry is None or entry.get("pending") or not entry.get("editable"):

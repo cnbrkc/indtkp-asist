@@ -16,6 +16,7 @@ from commandtext import ConfigStore
 
 
 def _remember(store_: "collections.OrderedDict[tuple[int, int], float]", chat_id: Any, message_id: Any) -> None:
+    """Mesajı canlı olay önbelleğine ekler (en fazla 5000 kayıt; eskiler atılır)."""
     store_[(int(chat_id), int(message_id))] = time.time()
     while len(store_) > 5000:
         store_.popitem(last=False)
@@ -37,6 +38,7 @@ def live_event_should_skip(event: Any) -> bool:
 
 
 def _cursor_ensure(chat_id: int) -> dict[str, Any]:
+    """Kaynağın imleç kaydını döner; yoksa oluşturur."""
     cid = int(chat_id)
     if cid not in appstate.CURSOR_RAM:
         appstate.CURSOR_RAM[cid] = {"cursor": 0, "pending": set(), "completed": set(), "failed": set(), "failed_at": {}, "initialized": True}
@@ -60,6 +62,7 @@ def _cursor_advance(chat_id: int) -> None:
 
 
 def _cursor_mark_pending(chat_id: int, msg_id: int) -> None:
+    """Mesajı \"işleniyor\" olarak işaretler; önceki başarısızlık kaydını temizler."""
     st = _cursor_ensure(chat_id)
     mid = int(msg_id)
     st["pending"].add(mid)
@@ -69,6 +72,7 @@ def _cursor_mark_pending(chat_id: int, msg_id: int) -> None:
 
 
 def _cursor_mark_success(chat_id: int, msg_id: int) -> None:
+    """Mesajı tamamlandı olarak işaretler ve imleci ilerletir."""
     st = _cursor_ensure(chat_id)
     mid = int(msg_id)
     st["pending"].discard(mid)
@@ -79,6 +83,7 @@ def _cursor_mark_success(chat_id: int, msg_id: int) -> None:
 
 
 def _cursor_mark_failed(chat_id: int, msg_id: int) -> None:
+    """Mesajı başarısız olarak işaretler (zamanıyla); imleç yeniden denenecek mesajın önünde bekler."""
     st = _cursor_ensure(chat_id)
     mid = int(msg_id)
     st["pending"].discard(mid)

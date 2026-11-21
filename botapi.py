@@ -105,6 +105,7 @@ async def _bot_api_request_full(
 async def _bot_api_request(
     token: str, method: str, *, payload: bytes, content_type: str, what: str,
 ) -> tuple[bool, str]:
+    """Bot API çağrısı yapar; yalnızca (başarılı_mı, ayrıntı) döner."""
     ok, detail, _ = await _bot_api_request_full(
         token, method, payload=payload, content_type=content_type, what=what,
     )
@@ -184,6 +185,7 @@ async def send_bot_media(
 
 
 async def delete_bot_message(token: str, chat_id: int | str, message_id: int) -> tuple[bool, str]:
+    """Bot hesabıyla gönderilmiş eski bildirimi siler."""
     payload = {"chat_id": chat_id, "message_id": message_id}
     return await _bot_api_request(token, "deleteMessage", payload=json.dumps(payload).encode(),
                                   content_type="application/json", what="eski bildirim")

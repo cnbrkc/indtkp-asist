@@ -61,10 +61,12 @@ def source_of(rt: Runtime, event: events.NewMessage.Event) -> dict[str, Any] | N
 
 
 def offer_link(rt: Runtime, event: events.NewMessage.Event) -> str | None:
+    """Mesaj adresi satırı açıksa orijinal mesajın t.me bağlantısını, değilse None döner."""
     return composer.build_message_link(event, source_of(rt, event)) if appstate.MESSAGE_LINK_LINE else None
 
 
 async def send_forward(rt: Runtime, event: events.NewMessage.Event) -> Any:
+    """Mesajı hedefe iletir (forward)."""
     return await rt.client.forward_messages(appstate.DESTINATION, event.message, from_peer=event.chat_id)
 
 
@@ -149,6 +151,7 @@ async def send_media(rt: Runtime, event: events.NewMessage.Event) -> Any:
 
 
 async def send_text_only(rt: Runtime, event: events.NewMessage.Event) -> Any:
+    """Forward/kopya/medya yolları başarısız olduğunda yalnızca metni (gizli linkler ve kaynak adı dahil) gönderir."""
     # Gövdeye ek olarak gizli linkler (varsa) ve kaynak adına gömülü mesaj
     # adresi eklenir; ürün linki bir şekilde kaçsa bile tek dokunuşla fırsata
     # ulaşılır (ad yazılamazsa "🔗 Mesajı Gör" satırı geri gelir).
@@ -193,6 +196,7 @@ async def send_link_card(rt: Runtime, event: events.NewMessage.Event) -> Any:
 
 
 async def send_account_with_retry(rt: Runtime, mode: str, event: Any) -> Any:
+    """Seçili yöntemle hesap üzerinden gönderir; FloodWait/SlowMode olursa bekleyip aynı fırsatı yeniden dener (gönderimler kilitle sıraya girer)."""
     # Account fallback must not silently drop an offer on FloodWait either.
     # Keep other offer sends behind this wait rather than stampeding Telegram.
     async with rt.account_send_lock:

@@ -15,45 +15,32 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import functools
 import json
 import logging
 import os
-import urllib.error
-import urllib.parse
-import urllib.request
 from collections.abc import Sequence
 
 from telethon import events, TelegramClient
 from telethon.sessions import StringSession
 
 import appstate
-import chatresolve
 import controlcmds
-import gitops
 import lifecycle
 import listener
-import pollcursor
 import preflight
 import runtimecfg
+import startup
 import timefmt
 from commandtext import ConfigStore
-from confutil import chat_values, config_flag, config_path, load_config
-from constants import MESSAGE_LINK_LABEL, PRODUCT_LINK_TEXT
-from dedupflow import dedup_preload
+from confutil import config_flag, config_path, load_config
 from delivery import send_copy, send_forward, send_link_card, send_media, send_text_only
 from dmcontrol import prepare_private_offer
-from header import build_header_line, header_price_text
-from lifecycle import (
-    prepare_scheduled_restart,
-    private_status_changed,
-    resume_after_scheduled_restart_failure,
-)
+from lifecycle import private_status_changed
 from listener import fast_poll_loop
 from private_bot import BotAPI, poll_health, poll_private_commands, PrivateOfferQueue
 from runtime import Runtime
-from textutil import display_name, humanize
+from textutil import display_name
 
 # Runner UTC çalışır; log saatlerini TSİ'ye sabitle ki kullanıcı saatle
 # karşılaştırabilsin (Actions log'unda "10:44" görünen satırlar TSİ 13:44'tü).
@@ -75,6 +62,7 @@ log = logging.getLogger("telegram-filter")
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Komut satırı bağımsız değişkenleri: --check ve --config."""
     parser = argparse.ArgumentParser(description="Telegram indirim mesajı filtresi")
     parser.add_argument(
         "--check", action="store_true",
@@ -85,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_check(config_path: str | None) -> int:
+    """Telegram'a bağlanmadan secret/config doğrulaması yapar; sorun varsa 1, yoksa 0 döner."""
     try:
         config = load_config(config_path)
     except FileNotFoundError:
@@ -100,6 +89,8 @@ def run_check(config_path: str | None) -> int:
 
 
 async def main(argv: Sequence[str] | None = None) -> int:
+    """Botu kurar ve çalıştırır: ayarları yükle → Telegram'a bağlan → sohbetleri çöz → servisleri,
+    teslim yollarını ve dinleyicileri kur → bağlantı kopana kadar dinle. Ayrıntılar ``startup`` ve akış modüllerinde."""
     # Filtre/link bayraklarını apply_runtime_config yazar; burada yalnızca
     # kimlik atanır (diğer adlar yalnızca okunur, `global` gerekmez).
     rt = Runtime()
@@ -144,124 +135,16 @@ async def main(argv: Sequence[str] | None = None) -> int:
     appstate.SELF_ID = me.id
     log.info("Bağlanıldı: %s (id=%s)", display_name(me), me.id)
 
-    if appstate.LINK_APPENDIX_MODE == "smart":
-        log.info("Bağlantı ekleri: akıllı mod — ürün adresi '%s' yazısına gömülür "
-                 "(buton, gizli hyperlink ya da görünür URL); alıntıdaki bağlantılar yedek kalır.",
-                 PRODUCT_LINK_TEXT)
-    elif appstate.LINK_APPENDIX_MODE == "all":
-        log.info("Bağlantı ekleri: tüm gizli linkler iletinin sonuna yazılacak.")
-    if appstate.MESSAGE_LINK_LINE:
-        log.info("Orijinal mesajın t.me adresi kaynak grup adının içine gömülecek "
-                 "(ayrı '🔗 %s' satırı yok).", MESSAGE_LINK_LABEL)
-    if appstate.NOTIFY_BOT_TOKEN:
-        log.info("Bildirim biçimi (basit düzen): en üstte ürün başlığı → '%s' → altında mesaj "
-                 "OLDUĞU GİBİ → en altta kalın kaynak adı%s; mesajın adresi o adın içine "
-                 "gömülüdür. Tekrarlı paylaşımlarda kaynak adı satırı kalkar, yerine çoklu "
-                 "paylaşım notu yazılır (📌 N kere paylaşıldı: <gruplar>; her ad kendi "
-                 "mesajına bağlı).",
-                 PRODUCT_LINK_TEXT, " + medya" if appstate.NOTIFY_MEDIA else "")
-    if appstate.CLEAN_COMMANDS:
-        log.info("Komut temizliği açık: yeni komutta önceki komut/yanıt silinir, "
-                 "bildirimlere dokunulmaz.")
-    if appstate.DEDUP_ENABLED:
-        log.info("Tekrar birleştirme açık: aynı ürün sorgusu %s boyunca tek mesajda toplanır, "
-                 "açılışta hedefteki son %d ileti taranır.",
-                 humanize(appstate.DEDUP_WINDOW_SECONDS), appstate.DEDUP_SCAN_LIMIT)
-    else:
-        log.info("Tekrar birleştirme kapalı: her eşleşme ayrı mesaj olarak iletilir.")
-
-    # --- Kaynakları, kontrol sohbetini ve hedefi çöz.
-    _orig_ids = dict(rt.store.config.get("source_chat_ids") or {}) if isinstance(rt.store.config.get("source_chat_ids"), dict) else {}
-    notes, fatal = await chatresolve.resolve_chat_groups(
-        rt.client, config, {"sources", "destination", "control"},
-    )
-    for note in notes:
-        log.info("%s", note)
-    if fatal:
-        raise SystemExit(f"{fatal}; source_chats listesini ve hesap üyeliğini kontrol et.")
-    # Kaynak ID'lerini kalıcılaştır — sonraki açılışlarda username FloodWait'ini önler
-    _new_ids = rt.store.config.get("source_chat_ids")
-    if isinstance(_new_ids, dict) and _new_ids != _orig_ids:
-        try:
-            await asyncio.to_thread(gitops.atomic_write_json, rt.store.path, rt.store.config)
-            log.info("Kaynak ID'leri kalıcılaştırıldı: %s/%s", len(_new_ids), len(chat_values(rt.store.config.get("source_chats"))))
-            # GitHub kalıcılığı: bir sonraki runner aynı ID'leri görsün; sessiz, hatası startup'ı öldürmez
-            # Yalnızca gerçek repo checkout'unda push et — testteki /tmp dosyası repo dışı
-            if gitops.push_token() and gitops.git_repo_root(rt.store.path.parent) is not None:
-                _st, _dt = await asyncio.to_thread(gitops.commit_and_push, rt.store.path, "kaynak ID'leri güncellendi")
-                log.info("Kaynak ID push: %s %s", _st, _dt)
-        except Exception as exc:  # noqa: BLE001 - kalıcılık hatası bot'u durdurmasın
-            log.warning("Kaynak ID'leri yazılamadı: %s: %s", type(exc).__name__, exc)
-    not_joined = [item["name"] for item in appstate.SOURCES if not item["joined"]]
-    if not_joined:
-        log.warning(
-            "Bu hesaptan üye olunmayan kaynaklar var, bunlardan mesaj GELMEZ: %s", ", ".join(not_joined)
-        )
-    if appstate.ADMIN_IDS:
-        log.info("Komut kullanabilecek admin ID'leri: %s", sorted(appstate.ADMIN_IDS))
-    elif len(appstate.CONTROL_IDS) > 1:
-        log.warning("admin_user_id boş: grup komutları kimse tarafından kullanılamaz.")
-    if not appstate.NOTIFY_BOT_TOKEN:
-        log.warning(
-            "NOTIFY_BOT_TOKEN secret/ortam değişkeni tanımlı değil: mesajları kendi hesabın "
-            "gönderdiği için Telegram BİLDİRİM ÜRETMEZ. Sesli bildirim istiyorsan @BotFather'dan "
-            "bir bot oluşturup gruba ekle ve token'ı NOTIFY_BOT_TOKEN secret'ında sakla."
-        )
-
+    startup.log_active_features()
+    await startup.resolve_chats(rt, config)
 
     rt.settings_lock = asyncio.Lock()
     rt.private_api = BotAPI(appstate.NOTIFY_BOT_TOKEN) if appstate.NOTIFY_BOT_TOKEN else None
-    # Optional feature: failure to initialize must not prevent channel listening.
-    rt.tracker = None
-    if rt.private_api and config_flag(rt.store.config.get("private_control"), False):
-        try:
-            from product_tracker import ProductTracker
-
-            def persist_products(path, data):
-                # Contents API avoids dirtying the shared checkout while config
-                # commits/rebases use it. The next runner checks out this snapshot.
-                with gitops.GIT_WRITE_LOCK:
-                    repository = os.getenv("GITHUB_REPOSITORY", "").strip()
-                    token = gitops.push_token()
-                    repo = gitops.git_repo_root(rt.store.path.parent)
-                    branch = (os.getenv("CONFIG_PUSH_BRANCH", "").strip()
-                              or (gitops.current_branch(repo) if repo else "")
-                              or os.getenv("GITHUB_REF_NAME", "").strip())
-                    if not repository or not token or not branch:
-                        return False, "GitHub kalıcı kayıt ortamı eksik."
-                    url = f"https://api.github.com/repos/{repository}/contents/{path.name}"
-                    ok, remote, detail = gitops._github_api("GET", f"{url}?ref={urllib.parse.quote(branch, safe='')}", token)
-                    if not ok or not isinstance(remote, dict) or not remote.get("sha"):
-                        log.warning("Ürün takip dosyasının GitHub sürümü okunamadı: %s",
-                                    detail or "beklenmeyen yanıt")
-                        return False, "Takip dosyasının GitHub sürümü okunamadı."
-                    payload = {
-                        "message": "config: ürün takip güncellemesi",
-                        "branch": branch, "sha": remote["sha"],
-                        "content": base64.b64encode((json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode()).decode(),
-                    }
-                    ok, _, detail = gitops._github_api("PUT", url, token, payload)
-                    if not ok:
-                        log.warning("Ürün takip ayarı GitHub'a yazılamadı: %s", detail)
-                    return ok, "Ürün takip ayarı GitHub'a yazıldı." if ok else "GitHub yazımı başarısız."
-
-            rt.tracker = ProductTracker(
-                rt.store.path.with_name("product_watches.json"), rt.private_api, persist_products,
-                owner_id=appstate.SELF_ID,
-                header_formatter=lambda cents, title: build_header_line(header_price_text(cents / 100), title),
-            )
-        except Exception:
-            log.exception("Ürün takibi başlatılamadı; kanal dinleme devam ediyor.")
-
-
+    startup.start_product_tracker(rt)
     rt.private_offers = PrivateOfferQueue(rt.private_api, functools.partial(prepare_private_offer, rt))
 
-
-    # --- İletim yolları -----------------------------------------------------
-    # Korumalı (noforwards) kanallarda forward ve copy patlar; o yüzden sırayla
+    # Teslim yolları: korumalı (noforwards) kanallarda forward ve copy patlar; zincir sırayla
     # denenir: forward -> copy -> medyayı indirip yeniden yükle -> sadece metin -> link.
-
-
     rt.senders = {
         "forward": functools.partial(send_forward, rt),
         "copy": functools.partial(send_copy, rt),
@@ -269,30 +152,9 @@ async def main(argv: Sequence[str] | None = None) -> int:
         "text": functools.partial(send_text_only, rt),
         "link": functools.partial(send_link_card, rt),
     }
-
     rt.account_send_lock = asyncio.Lock()
 
-
-    # --- Tekrar birleştirme --------------------------------------------------
-    # Aynı başlık aynı anda 3-5 kanaldan gelebilir; gönderen rezervasyon koyar,
-    # diğerleri bekleyip tekrara düşer. Rozet aynı ürünün kilidiyle birleştirilir;
-    # kayıp hedefte bu olayın kendisi yeni bildirim gönderebilir.
-
-                # State may have changed just as the timeout fired; re-read it.
-
-
-    # Tekrar önbelleğini sıfırla ve hedefin son iletileriyle ısıt: yeniden
-    # başlamalarda yalnızca güvenle eşlenebilen geçmişi kullan (tek tarama).
-    appstate.DEDUP_CACHE.clear()
-    appstate.LIVE_SEEN.clear()
-    appstate.POLL_DISPATCHED.clear()
-    appstate.SOURCE_IN_FLIGHT.clear()
-    await dedup_preload(rt)
-    # Cursor: RAM sadece, bilinçli /restart’ta tek persist
-    pollcursor.cursor_load_from_config(rt.store.config)
-    # İlk kurulum: source_cursors yoksa bootstrap ilk poll’de top ile yapılır (patlama yok)
-    if not rt.store.config.get("source_cursors"):
-        log.info("Cursor: kalıcı kayıt yok — ilk poll’de sınırlı geriye tarama yapılacak; başlangıçtan önceki geçmiş bastırılacak.")
+    await startup.prepare_caches(rt)
 
     # Handler'lara `chats=` VERMİYORUZ: Telethon o filtreyi ilk mesajda çözer ve
     # çözümleme hatası tüm update akışını öldürür. Filtreyi burada kendimiz yapıyoruz.
@@ -304,9 +166,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     async def on_new_message(event: events.NewMessage.Event) -> None:
         return await listener.on_new_message(rt, event)
 
-
-    rt.poll_delivery_tasks: set[asyncio.Task] = set()
-
+    rt.poll_delivery_tasks = set()
 
     # Özel komutlar ve fırsat kuyruğu ayrı görevlerde çalışır; açılış mesajı gönderilmez.
     private_tasks = []
@@ -325,16 +185,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
                     break
                 await asyncio.sleep(0.25)
 
-
-    if auto_restart and rt.gh_pat:
-        asyncio.create_task(lifecycle.auto_restart_scheduler(
-            rt.client, appstate.DESTINATION, rt.gh_pat, max(60, restart_minutes * 60),
-            prepare_restart=functools.partial(prepare_scheduled_restart, rt),
-            resume_after_failure=functools.partial(resume_after_scheduled_restart_failure, rt),
-        ))
-    elif auto_restart:
-        log.warning("auto_restart açık ama GH_PAT yok; oturum Actions süresi bitince kapanacak.")
-    asyncio.create_task(lifecycle.heartbeat())
+    lifecycle.start_background_tasks(rt, auto_restart, restart_minutes)
 
     if appstate.FAST_POLL:
         private_tasks.append(asyncio.create_task(fast_poll_loop(rt)))
